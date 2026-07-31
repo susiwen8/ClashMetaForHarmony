@@ -1,0 +1,108 @@
+{
+  "schemaVersion": "1.0.0",
+  "requirements": {
+    "schemaVersion": "1.0.0",
+    "target": {
+      "platform": "HarmonyOS",
+      "apiVersion": 20
+    },
+    "env": {
+      "sdkRoots": [
+        "DEVECO_SDK_HOME",
+        "HARMONY_SDK_HOME",
+        "OHOS_SDK_HOME",
+        "HOS_SDK_HOME",
+        "DEVECO_HOME_SDK"
+      ]
+    },
+    "tools": {
+      "node": {
+        "versionCommands": []
+      },
+      "java": {
+        "versionCommands": [
+          ["--version"],
+          ["-version"]
+        ]
+      },
+      "hvigor": {
+        "versionCommands": [
+          ["--version"]
+        ]
+      },
+      "ohpm": {
+        "versionCommands": [
+          ["--version"],
+          ["-v"]
+        ]
+      },
+      "hdc": {
+        "versionCommands": [
+          ["version"]
+        ]
+      }
+    },
+    "files": {
+      "localProperties": "harmony/local.properties",
+      "sdkMetadata": [
+        "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
+      ],
+      "apiMarkers": [
+        "openharmony/{apiVersion}/toolchains/arkts/tsconfig/ohos-global.d.ets",
+        "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
+      ],
+      "ndkMarkers": [
+        "openharmony/{apiVersion}/native/build/cmake/ohos.toolchain.cmake",
+        "openharmony/{apiVersion}/native/sysroot/usr/lib/aarch64-linux-ohos/libc++.so"
+      ],
+      "clang": "openharmony/{apiVersion}/native/llvm/bin/aarch64-linux-ohos-clang",
+      "llvmReadelf": "openharmony/{apiVersion}/native/llvm/bin/llvm-readelf"
+    }
+  },
+  "probe": {
+    "cwd": "/workspace/repo/harmony",
+    "env": {
+      "PATH": "/fixture/bin:/usr/bin",
+      "DEVECO_SDK_HOME": "/Users/fixture-user/Library/Secrets/Huawei/Sdk",
+      "HARMONY_SDK_HOME": "/Users/fixture-user/Library/Secrets/Huawei/Sdk"
+    },
+    "versions": {
+      "node": "v22.17.0",
+      "java": "17.0.14",
+      "sdkVersion": "HarmonyOS 6.0.0",
+      "apiVersion": "20"
+    },
+    "commandResults": {
+      "/fixture/bin/java --version": {
+        "stdout": "openjdk 17.0.14 2025-01-21\nOpenJDK Runtime Environment\n",
+        "stderr": ""
+      },
+      "/fixture/bin/hvigor --version": {
+        "stdout": "5.0.1\nbuild metadata\n",
+        "stderr": ""
+      },
+      "/fixture/bin/ohpm --version": {
+        "stdout": "5.0.3\n",
+        "stderr": ""
+      },
+      "/fixture/bin/hdc version": {
+        "stdout": "Ver: 3.1.0a\n",
+        "stderr": ""
+      }
+    },
+    "files": {
+      "/workspace/repo/harmony/local.properties": "sdk.dir=/Users/fixture-user/Library/Secrets/Huawei/Sdk\n",
+      "/fixture/bin/node": "",
+      "/fixture/bin/java": "",
+      "/fixture/bin/hvigor": "",
+      "/fixture/bin/ohpm": "",
+      "/fixture/bin/hdc": "",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/toolchains/ets/oh-uni-package.json": "{\"apiVersion\":\"20\",\"sdkVersion\":\"HarmonyOS 6.0.0\"}\n",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/toolchains/arkts/tsconfig/ohos-global.d.ets": "",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/build/cmake/ohos.toolchain.cmake": "",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/sysroot/usr/lib/aarch64-linux-ohos/libc++.so": "",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/llvm/bin/aarch64-linux-ohos-clang": "",
+      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/llvm/bin/llvm-readelf": ""
+    }
+  }
+}

@@ -40,6 +40,16 @@ cmake-build-*
 
 # local.properties
 local.properties
+/harmony/local.properties
+/harmony/.hvigor/
+/harmony/oh_modules/
+/harmony/build/
+/harmony/artifacts/*
+!/harmony/artifacts/.gitkeep
+/harmony/**/*.p12
+/harmony/**/*.cer
+/harmony/**/*.p7b
+/harmony/**/*.pem
 
 
 # tracker
