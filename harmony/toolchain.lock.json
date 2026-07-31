@@ -1,0 +1,22 @@
+{
+  "schemaVersion": "1.0.0",
+  "target": {
+    "name": "HarmonyOS 6/API 20/arm64",
+    "targetSdkVersion": "6.1.0(23)",
+    "targetApiVersion": 23,
+    "compatibleSdkVersion": "6.0.0(20)",
+    "compatibleApiVersion": 20,
+    "runtimeOS": "HarmonyOS",
+    "architecture": "arm64"
+  },
+  "installed": {
+    "devecoVersion": "6.1.0.860",
+    "sdkVersion": "6.1.0.105",
+    "sdkApiVersion": 23,
+    "ndkVersion": "6.1.0.105",
+    "ndkApiVersion": 23,
+    "hvigorVersion": "6.23.7",
+    "ohpmVersion": "6.1.1.830",
+    "hdcVersion": "6.1.0.105"
+  }
+}

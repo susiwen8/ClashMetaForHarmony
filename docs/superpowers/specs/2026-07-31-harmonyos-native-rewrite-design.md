@@ -2,7 +2,7 @@
 
 **Status:** User-approved design
 **Date:** 2026-07-31
-**Target:** HarmonyOS 6.x, API 20, arm64 phone
+**Target:** HarmonyOS 6.x, API 20 compatible baseline, arm64 phone
 **Delivery:** Developer-signed HAP for local device installation
 **License:** GPL-3.0, consistent with this repository
 
@@ -139,25 +139,32 @@ Documentation alone does not prove production behavior on a retail HarmonyOS
 
 ### 6.3 Toolchain prerequisite
 
-The current development machine does not expose DevEco Studio, HarmonyOS SDK,
-`hvigor`, `ohpm`, or `hdc`. Implementation begins by installing and validating
-the HarmonyOS 6/API 20 toolchain and local developer signing.
+The development machine now has DevEco Studio 6.1.0.860 installed with the
+pre-integrated HarmonyOS 6.1 SDK root at
+`/Applications/DevEco-Studio.app/Contents/sdk/default`. Task 2 verifies this
+installation state as an integrated API 23 SDK/NDK/tooling contract, records
+non-secret version facts, and confirms the native/ArkTS files that the build
+must use.
 
 ### 6.4 Target-SDK verification rule
 
 OpenHarmony `master` documentation is discovery evidence, not the final
 compatibility contract. Implementation must:
 
-- Pin the application compile and compatible SDK to the installed HarmonyOS
-  6/API 20 SDK.
-- Confirm every imported ArkTS symbol against the API 20 `.d.ts` files shipped
-  with that SDK.
-- Confirm every native symbol and linked library against the API 20 NDK
-  headers and CMake toolchain.
-- Avoid APIs marked as introduced after API 20 unless they are isolated behind
-  a capability check and have an API 20 implementation.
-- Record the exact DevEco, SDK, NDK, Hvigor, and device build versions in the
-  device proof artifact.
+- Pin the project target SDK to `6.1.0(23)` while preserving the compatibility
+  baseline `6.0.0(20)` and `runtimeOS: HarmonyOS` in the generated
+  `build-profile.json5`.
+- Confirm every imported ArkTS symbol against the declarations shipped in the
+  installed integrated SDK, with Task 3 proving the project-level compatible
+  baseline rather than relying on a standalone API 20 disk layout.
+- Confirm every native symbol and linked library against the installed
+  integrated NDK sysroot, `ohos.toolchain.cmake`, and
+  `aarch64-unknown-linux-ohos-clang` wrapper.
+- Avoid APIs that cannot be represented by the API 20 compatible project
+  baseline unless they are isolated behind a capability check and have an API
+  20 implementation.
+- Record the exact DevEco, SDK, NDK, Hvigor, Ohpm, HDC, and device build
+  versions in the proof artifacts.
 
 An API found only in a newer OpenHarmony document does not satisfy this rule.
 
@@ -671,7 +678,7 @@ Recovery rules:
 
 Deliverables:
 
-- HarmonyOS 6/API 20 SDK and tooling verified
+- HarmonyOS 6.1 integrated SDK/NDK tooling verified with an API 20 compatible project contract
 - Developer signing configured outside source control
 - Empty native Stage HAP builds
 - HAP installs and launches on a HarmonyOS 6 phone
@@ -931,7 +938,7 @@ contracts. The first implementation plan produced from it covers Phases 0-2:
 
 ### 21.1 In scope for the first implementation plan
 
-- Install and verify the HarmonyOS 6/API 20 toolchain.
+- Install-state verification for the HarmonyOS 6.1 integrated SDK/NDK toolchain, with project compatibility proved separately.
 - Configure local developer signing without committing secrets.
 - Create the self-contained `harmony/` Stage project.
 - Build, install, and launch an empty HAP.

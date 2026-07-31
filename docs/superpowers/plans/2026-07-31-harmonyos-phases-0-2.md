@@ -15,7 +15,7 @@
 ## Current Baseline
 
 - The repository has no `harmony/` tree.
-- DevEco Studio, HarmonyOS SDK/NDK, `hvigor`, `ohpm`, `hdc`, and CMake are not currently discoverable on this Mac.
+- DevEco Studio 6.1.0.860 is installed with the integrated HarmonyOS 6.1 SDK/NDK/tooling root at `/Applications/DevEco-Studio.app/Contents/sdk/default`; Task 2 pins that installation contract.
 - Node.js `v22.17.0`, Java 17, and Go `1.26.2 darwin/arm64` are available.
 - `go tool dist list` does not provide an `ohos/arm64` target.
 - `core/src/foss/golang/clash` is a declared but uninitialized mihomo submodule.
@@ -23,7 +23,7 @@
 
 ## Hard Gates and Stop Rules
 
-1. The API 20 SDK and NDK files shipped with the installed DevEco toolchain are the compatibility authority.
+1. The installed DevEco 6.1 integrated API 23 SDK/NDK files are the installation authority; Task 3 must still prove the API 20 compatible project settings in `build-profile.json5`.
 2. DevEco generates the initial Stage project. Do not hand-copy an old API 12/13 template.
 3. `GOOS=linux GOARCH=arm64 CGO_ENABLED=1` with the OHOS clang is a hypothesis until a library is built and loaded on a HarmonyOS 6 phone.
 4. If the Go/cgo smoke library cannot load, stop Phase 1 core work and diagnose the toolchain/runtime mismatch. Do not replace it with a fake backend.
@@ -83,15 +83,28 @@ harmony/
   {
     schemaVersion: '1.0.0',
     result: 'pass',
+    target: {
+      name: 'HarmonyOS 6/API 20/arm64',
+      targetSdkVersion: '6.1.0(23)',
+      compatibleSdkVersion: '6.0.0(20)',
+      runtimeOS: 'HarmonyOS'
+    },
+    installed: {
+      devecoVersion: '6.1.0.860',
+      sdkVersion: '6.1.0.105',
+      sdkApiVersion: 23,
+      ndkVersion: '6.1.0.105',
+      hdcVersion: '6.1.0.105'
+    },
     tools: {
       node: { found: true, version: '22.17.0' },
       java: { found: true, version: '17.0.18' },
-      hvigor: { found: true, version: 'fixture-hvigor-version' },
-      ohpm: { found: true, version: 'fixture-ohpm-version' },
-      hdc: { found: true, version: 'fixture-hdc-version' },
-      ohosClang: { found: true, version: 'fixture-ohos-clang-version' }
-    },
-    sdk: { apiVersion: 20, sdkVersion: '6.0.0(20)', ndkFound: true }
+      hvigor: { found: true, version: '6.23.7' },
+      ohpm: { found: true, version: '6.1.1.830' },
+      hdc: { found: true, version: '6.1.0.105' },
+      ohosClang: { found: true, version: null },
+      llvmReadelf: { found: true, version: null }
+    }
   }
   ```
 
@@ -116,8 +129,8 @@ harmony/
 
   - resolve tools from `PATH`, DevEco's documented terminal environment, and an optional ignored `harmony/local.properties`;
   - run version commands without a shell;
-  - locate the API 20 ArkTS `.d.ts` tree, NDK sysroot, CMake toolchain, `aarch64-linux-ohos-clang`, and `llvm-readelf`;
-  - return structured failures such as `TOOL_MISSING`, `API20_MISSING`, and `NDK_MISSING`;
+  - locate the integrated ArkTS declaration tree, NDK sysroot, CMake toolchain, `aarch64-unknown-linux-ohos-clang`, and `llvm-readelf`;
+  - return structured failures such as `SDK_METADATA_MISSING`, `ARKTS_DECLARATIONS_MISSING`, `TOOL_MISSING`, `TOOL_VERSION_MISSING`, and `NDK_MISSING`;
   - redact device serials and local paths in persisted output.
 
   `preflight.mjs` writes `harmony/artifacts/toolchain-preflight.json` even when incomplete and exits `0` only when every required item is found.
@@ -150,13 +163,13 @@ harmony/
 
   Run: `node harmony/tools/preflight.mjs`
 
-  Expected before installation: exit code `2`; proof has `result: "incomplete"` and identifies missing DevEco/API 20 tools.
+  Expected on a missing install: exit code `2`; proof has `result: "incomplete"` and identifies which integrated metadata, declarations, native files, or tools are absent.
 
 - [ ] **Step 6: Commit the preflight increment**
 
   Commit only the files in this task with a Lore message whose intent line is `Make the HarmonyOS toolchain prerequisite reproducible`.
 
-### Task 2: Install DevEco/API 20 and pin non-secret version facts
+### Task 2: Verify the integrated DevEco 6.1 toolchain and pin non-secret version facts
 
 **Files:**
 - Create after installation: `harmony/toolchain.lock.json`
@@ -169,21 +182,16 @@ harmony/
   Use the current package from Huawei's official DevEco resources page:
   `https://developer.huawei.com/consumer/cn/deveco-studio/resources/`.
 
-  Install the current official DevEco package that explicitly supports
-  HarmonyOS 6/API 20, together with the API 20 SDK, native SDK/NDK,
-  command-line tools, and device tools. Immediately record the exact
-  discovered versions in `toolchain.lock.json`; do not use a remembered
-  version or lower-bound example as the lock. Accept no SDK copied from an
-  unrelated repository.
+  Validate the already-installed official DevEco 6.1 package, its pre-integrated HarmonyOS 6.1 SDK/NDK, and the bundled command-line/device tools. Immediately record the exact discovered versions in `toolchain.lock.json`; do not use a remembered version or lower-bound example as the lock. Accept no SDK copied from an unrelated repository.
 
-- [ ] **Step 2: Write a failing API 20 filesystem contract test**
+- [ ] **Step 2: Write a failing integrated SDK contract test**
 
   Given the discovered SDK root, assert that:
 
-  - an API 20 SDK manifest exists;
-  - ArkTS API declarations can be enumerated;
+  - the integrated SDK metadata and locked target/compatible/runtimeOS contract exist;
+  - ArkTS API declarations can be enumerated from the integrated SDK;
   - the NDK sysroot and `ohos.toolchain.cmake` exist;
-  - `aarch64-linux-ohos-clang` and `llvm-readelf` are executable.
+  - `aarch64-unknown-linux-ohos-clang`, `llvm-readelf`, and `hdc` are executable.
 
 - [ ] **Step 3: Run the contract test to verify RED**
 
@@ -194,14 +202,14 @@ harmony/
 - [ ] **Step 4: Generate the lock file from actual tools**
 
   Persist `schemaVersion`, the fixed target string
-  `HarmonyOS 6/API 20/arm64`, and the exact discovered values for
-  `devecoVersion`, `sdkVersion`, `ndkVersion`, `hvigorVersion`,
-  `ohpmVersion`, and `hdcVersion`. The generator rejects an empty version
+  `HarmonyOS 6/API 20/arm64`, the project target/compatible/runtimeOS values,
+  and the exact discovered values for `devecoVersion`, `sdkVersion`,
+  `ndkVersion`, `hvigorVersion`, `ohpmVersion`, and `hdcVersion`. The generator rejects an empty version
   instead of writing a placeholder. Do not persist usernames, device serials,
   credentials, signing paths, or SDK absolute paths.
 
   Generate `toolchain.native-allowlist.json` from libraries that actually
-  exist in the API 20 NDK sysroot. It has separate exact `DT_NEEDED`
+  exist in the integrated API 23 NDK sysroot. It has separate exact `DT_NEEDED`
   allowlists for `goProbe`, `mihomoCore`, and `nodeAddon`. Candidate base
   entries are `libc.so`, `libdl.so`, and `libm.so`; the addon additionally
   permits the SDK-confirmed Node-API and HiLog library names plus the packaged
@@ -218,7 +226,7 @@ harmony/
   node --test harmony/tests/structure/api20-sdk-contract.test.mjs
   ```
 
-  Expected: both exit `0`; preflight reports API 20 and an arm64 OHOS clang.
+  Expected: both exit `0`; preflight reports the verified integrated API 23 install and the fixed API 20 compatible project target contract.
 
 - [ ] **Step 6: Commit the version contract**
 
@@ -248,7 +256,7 @@ harmony/
 
 - [ ] **Step 1: Write the failing layout and signing-isolation tests**
 
-  `phase0-layout.test.mjs` reads `required-phase0-paths.json` and checks the Stage skeleton, API 20 target, `entry` module, `EntryAbility`, and `pages/Index`.
+  `phase0-layout.test.mjs` reads `required-phase0-paths.json` and checks the Stage skeleton, the fixed `targetSdkVersion=6.1.0(23)` plus `compatibleSdkVersion=6.0.0(20)`/`runtimeOS=HarmonyOS` project contract, `entry` module, `EntryAbility`, and `pages/Index`.
 
   `signing-isolation.test.mjs` rejects tracked `.p12`, `.cer`, `.p7b`, `.pem`, passwords, absolute user paths, and signing material. It allows a product to name a local signing config but not to embed its secrets.
 
@@ -266,7 +274,7 @@ harmony/
   The signing test fails only when it finds tracked signing material,
   credential-like values, or machine-specific absolute paths.
 
-- [ ] **Step 3: Generate the API 20 project from DevEco**
+- [ ] **Step 3: Generate the API 20 compatible project from DevEco**
 
   Create an Empty Ability, Stage model, ArkTS application at `harmony/` with:
 
@@ -274,7 +282,7 @@ harmony/
   - module `entry`;
   - ability `EntryAbility`;
   - product `default`;
-  - compile/compatible target HarmonyOS 6/API 20;
+  - target SDK `6.1.0(23)` with compatible baseline `6.0.0(20)` and `runtimeOS: HarmonyOS`;
   - phone/default device type.
 
   Keep the generated Hvigor/plugin versions. Do not paste the old `2.4.2` sample versions or an API 12 target.
@@ -416,8 +424,8 @@ harmony/
   GOOS=linux
   GOARCH=arm64
   CGO_ENABLED=1
-  CC=<api20-ndk>/aarch64-linux-ohos-clang
-  CXX=<api20-ndk>/aarch64-linux-ohos-clang++
+  CC=<integrated-ndk>/aarch64-unknown-linux-ohos-clang
+  CXX=<integrated-ndk>/aarch64-unknown-linux-ohos-clang++
   go build -tags ohos -buildmode=c-shared
   ```
 
@@ -425,7 +433,7 @@ harmony/
 
 - [ ] **Step 4: Inspect the ELF before packaging**
 
-  `inspect-native-lib.mjs` invokes the API 20 NDK `llvm-readelf -h -d -sW`. Assert AArch64, expected exports, legal `NEEDED` entries, and no Android libraries.
+  `inspect-native-lib.mjs` invokes the integrated NDK `llvm-readelf -h -d -sW`. Assert AArch64, expected exports, legal `NEEDED` entries, and no Android libraries.
 
   “Legal” means an exact match against the component-specific entries in
   `harmony/toolchain.native-allowlist.json`; discovery from the current Mac or
@@ -587,7 +595,7 @@ harmony/
 
   Link only the exact addon entries in
   `harmony/toolchain.native-allowlist.json`, including the shipped Node-API
-  and HiLog libraries confirmed from the API 20 SDK.
+  and HiLog libraries confirmed from the integrated SDK.
 
 - [ ] **Step 4: Verify build and static contract**
 

@@ -1,8 +1,13 @@
 {
   "schemaVersion": "1.0.0",
   "target": {
-    "platform": "HarmonyOS",
-    "apiVersion": 20
+    "name": "HarmonyOS 6/API 20/arm64",
+    "targetSdkVersion": "6.1.0(23)",
+    "targetApiVersion": 23,
+    "compatibleSdkVersion": "6.0.0(20)",
+    "compatibleApiVersion": 20,
+    "runtimeOS": "HarmonyOS",
+    "architecture": "arm64"
   },
   "env": {
     "sdkRoots": [
@@ -13,6 +18,15 @@
       "DEVECO_HOME_SDK"
     ]
   },
+  "defaults": {
+    "sdkRoots": [
+      "/Applications/DevEco-Studio.app/Contents/sdk/default"
+    ],
+    "devecoContentsRoots": [
+      "/Applications/DevEco-Studio.app/Contents"
+    ],
+    "versionProbeTimeoutMs": 5000
+  },
   "tools": {
     "node": {
       "versionCommands": []
@@ -22,38 +36,28 @@
         ["--version"],
         ["-version"]
       ]
-    },
-    "hvigor": {
-      "versionCommands": [
-        ["--version"]
-      ]
-    },
-    "ohpm": {
-      "versionCommands": [
-        ["--version"],
-        ["-v"]
-      ]
-    },
-    "hdc": {
-      "versionCommands": [
-        ["version"]
-      ]
     }
   },
   "files": {
     "localProperties": "harmony/local.properties",
-    "sdkMetadata": [
-      "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
+    "sdkPkg": "sdk-pkg.json",
+    "devecoProductInfo": "Resources/product-info.json",
+    "etsPackage": "openharmony/ets/oh-uni-package.json",
+    "nativePackage": "openharmony/native/oh-uni-package.json",
+    "toolchainsPackage": "openharmony/toolchains/oh-uni-package.json",
+    "arktsDeclarationRoots": [
+      "openharmony/ets/api",
+      "hms/ets/api"
     ],
-    "apiMarkers": [
-      "openharmony/{apiVersion}/toolchains/arkts/tsconfig/ohos-global.d.ets",
-      "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
-    ],
-    "ndkMarkers": [
-      "openharmony/{apiVersion}/native/build/cmake/ohos.toolchain.cmake",
-      "openharmony/{apiVersion}/native/sysroot/usr/lib/aarch64-linux-ohos/libc++.so"
-    ],
-    "clang": "openharmony/{apiVersion}/native/llvm/bin/aarch64-linux-ohos-clang",
-    "llvmReadelf": "openharmony/{apiVersion}/native/llvm/bin/llvm-readelf"
+    "ndkSysroot": "openharmony/native/sysroot",
+    "ndkCmake": "openharmony/native/build/cmake/ohos.toolchain.cmake",
+    "clang": "openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang",
+    "llvmReadelf": "openharmony/native/llvm/bin/llvm-readelf",
+    "hdc": "openharmony/toolchains/hdc",
+    "hvigorPackage": "tools/hvigor/hvigor/package.json",
+    "hvigorBinary": "tools/hvigor/bin/hvigorw",
+    "ohpmPackage": "tools/ohpm/package.json",
+    "ohpmBinary": "tools/ohpm/bin/ohpm",
+    "nativeLibraryDirectory": "openharmony/native/sysroot/usr/lib/aarch64-linux-ohos"
   }
 }

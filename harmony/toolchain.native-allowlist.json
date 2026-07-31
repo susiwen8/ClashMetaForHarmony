@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1.0.0",
+  "architecture": "arm64",
+  "source": {
+    "sdkVersion": "6.1.0.105",
+    "sdkApiVersion": 23
+  },
+  "goProbe": [
+    "libc.so"
+  ],
+  "mihomoCore": [
+    "libc.so"
+  ],
+  "nodeAddon": [
+    "libace_napi.z.so",
+    "libc.so",
+    "libcmfa_mihomo.so",
+    "libhilog_ndk.z.so"
+  ]
+}

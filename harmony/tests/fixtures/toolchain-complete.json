@@ -3,8 +3,13 @@
   "requirements": {
     "schemaVersion": "1.0.0",
     "target": {
-      "platform": "HarmonyOS",
-      "apiVersion": 20
+      "name": "HarmonyOS 6/API 20/arm64",
+      "targetSdkVersion": "6.1.0(23)",
+      "targetApiVersion": 23,
+      "compatibleSdkVersion": "6.0.0(20)",
+      "compatibleApiVersion": 20,
+      "runtimeOS": "HarmonyOS",
+      "architecture": "arm64"
     },
     "env": {
       "sdkRoots": [
@@ -15,6 +20,15 @@
         "DEVECO_HOME_SDK"
       ]
     },
+    "defaults": {
+      "sdkRoots": [
+        "/fixture/DevEco-Studio.app/Contents/sdk/default"
+      ],
+      "devecoContentsRoots": [
+        "/fixture/DevEco-Studio.app/Contents"
+      ],
+      "versionProbeTimeoutMs": 5000
+    },
     "tools": {
       "node": {
         "versionCommands": []
@@ -24,85 +38,85 @@
           ["--version"],
           ["-version"]
         ]
-      },
-      "hvigor": {
-        "versionCommands": [
-          ["--version"]
-        ]
-      },
-      "ohpm": {
-        "versionCommands": [
-          ["--version"],
-          ["-v"]
-        ]
-      },
-      "hdc": {
-        "versionCommands": [
-          ["version"]
-        ]
       }
     },
     "files": {
       "localProperties": "harmony/local.properties",
-      "sdkMetadata": [
-        "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
+      "sdkPkg": "sdk-pkg.json",
+      "devecoProductInfo": "Resources/product-info.json",
+      "etsPackage": "openharmony/ets/oh-uni-package.json",
+      "nativePackage": "openharmony/native/oh-uni-package.json",
+      "toolchainsPackage": "openharmony/toolchains/oh-uni-package.json",
+      "arktsDeclarationRoots": [
+        "openharmony/ets/api",
+        "hms/ets/api"
       ],
-      "apiMarkers": [
-        "openharmony/{apiVersion}/toolchains/arkts/tsconfig/ohos-global.d.ets",
-        "openharmony/{apiVersion}/toolchains/ets/oh-uni-package.json"
-      ],
-      "ndkMarkers": [
-        "openharmony/{apiVersion}/native/build/cmake/ohos.toolchain.cmake",
-        "openharmony/{apiVersion}/native/sysroot/usr/lib/aarch64-linux-ohos/libc++.so"
-      ],
-      "clang": "openharmony/{apiVersion}/native/llvm/bin/aarch64-linux-ohos-clang",
-      "llvmReadelf": "openharmony/{apiVersion}/native/llvm/bin/llvm-readelf"
+      "ndkSysroot": "openharmony/native/sysroot",
+      "ndkCmake": "openharmony/native/build/cmake/ohos.toolchain.cmake",
+      "clang": "openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang",
+      "llvmReadelf": "openharmony/native/llvm/bin/llvm-readelf",
+      "hdc": "openharmony/toolchains/hdc",
+      "hvigorPackage": "tools/hvigor/hvigor/package.json",
+      "hvigorBinary": "tools/hvigor/bin/hvigorw",
+      "ohpmPackage": "tools/ohpm/package.json",
+      "ohpmBinary": "tools/ohpm/bin/ohpm",
+      "nativeLibraryDirectory": "openharmony/native/sysroot/usr/lib/aarch64-linux-ohos"
     }
   },
   "probe": {
     "cwd": "/workspace/repo/harmony",
     "env": {
       "PATH": "/fixture/bin:/usr/bin",
-      "DEVECO_SDK_HOME": "/Users/fixture-user/Library/Secrets/Huawei/Sdk",
-      "HARMONY_SDK_HOME": "/Users/fixture-user/Library/Secrets/Huawei/Sdk"
+      "DEVECO_SDK_HOME": "/fixture/DevEco-Studio.app/Contents/sdk/default"
     },
     "versions": {
       "node": "v22.17.0",
-      "java": "17.0.14",
-      "sdkVersion": "HarmonyOS 6.0.0",
-      "apiVersion": "20"
+      "java": "17.0.18"
     },
     "commandResults": {
       "/fixture/bin/java --version": {
-        "stdout": "openjdk 17.0.14 2025-01-21\nOpenJDK Runtime Environment\n",
-        "stderr": ""
-      },
-      "/fixture/bin/hvigor --version": {
-        "stdout": "5.0.1\nbuild metadata\n",
-        "stderr": ""
-      },
-      "/fixture/bin/ohpm --version": {
-        "stdout": "5.0.3\n",
-        "stderr": ""
-      },
-      "/fixture/bin/hdc version": {
-        "stdout": "Ver: 3.1.0a\n",
+        "stdout": "openjdk 17.0.18 2026-01-20\nOpenJDK Runtime Environment\n",
         "stderr": ""
       }
     },
     "files": {
-      "/workspace/repo/harmony/local.properties": "sdk.dir=/Users/fixture-user/Library/Secrets/Huawei/Sdk\n",
+      "/workspace/repo/harmony/local.properties": "sdk.dir=/fixture/DevEco-Studio.app/Contents/sdk/default\n",
       "/fixture/bin/node": "",
       "/fixture/bin/java": "",
-      "/fixture/bin/hvigor": "",
-      "/fixture/bin/ohpm": "",
-      "/fixture/bin/hdc": "",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/toolchains/ets/oh-uni-package.json": "{\"apiVersion\":\"20\",\"sdkVersion\":\"HarmonyOS 6.0.0\"}\n",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/toolchains/arkts/tsconfig/ohos-global.d.ets": "",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/build/cmake/ohos.toolchain.cmake": "",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/sysroot/usr/lib/aarch64-linux-ohos/libc++.so": "",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/llvm/bin/aarch64-linux-ohos-clang": "",
-      "/Users/fixture-user/Library/Secrets/Huawei/Sdk/openharmony/20/native/llvm/bin/llvm-readelf": ""
-    }
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/sdk-pkg.json": "{\n  \"meta\": { \"version\": \"1.0.0\" },\n  \"data\": {\n    \"apiVersion\": \"23\",\n    \"version\": \"6.1.0.105\",\n    \"platformVersion\": \"6.1.0\",\n    \"stage\": \"Release\"\n  }\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/ets/oh-uni-package.json": "{\n  \"apiVersion\": \"23\",\n  \"version\": \"6.1.0.105\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/oh-uni-package.json": "{\n  \"apiVersion\": \"23\",\n  \"version\": \"6.1.0.105\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/oh-uni-package.json": "{\n  \"apiVersion\": \"23\",\n  \"version\": \"6.1.0.105\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/ets/api/@ohos.app.ability.UIAbility.d.ts": "export interface UIAbility {}\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/ets/api/@ohos.hilog.d.ts": "export declare const hilog: unique symbol;\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/build/cmake/ohos.toolchain.cmake": "set(OHOS TRUE)\n",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos/libc.so": "",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos/libace_napi.z.so": "",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos/libhilog_ndk.z.so": "",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang": "",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/bin/llvm-readelf": "",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc": "",
+      "/fixture/DevEco-Studio.app/Contents/Resources/product-info.json": "{\n  \"version\": \"6.1.0.860\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/tools/hvigor/hvigor/package.json": "{\n  \"version\": \"6.23.7\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw": "",
+      "/fixture/DevEco-Studio.app/Contents/tools/ohpm/package.json": "{\n  \"version\": \"6.1.1.830\"\n}\n",
+      "/fixture/DevEco-Studio.app/Contents/tools/ohpm/bin/ohpm": ""
+    },
+    "directories": [
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr/lib",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/sysroot/usr/lib/aarch64-linux-ohos",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/ets/api"
+    ],
+    "executableFiles": [
+      "/fixture/bin/node",
+      "/fixture/bin/java",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/native/llvm/bin/llvm-readelf",
+      "/fixture/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc",
+      "/fixture/DevEco-Studio.app/Contents/tools/hvigor/bin/hvigorw",
+      "/fixture/DevEco-Studio.app/Contents/tools/ohpm/bin/ohpm"
+    ]
   }
 }
