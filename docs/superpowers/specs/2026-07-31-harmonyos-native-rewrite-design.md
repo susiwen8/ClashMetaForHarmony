@@ -143,6 +143,24 @@ The current development machine does not expose DevEco Studio, HarmonyOS SDK,
 `hvigor`, `ohpm`, or `hdc`. Implementation begins by installing and validating
 the HarmonyOS 6/API 20 toolchain and local developer signing.
 
+### 6.4 Target-SDK verification rule
+
+OpenHarmony `master` documentation is discovery evidence, not the final
+compatibility contract. Implementation must:
+
+- Pin the application compile and compatible SDK to the installed HarmonyOS
+  6/API 20 SDK.
+- Confirm every imported ArkTS symbol against the API 20 `.d.ts` files shipped
+  with that SDK.
+- Confirm every native symbol and linked library against the API 20 NDK
+  headers and CMake toolchain.
+- Avoid APIs marked as introduced after API 20 unless they are isolated behind
+  a capability check and have an API 20 implementation.
+- Record the exact DevEco, SDK, NDK, Hvigor, and device build versions in the
+  device proof artifact.
+
+An API found only in a newer OpenHarmony document does not satisfy this rule.
+
 ## 7. Repository Boundary
 
 The new project lives under `harmony/` in this repository:
@@ -402,6 +420,14 @@ RDB stores structured metadata, not full YAML bodies:
   - last successful update
   - last status
   - parsed subscription information
+  - current committed version ID
+- `profile_versions`
+  - profile ID
+  - immutable version ID
+  - content hash
+  - sandbox-relative directory
+  - creation time
+  - validation status
 - `selections`
   - profile ID
   - proxy group
@@ -439,18 +465,43 @@ Application sandbox directories contain:
 - Rotating logs
 - Explicitly generated diagnostics
 
+Profile payloads are immutable and versioned:
+
+```text
+profiles/<profile-id>/versions/<content-hash>/
+processing/<operation-id>/
+```
+
+RDB's `profiles.current_version_id` is the only authoritative pointer to a
+profile payload. A new version never overwrites or renames the directory
+referenced by the current pointer.
+
 Imported content follows:
 
 ```text
 Picker input
   -> bounded read into processing directory
   -> core validation
-  -> atomic move into final profile directory
-  -> RDB metadata commit
+  -> atomic rename into a new immutable version directory
+  -> one RDB transaction inserts the version row and flips current_version_id
+  -> active runtime reload when this is the active profile
+  -> old-version cleanup only after confirmed success
 ```
 
-If validation or commit fails, the processing data is removed and the previous
-active data remains unchanged.
+Failure behavior:
+
+- Validation failure removes the processing directory; RDB is untouched.
+- Filesystem rename failure leaves RDB untouched.
+- RDB commit failure leaves `current_version_id` unchanged; the new unreferenced
+  version is cleaned immediately or during startup recovery.
+- If the updated profile is active and runtime reload fails after the RDB
+  commit, a compensating RDB transaction restores the previous version pointer
+  and the runtime reloads the previous version.
+- The previous version directory remains present until the new version is
+  committed and, for an active profile, successfully loaded.
+
+This version-pointer protocol provides rollback without claiming a nonexistent
+atomic transaction across RDB and the filesystem.
 
 ## 12. User Experience
 
@@ -519,10 +570,16 @@ The phone UI uses HarmonyOS `Navigation` with four primary destinations:
 3. Content is downloaded or copied with size and timeout bounds.
 4. The real core validates the content.
 5. Validation errors return structured location and message data.
-6. Successful content is atomically moved into the profile directory.
-7. RDB metadata is committed.
-8. Activation asks `CoreRuntime` to load the committed profile.
-9. UI updates only after confirmed runtime events.
+6. Successful content is atomically renamed into a new immutable version
+   directory; the previous version remains untouched.
+7. One RDB transaction inserts the version record and changes the profile's
+   current version pointer.
+8. Activation or an active-profile update asks `CoreRuntime` to load the
+   committed version path.
+9. If runtime load fails, the pointer and runtime are restored to the previous
+   version before the failure is shown.
+10. UI updates only after confirmed runtime events.
+11. Superseded versions are cleaned only after successful commit and load.
 
 ### 13.2 Start a local proxy
 
@@ -647,11 +704,23 @@ Deliverables:
 - Configuration validation and load
 - HTTP/SOCKS start and stop
 - Real logs and runtime events
-- HTTPS request routed through the proxy
+- A test-only minimal ArkTS debug page showing core version, fixture validation,
+  runtime state, actual listener addresses, recent structured logs, and
+  start/stop/probe controls
+- Checked-in non-secret Phase 2 YAML fixtures
+- Deterministic HTTP and SOCKS device probes through the real listeners
 
 Gate:
 
-- No fake/stub backend is packaged, and real traffic passes through the core.
+- No fake/stub backend is packaged.
+- Both the HTTP listener and the SOCKS5 listener complete an HTTPS request to
+  the test origin through the real core.
+- Phase 2 uses a deterministic `MATCH,DIRECT` fixture; proxy group selection
+  and remote-node behavior are Phase 3 acceptance concerns.
+- The device runner writes `phase2-device-proof.json` containing toolchain and
+  device build versions, HAP hash, native-library hash, reported core version,
+  fixture hash, bound listener addresses, HTTP and SOCKS probe results,
+  response hash, timestamps, and an explicit `stubDetected: false` result.
 
 ### Phase 3: Full non-VPN application
 
@@ -777,6 +846,27 @@ against Android UI implementation details.
 Emulator testing is limited to UI, basic ArkTS logic, and accessibility. It is
 not accepted as evidence for native core, traffic, background, or VPN claims.
 
+### 17.8 Phase 2 deterministic proxy proof
+
+The limited Phase 2 surface uses:
+
+- A checked-in, non-secret `MATCH,DIRECT` mihomo fixture.
+- A test-only ArkTS debug page; production navigation and profile UI are not
+  prerequisites.
+- A test origin started by the repository's device-test harness on a
+  development host reachable from the phone.
+- A test-build native probe that connects first to the core's HTTP listener and
+  then to its SOCKS5 listener, requests the same HTTPS test resource, and
+  returns structured results to ArkTS.
+- Origin and probe request IDs that prove both requests reached the intended
+  endpoint.
+- HAP and library inspection that rejects known stub symbols and verifies the
+  packaged arm64 library hash.
+
+The test runner persists the proof as `phase2-device-proof.json`. A screenshot,
+UI toast, emulator result, or unstructured console log is not sufficient
+evidence.
+
 ## 18. Acceptance Criteria
 
 The first usable non-VPN milestone is complete when:
@@ -839,6 +929,39 @@ contracts. The first implementation plan produced from it covers Phases 0-2:
 2. Node-API bridge
 3. Real mihomo local proxy
 
+### 21.1 In scope for the first implementation plan
+
+- Install and verify the HarmonyOS 6/API 20 toolchain.
+- Configure local developer signing without committing secrets.
+- Create the self-contained `harmony/` Stage project.
+- Build, install, and launch an empty HAP.
+- Build and load the arm64 Node-API addon.
+- Implement only the minimum domain/runtime contracts required by the debug
+  proof surface.
+- Build the real mihomo core and platform-neutral lifecycle/config/local-proxy
+  ABI.
+- Validate and load checked-in non-secret YAML fixtures.
+- Start and stop real HTTP and SOCKS5 listeners.
+- Display core version, runtime state, listener information, and recent
+  structured logs on the test-only debug page.
+- Run the deterministic HTTP and SOCKS device probes and write the structured
+  Phase 2 proof artifact.
+- Verify the HAP contains the real core and no stub.
+
+### 21.2 Explicitly deferred from the first implementation plan
+
+- Production navigation and visual polish
+- RDB profile library and user-driven import
+- Proxy group browsing, node selection, and latency UI
+- Provider management
+- File editor and export UI
+- Production settings and overrides UI
+- Scheduled updates
+- Production log history, filtering, rotation, and export
+- Access-control UI
+- `VpnExtensionAbility`, TUN, route/DNS configuration, and socket protection
+- Background hardening and release delivery
+
 Phases 3-5 remain governed by the interfaces, flows, risks, and acceptance
 criteria in this design, but each is planned only after its prerequisite device
 gate passes. This prevents detailed UI or VPN work from being built on an
@@ -859,8 +982,8 @@ Local evidence:
 
 Platform references:
 
-- [OpenHarmony third-party VPN guide](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/network/net-vpnExtension.md)
-- [OpenHarmony VPN Extension API](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/reference/apis-network-kit/js-apis-net-vpnExtension.md)
-- [OpenHarmony NDK overview](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/napi/ndk-development-overview.md)
-- [OpenHarmony continuous tasks](https://github.com/openharmony/docs/blob/master/zh-cn/application-dev/task-management/continuous-task.md)
+- [OpenHarmony third-party VPN guide, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/network/net-vpnExtension.md)
+- [OpenHarmony VPN Extension API, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/reference/apis-network-kit/js-apis-net-vpnExtension.md)
+- [OpenHarmony NDK overview, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/napi/ndk-development-overview.md)
+- [OpenHarmony continuous tasks, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/task-management/continuous-task.md)
 - [Huawei FileShare guidance](https://developer.huawei.com/consumer/cn/doc/HarmonyOS-Guides/native-fileshare-guidelines)
