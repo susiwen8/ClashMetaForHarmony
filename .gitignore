@@ -51,6 +51,9 @@ tracker.properties
 # cxx
 .cxx
 
+# Codex isolated feature worktrees
+/.worktrees/
+
 *.hprof
 
 # firebase
