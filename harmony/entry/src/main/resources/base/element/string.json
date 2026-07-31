@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "HarmonyOS entry module"
+    },
+    {
+      "name": "EntryAbility_desc",
+      "value": "Clash Meta entry ability"
+    },
+    {
+      "name": "EntryAbility_label",
+      "value": "Clash Meta"
+    }
+  ]
+}

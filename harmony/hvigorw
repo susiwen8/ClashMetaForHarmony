@@ -1,0 +1,24 @@
+#!/usr/bin/env bash
+
+set -eu
+
+PROJECT_DIR="$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)"
+DEVECO_STUDIO_CONTENTS="${DEVECO_STUDIO_CONTENTS:-/Applications/DevEco-Studio.app/Contents}"
+INTEGRATED_HVIGOR_WRAPPER="${DEVECO_STUDIO_CONTENTS}/tools/hvigor/bin/hvigorw"
+
+fail() {
+  echo "$@" >&2
+  exit 1
+}
+
+if [ -z "${DEVECO_SDK_HOME:-}" ]; then
+  export DEVECO_SDK_HOME="${DEVECO_STUDIO_CONTENTS}/sdk"
+fi
+
+if [ ! -x "${INTEGRATED_HVIGOR_WRAPPER}" ]; then
+  fail "ERROR: Integrated hvigor wrapper not found or not executable: ${INTEGRATED_HVIGOR_WRAPPER}"
+fi
+
+cd "${PROJECT_DIR}" || fail "ERROR: Failed to enter Harmony project directory: ${PROJECT_DIR}"
+
+exec "${INTEGRATED_HVIGOR_WRAPPER}" "$@"

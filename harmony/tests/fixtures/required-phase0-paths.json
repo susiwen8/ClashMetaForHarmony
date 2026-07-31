@@ -1,0 +1,42 @@
+{
+  "requiredPaths": [
+    "AppScope/app.json5",
+    "build-profile.json5",
+    "hvigorfile.ts",
+    "hvigorw",
+    "hvigor/hvigor-config.json5",
+    "oh-package.json5",
+    "entry/build-profile.json5",
+    "entry/hvigorfile.ts",
+    "entry/oh-package.json5",
+    "entry/src/main/module.json5",
+    "entry/src/main/ets/entryability/EntryAbility.ets",
+    "entry/src/main/ets/pages/Index.ets",
+    "entry/src/main/resources/base/profile/main_pages.json",
+    "entry/src/main/resources/base/element/string.json"
+  ],
+  "project": {
+    "bundleName": "com.github.kr328.clash.harmony",
+    "productName": "default",
+    "targetSdkVersion": "6.1.0(23)",
+    "compatibleSdkVersion": "6.0.0(20)",
+    "runtimeOS": "HarmonyOS"
+  },
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "mainElement": "EntryAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "pages": "$profile:main_pages"
+  },
+  "ability": {
+    "name": "EntryAbility",
+    "srcEntry": "./ets/entryability/EntryAbility.ets"
+  },
+  "page": {
+    "route": "pages/Index",
+    "component": "Index"
+  }
+}
