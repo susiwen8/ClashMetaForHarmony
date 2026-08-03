@@ -81,6 +81,8 @@ private:
     CLEANED,
   };
 
+  bool handle_owned_locked(void *handle) const;
+  bool handle_claimed_locked(void *handle) const;
   CleanupResult repeated_cleanup_result_locked() const;
 
   LifecycleOperations lifecycle_;
@@ -91,9 +93,7 @@ private:
   std::unordered_map<void *, AsyncWorkRegistration> async_work_;
   std::unordered_map<void *, DeliveryRegistration> deliveries_;
   std::unordered_map<void *, ReferenceRegistration> references_;
-  std::unordered_set<void *> claimed_async_;
-  std::unordered_set<void *> claimed_deliveries_;
-  std::unordered_set<void *> claimed_references_;
+  std::unordered_set<void *> claimed_handles_;
   cmfa_status cached_shutdown_status_;
   cmfa_status cached_unregister_status_;
 };

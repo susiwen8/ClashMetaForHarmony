@@ -78,14 +78,18 @@ bool NapiEnvironmentOwner::try_add_async(AsyncWorkRegistration registration) {
   if (state_ != State::CREATED && state_ != State::ACTIVE) {
     return false;
   }
-  return async_work_.emplace(registration.handle, registration).second;
+  if (handle_owned_locked(registration.handle) || handle_claimed_locked(registration.handle)) {
+    return false;
+  }
+  async_work_.emplace(registration.handle, registration);
+  return true;
 }
 
 ReleaseResult NapiEnvironmentOwner::finish_async(void *handle) {
   AsyncWorkRegistration registration{};
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (claimed_async_.find(handle) != claimed_async_.end()) {
+    if (handle_claimed_locked(handle)) {
       return ReleaseResult::CLAIMED_BY_CLEANUP;
     }
     const auto found = async_work_.find(handle);
@@ -109,14 +113,18 @@ bool NapiEnvironmentOwner::try_add_delivery(DeliveryRegistration registration) {
   if (state_ != State::CREATED && state_ != State::ACTIVE) {
     return false;
   }
-  return deliveries_.emplace(registration.handle, registration).second;
+  if (handle_owned_locked(registration.handle) || handle_claimed_locked(registration.handle)) {
+    return false;
+  }
+  deliveries_.emplace(registration.handle, registration);
+  return true;
 }
 
 ReleaseResult NapiEnvironmentOwner::release_delivery(void *handle, bool should_abort) {
   DeliveryRegistration registration{};
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (claimed_deliveries_.find(handle) != claimed_deliveries_.end()) {
+    if (handle_claimed_locked(handle)) {
       return ReleaseResult::CLAIMED_BY_CLEANUP;
     }
     const auto found = deliveries_.find(handle);
@@ -143,14 +151,18 @@ bool NapiEnvironmentOwner::try_add_reference(ReferenceRegistration registration)
   if (state_ != State::CREATED && state_ != State::ACTIVE) {
     return false;
   }
-  return references_.emplace(registration.handle, registration).second;
+  if (handle_owned_locked(registration.handle) || handle_claimed_locked(registration.handle)) {
+    return false;
+  }
+  references_.emplace(registration.handle, registration);
+  return true;
 }
 
 ReleaseResult NapiEnvironmentOwner::release_reference(void *handle) {
   ReferenceRegistration registration{};
   {
     std::lock_guard<std::mutex> lock(mutex_);
-    if (claimed_references_.find(handle) != claimed_references_.end()) {
+    if (handle_claimed_locked(handle)) {
       return ReleaseResult::CLAIMED_BY_CLEANUP;
     }
     const auto found = references_.find(handle);
@@ -185,21 +197,21 @@ CleanupResult NapiEnvironmentOwner::cleanup() {
 
     async_to_release.reserve(async_work_.size());
     for (const auto &entry : async_work_) {
-      claimed_async_.insert(entry.first);
+      claimed_handles_.insert(entry.first);
       async_to_release.push_back(entry.second);
     }
     async_work_.clear();
 
     deliveries_to_release.reserve(deliveries_.size());
     for (const auto &entry : deliveries_) {
-      claimed_deliveries_.insert(entry.first);
+      claimed_handles_.insert(entry.first);
       deliveries_to_release.push_back(entry.second);
     }
     deliveries_.clear();
 
     references_to_release.reserve(references_.size());
     for (const auto &entry : references_) {
-      claimed_references_.insert(entry.first);
+      claimed_handles_.insert(entry.first);
       references_to_release.push_back(entry.second);
     }
     references_.clear();
@@ -253,6 +265,15 @@ std::size_t NapiEnvironmentOwner::reference_count() const {
 
 CleanupResult NapiEnvironmentOwner::repeated_cleanup_result_locked() const {
   return CleanupResult{true, cached_shutdown_status_, cached_unregister_status_};
+}
+
+bool NapiEnvironmentOwner::handle_owned_locked(void *handle) const {
+  return async_work_.find(handle) != async_work_.end() || deliveries_.find(handle) != deliveries_.end() ||
+         references_.find(handle) != references_.end();
+}
+
+bool NapiEnvironmentOwner::handle_claimed_locked(void *handle) const {
+  return claimed_handles_.find(handle) != claimed_handles_.end();
 }
 
 } // namespace cmfa::napi
