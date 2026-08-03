@@ -1,0 +1,8 @@
+{
+  "schemaVersion": "1.0.0",
+  "module": "github.com/metacubex/mihomo",
+  "version": "v1.19.29",
+  "commit": "e26714a181ac0e2fa803453c0a8e9a9ce94e31cb",
+  "remote": "https://github.com/MetaCubeX/mihomo",
+  "ref": "refs/tags/v1.19.29"
+}
