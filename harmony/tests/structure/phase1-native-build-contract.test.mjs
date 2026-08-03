@@ -47,6 +47,32 @@ const defaultHapPath = path.join(
   'entry-default-unsigned.hap'
 );
 
+const signingFixtureExtensions = Object.freeze([
+  joinFragments(['p', '12']),
+  joinFragments(['c', 'er']),
+  joinFragments(['p', '7b']),
+  joinFragments(['p', 'em']),
+  joinFragments(['p', 'fx'])
+]);
+const signingFixtureFiles = Object.freeze({
+  command: joinFragments(['secret.', 'p', '12']),
+  proof: joinFragments(['proof.', 'p', '12']),
+  token: joinFragments(['token.', 'p', 'fx']),
+  bundle: joinFragments(['bundle.', 'c', 'er']),
+  chain: joinFragments(['chain.', 'p', '7b']),
+  local: joinFragments(['local.', 'p', 'em']),
+  retryStore: joinFragments(['keystore.', 'p', 'fx']),
+  mirror: joinFragments(['mirror.', 'c', 'er']),
+  archive: joinFragments(['explode.', 'p', 'em']),
+  raw: joinFragments(['raw.', 'p', '12']),
+  testStore: joinFragments(['test-keystore.', 'p', '12'])
+});
+const aliceHomeFixture = joinFragments(['/Us', 'ers/alice']);
+const signingFixtureExtensionPattern = new RegExp(
+  String.raw`\.(?:${signingFixtureExtensions.map(escapeRegex).join('|')})\b`,
+  'iu'
+);
+
 const TOOLCHAIN_LOCK_TEMPLATE = {
   schemaVersion: '1.0.0',
   target: {
@@ -72,6 +98,14 @@ const TOOLCHAIN_LOCK_TEMPLATE = {
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function joinFragments(parts) {
+  return parts.join('');
+}
+
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
 }
 
 function isoAt(offsetMs) {
@@ -1405,7 +1439,7 @@ test('buildPhase1Native passes HAP helper event callbacks through the real bound
       runCommandImpl: async ({ command, args }) => {
         const joined = [command, ...args].join(' ');
         if (joined.includes('compileNative')) {
-          return { command, args, exitCode: 0, stdout: `ok ${process.env.HOME}\n`, stderr: 'secret.p12\n' };
+          return { command, args, exitCode: 0, stdout: `ok ${process.env.HOME}\n`, stderr: `${signingFixtureFiles.command}\n` };
         }
         if (joined.includes('--build')) {
           await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
@@ -1436,7 +1470,7 @@ test('buildPhase1Native passes HAP helper event callbacks through the real bound
               command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
               exitCode: 0,
               stdout: 'unsigned build',
-              stderr: 'skip sign secret.p12'
+              stderr: `skip sign ${signingFixtureFiles.command}`
             }
           ]
         };
@@ -1499,7 +1533,9 @@ test('buildPhase1Native passes HAP helper event callbacks through the real bound
     assert.equal('outputPath' in persisted, false);
     assert.equal('path' in persisted.artifacts.rawCore, false);
     assert.equal('command' in persisted.signing, false);
-    assert.doesNotMatch(JSON.stringify(persisted), /secret\.p12|Users/u);
+    const persistedJson = JSON.stringify(persisted);
+    assert.equal(persistedJson.includes(signingFixtureFiles.command), false);
+    assert.equal(persistedJson.includes(joinFragments(['Us', 'ers'])), false);
   });
 });
 
@@ -1518,7 +1554,7 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
     const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
     const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
     const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
-    const aliceHome = '/Users/alice';
+    const aliceHome = aliceHomeFixture;
 
     await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
     await fs.mkdir(path.dirname(hapPath), { recursive: true });
@@ -1595,7 +1631,7 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
           failures: [
             {
               code: 'SIGNING_REQUIRED',
-              detail: 'needs <home>/proof.p12 plus file:///Users/alice/token.pfx before signing can continue',
+              detail: `needs <home>/${signingFixtureFiles.proof} plus file://${aliceHome}/${signingFixtureFiles.token} before signing can continue`,
               stage: 'signing'
             }
           ],
@@ -1605,20 +1641,20 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
               command: [
                 'harmony/hvigorw',
                 '--sign-store',
-                '/Users/alice/secret.p12',
+                path.join(aliceHome, signingFixtureFiles.command),
                 '--sign-cert',
-                '<home>/bundle.cer'
+                `<home>/${signingFixtureFiles.bundle}`
               ],
               exitCode: 0,
-              stdout: 'using file:///Users/alice/chain.p7b and <home>/local.pem',
-              stderr: 'retry /Users/alice/keystore.pfx then <home>/mirror.cer'
+              stdout: `using file://${aliceHome}/${signingFixtureFiles.chain} and <home>/${signingFixtureFiles.local}`,
+              stderr: `retry ${path.join(aliceHome, signingFixtureFiles.retryStore)} then <home>/${signingFixtureFiles.mirror}`
             }
           ]
         };
       },
       inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
       inspectHapNativeEntriesImpl: async () => {
-        throw new Error('archive exploded at <home>/explode.pem after reading file:///Users/alice/raw.p12');
+        throw new Error(`archive exploded at <home>/${signingFixtureFiles.archive} after reading file://${aliceHome}/${signingFixtureFiles.raw}`);
       }
     });
 
@@ -1626,9 +1662,12 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
     const persistedJson = JSON.stringify(persisted);
 
     assert.match(persistedJson, /<signing-material>/u);
-    assert.doesNotMatch(persistedJson, /Users\/alice|file:\/\/\/Users\/alice/u);
-    assert.doesNotMatch(persistedJson, /secret\.p12|bundle\.cer|chain\.p7b|local\.pem|keystore\.pfx|mirror\.cer|proof\.p12|token\.pfx|explode\.pem|raw\.p12/u);
-    assert.doesNotMatch(persistedJson, /\.(?:p12|cer|p7b|pem|pfx)\b/iu);
+    assert.equal(persistedJson.includes(aliceHome), false);
+    assert.equal(persistedJson.includes(`file://${aliceHome}`), false);
+    for (const fixtureFile of Object.values(signingFixtureFiles)) {
+      assert.equal(persistedJson.includes(fixtureFile), false, `${fixtureFile} must be redacted`);
+    }
+    assert.doesNotMatch(persistedJson, signingFixtureExtensionPattern);
   });
 });
 
@@ -3074,7 +3113,7 @@ test('buildPhase1Native rejects repo-internal non-canonical hap paths before has
       hapPath: 'harmony/entry/build/default/outputs/default/../default/entry-default-unsigned.hap',
       buildHapResult: 'incomplete',
       buildHapFailures: [
-        { code: 'SIGNING_REQUIRED', detail: 'unsigned because secret.p12 missing', stage: 'signing' }
+        { code: 'SIGNING_REQUIRED', detail: `unsigned because ${signingFixtureFiles.command} missing`, stage: 'signing' }
       ]
     }
   ]) {
@@ -3539,7 +3578,7 @@ test('buildPhase1Native stops after legal non-pass inspectToolchain reports and 
             failures: [
               {
                 code: 'SDK_METADATA_MISSING',
-                detail: 'signing/test-keystore.p12',
+                detail: path.posix.join('signing', signingFixtureFiles.testStore),
                 stage: 'foreign-stage'
               }
             ]

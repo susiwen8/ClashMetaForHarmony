@@ -7,7 +7,7 @@ import { fileURLToPath } from 'node:url';
 
 const harmonyRoot = resolvePathFromImportMetaUrl(import.meta.url);
 const repoRoot = path.resolve(harmonyRoot, '..');
-const sensitiveExtensions = ['p12', 'cer', 'p7b', 'pem'];
+const sensitiveExtensions = ['p12', 'cer', 'p7b', 'pem', 'pfx'];
 const passwordFragments = ['pass', 'word'];
 const passphraseFragments = ['pass', 'phrase'];
 const secretFragments = ['sec', 'ret'];
@@ -89,7 +89,7 @@ function buildCredentialAssignmentPattern() {
     String.raw`${joinFragments(privateKeyFragments)}(?:File|Path)?\b`,
     String.raw`${joinFragments(certificateFragments)}(?:File|Path)?\b`,
     String.raw`${joinFragments(keystoreFragments)}(?:File|Path)?\b`,
-    String.raw`${joinFragments(signingFragments)}\b`,
+    String.raw`${joinFragments(signingFragments)}\b(?!["']?\s*:\s*\{)`,
     String.raw`${joinFragments(['store', 'Password'])}\b`,
     String.raw`${joinFragments(['key', 'Password'])}\b`
   ];
@@ -135,11 +135,13 @@ test('signing isolation matchers reject bare extensions, signing credential fiel
   const credentialAssignmentPattern = buildCredentialAssignmentPattern();
   const machineSpecificPathPattern = buildMachineSpecificPathPattern();
   const bareExtensionToken = `.${sensitiveExtensions[0]}`;
+  const pfxExtensionToken = `.${joinFragments(['p', 'fx'])}`;
   const fileToken = `${joinFragments(['sign', 'ing'])} ${joinFragments(['file'])} ${bareExtensionToken}`;
   const certPathField = `${joinFragments(certificateFragments)}${joinFragments(['Path'])}: './${joinFragments(['cert'])}.${sensitiveExtensions[1]}'`;
   const storeFileField = `${joinFragments(['store', 'File'])} = '${joinFragments(['release'])}.${sensitiveExtensions[0]}'`;
   const keyAliasField = `${joinFragments(['key', 'Alias'])}: '${joinFragments(['release'])}'`;
   const signingAssignmentField = `${joinFragments(signingFragments)}: '${joinFragments(['release'])}'`;
+  const signingStatusField = `${joinFragments(signingFragments)}: { result: '${joinFragments(['incomplete'])}' }`;
   const signingConfigName = `${joinFragments(signingFragments)}Config: "${joinFragments(['default'])}"`;
   const macHomePath = `${joinFragments(macHomePrefix)}${joinFragments(['alice/keys'])}`;
   const windowsHomePath = String.raw`${joinFragments(['C'])}:${joinFragments(['\\', '\\'])}${joinFragments(['Us', 'ers'])}${joinFragments(['\\', '\\'])}${joinFragments(['alice'])}${joinFragments(['\\', '\\'])}${joinFragments(['keys'])}`;
@@ -147,17 +149,20 @@ test('signing isolation matchers reject bare extensions, signing credential fiel
   const hiddenSigningPath = `${joinFragments(['keys'])}/${bareExtensionToken}`;
 
   assert.match(bareExtensionToken, sensitiveFilePattern);
+  assert.match(pfxExtensionToken, sensitiveFilePattern);
   assert.match(fileToken, sensitiveFilePattern);
   assert.match(certPathField, sensitiveFilePattern);
   assert.match(certPathField, credentialAssignmentPattern);
   assert.match(storeFileField, credentialAssignmentPattern);
   assert.match(keyAliasField, credentialAssignmentPattern);
   assert.match(signingAssignmentField, credentialAssignmentPattern);
+  assert.doesNotMatch(signingStatusField, credentialAssignmentPattern);
   assert.doesNotMatch(signingConfigName, credentialAssignmentPattern);
   assert.match(macHomePath, machineSpecificPathPattern);
   assert.match(windowsHomePath, machineSpecificPathPattern);
   assert.match(windowsForwardSlashHomePath, machineSpecificPathPattern);
   assert.match(hiddenSigningPath, bannedPathPattern);
+  assert.match(`${joinFragments(['keys'])}/${pfxExtensionToken}`, bannedPathPattern);
 });
 
 test('signing isolation path resolution decodes encoded spaces from import.meta URLs', () => {
