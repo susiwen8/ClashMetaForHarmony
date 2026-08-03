@@ -14,6 +14,11 @@
 #include <utility>
 #include <vector>
 
+#if defined(__unix__) || defined(__APPLE__)
+#include <sys/wait.h>
+#include <unistd.h>
+#endif
+
 namespace {
 
 using cmfa::napi::AsyncWorkRegistration;
@@ -71,6 +76,8 @@ struct LifecycleContext {
   std::atomic<int> unregister_count{0};
   cmfa_status shutdown_status = CMFA_OK;
   cmfa_status unregister_status = CMFA_OK;
+  bool throw_on_shutdown = false;
+  bool throw_on_unregister = false;
 
   explicit LifecycleContext(OperationLog *log_in) : log(log_in) {}
 };
@@ -79,6 +86,9 @@ cmfa_status lifecycle_shutdown(void *context, cmfa_error *) {
   auto *state = static_cast<LifecycleContext *>(context);
   state->shutdown_count.fetch_add(1, std::memory_order_relaxed);
   state->log->append("core.shutdown");
+  if (state->throw_on_shutdown) {
+    throw std::runtime_error("shutdown throw");
+  }
   return state->shutdown_status;
 }
 
@@ -86,6 +96,9 @@ cmfa_status lifecycle_unregister(void *context, cmfa_error *) {
   auto *state = static_cast<LifecycleContext *>(context);
   state->unregister_count.fetch_add(1, std::memory_order_relaxed);
   state->log->append("backend.unregister");
+  if (state->throw_on_unregister) {
+    throw std::runtime_error("unregister throw");
+  }
   return state->unregister_status;
 }
 
@@ -108,6 +121,9 @@ struct AsyncResource {
   bool join_entered = false;
   bool join_allowed = false;
   bool cancel_seen = false;
+  bool throw_on_cancel = false;
+  bool throw_on_join = false;
+  bool throw_on_release = false;
 
   explicit AsyncResource(OperationLog *log_in) : log(log_in) {}
 };
@@ -121,6 +137,9 @@ void async_request_cancel(void *handle) {
     resource->cancel_seen = true;
   }
   resource->cv.notify_all();
+  if (resource->throw_on_cancel) {
+    throw std::runtime_error("async cancel throw");
+  }
 }
 
 void async_join(void *handle) {
@@ -133,12 +152,18 @@ void async_join(void *handle) {
   while (resource->block_join && !resource->join_allowed) {
     resource->cv.wait(lock);
   }
+  if (resource->throw_on_join) {
+    throw std::runtime_error("async join throw");
+  }
 }
 
 void async_release(void *handle) {
   auto *resource = static_cast<AsyncResource *>(handle);
   resource->release_count.fetch_add(1, std::memory_order_relaxed);
   resource->log->append("async.release");
+  if (resource->throw_on_release) {
+    throw std::runtime_error("async release throw");
+  }
 }
 
 AsyncWorkRegistration make_async_registration(AsyncResource *resource) {
@@ -154,6 +179,8 @@ struct DeliveryResource {
   OperationLog *log = nullptr;
   std::atomic<int> abort_count{0};
   std::atomic<int> release_count{0};
+  bool throw_on_abort = false;
+  bool throw_on_release = false;
 
   explicit DeliveryResource(OperationLog *log_in) : log(log_in) {}
 };
@@ -162,12 +189,18 @@ void delivery_abort(void *handle) {
   auto *resource = static_cast<DeliveryResource *>(handle);
   resource->abort_count.fetch_add(1, std::memory_order_relaxed);
   resource->log->append("delivery.abort");
+  if (resource->throw_on_abort) {
+    throw std::runtime_error("delivery abort throw");
+  }
 }
 
 void delivery_release(void *handle) {
   auto *resource = static_cast<DeliveryResource *>(handle);
   resource->release_count.fetch_add(1, std::memory_order_relaxed);
   resource->log->append("delivery.release");
+  if (resource->throw_on_release) {
+    throw std::runtime_error("delivery release throw");
+  }
 }
 
 DeliveryRegistration make_delivery_registration(DeliveryResource *resource) {
@@ -181,6 +214,7 @@ DeliveryRegistration make_delivery_registration(DeliveryResource *resource) {
 struct ReferenceResource {
   OperationLog *log = nullptr;
   std::atomic<int> release_count{0};
+  bool throw_on_release = false;
 
   explicit ReferenceResource(OperationLog *log_in) : log(log_in) {}
 };
@@ -189,6 +223,9 @@ void reference_release(void *handle) {
   auto *resource = static_cast<ReferenceResource *>(handle);
   resource->release_count.fetch_add(1, std::memory_order_relaxed);
   resource->log->append("reference.release");
+  if (resource->throw_on_release) {
+    throw std::runtime_error("reference release throw");
+  }
 }
 
 ReferenceRegistration make_reference_registration(ReferenceResource *resource) {
@@ -325,6 +362,28 @@ template <typename Future>
 void wait_for_future_ready(Future &future, const std::string &message) {
   expect_equal(future.wait_for(std::chrono::seconds(2)), std::future_status::ready, message);
 }
+
+#if defined(__unix__) || defined(__APPLE__)
+template <typename ChildFn>
+void expect_child_success_without_signal(ChildFn child_fn, const std::string &message) {
+  const pid_t child = ::fork();
+  expect(child >= 0, "fork should succeed");
+  if (child == 0) {
+    const int exit_code = child_fn();
+    _exit(exit_code);
+  }
+
+  int status = 0;
+  const pid_t waited = ::waitpid(child, &status, 0);
+  expect_equal(waited, child, "waitpid should return child pid");
+  if (WIFSIGNALED(status)) {
+    throw TestFailure(message + " (child signaled " + std::to_string(WTERMSIG(status)) + ")");
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    throw TestFailure(message + " (child exit " + std::to_string(WEXITSTATUS(status)) + ")");
+  }
+}
+#endif
 
 void test_activate_once_and_duplicate_handles_do_not_transfer_ownership() {
   OperationLog log;
@@ -470,6 +529,36 @@ void test_normal_release_paths_drop_counts_and_release_once() {
                "released delivery should disappear");
   expect_equal(owner.release_reference(&reference), ReleaseResult::NOT_REGISTERED,
                "released reference should disappear");
+}
+
+void test_normal_release_paths_swallow_callback_exceptions() {
+  OperationLog log;
+  LifecycleContext lifecycle{&log};
+  AsyncResource async{&log};
+  DeliveryResource delivery{&log};
+  ReferenceResource reference{&log};
+  async.throw_on_release = true;
+  delivery.throw_on_abort = true;
+  delivery.throw_on_release = true;
+  reference.throw_on_release = true;
+  NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+
+  expect(owner.try_add_async(make_async_registration(&async)), "async registration should succeed");
+  expect(owner.try_add_delivery(make_delivery_registration(&delivery)), "delivery registration should succeed");
+  expect(owner.try_add_reference(make_reference_registration(&reference)), "reference registration should succeed");
+
+  expect_equal(owner.finish_async(&async), ReleaseResult::RELEASED,
+               "finish_async should swallow release exceptions");
+  expect_equal(owner.release_delivery(&delivery, true), ReleaseResult::RELEASED,
+               "release_delivery should swallow abort/release exceptions");
+  expect_equal(owner.release_reference(&reference), ReleaseResult::RELEASED,
+               "release_reference should swallow release exceptions");
+  expect_equal(owner.async_count(), static_cast<size_t>(0), "async count should still drop to zero");
+  expect_equal(owner.delivery_count(), static_cast<size_t>(0), "delivery count should still drop to zero");
+  expect_equal(owner.reference_count(), static_cast<size_t>(0), "reference count should still drop to zero");
+  expect_strings(log.snapshot(),
+                 {"async.release", "delivery.abort", "delivery.release", "reference.release"},
+                 "normal release callbacks should still be attempted in order");
 }
 
 void test_release_delivery_abort_true_runs_abort_then_release_once() {
@@ -653,6 +742,53 @@ void test_cleanup_claims_async_delivery_and_reference_release_paths() {
                "cleanup must release reference once");
 }
 
+void test_cleanup_swallows_resource_callback_exceptions_and_reaches_terminal_state() {
+  OperationLog log;
+  LifecycleContext lifecycle{&log};
+  AsyncResource async{&log};
+  DeliveryResource delivery{&log};
+  ReferenceResource reference{&log};
+  async.throw_on_cancel = true;
+  async.throw_on_release = true;
+  delivery.throw_on_abort = true;
+  delivery.throw_on_release = true;
+  reference.throw_on_release = true;
+  NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+
+  expect(owner.activate(), "activate should succeed");
+  expect(owner.try_add_async(make_async_registration(&async)), "async registration should succeed");
+  expect(owner.try_add_delivery(make_delivery_registration(&delivery)), "delivery registration should succeed");
+  expect(owner.try_add_reference(make_reference_registration(&reference)), "reference registration should succeed");
+
+  const CleanupResult first = owner.cleanup();
+  const CleanupResult second = owner.cleanup();
+
+  expect_cleanup_status(first, false, CMFA_OK, CMFA_OK, "first cleanup after resource throws");
+  expect_cleanup_status(second, true, CMFA_OK, CMFA_OK, "second cleanup after resource throws");
+  expect_strings(log.snapshot(),
+                 {"async.cancel",
+                  "async.join",
+                  "delivery.abort",
+                  "delivery.release",
+                  "reference.release",
+                  "async.release",
+                  "core.shutdown",
+                  "backend.unregister"},
+                 "cleanup must continue through all stages despite resource exceptions");
+  expect_equal(async.cancel_count.load(std::memory_order_relaxed), 1, "cancel should still be attempted once");
+  expect_equal(async.join_count.load(std::memory_order_relaxed), 1, "join should still be attempted once");
+  expect_equal(async.release_count.load(std::memory_order_relaxed), 1, "release should still be attempted once");
+  expect_equal(delivery.abort_count.load(std::memory_order_relaxed), 1, "delivery abort should still be attempted once");
+  expect_equal(delivery.release_count.load(std::memory_order_relaxed), 1,
+               "delivery release should still be attempted once");
+  expect_equal(reference.release_count.load(std::memory_order_relaxed), 1,
+               "reference release should still be attempted once");
+  expect_equal(lifecycle.shutdown_count.load(std::memory_order_relaxed), 1,
+               "shutdown should still be attempted once");
+  expect_equal(lifecycle.unregister_count.load(std::memory_order_relaxed), 1,
+               "unregister should still be attempted once");
+}
+
 void test_cleanup_waits_for_in_flight_async_and_reuses_cached_result() {
   OperationLog log;
   LifecycleContext lifecycle{&log};
@@ -703,6 +839,41 @@ void test_cleanup_preserves_independent_shutdown_and_unregister_statuses() {
   expect_cleanup_status(cleanup, false, CMFA_BACKEND_ERROR, CMFA_INVALID_STATE, "status-preserving cleanup");
   expect_strings(log.snapshot(), {"core.shutdown", "backend.unregister"},
                  "cleanup should attempt unregister even when shutdown fails");
+}
+
+void test_cleanup_maps_shutdown_exception_and_still_runs_unregister() {
+  OperationLog log;
+  LifecycleContext lifecycle{&log};
+  lifecycle.throw_on_shutdown = true;
+  lifecycle.unregister_status = CMFA_INVALID_STATE;
+  NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+
+  const CleanupResult first = owner.cleanup();
+  const CleanupResult second = owner.cleanup();
+
+  expect_cleanup_status(first, false, CMFA_BACKEND_ERROR, CMFA_INVALID_STATE,
+                        "shutdown exception should map to backend error");
+  expect_cleanup_status(second, true, CMFA_BACKEND_ERROR, CMFA_INVALID_STATE,
+                        "shutdown exception cleanup should cache result");
+  expect_strings(log.snapshot(), {"core.shutdown", "backend.unregister"},
+                 "unregister should still run after shutdown throws");
+}
+
+void test_cleanup_maps_unregister_exception_to_backend_error() {
+  OperationLog log;
+  LifecycleContext lifecycle{&log};
+  lifecycle.throw_on_unregister = true;
+  NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+
+  const CleanupResult first = owner.cleanup();
+  const CleanupResult second = owner.cleanup();
+
+  expect_cleanup_status(first, false, CMFA_OK, CMFA_BACKEND_ERROR,
+                        "unregister exception should map to backend error");
+  expect_cleanup_status(second, true, CMFA_OK, CMFA_BACKEND_ERROR,
+                        "unregister exception cleanup should cache result");
+  expect_strings(log.snapshot(), {"core.shutdown", "backend.unregister"},
+                 "cleanup should still reach terminal state when unregister throws");
 }
 
 void test_cleanup_before_activate_drains_partial_initialization() {
@@ -789,6 +960,64 @@ void test_destructor_uses_cleanup_path_exactly_once() {
                "destructor should run unregister once");
 }
 
+void test_destructor_swallows_callback_exceptions() {
+#if defined(__unix__) || defined(__APPLE__)
+  expect_child_success_without_signal([]() {
+    OperationLog log;
+    LifecycleContext lifecycle{&log};
+    AsyncResource async{&log};
+    DeliveryResource delivery{&log};
+    ReferenceResource reference{&log};
+    async.throw_on_cancel = true;
+    async.throw_on_release = true;
+    delivery.throw_on_abort = true;
+    delivery.throw_on_release = true;
+    reference.throw_on_release = true;
+    lifecycle.throw_on_shutdown = true;
+    lifecycle.throw_on_unregister = true;
+
+    {
+      NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+      if (!owner.try_add_async(make_async_registration(&async))) {
+        return 10;
+      }
+      if (!owner.try_add_delivery(make_delivery_registration(&delivery))) {
+        return 11;
+      }
+      if (!owner.try_add_reference(make_reference_registration(&reference))) {
+        return 12;
+      }
+    }
+
+    if (async.cancel_count.load(std::memory_order_relaxed) != 1) {
+      return 13;
+    }
+    if (async.join_count.load(std::memory_order_relaxed) != 1) {
+      return 14;
+    }
+    if (async.release_count.load(std::memory_order_relaxed) != 1) {
+      return 15;
+    }
+    if (delivery.abort_count.load(std::memory_order_relaxed) != 1) {
+      return 16;
+    }
+    if (delivery.release_count.load(std::memory_order_relaxed) != 1) {
+      return 17;
+    }
+    if (reference.release_count.load(std::memory_order_relaxed) != 1) {
+      return 18;
+    }
+    if (lifecycle.shutdown_count.load(std::memory_order_relaxed) != 1) {
+      return 19;
+    }
+    if (lifecycle.unregister_count.load(std::memory_order_relaxed) != 1) {
+      return 20;
+    }
+    return 0;
+  }, "destructor should not terminate when cleanup callbacks throw");
+#endif
+}
+
 } // namespace
 
 int main() {
@@ -798,6 +1027,8 @@ int main() {
       {"handles_are_globally_unique_across_registration_types",
        test_handles_are_globally_unique_across_registration_types},
       {"normal_release_paths_drop_counts_and_release_once", test_normal_release_paths_drop_counts_and_release_once},
+      {"normal_release_paths_swallow_callback_exceptions",
+       test_normal_release_paths_swallow_callback_exceptions},
       {"release_delivery_abort_true_runs_abort_then_release_once",
        test_release_delivery_abort_true_runs_abort_then_release_once},
       {"invalid_registrations_are_rejected_without_transferring_ownership",
@@ -807,13 +1038,20 @@ int main() {
        test_cleanup_rejects_late_registrations_and_claims_release_races},
       {"cleanup_claims_async_delivery_and_reference_release_paths",
        test_cleanup_claims_async_delivery_and_reference_release_paths},
+      {"cleanup_swallows_resource_callback_exceptions_and_reaches_terminal_state",
+       test_cleanup_swallows_resource_callback_exceptions_and_reaches_terminal_state},
       {"cleanup_waits_for_in_flight_async_and_reuses_cached_result",
        test_cleanup_waits_for_in_flight_async_and_reuses_cached_result},
       {"cleanup_preserves_independent_shutdown_and_unregister_statuses",
        test_cleanup_preserves_independent_shutdown_and_unregister_statuses},
+      {"cleanup_maps_shutdown_exception_and_still_runs_unregister",
+       test_cleanup_maps_shutdown_exception_and_still_runs_unregister},
+      {"cleanup_maps_unregister_exception_to_backend_error",
+       test_cleanup_maps_unregister_exception_to_backend_error},
       {"cleanup_before_activate_drains_partial_initialization",
        test_cleanup_before_activate_drains_partial_initialization},
       {"destructor_uses_cleanup_path_exactly_once", test_destructor_uses_cleanup_path_exactly_once},
+      {"destructor_swallows_callback_exceptions", test_destructor_swallows_callback_exceptions},
   };
 
   size_t failed = 0;

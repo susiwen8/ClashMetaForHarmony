@@ -50,7 +50,7 @@ enum class ReleaseResult {
 class NapiEnvironmentOwner final {
 public:
   explicit NapiEnvironmentOwner(LifecycleOperations operations);
-  ~NapiEnvironmentOwner();
+  ~NapiEnvironmentOwner() noexcept;
 
   NapiEnvironmentOwner(const NapiEnvironmentOwner &) = delete;
   NapiEnvironmentOwner &operator=(const NapiEnvironmentOwner &) = delete;

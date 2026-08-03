@@ -1,6 +1,7 @@
 #include "napi_environment.h"
 
 #include <array>
+#include <cstddef>
 #include <utility>
 #include <vector>
 
@@ -20,12 +21,27 @@ struct LocalErrorBuffer {
   }
 };
 
+template <typename Callback>
+void invoke_void_callback_noexcept(Callback callback, void *handle) noexcept {
+  if (callback == nullptr) {
+    return;
+  }
+  try {
+    callback(handle);
+  } catch (...) {
+  }
+}
+
 cmfa_status invoke_lifecycle(cmfa_status (*operation)(void *, cmfa_error *), void *context) {
   if (operation == nullptr) {
     return CMFA_OK;
   }
   LocalErrorBuffer error;
-  return operation(context, &error.error);
+  try {
+    return operation(context, &error.error);
+  } catch (...) {
+    return CMFA_BACKEND_ERROR;
+  }
 }
 
 bool valid_registration(const AsyncWorkRegistration &registration) {
@@ -50,7 +66,7 @@ NapiEnvironmentOwner::NapiEnvironmentOwner(LifecycleOperations operations)
       cached_shutdown_status_(CMFA_OK),
       cached_unregister_status_(CMFA_OK) {}
 
-NapiEnvironmentOwner::~NapiEnvironmentOwner() {
+NapiEnvironmentOwner::~NapiEnvironmentOwner() noexcept {
   (void)cleanup();
 }
 
@@ -100,7 +116,7 @@ ReleaseResult NapiEnvironmentOwner::finish_async(void *handle) {
     async_work_.erase(found);
   }
 
-  registration.release(registration.handle);
+  invoke_void_callback_noexcept(registration.release, registration.handle);
   return ReleaseResult::RELEASED;
 }
 
@@ -136,9 +152,9 @@ ReleaseResult NapiEnvironmentOwner::release_delivery(void *handle, bool should_a
   }
 
   if (should_abort) {
-    registration.abort(registration.handle);
+    invoke_void_callback_noexcept(registration.abort, registration.handle);
   }
-  registration.release(registration.handle);
+  invoke_void_callback_noexcept(registration.release, registration.handle);
   return ReleaseResult::RELEASED;
 }
 
@@ -173,7 +189,7 @@ ReleaseResult NapiEnvironmentOwner::release_reference(void *handle) {
     references_.erase(found);
   }
 
-  registration.release(registration.handle);
+  invoke_void_callback_noexcept(registration.release, registration.handle);
   return ReleaseResult::RELEASED;
 }
 
@@ -191,6 +207,17 @@ CleanupResult NapiEnvironmentOwner::cleanup() {
       cleanup_complete_.wait(lock, [this] { return state_ == State::CLEANED; });
       return repeated_cleanup_result_locked();
     }
+
+    const std::size_t async_count = async_work_.size();
+    const std::size_t delivery_count = deliveries_.size();
+    const std::size_t reference_count = references_.size();
+    const std::size_t claimed_capacity =
+        claimed_handles_.size() + async_count + delivery_count + reference_count;
+
+    async_to_release.reserve(async_count);
+    deliveries_to_release.reserve(delivery_count);
+    references_to_release.reserve(reference_count);
+    claimed_handles_.reserve(claimed_capacity);
 
     state_ = State::CLOSING;
     delivery_enabled_ = false;
@@ -218,20 +245,20 @@ CleanupResult NapiEnvironmentOwner::cleanup() {
   }
 
   for (const auto &registration : async_to_release) {
-    registration.request_cancel(registration.handle);
+    invoke_void_callback_noexcept(registration.request_cancel, registration.handle);
   }
   for (const auto &registration : async_to_release) {
-    registration.join(registration.handle);
+    invoke_void_callback_noexcept(registration.join, registration.handle);
   }
   for (const auto &registration : deliveries_to_release) {
-    registration.abort(registration.handle);
-    registration.release(registration.handle);
+    invoke_void_callback_noexcept(registration.abort, registration.handle);
+    invoke_void_callback_noexcept(registration.release, registration.handle);
   }
   for (const auto &registration : references_to_release) {
-    registration.release(registration.handle);
+    invoke_void_callback_noexcept(registration.release, registration.handle);
   }
   for (const auto &registration : async_to_release) {
-    registration.release(registration.handle);
+    invoke_void_callback_noexcept(registration.release, registration.handle);
   }
 
   const cmfa_status shutdown_status = invoke_lifecycle(lifecycle_.shutdown, lifecycle_.context);
