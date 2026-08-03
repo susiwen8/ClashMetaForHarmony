@@ -43,7 +43,7 @@ CoreErrorData make_error(std::string_view code,
                          bool retryable,
                          std::string_view action,
                          const char *operation,
-                         cmfa_status status) {
+                         int32_t status) {
   CoreErrorData error;
   error.code.assign(code);
   error.category.assign(category);
@@ -64,41 +64,41 @@ void fallback_throw(napi_env env) {
 CoreErrorData make_core_error(cmfa_status status, const char *operation) {
   switch (status) {
     case CMFA_INVALID_ARGUMENT:
-      return make_error("INVALID_ARGUMENT", kCoreErrorCategory, "Input validation failed", false, "CHECK_INPUT",
+      return make_error("CMFA_INVALID_ARGUMENT", kCoreErrorCategory, "Input validation failed", false, "CHECK_INPUT",
                         operation, status);
     case CMFA_INVALID_UTF8:
-      return make_error("INVALID_UTF8", kCoreErrorCategory, "Input must be valid UTF-8", false, "CHECK_INPUT",
+      return make_error("CMFA_INVALID_UTF8", kCoreErrorCategory, "Input must be valid UTF-8", false, "CHECK_INPUT",
                         operation, status);
     case CMFA_OUT_OF_RANGE:
-      return make_error("OUT_OF_RANGE", kCoreErrorCategory, "Input exceeded the supported range", false,
+      return make_error("CMFA_OUT_OF_RANGE", kCoreErrorCategory, "Input exceeded the supported range", false,
                         "CHECK_INPUT", operation, status);
     case CMFA_BUFFER_TOO_SMALL:
-      return make_error("BUFFER_TOO_SMALL", kCoreErrorCategory, "Native output buffer was too small", false,
+      return make_error("CMFA_BUFFER_TOO_SMALL", kCoreErrorCategory, "Native output buffer was too small", false,
                         "CHECK_INPUT", operation, status);
     case CMFA_NOT_INITIALIZED:
-      return make_error("NOT_INITIALIZED", kStateErrorCategory, "Native core is not initialized", false,
+      return make_error("CMFA_NOT_INITIALIZED", kStateErrorCategory, "Native core is not initialized", false,
                         "RESTART_OPERATION", operation, status);
     case CMFA_ALREADY_INITIALIZED:
-      return make_error("ALREADY_INITIALIZED", kStateErrorCategory, "Native core is already initialized", false,
+      return make_error("CMFA_ALREADY_INITIALIZED", kStateErrorCategory, "Native core is already initialized", false,
                         "RESTART_OPERATION", operation, status);
     case CMFA_INVALID_STATE:
-      return make_error("INVALID_STATE", kStateErrorCategory, "Native core is in an invalid state", false,
+      return make_error("CMFA_INVALID_STATE", kStateErrorCategory, "Native core is in an invalid state", false,
                         "RESTART_OPERATION", operation, status);
     case CMFA_BUSY:
       return make_error("CMFA_BUSY", kStateErrorCategory, "Native core is busy", true, "RETRY", operation, status);
     case CMFA_CORE_UNAVAILABLE:
-      return make_error("CORE_UNAVAILABLE", kCoreErrorCategory, "Requested core capability is unavailable", false,
+      return make_error("CMFA_CORE_UNAVAILABLE", kCoreErrorCategory, "Requested core capability is unavailable", false,
                         "UPDATE_CORE", operation, status);
     case CMFA_BACKEND_ERROR:
     default:
-      return make_error("BACKEND_ERROR", kCoreErrorCategory, "Native backend reported an error", true, "RETRY",
+      return make_error("CMFA_BACKEND_ERROR", kCoreErrorCategory, "Native backend reported an error", true, "RETRY",
                         operation, status);
   }
 }
 
-CoreErrorData make_napi_failure(const char *operation) {
+CoreErrorData make_napi_failure(const char *operation, napi_status status) {
   return make_error("NAPI_FAILURE", kCoreErrorCategory, "Native bridge failed while talking to ArkTS", false,
-                    "RESTART_APP", operation, CMFA_BACKEND_ERROR);
+                    "RESTART_APP", operation, static_cast<int32_t>(status));
 }
 
 napi_status create_core_error_value(napi_env env, const CoreErrorData &error, napi_value *result) {
@@ -179,8 +179,8 @@ void throw_core_error(napi_env env, const CoreErrorData &error) {
   }
 }
 
-void throw_napi_failure(napi_env env, const char *operation) {
-  throw_core_error(env, make_napi_failure(operation));
+void throw_napi_failure(napi_env env, const char *operation, napi_status status) {
+  throw_core_error(env, make_napi_failure(operation, status));
 }
 
 void reject_deferred_with_core_error(napi_env env, napi_deferred deferred, const CoreErrorData &error) {
@@ -194,8 +194,8 @@ void reject_deferred_with_core_error(napi_env env, napi_deferred deferred, const
   }
 }
 
-void reject_deferred_with_napi_failure(napi_env env, napi_deferred deferred, const char *operation) {
-  reject_deferred_with_core_error(env, deferred, make_napi_failure(operation));
+void reject_deferred_with_napi_failure(napi_env env, napi_deferred deferred, const char *operation, napi_status status) {
+  reject_deferred_with_core_error(env, deferred, make_napi_failure(operation, status));
 }
 
 } // namespace cmfa::nodeaddon

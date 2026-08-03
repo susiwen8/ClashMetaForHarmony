@@ -21,7 +21,7 @@ const REQUIRED_EXPORTS = {
   nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
-const EXPORT_SENTINEL_PATTERN = /(?:test|fake|stub)/iu;
+const EXPORT_SENTINEL_PATTERN = /(?:^|[_$])(?:test|fake|stub)(?:[_$]|$)/iu;
 const NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS = [
   { code: 'PUBLIC_CMFA_EXPORT_FORBIDDEN', pattern: /^cmfa_/u },
   { code: 'INTERNAL_SYMBOL_FORBIDDEN', pattern: /cmfa_internal_register_backend/u },
@@ -191,7 +191,7 @@ export async function inspectNativeLibrary({
   const [headerResult, dynamicResult, symbolsResult] = await Promise.all([
     runReadelf(readelfPath, ['-h', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs }),
     runReadelf(readelfPath, ['-d', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs }),
-    runReadelf(readelfPath, ['-sW', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs })
+    runReadelf(readelfPath, ['--dyn-syms', '-W', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs })
   ]);
 
   const commandResults = [headerResult, dynamicResult, symbolsResult];

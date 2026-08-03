@@ -135,8 +135,9 @@ napi_value subscribe(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
   void *data = nullptr;
-  if (napi_get_cb_info(env, info, &argc, argv, nullptr, &data) != napi_ok) {
-    throw_napi_failure(env, "subscribe");
+  const napi_status callback_status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+  if (callback_status != napi_ok) {
+    throw_napi_failure(env, "subscribe", callback_status);
     return nullptr;
   }
   if (argc != 1) {
@@ -151,8 +152,9 @@ napi_value subscribe(napi_env env, napi_callback_info info) {
   }
 
   napi_valuetype callback_type = napi_undefined;
-  if (napi_typeof(env, argv[0], &callback_type) != napi_ok) {
-    throw_napi_failure(env, "subscribe");
+  const napi_status callback_type_status = napi_typeof(env, argv[0], &callback_type);
+  if (callback_type_status != napi_ok) {
+    throw_napi_failure(env, "subscribe", callback_type_status);
     return nullptr;
   }
   if (callback_type != napi_function) {
@@ -185,52 +187,56 @@ napi_value subscribe(napi_env env, napi_callback_info info) {
   auto subscription = std::make_shared<Subscription>();
   subscription->addon = addon;
 
-  if (napi_create_reference(env, argv[0], 1, &subscription->callback_ref) != napi_ok) {
-    throw_napi_failure(env, "subscribe");
+  const napi_status create_reference_status = napi_create_reference(env, argv[0], 1, &subscription->callback_ref);
+  if (create_reference_status != napi_ok) {
+    throw_napi_failure(env, "subscribe", create_reference_status);
     return nullptr;
   }
 
   napi_value resource_name = nullptr;
-  if (napi_create_string_utf8(env, "subscribe", NAPI_AUTO_LENGTH, &resource_name) != napi_ok) {
+  const napi_status resource_name_status = napi_create_string_utf8(env, "subscribe", NAPI_AUTO_LENGTH, &resource_name);
+  if (resource_name_status != napi_ok) {
     (void)napi_delete_reference(env, subscription->callback_ref);
-    throw_napi_failure(env, "subscribe");
+    throw_napi_failure(env, "subscribe", resource_name_status);
     return nullptr;
   }
 
   auto *delivery = new (std::nothrow) SubscriptionDelivery{};
   if (delivery == nullptr) {
     (void)napi_delete_reference(env, subscription->callback_ref);
-    throw_napi_failure(env, "subscribe");
+    throw_napi_failure(env, "subscribe", napi_generic_failure);
     return nullptr;
   }
-  if (napi_create_threadsafe_function(env,
-                                      argv[0],
-                                      nullptr,
-                                      resource_name,
-                                      1,
-                                      1,
-                                      nullptr,
-                                      nullptr,
-                                      subscription.get(),
-                                      deliver_event_to_js,
-                                      &delivery->tsfn) != napi_ok) {
+  const napi_status tsfn_status = napi_create_threadsafe_function(env,
+                                                                  argv[0],
+                                                                  nullptr,
+                                                                  resource_name,
+                                                                  1,
+                                                                  1,
+                                                                  nullptr,
+                                                                  nullptr,
+                                                                  subscription.get(),
+                                                                  deliver_event_to_js,
+                                                                  &delivery->tsfn);
+  if (tsfn_status != napi_ok) {
     delete delivery;
     (void)napi_delete_reference(env, subscription->callback_ref);
-    throw_napi_failure(env, "subscribe");
+    throw_napi_failure(env, "subscribe", tsfn_status);
     return nullptr;
   }
   subscription->delivery = delivery;
 
-  if (!addon->owner.try_add_reference({subscription.get(), release_reference_handle})) {
+  if (!addon->owner.try_add_delivery({delivery, abort_subscription_delivery, release_subscription_delivery})) {
     (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_abort);
     delete delivery;
     (void)napi_delete_reference(env, subscription->callback_ref);
-    throw_napi_failure(env, "subscribe");
+    throw_napi_failure(env, "subscribe", napi_generic_failure);
     return nullptr;
   }
-  if (!addon->owner.try_add_delivery({delivery, abort_subscription_delivery, release_subscription_delivery})) {
-    (void)addon->owner.release_reference(subscription.get());
-    throw_napi_failure(env, "subscribe");
+  if (!addon->owner.try_add_reference({subscription.get(), release_reference_handle})) {
+    (void)addon->owner.release_delivery(delivery, true);
+    (void)napi_delete_reference(env, subscription->callback_ref);
+    throw_napi_failure(env, "subscribe", napi_generic_failure);
     return nullptr;
   }
 
@@ -252,7 +258,8 @@ napi_value subscribe(napi_env env, napi_callback_info info) {
   (void)queue_subscription_event(subscription, initial_event);
 
   napi_value result = nullptr;
-  if (napi_create_uint32(env, subscription_id, &result) != napi_ok) {
+  const napi_status create_id_status = napi_create_uint32(env, subscription_id, &result);
+  if (create_id_status != napi_ok) {
     {
       std::lock_guard<std::mutex> lock(addon->subscriptions_mutex);
       addon->subscriptions.erase(subscription_id);
@@ -260,7 +267,7 @@ napi_value subscribe(napi_env env, napi_callback_info info) {
     subscription->active.store(false, std::memory_order_release);
     (void)addon->owner.release_delivery(delivery, true);
     (void)addon->owner.release_reference(subscription.get());
-    throw_napi_failure(env, "subscribe");
+    throw_napi_failure(env, "subscribe", create_id_status);
     return nullptr;
   }
 
@@ -271,8 +278,9 @@ napi_value unsubscribe(napi_env env, napi_callback_info info) {
   size_t argc = 1;
   napi_value argv[1] = {nullptr};
   void *data = nullptr;
-  if (napi_get_cb_info(env, info, &argc, argv, nullptr, &data) != napi_ok) {
-    throw_napi_failure(env, "unsubscribe");
+  const napi_status callback_status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+  if (callback_status != napi_ok) {
+    throw_napi_failure(env, "unsubscribe", callback_status);
     return nullptr;
   }
   if (argc != 1) {
@@ -305,8 +313,9 @@ napi_value unsubscribe(napi_env env, napi_callback_info info) {
   }
 
   napi_value result = nullptr;
-  if (napi_get_undefined(env, &result) != napi_ok) {
-    throw_napi_failure(env, "unsubscribe");
+  const napi_status undefined_status = napi_get_undefined(env, &result);
+  if (undefined_status != napi_ok) {
+    throw_napi_failure(env, "unsubscribe", undefined_status);
     return nullptr;
   }
   return result;

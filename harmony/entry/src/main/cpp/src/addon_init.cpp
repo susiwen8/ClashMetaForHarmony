@@ -1,4 +1,5 @@
 #include "cmfa_napi.h"
+#include "cmfa_mihomo_backend.h"
 
 namespace cmfa::nodeaddon {
 
@@ -63,14 +64,14 @@ napi_value Init(napi_env env, napi_value exports) {
   }
 
   if (napi_add_env_cleanup_hook(env, cleanup_addon, state) != napi_ok) {
-    throw_napi_failure(env, "Init");
+    throw_napi_failure(env, "Init", napi_generic_failure);
     delete_state_with_cleanup(state);
     return nullptr;
   }
 
   if (define_core_module(env, exports, state) != napi_ok) {
     (void)napi_remove_env_cleanup_hook(env, cleanup_addon, state);
-    throw_napi_failure(env, "Init");
+    throw_napi_failure(env, "Init", napi_generic_failure);
     delete_state_with_cleanup(state);
     return nullptr;
   }

@@ -22,7 +22,10 @@ if(NOT EXISTS "${CORE_LIBRARY_PATH}")
 endif()
 
 add_library(cmfa_mihomo SHARED IMPORTED GLOBAL)
-set_target_properties(cmfa_mihomo PROPERTIES IMPORTED_LOCATION "${CORE_LIBRARY_PATH}")
+set_target_properties(cmfa_mihomo PROPERTIES
+  IMPORTED_LOCATION "${CORE_LIBRARY_PATH}"
+  IMPORTED_NO_SONAME TRUE
+)
 
 add_library(entry SHARED
   "${ABI_SOURCE}"
@@ -51,8 +54,15 @@ target_compile_options(entry PRIVATE
   -Wall
   -Wextra
   -Werror
-  -Wno-unused-command-line-argument
   -fvisibility=hidden
+)
+
+if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
+  target_compile_options(entry PRIVATE -Wno-unused-command-line-argument)
+endif()
+
+target_link_options(entry PRIVATE
+  -Wl,--exclude-libs,ALL
 )
 
 target_link_libraries(entry PRIVATE

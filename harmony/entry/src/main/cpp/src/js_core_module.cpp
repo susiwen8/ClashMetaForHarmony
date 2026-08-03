@@ -29,8 +29,9 @@ bool load_runtime_snapshot(OwnedRuntimeSnapshot *out, CoreErrorData *error) {
 napi_value hello(napi_env env, napi_callback_info info) {
   size_t argc = 0;
   void *data = nullptr;
-  if (napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data) != napi_ok) {
-    throw_napi_failure(env, "hello");
+  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+  if (status != napi_ok) {
+    throw_napi_failure(env, "hello", status);
     return nullptr;
   }
   auto *addon = static_cast<AddonState *>(data);
@@ -40,8 +41,9 @@ napi_value hello(napi_env env, napi_callback_info info) {
   }
 
   napi_value result = nullptr;
-  if (napi_create_string_utf8(env, "cmfa-native-ready", NAPI_AUTO_LENGTH, &result) != napi_ok) {
-    throw_napi_failure(env, "hello");
+  const napi_status create_status = napi_create_string_utf8(env, "cmfa-native-ready", NAPI_AUTO_LENGTH, &result);
+  if (create_status != napi_ok) {
+    throw_napi_failure(env, "hello", create_status);
     return nullptr;
   }
   return result;
@@ -50,8 +52,9 @@ napi_value hello(napi_env env, napi_callback_info info) {
 napi_value runtime_snapshot(napi_env env, napi_callback_info info) {
   size_t argc = 0;
   void *data = nullptr;
-  if (napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data) != napi_ok) {
-    throw_napi_failure(env, "runtimeSnapshot");
+  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+  if (status != napi_ok) {
+    throw_napi_failure(env, "runtimeSnapshot", status);
     return nullptr;
   }
   auto *addon = static_cast<AddonState *>(data);

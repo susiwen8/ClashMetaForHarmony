@@ -40,7 +40,7 @@ bool get_named_property(napi_env env, napi_value object, const char *name, napi_
   if (status == napi_ok) {
     return true;
   }
-  *error = make_napi_failure("decodeLocalOptions");
+  *error = make_napi_failure("decodeLocalOptions", status);
   return false;
 }
 
@@ -48,7 +48,7 @@ bool decode_uint32_value(napi_env env, napi_value value, uint32_t *out, CoreErro
   napi_valuetype type = napi_undefined;
   napi_status status = napi_typeof(env, value, &type);
   if (status != napi_ok) {
-    *error = make_napi_failure(operation);
+    *error = make_napi_failure(operation, status);
     return false;
   }
   if (type != napi_number) {
@@ -146,7 +146,7 @@ bool decode_utf8_string(napi_env env,
   napi_valuetype type = napi_undefined;
   napi_status status = napi_typeof(env, value, &type);
   if (status != napi_ok) {
-    *error = make_napi_failure(operation);
+    *error = make_napi_failure(operation, status);
     return false;
   }
   if (type != napi_string) {
@@ -193,7 +193,7 @@ bool decode_local_options(napi_env env, napi_value value, OwnedLocalOptions *out
   napi_valuetype type = napi_undefined;
   napi_status status = napi_typeof(env, value, &type);
   if (status != napi_ok) {
-    *error = make_napi_failure("decodeLocalOptions");
+    *error = make_napi_failure("decodeLocalOptions", status);
     return false;
   }
   if (type != napi_object) {
@@ -257,22 +257,22 @@ bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, na
   napi_value object = nullptr;
   napi_status status = napi_create_object(env, &object);
   if (status != napi_ok) {
-    *error = make_napi_failure("runtimeSnapshot");
+    *error = make_napi_failure("runtimeSnapshot", status);
     return false;
   }
   status = set_named_string(env, object, "state", snapshot.state);
   if (status != napi_ok) {
-    *error = make_napi_failure("runtimeSnapshot");
+    *error = make_napi_failure("runtimeSnapshot", status);
     return false;
   }
   status = set_named_string(env, object, "activeConfigPath", snapshot.active_config_path);
   if (status != napi_ok) {
-    *error = make_napi_failure("runtimeSnapshot");
+    *error = make_napi_failure("runtimeSnapshot", status);
     return false;
   }
   status = set_named_uint32(env, object, "mixedPort", snapshot.mixed_port);
   if (status != napi_ok) {
-    *error = make_napi_failure("runtimeSnapshot");
+    *error = make_napi_failure("runtimeSnapshot", status);
     return false;
   }
   *result = object;
@@ -283,40 +283,40 @@ bool owned_event_to_js(napi_env env, const OwnedCoreEvent &event, napi_value *re
   napi_value object = nullptr;
   napi_status status = napi_create_object(env, &object);
   if (status != napi_ok) {
-    *error = make_napi_failure("eventDelivery");
+    *error = make_napi_failure("eventDelivery", status);
     return false;
   }
 
   if (event.kind == OwnedCoreEvent::Kind::RUNTIME) {
     status = set_named_string(env, object, "type", "runtime");
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
     status = set_named_string(env, object, "state", event.state);
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
     status = set_named_string(env, object, "message", event.message);
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
   } else {
     status = set_named_string(env, object, "type", "log");
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
     status = set_named_string(env, object, "level", event.level);
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
     status = set_named_string(env, object, "message", event.message);
     if (status != napi_ok) {
-      *error = make_napi_failure("eventDelivery");
+      *error = make_napi_failure("eventDelivery", status);
       return false;
     }
   }

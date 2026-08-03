@@ -85,6 +85,10 @@ function parseExportNames(body, pattern) {
   return [...body.matchAll(pattern)].map((match) => match[1]).sort();
 }
 
+function countMatches(body, pattern) {
+  return [...body.matchAll(pattern)].length;
+}
+
 function createSpawnStub(outputsByFlag) {
   return function spawnStub(command, args) {
     const child = new EventEmitter();
@@ -202,13 +206,14 @@ test('Task 7 environment ownership is host-testable and SDK-opaque', async () =>
 });
 
 test('Task 7 typed facade files, exports, and source contracts are present', async () => {
-  const [inspectModule, dtsBody, maybeHeader, buildProfileRaw, entryPackageRaw, typesPackageRaw] = await Promise.all([
+  const [inspectModule, dtsBody, maybeHeader, buildProfileRaw, entryPackageRaw, typesPackageRaw, cmakeRaw] = await Promise.all([
     import('../bin/inspect-native-lib.mjs', { with: { type: 'module' } }).catch(() => import('../bin/inspect-native-lib.mjs')),
     fs.readFile(dtsPath, 'utf8'),
     fs.readFile(path.join(cppIncludeDir, 'cmfa_napi.h'), 'utf8'),
     fs.readFile(buildProfilePath, 'utf8'),
     fs.readFile(entryPackagePath, 'utf8'),
-    fs.readFile(typesPackagePath, 'utf8')
+    fs.readFile(typesPackagePath, 'utf8'),
+    fs.readFile(path.join(cppSourceDir, '..', 'CMakeLists.txt'), 'utf8')
   ]);
 
   const valueExports = parseExportNames(dtsBody, /^export declare function (\w+)\s*\(/gmu);
@@ -224,18 +229,46 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(maybeHeader, /#include <napi\/native_api\.h>/u);
   assert.match(maybeHeader, /\bstruct AddonState\b/u);
   assert.doesNotMatch(maybeHeader, /\bcmfa_internal_register_backend\b/u);
+  assert.doesNotMatch(maybeHeader, /#include "cmfa_mihomo_backend\.h"/u, 'shared cmfa_napi.h must not expose backend seam headers');
 
   const sourceBodies = await Promise.all(typedSourceNames.map(async (fileName) => ({
     fileName,
     body: await fs.readFile(path.join(cppSourceDir, fileName), 'utf8')
   })));
   assert.equal(typeof inspectModule.inspectNativeLibrary, 'function');
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_async.cpp').body, /\bstd::thread\b/u);
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_async.cpp').body, /\bnapi_create_threadsafe_function\b/u);
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_events.cpp').body, /\bnapi_create_reference\b/u);
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_events.cpp').body, /\bnapi_call_threadsafe_function\b/u);
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'addon_init.cpp').body, /\bnapi_add_env_cleanup_hook\b/u);
-  assert.match(sourceBodies.find(({ fileName }) => fileName === 'addon_init.cpp').body, /\bNAPI_MODULE\s*\(\s*libentry\s*,\s*Init\s*\)/u);
+  const jsAsyncBody = sourceBodies.find(({ fileName }) => fileName === 'js_async.cpp').body;
+  const jsErrorsBody = sourceBodies.find(({ fileName }) => fileName === 'js_errors.cpp').body;
+  const jsEventsBody = sourceBodies.find(({ fileName }) => fileName === 'js_events.cpp').body;
+  const addonInitBody = sourceBodies.find(({ fileName }) => fileName === 'addon_init.cpp').body;
+  assert.match(jsAsyncBody, /\bstd::thread\b/u);
+  assert.match(jsAsyncBody, /\bnapi_create_threadsafe_function\b/u);
+  assert.match(jsEventsBody, /\bnapi_create_reference\b/u);
+  assert.match(jsEventsBody, /\bnapi_call_threadsafe_function\b/u);
+  assert.match(addonInitBody, /\bnapi_add_env_cleanup_hook\b/u);
+  assert.match(addonInitBody, /\bNAPI_MODULE\s*\(\s*libentry\s*,\s*Init\s*\)/u);
+  assert.match(addonInitBody, /#include "cmfa_mihomo_backend\.h"/u, 'addon_init.cpp should own the hidden backend include itself');
+  assert.match(cmakeRaw, /IMPORTED_NO_SONAME\s+TRUE/u, 'imported real core must link by basename DT_NEEDED');
+  assert.match(cmakeRaw, /--exclude-libs,ALL/u, 'entry addon must hide static archive exports such as libc\+\+');
+  assert.match(cmakeRaw, /OHOS/u, 'CMake should gate OHOS-specific warning compatibility explicitly');
+  assert.match(cmakeRaw, /Wno-unused-command-line-argument/u, 'toolchain warning suppression must exist for OHOS clang injection');
+  assert.match(jsErrorsBody, /CoreErrorData make_napi_failure\s*\(\s*const char \*operation\s*,\s*napi_status status\s*\)/u);
+  assert.match(jsErrorsBody, /"CMFA_INVALID_ARGUMENT"/u);
+  assert.match(jsErrorsBody, /"CMFA_INVALID_UTF8"/u);
+  assert.match(jsErrorsBody, /"CMFA_OUT_OF_RANGE"/u);
+  assert.match(jsErrorsBody, /"CMFA_BUFFER_TOO_SMALL"/u);
+  assert.match(jsErrorsBody, /"CMFA_NOT_INITIALIZED"/u);
+  assert.match(jsErrorsBody, /"CMFA_ALREADY_INITIALIZED"/u);
+  assert.match(jsErrorsBody, /"CMFA_INVALID_STATE"/u);
+  assert.match(jsErrorsBody, /"CMFA_BUSY"/u);
+  assert.match(jsErrorsBody, /"CMFA_CORE_UNAVAILABLE"/u);
+  assert.match(jsErrorsBody, /"CMFA_BACKEND_ERROR"/u);
+  assert.match(jsErrorsBody, /"NAPI_FAILURE"/u);
+  assert.doesNotMatch(jsErrorsBody, /make_napi_failure\s*\(\s*const char \*operation\s*\)/u, 'napi failures must capture real napi_status in context');
+  assert.equal(countMatches(jsAsyncBody, /\bnapi_get_cb_info\b/gu), 5, 'each async entry should decode callback info exactly once');
+  assert.doesNotMatch(jsAsyncBody, /create_async_operation[\s\S]*napi_get_cb_info/u, 'shared async launcher must not re-read callback info');
+  assert.match(jsEventsBody, /try_add_delivery[\s\S]*try_add_reference/u, 'events should register delivery before reference rollback-sensitive step');
+  assert.match(jsEventsBody, /if\s*\(!addon->owner\.try_add_reference[\s\S]*owner\.release_delivery\(delivery,\s*true\)/u, 'reference registration failure must release owner-held delivery through owner API');
+  assert.doesNotMatch(jsEventsBody, /if\s*\(!addon->owner\.try_add_reference[\s\S]*napi_release_threadsafe_function/u, 'reference registration failure must not manually release owner-held TSFN');
   for (const { fileName, body } of sourceBodies) {
     assert.doesNotMatch(body, /\bdlopen\b/u, `${fileName} must not use dlopen`);
     assert.doesNotMatch(body, /\bdlsym\b/u, `${fileName} must not use dlsym`);
@@ -290,9 +323,11 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
             'Shared library: [libhilog_ndk.z.so]'
           ].join('\n')
         },
-        '-sW': {
+        '--dyn-syms': {
           stdout: [
-            '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1'
+            'Symbol table \'.dynsym\' contains 2 entries:',
+            '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
+            '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _ZNSt4__n17promiseIvE28set_exception_at_thread_exitESt13exception_ptr'
           ].join('\n')
         }
       })
@@ -312,7 +347,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libcmfa_mihomo.so]'
             ].join('\n')
           },
-          '-sW': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
         },
         expectedCode: 'DT_NEEDED_SET_MISMATCH'
       },
@@ -329,7 +364,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libextra.so]'
             ].join('\n')
           },
-          '-sW': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
         },
         expectedCode: 'DT_NEEDED_NOT_ALLOWLISTED'
       },
@@ -346,7 +381,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libdl.so]'
             ].join('\n')
           },
-          '-sW': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
         },
         expectedCode: 'LIBDL_FORBIDDEN'
       },
@@ -363,7 +398,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libc++_shared.so]'
             ].join('\n')
           },
-          '-sW': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
         },
         expectedCode: 'LIBCXX_SHARED_FORBIDDEN'
       },
@@ -379,7 +414,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libhilog_ndk.z.so]'
             ].join('\n')
           },
-          '-sW': {
+          '--dyn-syms': {
             stdout: [
               '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
               '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_runtime_state'
@@ -400,7 +435,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libhilog_ndk.z.so]'
             ].join('\n')
           },
-          '-sW': {
+          '--dyn-syms': {
             stdout: [
               '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
               '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _ZN4cmfa24register_mihomo_backendEP10cmfa_error'
@@ -421,7 +456,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libhilog_ndk.z.so]'
             ].join('\n')
           },
-          '-sW': {
+          '--dyn-syms': {
             stdout: [
               '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
               '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_internal_register_backend'
@@ -431,7 +466,7 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
         expectedCode: 'INTERNAL_SYMBOL_FORBIDDEN'
       },
       {
-        name: 'test sentinel export fails',
+        name: 'test hook sentinel export fails',
         outputsByFlag: {
           '-h': { stdout: 'Machine: AArch64\n' },
           '-d': {
@@ -442,10 +477,52 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
               'Shared library: [libhilog_ndk.z.so]'
             ].join('\n')
           },
-          '-sW': {
+          '--dyn-syms': {
             stdout: [
               '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 test_fake_stub_export'
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_test_hook'
+            ].join('\n')
+          }
+        },
+        expectedCode: 'EXPORT_SENTINEL_FORBIDDEN'
+      },
+      {
+        name: 'fake backend sentinel export fails',
+        outputsByFlag: {
+          '-h': { stdout: 'Machine: AArch64\n' },
+          '-d': {
+            stdout: [
+              'Shared library: [libace_napi.z.so]',
+              'Shared library: [libc.so]',
+              'Shared library: [libcmfa_mihomo.so]',
+              'Shared library: [libhilog_ndk.z.so]'
+            ].join('\n')
+          },
+          '--dyn-syms': {
+            stdout: [
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 fake_backend'
+            ].join('\n')
+          }
+        },
+        expectedCode: 'EXPORT_SENTINEL_FORBIDDEN'
+      },
+      {
+        name: 'stub core sentinel export fails',
+        outputsByFlag: {
+          '-h': { stdout: 'Machine: AArch64\n' },
+          '-d': {
+            stdout: [
+              'Shared library: [libace_napi.z.so]',
+              'Shared library: [libc.so]',
+              'Shared library: [libcmfa_mihomo.so]',
+              'Shared library: [libhilog_ndk.z.so]'
+            ].join('\n')
+          },
+          '--dyn-syms': {
+            stdout: [
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 stub_core'
             ].join('\n')
           }
         },

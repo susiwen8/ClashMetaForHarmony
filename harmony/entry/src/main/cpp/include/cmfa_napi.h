@@ -2,7 +2,6 @@
 #define CMFA_NAPI_H
 
 #include "cmfa_core.h"
-#include "cmfa_mihomo_backend.h"
 #include "napi_environment.h"
 
 #include <napi/native_api.h>
@@ -24,7 +23,7 @@ constexpr size_t kMaxEventMessageBytes = 4096;
 
 struct CoreErrorContextData {
   std::string operation;
-  cmfa_status status = CMFA_OK;
+  int32_t status = 0;
 };
 
 struct CoreErrorData {
@@ -134,12 +133,12 @@ const char *log_level_name(cmfa_log_level level);
 const char *async_operation_name(AsyncOp op);
 
 CoreErrorData make_core_error(cmfa_status status, const char *operation);
-CoreErrorData make_napi_failure(const char *operation);
+CoreErrorData make_napi_failure(const char *operation, napi_status status);
 napi_status create_core_error_value(napi_env env, const CoreErrorData &error, napi_value *result);
 void throw_core_error(napi_env env, const CoreErrorData &error);
-void throw_napi_failure(napi_env env, const char *operation);
+void throw_napi_failure(napi_env env, const char *operation, napi_status status);
 void reject_deferred_with_core_error(napi_env env, napi_deferred deferred, const CoreErrorData &error);
-void reject_deferred_with_napi_failure(napi_env env, napi_deferred deferred, const char *operation);
+void reject_deferred_with_napi_failure(napi_env env, napi_deferred deferred, const char *operation, napi_status status);
 
 bool decode_utf8_string(napi_env env,
                         napi_value value,
