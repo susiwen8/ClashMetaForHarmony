@@ -1,0 +1,852 @@
+#define CMFA_INTERNAL_BACKEND_API 1
+#include "cmfa_core.h"
+
+#include <condition_variable>
+#include <cstddef>
+#include <cstring>
+#include <mutex>
+
+namespace {
+
+thread_local size_t g_host_callback_depth = 0;
+thread_local size_t g_backend_call_depth = 0;
+
+#if defined(CMFA_CONTRACT_TESTING)
+std::mutex g_test_hook_mutex;
+void (*g_test_hook)(void *context, int point) = nullptr;
+void *g_test_hook_context = nullptr;
+#endif
+
+struct ContractState {
+  std::mutex mutex;
+  std::condition_variable cv;
+  bool initialized = false;
+  bool callbacks_enabled = false;
+  bool lifecycle_transition_in_progress = false;
+  bool start_in_progress = false;
+  bool backend_mutation_in_progress = false;
+  size_t in_flight_callbacks = 0;
+  size_t in_flight_backend_calls = 0;
+  cmfa_host_callbacks host{};
+  cmfa_backend_api backend{};
+  bool backend_registered = false;
+  cmfa_runtime_snapshot snapshot{};
+  cmfa_backend_host backend_host{};
+};
+
+ContractState g_contract;
+
+bool has_required_size(uint32_t actual, size_t expected) {
+  return static_cast<size_t>(actual) >= expected;
+}
+
+#if defined(CMFA_CONTRACT_TESTING)
+void invoke_test_hook(int point) {
+  void (*hook)(void *context, int point) = nullptr;
+  void *context = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+    hook = g_test_hook;
+    context = g_test_hook_context;
+  }
+  if (hook != nullptr) {
+    hook(context, point);
+  }
+}
+#else
+inline void invoke_test_hook(int) {}
+#endif
+
+bool bounded_c_string_length(const char *text, size_t capacity, size_t *length_out) {
+  if (text == nullptr) {
+    return false;
+  }
+
+  for (size_t index = 0; index < capacity; ++index) {
+    if (text[index] == '\0') {
+      if (length_out != nullptr) {
+        *length_out = index;
+      }
+      return true;
+    }
+  }
+
+  return false;
+}
+
+void write_error_with_length(cmfa_error *error, cmfa_status status, const char *message, size_t message_length) {
+  if (error == nullptr) {
+    return;
+  }
+
+  error->code = status;
+  error->length = message_length;
+  if (error->message == nullptr || error->capacity == 0) {
+    return;
+  }
+
+  const size_t writable = error->capacity - 1;
+  const size_t copy_length = message_length < writable ? message_length : writable;
+  if (copy_length > 0 && message != nullptr) {
+    std::memmove(error->message, message, copy_length);
+  }
+  error->message[copy_length] = '\0';
+}
+
+void write_error_literal(cmfa_error *error, cmfa_status status, const char *message) {
+  write_error_with_length(error, status, message, message != nullptr ? std::strlen(message) : 0);
+}
+
+cmfa_status fail(cmfa_error *error, cmfa_status status, const char *message) {
+  write_error_literal(error, status, message);
+  return status;
+}
+
+void clear_error(cmfa_error *error) { write_error_with_length(error, CMFA_OK, "", 0); }
+
+cmfa_status finalize_backend_error(cmfa_error *error, cmfa_status status, const char *fallback_message) {
+  if (error == nullptr) {
+    return status;
+  }
+
+  size_t backend_length = 0;
+  if (error->message != nullptr && error->capacity > 0 &&
+      bounded_c_string_length(error->message, error->capacity, &backend_length)) {
+    error->code = status;
+    error->length = backend_length;
+    return status;
+  }
+
+  write_error_literal(error, status, fallback_message);
+  return status;
+}
+
+bool is_valid_runtime_state(cmfa_runtime_state_value state) {
+  return state == CMFA_RUNTIME_STOPPED || state == CMFA_RUNTIME_STARTING || state == CMFA_RUNTIME_RUNNING ||
+         state == CMFA_RUNTIME_STOPPING || state == CMFA_RUNTIME_ERROR;
+}
+
+bool is_valid_utf8_span(const char *text, size_t length) {
+  if (text == nullptr) {
+    return false;
+  }
+
+  const unsigned char *bytes = reinterpret_cast<const unsigned char *>(text);
+  size_t index = 0;
+  while (index < length) {
+    const unsigned char lead = bytes[index];
+    if (lead <= 0x7F) {
+      index += 1;
+      continue;
+    }
+
+    size_t needed = 0;
+    uint32_t code_point = 0;
+    uint32_t min_code_point = 0;
+    if (lead >= 0xC2 && lead <= 0xDF) {
+      needed = 2;
+      code_point = lead & 0x1F;
+      min_code_point = 0x80;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+      needed = 3;
+      code_point = lead & 0x0F;
+      min_code_point = 0x800;
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+      needed = 4;
+      code_point = lead & 0x07;
+      min_code_point = 0x10000;
+    } else {
+      return false;
+    }
+
+    for (size_t offset = 1; offset < needed; ++offset) {
+      if (index + offset >= length) {
+        return false;
+      }
+      const unsigned char continuation = bytes[index + offset];
+      if ((continuation & 0xC0) != 0x80) {
+        return false;
+      }
+      code_point = (code_point << 6U) | static_cast<uint32_t>(continuation & 0x3F);
+    }
+
+    if (code_point < min_code_point || code_point > 0x10FFFF ||
+        (code_point >= 0xD800 && code_point <= 0xDFFF)) {
+      return false;
+    }
+
+    index += needed;
+  }
+
+  return true;
+}
+
+void zero_path_buffer(char *buffer) {
+  if (buffer != nullptr) {
+    buffer[0] = '\0';
+  }
+}
+
+void copy_path_buffer(char *destination, const char *source, size_t length) {
+  if (destination == nullptr) {
+    return;
+  }
+  if (source != nullptr && length > 0) {
+    std::memcpy(destination, source, length);
+  }
+  destination[length] = '\0';
+}
+
+cmfa_status validate_path_argument(const char *path, size_t *length_out, cmfa_error *error) {
+  size_t length = 0;
+  if (path == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "path must not be null");
+  }
+  if (!bounded_c_string_length(path, CMFA_MAX_PATH_BYTES, &length)) {
+    return fail(error, CMFA_OUT_OF_RANGE, "path exceeds CMFA_MAX_PATH_BYTES");
+  }
+  if (length == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "path must not be empty");
+  }
+  if (!is_valid_utf8_span(path, length)) {
+    return fail(error, CMFA_INVALID_UTF8, "path must be valid UTF-8");
+  }
+  if (length_out != nullptr) {
+    *length_out = length;
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_snapshot_path_buffer(const char *path_buffer, cmfa_error *error, bool allow_empty) {
+  size_t length = 0;
+  if (!bounded_c_string_length(path_buffer, CMFA_MAX_PATH_BYTES, &length)) {
+    return fail(error, CMFA_BACKEND_ERROR, "snapshot path buffer must be NUL terminated");
+  }
+  if (length == 0) {
+    if (allow_empty) {
+      clear_error(error);
+      return CMFA_OK;
+    }
+    return fail(error, CMFA_BACKEND_ERROR, "snapshot path must not be empty");
+  }
+  if (!is_valid_utf8_span(path_buffer, length)) {
+    return fail(error, CMFA_BACKEND_ERROR, "snapshot path must be valid UTF-8");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+void store_snapshot_locked(const cmfa_runtime_snapshot &snapshot) {
+  g_contract.snapshot.struct_size = sizeof(cmfa_runtime_snapshot);
+  g_contract.snapshot.state = snapshot.state;
+  g_contract.snapshot.mixed_port = snapshot.mixed_port;
+  size_t length = 0;
+  if (bounded_c_string_length(snapshot.active_config_path, CMFA_MAX_PATH_BYTES, &length)) {
+    copy_path_buffer(g_contract.snapshot.active_config_path, snapshot.active_config_path, length);
+  } else {
+    zero_path_buffer(g_contract.snapshot.active_config_path);
+  }
+}
+
+void reset_snapshot_locked() {
+  g_contract.snapshot.struct_size = sizeof(cmfa_runtime_snapshot);
+  g_contract.snapshot.state = CMFA_RUNTIME_STOPPED;
+  g_contract.snapshot.mixed_port = 0;
+  zero_path_buffer(g_contract.snapshot.active_config_path);
+}
+
+cmfa_status validate_snapshot_output(cmfa_runtime_snapshot *snapshot, cmfa_error *error) {
+  if (snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "snapshot must not be null");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+void wait_for_quiescent_locked(std::unique_lock<std::mutex> &lock) {
+  const size_t exempt_callbacks = g_host_callback_depth;
+  g_contract.cv.wait(lock, [&] {
+    return g_contract.in_flight_callbacks <= exempt_callbacks && !g_contract.start_in_progress &&
+           g_contract.in_flight_backend_calls == 0;
+  });
+}
+
+cmfa_status validate_backend_api_complete(const cmfa_backend_api *backend, cmfa_error *error) {
+  if (backend == nullptr) {
+    clear_error(error);
+    return CMFA_OK;
+  }
+  if (!has_required_size(backend->struct_size, sizeof(cmfa_backend_api))) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "backend struct_size is too small");
+  }
+  if (backend->attach_host == nullptr || backend->core_version == nullptr || backend->validate_config == nullptr ||
+      backend->load_config == nullptr || backend->start_local == nullptr || backend->stop == nullptr ||
+      backend->runtime_state == nullptr || backend->shutdown == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "backend lifecycle hooks must all be present");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status begin_backend_call(cmfa_backend_api *backend_out,
+                               cmfa_error *error,
+                               bool allow_missing_backend = false,
+                               bool *borrowed_backend = nullptr) {
+  invoke_test_hook(1);
+  std::unique_lock<std::mutex> lock(g_contract.mutex);
+  g_contract.cv.wait(lock, [] { return !g_contract.backend_mutation_in_progress; });
+  if (!g_contract.initialized) {
+    return fail(error, CMFA_NOT_INITIALIZED, "cmfa_initialize must succeed first");
+  }
+  if (g_contract.lifecycle_transition_in_progress) {
+    return fail(error, CMFA_BUSY, "runtime lifecycle transition is in progress");
+  }
+  if (!g_contract.backend_registered) {
+    if (allow_missing_backend) {
+      if (borrowed_backend != nullptr) {
+        *borrowed_backend = false;
+      }
+      clear_error(error);
+      return CMFA_OK;
+    }
+    return fail(error, CMFA_CORE_UNAVAILABLE, "core backend is unavailable");
+  }
+  g_contract.in_flight_backend_calls += 1;
+  if (borrowed_backend != nullptr) {
+    *borrowed_backend = true;
+  }
+  *backend_out = g_contract.backend;
+  clear_error(error);
+  return CMFA_OK;
+}
+
+void end_backend_call() {
+  std::lock_guard<std::mutex> lock(g_contract.mutex);
+  if (g_contract.in_flight_backend_calls > 0) {
+    g_contract.in_flight_backend_calls -= 1;
+  }
+  g_contract.cv.notify_all();
+}
+
+cmfa_status emit_log_to_host(void *context, const cmfa_log_message *message, cmfa_error *error) {
+  cmfa_log_sink_fn sink = nullptr;
+  void *sink_context = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    if (!g_contract.initialized || !g_contract.callbacks_enabled || message == nullptr || g_contract.host.log_sink == nullptr) {
+      clear_error(error);
+      return CMFA_OK;
+    }
+    sink = g_contract.host.log_sink;
+    sink_context = g_contract.host.context;
+    g_contract.in_flight_callbacks += 1;
+  }
+
+  (void)context;
+  g_host_callback_depth += 1;
+  sink(sink_context, message);
+  g_host_callback_depth -= 1;
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.in_flight_callbacks -= 1;
+    g_contract.cv.notify_all();
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status emit_event_to_host(void *context, const cmfa_runtime_event *event, cmfa_error *error) {
+  cmfa_runtime_event_sink_fn sink = nullptr;
+  void *sink_context = nullptr;
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    if (!g_contract.initialized || !g_contract.callbacks_enabled || event == nullptr || g_contract.host.event_sink == nullptr) {
+      clear_error(error);
+      return CMFA_OK;
+    }
+    sink = g_contract.host.event_sink;
+    sink_context = g_contract.host.context;
+    g_contract.in_flight_callbacks += 1;
+  }
+
+  (void)context;
+  g_host_callback_depth += 1;
+  sink(sink_context, event);
+  g_host_callback_depth -= 1;
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.in_flight_callbacks -= 1;
+    g_contract.cv.notify_all();
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+} // namespace
+
+ #if defined(CMFA_CONTRACT_TESTING)
+extern "C" CMFA_INTERNAL_VISIBILITY void cmfa_internal_set_test_hook(void (*hook)(void *context, int point),
+                                                                     void *context) {
+  std::lock_guard<std::mutex> lock(g_test_hook_mutex);
+  g_test_hook = hook;
+  g_test_hook_context = context;
+}
+#endif
+
+extern "C" CMFA_INTERNAL_VISIBILITY cmfa_status cmfa_internal_register_backend(const cmfa_backend_api *backend,
+                                                                               cmfa_error *error) {
+  const cmfa_status validation_status = validate_backend_api_complete(backend, error);
+  if (validation_status != CMFA_OK) {
+    return validation_status;
+  }
+
+  cmfa_backend_api candidate{};
+
+  {
+    std::unique_lock<std::mutex> lock(g_contract.mutex);
+    g_contract.cv.wait(lock, [] {
+      return !g_contract.backend_mutation_in_progress && !g_contract.lifecycle_transition_in_progress;
+    });
+    if (g_contract.initialized) {
+      return fail(error, CMFA_INVALID_STATE, "backend mutation is only allowed before initialize or after shutdown");
+    }
+    g_contract.backend_mutation_in_progress = true;
+    wait_for_quiescent_locked(lock);
+    if (backend != nullptr) {
+      candidate = *backend;
+    }
+  }
+
+  if (backend == nullptr) {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.backend = {};
+    g_contract.backend_registered = false;
+    g_contract.backend_mutation_in_progress = false;
+    g_contract.cv.notify_all();
+    clear_error(error);
+    return CMFA_OK;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.backend = candidate;
+    g_contract.backend_registered = true;
+    g_contract.backend_mutation_in_progress = false;
+    g_contract.cv.notify_all();
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_initialize(const cmfa_host_callbacks *host, cmfa_error *error) {
+  if (host == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "host callbacks must not be null");
+  }
+  if (!has_required_size(host->struct_size, sizeof(cmfa_host_callbacks))) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "host callback struct_size is too small");
+  }
+
+  cmfa_backend_api backend_copy{};
+  cmfa_backend_host backend_host_copy{};
+  bool should_attach = false;
+
+  {
+    std::unique_lock<std::mutex> lock(g_contract.mutex);
+    g_contract.cv.wait(lock, [] { return !g_contract.backend_mutation_in_progress && !g_contract.lifecycle_transition_in_progress; });
+    if (g_contract.initialized) {
+      return fail(error, CMFA_ALREADY_INITIALIZED, "cmfa_initialize may only be called once before shutdown");
+    }
+
+    g_contract.host = *host;
+    g_contract.initialized = true;
+    g_contract.callbacks_enabled = true;
+    g_contract.start_in_progress = false;
+    g_contract.backend_host.struct_size = sizeof(cmfa_backend_host);
+    g_contract.backend_host.context = nullptr;
+    g_contract.backend_host.host_emit_log = &emit_log_to_host;
+    g_contract.backend_host.host_emit_event = &emit_event_to_host;
+    reset_snapshot_locked();
+
+    if (g_contract.backend_registered) {
+      backend_copy = g_contract.backend;
+      backend_host_copy = g_contract.backend_host;
+      should_attach = true;
+      g_contract.lifecycle_transition_in_progress = true;
+      g_contract.in_flight_backend_calls += 1;
+    }
+  }
+
+  if (should_attach) {
+    g_backend_call_depth += 1;
+    const cmfa_status status = backend_copy.attach_host(backend_copy.context, &backend_host_copy, error);
+    g_backend_call_depth -= 1;
+    if (status != CMFA_OK) {
+      std::lock_guard<std::mutex> lock(g_contract.mutex);
+      g_contract.in_flight_backend_calls -= 1;
+      g_contract.initialized = false;
+      g_contract.callbacks_enabled = false;
+      g_contract.start_in_progress = false;
+      reset_snapshot_locked();
+      g_contract.lifecycle_transition_in_progress = false;
+      g_contract.cv.notify_all();
+      return finalize_backend_error(error, status, "backend attach_host failed");
+    }
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.in_flight_backend_calls -= 1;
+    g_contract.lifecycle_transition_in_progress = false;
+    g_contract.cv.notify_all();
+  }
+
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_core_version(char *out, size_t capacity, cmfa_error *error) {
+  if (out == nullptr || capacity == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "version output buffer must not be null or empty");
+  }
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    out[0] = '\0';
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.core_version(backend_copy.context, out, capacity, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+
+  if (status != CMFA_OK) {
+    out[capacity - 1] = '\0';
+    return finalize_backend_error(error, status, "backend core_version failed");
+  }
+
+  size_t version_length = 0;
+  if (!bounded_c_string_length(out, capacity, &version_length)) {
+    out[capacity - 1] = '\0';
+    return finalize_backend_error(error, CMFA_BACKEND_ERROR, "backend core_version output must be NUL terminated");
+  }
+
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_validate_config(const char *path, cmfa_error *error) {
+  size_t path_length = 0;
+  const cmfa_status argument_status = validate_path_argument(path, &path_length, error);
+  if (argument_status != CMFA_OK) {
+    return argument_status;
+  }
+  (void)path_length;
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.validate_config(backend_copy.context, path, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    return finalize_backend_error(error, status, "backend validate_config failed");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_load_config(const char *path, cmfa_error *error) {
+  size_t path_length = 0;
+  const cmfa_status argument_status = validate_path_argument(path, &path_length, error);
+  if (argument_status != CMFA_OK) {
+    return argument_status;
+  }
+  (void)path_length;
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.load_config(backend_copy.context, path, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    return finalize_backend_error(error, status, "backend load_config failed");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_start_local(const cmfa_local_options *options,
+                                         cmfa_runtime_snapshot *snapshot,
+                                         cmfa_error *error) {
+  if (options == nullptr || snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "options and snapshot must not be null");
+  }
+  if (!has_required_size(options->struct_size, sizeof(cmfa_local_options))) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "local options struct_size is too small");
+  }
+
+  size_t path_length = 0;
+  const cmfa_status path_status = validate_path_argument(options->config_path, &path_length, error);
+  if (path_status != CMFA_OK) {
+    return path_status;
+  }
+  if (options->mixed_port == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "mixed_port must be greater than zero");
+  }
+  if (options->mixed_port > 65535U) {
+    return fail(error, CMFA_OUT_OF_RANGE, "mixed_port must fit in uint16");
+  }
+
+  cmfa_backend_api backend_copy{};
+  cmfa_runtime_snapshot working_snapshot{};
+
+  {
+    std::unique_lock<std::mutex> lock(g_contract.mutex);
+    g_contract.cv.wait(lock, [] { return !g_contract.backend_mutation_in_progress; });
+    if (!g_contract.initialized) {
+      return fail(error, CMFA_NOT_INITIALIZED, "cmfa_initialize must succeed first");
+    }
+    if (g_contract.lifecycle_transition_in_progress) {
+      return fail(error, CMFA_BUSY, "runtime lifecycle transition is in progress");
+    }
+    if (g_contract.start_in_progress || g_contract.snapshot.state == CMFA_RUNTIME_STARTING ||
+        g_contract.snapshot.state == CMFA_RUNTIME_RUNNING || g_contract.snapshot.state == CMFA_RUNTIME_STOPPING) {
+      return fail(error, CMFA_BUSY, "runtime is not ready for another start");
+    }
+    if (!g_contract.backend_registered) {
+      return fail(error, CMFA_CORE_UNAVAILABLE, "core backend is unavailable");
+    }
+
+    g_contract.start_in_progress = true;
+    g_contract.callbacks_enabled = true;
+    g_contract.snapshot.state = CMFA_RUNTIME_STARTING;
+    g_contract.snapshot.mixed_port = options->mixed_port;
+    copy_path_buffer(g_contract.snapshot.active_config_path, options->config_path, path_length);
+    g_contract.in_flight_backend_calls += 1;
+    backend_copy = g_contract.backend;
+  }
+
+  working_snapshot.struct_size = sizeof(cmfa_runtime_snapshot);
+  working_snapshot.state = CMFA_RUNTIME_STARTING;
+  working_snapshot.mixed_port = options->mixed_port;
+  copy_path_buffer(working_snapshot.active_config_path, options->config_path, path_length);
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.start_local(backend_copy.context, options, &working_snapshot, error);
+  g_backend_call_depth -= 1;
+
+  std::unique_lock<std::mutex> lock(g_contract.mutex);
+  g_contract.in_flight_backend_calls -= 1;
+  g_contract.start_in_progress = false;
+  g_contract.cv.notify_all();
+
+  if (g_contract.lifecycle_transition_in_progress || !g_contract.initialized) {
+    reset_snapshot_locked();
+    return finalize_backend_error(error, CMFA_INVALID_STATE, "runtime start was cancelled by lifecycle transition");
+  }
+  if (status != CMFA_OK) {
+    g_contract.snapshot.state = CMFA_RUNTIME_ERROR;
+    return finalize_backend_error(error, status, "backend start_local failed");
+  }
+  if (!is_valid_runtime_state(working_snapshot.state)) {
+    g_contract.snapshot.state = CMFA_RUNTIME_ERROR;
+    return finalize_backend_error(error, CMFA_BACKEND_ERROR, "backend returned an invalid runtime state");
+  }
+  const cmfa_status snapshot_path_status = validate_snapshot_path_buffer(working_snapshot.active_config_path, error, false);
+  if (snapshot_path_status != CMFA_OK) {
+    g_contract.snapshot.state = CMFA_RUNTIME_ERROR;
+    return snapshot_path_status;
+  }
+
+  store_snapshot_locked(working_snapshot);
+  *snapshot = g_contract.snapshot;
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
+  if (g_host_callback_depth > 0 || g_backend_call_depth > 0) {
+    return fail(error, CMFA_INVALID_STATE, "lifecycle APIs cannot be re-entered from host callbacks or backend calls");
+  }
+
+  cmfa_backend_api backend_copy{};
+  bool should_call_backend = false;
+
+  {
+    std::unique_lock<std::mutex> lock(g_contract.mutex);
+    if (!g_contract.initialized) {
+      return fail(error, CMFA_NOT_INITIALIZED, "cmfa_initialize must succeed first");
+    }
+    g_contract.cv.wait(lock, [] { return !g_contract.backend_mutation_in_progress && !g_contract.lifecycle_transition_in_progress; });
+    g_contract.lifecycle_transition_in_progress = true;
+    g_contract.callbacks_enabled = false;
+    wait_for_quiescent_locked(lock);
+    if (!g_contract.initialized) {
+      g_contract.lifecycle_transition_in_progress = false;
+      g_contract.cv.notify_all();
+      return fail(error, CMFA_NOT_INITIALIZED, "cmfa_initialize must succeed first");
+    }
+    should_call_backend = g_contract.backend_registered && g_contract.snapshot.state != CMFA_RUNTIME_STOPPED;
+    if (should_call_backend) {
+      g_contract.in_flight_backend_calls += 1;
+      backend_copy = g_contract.backend;
+    }
+  }
+
+  if (should_call_backend) {
+    g_backend_call_depth += 1;
+    const cmfa_status status = backend_copy.stop(backend_copy.context, error);
+    g_backend_call_depth -= 1;
+    {
+      std::lock_guard<std::mutex> lock(g_contract.mutex);
+      g_contract.in_flight_backend_calls -= 1;
+      g_contract.cv.notify_all();
+      if (status != CMFA_OK) {
+        g_contract.snapshot.state = CMFA_RUNTIME_ERROR;
+        g_contract.lifecycle_transition_in_progress = false;
+        g_contract.cv.notify_all();
+      }
+    }
+    if (status != CMFA_OK) {
+      return finalize_backend_error(error, status, "backend stop failed");
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    reset_snapshot_locked();
+    g_contract.lifecycle_transition_in_progress = false;
+    g_contract.cv.notify_all();
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_error *error) {
+  const cmfa_status output_status = validate_snapshot_output(snapshot, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+
+  cmfa_backend_api backend_copy{};
+  bool borrowed_backend = false;
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error, true, &borrowed_backend);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+  if (!borrowed_backend) {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    *snapshot = g_contract.snapshot;
+    clear_error(error);
+    return CMFA_OK;
+  }
+
+  cmfa_runtime_snapshot backend_snapshot{};
+  backend_snapshot.struct_size = sizeof(cmfa_runtime_snapshot);
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.runtime_state(backend_copy.context, &backend_snapshot, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    return finalize_backend_error(error, status, "backend runtime_state failed");
+  }
+  if (!is_valid_runtime_state(backend_snapshot.state)) {
+    return finalize_backend_error(error, CMFA_BACKEND_ERROR, "backend returned an invalid runtime state");
+  }
+  const cmfa_status path_status =
+      validate_snapshot_path_buffer(backend_snapshot.active_config_path, error,
+                                    backend_snapshot.state == CMFA_RUNTIME_STOPPED);
+  if (path_status != CMFA_OK) {
+    return path_status;
+  }
+
+  invoke_test_hook(2);
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    if (!g_contract.initialized) {
+      return fail(error, CMFA_NOT_INITIALIZED, "cmfa_initialize must succeed first");
+    }
+    if (g_contract.lifecycle_transition_in_progress) {
+      return fail(error, CMFA_BUSY, "runtime lifecycle transition is in progress");
+    }
+    store_snapshot_locked(backend_snapshot);
+    *snapshot = g_contract.snapshot;
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_shutdown(cmfa_error *error) {
+  if (g_host_callback_depth > 0 || g_backend_call_depth > 0) {
+    return fail(error, CMFA_INVALID_STATE, "lifecycle APIs cannot be re-entered from host callbacks or backend calls");
+  }
+
+  cmfa_backend_api backend_copy{};
+  bool should_call_backend = false;
+
+  {
+    std::unique_lock<std::mutex> lock(g_contract.mutex);
+    if (!g_contract.initialized) {
+      clear_error(error);
+      return CMFA_OK;
+    }
+    g_contract.cv.wait(lock, [] { return !g_contract.backend_mutation_in_progress && !g_contract.lifecycle_transition_in_progress; });
+    g_contract.lifecycle_transition_in_progress = true;
+    g_contract.callbacks_enabled = false;
+    wait_for_quiescent_locked(lock);
+    if (!g_contract.initialized) {
+      g_contract.lifecycle_transition_in_progress = false;
+      g_contract.cv.notify_all();
+      clear_error(error);
+      return CMFA_OK;
+    }
+    should_call_backend = g_contract.backend_registered;
+    if (should_call_backend) {
+      g_contract.in_flight_backend_calls += 1;
+      backend_copy = g_contract.backend;
+    }
+  }
+
+  if (should_call_backend) {
+    g_backend_call_depth += 1;
+    const cmfa_status status = backend_copy.shutdown(backend_copy.context, error);
+    g_backend_call_depth -= 1;
+    {
+      std::lock_guard<std::mutex> lock(g_contract.mutex);
+      g_contract.in_flight_backend_calls -= 1;
+      g_contract.cv.notify_all();
+      if (status != CMFA_OK) {
+        g_contract.lifecycle_transition_in_progress = false;
+        g_contract.cv.notify_all();
+      }
+    }
+    if (status != CMFA_OK) {
+      return finalize_backend_error(error, status, "backend shutdown failed");
+    }
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.initialized = false;
+    g_contract.callbacks_enabled = false;
+    g_contract.start_in_progress = false;
+    g_contract.host = {};
+    reset_snapshot_locked();
+    g_contract.lifecycle_transition_in_progress = false;
+    g_contract.cv.notify_all();
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
