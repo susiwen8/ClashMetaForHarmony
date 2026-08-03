@@ -27,55 +27,65 @@ bool load_runtime_snapshot(OwnedRuntimeSnapshot *out, CoreErrorData *error) {
 } // namespace
 
 napi_value hello(napi_env env, napi_callback_info info) {
-  size_t argc = 0;
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "hello", status);
-    return nullptr;
-  }
-  auto *addon = static_cast<AddonState *>(data);
-  if (addon == nullptr || !addon->owner.can_deliver()) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_STATE, "hello"));
-    return nullptr;
-  }
+  try {
+    size_t argc = 0;
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "hello", status);
+      return nullptr;
+    }
+    auto *addon = static_cast<AddonState *>(data);
+    if (addon == nullptr || !addon->owner.can_deliver()) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_STATE, "hello"));
+      return nullptr;
+    }
 
-  napi_value result = nullptr;
-  const napi_status create_status = napi_create_string_utf8(env, "cmfa-native-ready", NAPI_AUTO_LENGTH, &result);
-  if (create_status != napi_ok) {
-    throw_napi_failure(env, "hello", create_status);
+    napi_value result = nullptr;
+    const napi_status create_status = napi_create_string_utf8(env, "cmfa-native-ready", NAPI_AUTO_LENGTH, &result);
+    if (create_status != napi_ok) {
+      throw_napi_failure(env, "hello", create_status);
+      return nullptr;
+    }
+    return result;
+  } catch (...) {
+    throw_napi_failure(env, "hello", napi_generic_failure);
     return nullptr;
   }
-  return result;
 }
 
 napi_value runtime_snapshot(napi_env env, napi_callback_info info) {
-  size_t argc = 0;
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "runtimeSnapshot", status);
-    return nullptr;
-  }
-  auto *addon = static_cast<AddonState *>(data);
-  if (addon == nullptr || !addon->owner.can_deliver()) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_STATE, "runtimeSnapshot"));
-    return nullptr;
-  }
+  try {
+    size_t argc = 0;
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "runtimeSnapshot", status);
+      return nullptr;
+    }
+    auto *addon = static_cast<AddonState *>(data);
+    if (addon == nullptr || !addon->owner.can_deliver()) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_STATE, "runtimeSnapshot"));
+      return nullptr;
+    }
 
-  OwnedRuntimeSnapshot snapshot;
-  CoreErrorData error;
-  if (!load_runtime_snapshot(&snapshot, &error)) {
-    throw_core_error(env, error);
-    return nullptr;
-  }
+    OwnedRuntimeSnapshot snapshot;
+    CoreErrorData error;
+    if (!load_runtime_snapshot(&snapshot, &error)) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
 
-  napi_value result = nullptr;
-  if (!owned_snapshot_to_js(env, snapshot, &result, &error)) {
-    throw_core_error(env, error);
+    napi_value result = nullptr;
+    if (!owned_snapshot_to_js(env, snapshot, &result, &error)) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
+    return result;
+  } catch (...) {
+    throw_napi_failure(env, "runtimeSnapshot", napi_generic_failure);
     return nullptr;
   }
-  return result;
 }
 
 napi_status define_core_module(napi_env env, napi_value exports, AddonState *state) {

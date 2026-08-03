@@ -195,6 +195,9 @@ void reject_deferred_with_core_error(napi_env env, napi_deferred deferred, const
 }
 
 void reject_deferred_with_napi_failure(napi_env env, napi_deferred deferred, const char *operation, napi_status status) {
+  if (deferred == nullptr) {
+    return;
+  }
   reject_deferred_with_core_error(env, deferred, make_napi_failure(operation, status));
 }
 

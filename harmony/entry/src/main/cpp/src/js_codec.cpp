@@ -5,6 +5,9 @@
 
 namespace cmfa::nodeaddon {
 
+void emit_log_event(void *context, const cmfa_log_message *message) noexcept;
+void emit_runtime_event(void *context, const cmfa_runtime_event *message) noexcept;
+
 namespace {
 
 constexpr std::string_view kRuntimeStopped = "STOPPED";
@@ -85,7 +88,10 @@ bool decode_uint32_value(napi_env env, napi_value value, uint32_t *out, CoreErro
 } // namespace
 
 AddonState::AddonState(cmfa::napi::LifecycleOperations operations)
-    : env(nullptr), owner(operations), next_subscription_id(1) {}
+    : env(nullptr),
+      ownership(),
+      owner(cmfa::napi::LifecycleOperations{&ownership, operations.shutdown, operations.unregister_backend}),
+      next_subscription_id(1) {}
 
 const char *runtime_state_name(cmfa_runtime_state_value state) {
   switch (state) {

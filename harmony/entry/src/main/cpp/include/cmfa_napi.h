@@ -8,6 +8,7 @@
 #include <node_api.h>
 
 #include <atomic>
+#include <condition_variable>
 #include <cstdint>
 #include <memory>
 #include <mutex>
@@ -84,13 +85,20 @@ struct AsyncResult {
 struct AsyncDelivery;
 struct AsyncThreadHandle;
 struct AsyncPromiseJob;
+struct AsyncCompletionPayload;
 struct SubscriptionDelivery;
 struct Subscription;
+
+struct AddonLifecycleOwnership {
+  std::atomic<bool> backend_registered{false};
+  std::atomic<bool> core_initialized{false};
+};
 
 struct AddonState {
   explicit AddonState(cmfa::napi::LifecycleOperations operations);
 
   napi_env env;
+  AddonLifecycleOwnership ownership;
   cmfa::napi::NapiEnvironmentOwner owner;
   std::mutex subscriptions_mutex;
   std::unordered_map<uint32_t, std::shared_ptr<Subscription>> subscriptions;
@@ -113,17 +121,22 @@ struct AsyncPromiseJob {
   AsyncInput input;
   AsyncDelivery *delivery = nullptr;
   AsyncThreadHandle *async_handle = nullptr;
+  AsyncCompletionPayload *completion_payload = nullptr;
 };
 
 struct SubscriptionDelivery {
   napi_threadsafe_function tsfn = nullptr;
   std::atomic<bool> abort_consumed{false};
+  std::weak_ptr<Subscription> subscription;
 };
 
 struct Subscription {
   AddonState *addon = nullptr;
   uint32_t id = 0;
-  std::atomic<bool> active{true};
+  std::mutex mutex;
+  std::condition_variable in_flight_js_cv;
+  bool active = true;
+  uint32_t in_flight_js = 0;
   napi_ref callback_ref = nullptr;
   SubscriptionDelivery *delivery = nullptr;
 };
@@ -168,8 +181,8 @@ napi_value hello(napi_env env, napi_callback_info info);
 napi_value runtime_snapshot(napi_env env, napi_callback_info info);
 napi_status define_core_module(napi_env env, napi_value exports, AddonState *state);
 
-void emit_log_event(void *context, const cmfa_log_message *message);
-void emit_runtime_event(void *context, const cmfa_runtime_event *event);
+void emit_log_event(void *context, const cmfa_log_message *message) noexcept;
+void emit_runtime_event(void *context, const cmfa_runtime_event *event) noexcept;
 
 } // namespace cmfa::nodeaddon
 

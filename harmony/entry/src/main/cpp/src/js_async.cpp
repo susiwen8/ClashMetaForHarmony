@@ -6,11 +6,15 @@
 
 namespace cmfa::nodeaddon {
 
+struct AsyncCompletionPayload {
+  std::shared_ptr<AsyncPromiseJob> job;
+  AsyncResult result;
+};
+
 namespace {
 
-struct AsyncCompletionPayload {
-  AsyncPromiseJob *job = nullptr;
-  AsyncResult result;
+struct AsyncTsfnFinalizerState {
+  std::shared_ptr<AsyncPromiseJob> job;
 };
 
 cmfa::napi::ReleaseResult finish_async(AddonState *addon, AsyncThreadHandle *handle) {
@@ -64,7 +68,7 @@ void release_delivery_handle(void *handle) {
 }
 
 void tsfn_finalize_async(napi_env, void *finalize_data, void *) {
-  delete static_cast<AsyncPromiseJob *>(finalize_data);
+  delete static_cast<AsyncTsfnFinalizerState *>(finalize_data);
 }
 
 bool build_async_result_value(napi_env env, const AsyncResult &result, napi_value *value) {
@@ -191,8 +195,9 @@ void complete_promise(napi_env env, napi_value, void *, void *data) {
     return;
   }
 
-  AsyncPromiseJob *job = payload->job;
+  std::shared_ptr<AsyncPromiseJob> job = payload->job;
   AddonState *addon = job->addon;
+  job->completion_payload = nullptr;
 
   if (payload->result.ok) {
     napi_value resolution = nullptr;
@@ -210,226 +215,283 @@ void complete_promise(napi_env env, napi_value, void *, void *data) {
   delete payload;
 }
 
-void async_worker_main(AsyncPromiseJob *job) {
-  AsyncResult result = run_async_operation(job->input, job->async_handle->cancel_requested);
-  auto *payload = new (std::nothrow) AsyncCompletionPayload{};
-  if (payload == nullptr) {
-    return;
-  }
-  payload->job = job;
-  payload->result = std::move(result);
-
-  const napi_status status =
-      napi_call_threadsafe_function(job->delivery->tsfn, payload, napi_tsfn_nonblocking);
-  if (status != napi_ok && status != napi_closing) {
-    delete payload;
-  }
-}
-
 struct DecodedAsyncCall {
   AddonState *addon = nullptr;
   AsyncInput input;
 };
 
+void run_async_worker(AsyncPromiseJob *job) {
+  AsyncResult result = run_async_operation(job->input, job->async_handle->cancel_requested);
+  AsyncCompletionPayload *payload = job->completion_payload;
+  if (payload == nullptr) {
+    return;
+  }
+  payload->result = std::move(result);
+
+  const napi_status status =
+      napi_call_threadsafe_function(job->delivery->tsfn, payload, napi_tsfn_nonblocking);
+  if (status != napi_ok && status != napi_closing) {
+    job->completion_payload = nullptr;
+    delete payload;
+  } else if (status == napi_closing) {
+    job->completion_payload = nullptr;
+    delete payload;
+  }
+}
+
 napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) {
-  auto *addon = decoded.addon;
-  const AsyncOp op = decoded.input.op;
-  if (addon == nullptr || !addon->owner.can_deliver()) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_STATE, async_operation_name(op)));
-    return nullptr;
-  }
-
   napi_deferred deferred = nullptr;
-  napi_value promise = nullptr;
-  const napi_status promise_status = napi_create_promise(env, &deferred, &promise);
-  if (promise_status != napi_ok) {
-    throw_napi_failure(env, async_operation_name(op), promise_status);
-    return nullptr;
-  }
-
-  auto *job = new (std::nothrow) AsyncPromiseJob{};
-  if (job == nullptr) {
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-    return promise;
-  }
-  job->addon = addon;
-  job->deferred = deferred;
-  job->input = decoded.input;
-
-  napi_value async_name = nullptr;
-  const napi_status async_name_status =
-      napi_create_string_utf8(env, async_operation_name(op), NAPI_AUTO_LENGTH, &async_name);
-  if (async_name_status != napi_ok) {
-    delete job;
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), async_name_status);
-    return promise;
-  }
-
-  auto *delivery = new (std::nothrow) AsyncDelivery{};
-  if (delivery == nullptr) {
-    delete job;
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-    return promise;
-  }
-  const napi_status tsfn_status = napi_create_threadsafe_function(env,
-                                                                  nullptr,
-                                                                  nullptr,
-                                                                  async_name,
-                                                                  1,
-                                                                  1,
-                                                                  job,
-                                                                  tsfn_finalize_async,
-                                                                  nullptr,
-                                                                  complete_promise,
-                                                                  &delivery->tsfn);
-  if (tsfn_status != napi_ok) {
-    delete delivery;
-    delete job;
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), tsfn_status);
-    return promise;
-  }
-  job->delivery = delivery;
-
-  if (!addon->owner.try_add_delivery({delivery, abort_delivery, release_delivery_handle})) {
-    (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_abort);
-    delete delivery;
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-    return promise;
-  }
-
-  auto *async_handle = new (std::nothrow) AsyncThreadHandle{};
-  if (async_handle == nullptr) {
-    (void)release_delivery(addon, delivery, true);
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-    return promise;
-  }
-  if (!addon->owner.try_add_async({async_handle, request_cancel_async, join_async, release_async})) {
-    delete async_handle;
-    (void)release_delivery(addon, delivery, true);
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-    return promise;
-  }
-  job->async_handle = async_handle;
-
   try {
-    async_handle->worker = std::thread([job] { async_worker_main(job); });
-  } catch (...) {
-    (void)finish_async(addon, async_handle);
-    (void)release_delivery(addon, delivery, true);
-    reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
-  }
+    auto *addon = decoded.addon;
+    const AsyncOp op = decoded.input.op;
+    if (addon == nullptr || !addon->owner.can_deliver()) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_STATE, async_operation_name(op)));
+      return nullptr;
+    }
 
-  return promise;
+    napi_value promise = nullptr;
+    const napi_status promise_status = napi_create_promise(env, &deferred, &promise);
+    if (promise_status != napi_ok) {
+      throw_napi_failure(env, async_operation_name(op), promise_status);
+      return nullptr;
+    }
+
+    std::shared_ptr<AsyncPromiseJob> job = std::make_shared<AsyncPromiseJob>();
+    job->addon = addon;
+    job->deferred = deferred;
+    job->input = decoded.input;
+
+    auto *payload = new (std::nothrow) AsyncCompletionPayload{};
+    if (payload == nullptr) {
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+    payload->job = job;
+    job->completion_payload = payload;
+
+    auto *finalizer_state = new (std::nothrow) AsyncTsfnFinalizerState{};
+    if (finalizer_state == nullptr) {
+      job->completion_payload = nullptr;
+      delete payload;
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+    finalizer_state->job = job;
+
+    napi_value async_name = nullptr;
+    const napi_status async_name_status =
+        napi_create_string_utf8(env, async_operation_name(op), NAPI_AUTO_LENGTH, &async_name);
+    if (async_name_status != napi_ok) {
+      delete finalizer_state;
+      job->completion_payload = nullptr;
+      delete payload;
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), async_name_status);
+      return promise;
+    }
+
+    auto *delivery = new (std::nothrow) AsyncDelivery{};
+    if (delivery == nullptr) {
+      delete finalizer_state;
+      job->completion_payload = nullptr;
+      delete payload;
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+    const napi_status tsfn_status = napi_create_threadsafe_function(env,
+                                                                    nullptr,
+                                                                    nullptr,
+                                                                    async_name,
+                                                                    1,
+                                                                    1,
+                                                                    finalizer_state,
+                                                                    tsfn_finalize_async,
+                                                                    nullptr,
+                                                                    complete_promise,
+                                                                    &delivery->tsfn);
+    if (tsfn_status != napi_ok) {
+      delete delivery;
+      delete finalizer_state;
+      job->completion_payload = nullptr;
+      delete payload;
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), tsfn_status);
+      return promise;
+    }
+    job->delivery = delivery;
+
+    if (!addon->owner.try_add_delivery({delivery, abort_delivery, release_delivery_handle})) {
+      job->completion_payload = nullptr;
+      delete payload;
+      (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_abort);
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+
+    auto *async_handle = new (std::nothrow) AsyncThreadHandle{};
+    if (async_handle == nullptr) {
+      job->completion_payload = nullptr;
+      delete payload;
+      (void)release_delivery(addon, delivery, true);
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+    if (!addon->owner.try_add_async({async_handle, request_cancel_async, join_async, release_async})) {
+      delete async_handle;
+      job->completion_payload = nullptr;
+      delete payload;
+      (void)release_delivery(addon, delivery, true);
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
+      return promise;
+    }
+    job->async_handle = async_handle;
+
+    async_handle->worker = std::thread([job] { run_async_worker(job.get()); });
+    return promise;
+    } catch (...) {
+      reject_deferred_with_napi_failure(env, deferred, async_operation_name(decoded.input.op), napi_generic_failure);
+      if (deferred != nullptr) {
+        napi_value promise = nullptr;
+        if (napi_get_undefined(env, &promise) == napi_ok) {
+          return promise;
+        }
+      }
+      throw_napi_failure(env, async_operation_name(decoded.input.op), napi_generic_failure);
+      return nullptr;
+  }
 }
 
 } // namespace
 
 napi_value core_version(napi_env env, napi_callback_info info) {
-  size_t argc = 0;
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "coreVersion", status);
+  try {
+    size_t argc = 0;
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "coreVersion", status);
+      return nullptr;
+    }
+    if (argc != 0) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "coreVersion"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::CORE_VERSION;
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "coreVersion", napi_generic_failure);
     return nullptr;
   }
-  if (argc != 0) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "coreVersion"));
-    return nullptr;
-  }
-  DecodedAsyncCall decoded;
-  decoded.addon = static_cast<AddonState *>(data);
-  decoded.input.op = AsyncOp::CORE_VERSION;
-  return start_async_operation(env, decoded);
 }
 
 napi_value validate_configuration(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1] = {nullptr};
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "validateConfiguration", status);
+  try {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "validateConfiguration", status);
+      return nullptr;
+    }
+    if (argc != 1) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "validateConfiguration"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::VALIDATE_CONFIGURATION;
+    CoreErrorData error;
+    if (!decode_path_argument(env, argv[0], &decoded.input.path, &error, "validateConfiguration")) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "validateConfiguration", napi_generic_failure);
     return nullptr;
   }
-  if (argc != 1) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "validateConfiguration"));
-    return nullptr;
-  }
-  DecodedAsyncCall decoded;
-  decoded.addon = static_cast<AddonState *>(data);
-  decoded.input.op = AsyncOp::VALIDATE_CONFIGURATION;
-  CoreErrorData error;
-  if (!decode_path_argument(env, argv[0], &decoded.input.path, &error, "validateConfiguration")) {
-    throw_core_error(env, error);
-    return nullptr;
-  }
-  return start_async_operation(env, decoded);
 }
 
 napi_value load_configuration(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1] = {nullptr};
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "loadConfiguration", status);
+  try {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "loadConfiguration", status);
+      return nullptr;
+    }
+    if (argc != 1) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "loadConfiguration"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::LOAD_CONFIGURATION;
+    CoreErrorData error;
+    if (!decode_path_argument(env, argv[0], &decoded.input.path, &error, "loadConfiguration")) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "loadConfiguration", napi_generic_failure);
     return nullptr;
   }
-  if (argc != 1) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "loadConfiguration"));
-    return nullptr;
-  }
-  DecodedAsyncCall decoded;
-  decoded.addon = static_cast<AddonState *>(data);
-  decoded.input.op = AsyncOp::LOAD_CONFIGURATION;
-  CoreErrorData error;
-  if (!decode_path_argument(env, argv[0], &decoded.input.path, &error, "loadConfiguration")) {
-    throw_core_error(env, error);
-    return nullptr;
-  }
-  return start_async_operation(env, decoded);
 }
 
 napi_value start_local(napi_env env, napi_callback_info info) {
-  size_t argc = 1;
-  napi_value argv[1] = {nullptr};
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "startLocal", status);
+  try {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "startLocal", status);
+      return nullptr;
+    }
+    if (argc != 1) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "startLocal"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::START_LOCAL;
+    CoreErrorData error;
+    if (!decode_local_options(env, argv[0], &decoded.input.local_options, &error)) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "startLocal", napi_generic_failure);
     return nullptr;
   }
-  if (argc != 1) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "startLocal"));
-    return nullptr;
-  }
-  DecodedAsyncCall decoded;
-  decoded.addon = static_cast<AddonState *>(data);
-  decoded.input.op = AsyncOp::START_LOCAL;
-  CoreErrorData error;
-  if (!decode_local_options(env, argv[0], &decoded.input.local_options, &error)) {
-    throw_core_error(env, error);
-    return nullptr;
-  }
-  return start_async_operation(env, decoded);
 }
 
 napi_value stop_runtime(napi_env env, napi_callback_info info) {
-  size_t argc = 0;
-  void *data = nullptr;
-  const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
-  if (status != napi_ok) {
-    throw_napi_failure(env, "stopRuntime", status);
+  try {
+    size_t argc = 0;
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, nullptr, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "stopRuntime", status);
+      return nullptr;
+    }
+    if (argc != 0) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "stopRuntime"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::STOP_RUNTIME;
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "stopRuntime", napi_generic_failure);
     return nullptr;
   }
-  if (argc != 0) {
-    throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "stopRuntime"));
-    return nullptr;
-  }
-  DecodedAsyncCall decoded;
-  decoded.addon = static_cast<AddonState *>(data);
-  decoded.input.op = AsyncOp::STOP_RUNTIME;
-  return start_async_operation(env, decoded);
 }
 
 } // namespace cmfa::nodeaddon
