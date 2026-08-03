@@ -89,6 +89,27 @@ function countMatches(body, pattern) {
   return [...body.matchAll(pattern)].length;
 }
 
+function extractFunctionBody(body, functionName) {
+  const signature = `${functionName}(`;
+  const start = body.indexOf(signature);
+  assert.notEqual(start, -1, `Expected to find ${functionName}`);
+  const braceStart = body.indexOf('{', start);
+  assert.notEqual(braceStart, -1, `Expected ${functionName} to have a body`);
+  let depth = 0;
+  for (let index = braceStart; index < body.length; index += 1) {
+    const char = body[index];
+    if (char === '{') {
+      depth += 1;
+    } else if (char === '}') {
+      depth -= 1;
+      if (depth === 0) {
+        return body.slice(start, index + 1);
+      }
+    }
+  }
+  throw new Error(`Unbalanced braces in ${functionName}`);
+}
+
 function createSpawnStub(outputsByFlag) {
   return function spawnStub(command, args) {
     const child = new EventEmitter();
@@ -240,6 +261,8 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   const jsErrorsBody = sourceBodies.find(({ fileName }) => fileName === 'js_errors.cpp').body;
   const jsEventsBody = sourceBodies.find(({ fileName }) => fileName === 'js_events.cpp').body;
   const addonInitBody = sourceBodies.find(({ fileName }) => fileName === 'addon_init.cpp').body;
+  const asyncFinalizerBody = extractFunctionBody(jsAsyncBody, 'tsfn_finalize_async');
+  const asyncWorkerBody = extractFunctionBody(jsAsyncBody, 'run_async_worker');
   assert.match(jsAsyncBody, /\bstd::thread\b/u);
   assert.match(jsAsyncBody, /\bnapi_create_threadsafe_function\b/u);
   assert.match(jsEventsBody, /\bnapi_create_reference\b/u);
@@ -291,9 +314,11 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(jsAsyncBody, /\btry\s*\{[\s\S]*\}\s*catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*throw_napi_failure/u, 'exported async callbacks should have catch-all JS boundaries');
   assert.match(jsAsyncBody, /\bqueue_failure_status\b/u, 'async job should record unexpected TSFN queue failure status');
   assert.match(jsAsyncBody, /\bqueue_failed\b/u, 'async job should record that queue failure settlement is pending');
-  assert.match(jsAsyncBody, /if\s*\(status\s*!=\s*napi_ok\s*&&\s*status\s*!=\s*napi_closing\)[\s\S]*queue_failed/u, 'unexpected queue failure must be captured instead of silently leaking');
-  assert.match(jsAsyncBody, /tsfn_finalize_async[\s\S]*reject_deferred_with_napi_failure/u, 'TSFN finalizer should settle queue-failed promises on env thread');
-  assert.match(jsAsyncBody, /tsfn_finalize_async[\s\S]*finish_async/u, 'TSFN finalizer should complete async owner rollback after queue failure');
+  assert.match(asyncWorkerBody, /if\s*\(status\s*!=\s*napi_ok\s*&&\s*status\s*!=\s*napi_closing\)[\s\S]*queue_failed/u, 'unexpected queue failure must be captured instead of silently leaking');
+  assert.match(asyncFinalizerBody, /reject_deferred_with_napi_failure/u, 'TSFN finalizer should settle queue-failed promises on env thread');
+  assert.doesNotMatch(asyncFinalizerBody, /\bjob->addon\b/u, 'TSFN finalizer must not access AddonState after env cleanup');
+  assert.doesNotMatch(asyncFinalizerBody, /\bfinish_async\b/u, 'TSFN finalizer must not touch async owner rollback');
+  assert.match(asyncWorkerBody, /finish_async\(job->addon,\s*job->async_handle\)[\s\S]*release_delivery\(job->addon,\s*job->delivery,\s*true\)/u, 'worker queue-failure path must finish async before releasing delivery');
   assert.match(jsAsyncBody, /catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*if\s*\(async_registered\)[\s\S]*finish_async/u, 'post-promise catch should rollback registered async handles');
   assert.match(jsAsyncBody, /catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*if\s*\(delivery_registered\)[\s\S]*release_delivery/u, 'post-promise catch should rollback registered delivery handles');
   assert.match(jsAsyncBody, /if\s*\(!addon->owner\.try_add_delivery[\s\S]*napi_release_threadsafe_function[\s\S]*delete delivery/u, 'failed delivery registration must delete the local delivery wrapper after aborting the raw TSFN');

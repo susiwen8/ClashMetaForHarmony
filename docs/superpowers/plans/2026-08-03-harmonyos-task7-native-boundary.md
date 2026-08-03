@@ -842,10 +842,10 @@ Use distinct wrappers so lifetime is unambiguous:
 
 - the async wrapper owns the joinable thread; `request_cancel` sets an atomic cancellation flag, `join` joins, and `release` joins-if-needed then deletes the wrapper;
 - the delivery wrapper owns the TSFN release count; `abort` performs one `napi_tsfn_abort`, while `release` performs `napi_tsfn_release` only if abort did not already consume it, then deletes only wrapper-owned native state;
-- the TSFN finalizer owns the Promise job object and does not access `napi_env` or `AddonState`;
+- the TSFN finalizer owns the Promise job object and never accesses `AddonState`; it may reject only the recorded unexpected non-closing queue failure when `env != nullptr`, and when `env == nullptr` it destroys native state only;
 - after successful owner registration no failure path frees that handle directly. Rollback uses `finish_async`/`release_delivery` and honors `CLAIMED_BY_CLEANUP`.
 
-On normal completion, resolve/reject first, then call `finish_async(thread_handle)` and `release_delivery(tsfn_handle, false)`. A `napi_closing` queue result is owned by cleanup; an unexpected queue failure leaves the registered resources for the same cleanup path rather than self-joining or double-releasing from the worker.
+On normal completion, resolve/reject first, then call `finish_async(thread_handle)` and `release_delivery(tsfn_handle, false)`. A `napi_closing` queue result is owned by cleanup. For an unexpected non-closing queue failure, record the `napi_status`, have the worker perform `finish_async(thread_handle)` then `release_delivery(tsfn_handle, true)` exactly once, and let the TSFN finalizer reject the Promise on the env thread when possible. A live env Promise must never remain permanently pending after that failure path.
 
 - [ ] **Step 5: Implement subscriptions with a reference, TSFN, and truthful initial state**
 
@@ -862,7 +862,7 @@ On normal completion, resolve/reject first, then call `finish_async(thread_handl
 
 The Phase 1 initial event is therefore exactly truthful `STOPPED`, not a hard-coded optimistic state. Native log/runtime sinks copy `type`, state/level, and bounded message before taking a subscription snapshot; they never call JS directly. Queue full drops that event without blocking the core and without freeing owner-held resources. `napi_closing` is treated as teardown, not as an application error.
 
-`unsubscribe(id)` is idempotent. It marks the subscription inactive and removes it under the map lock, then outside the lock calls `release_delivery(handle, true)` before `release_reference(handle)`. A concurrently copied subscription observes inactive or a closing TSFN; no queued callback may run after unsubscribe returns. Unknown IDs are a no-op, while non-uint32 arguments throw `CoreError`.
+`unsubscribe(id)` is idempotent. It marks the subscription inactive and removes it under the map lock, then outside the lock calls `release_delivery(handle, true)` before `release_reference(handle)`. A concurrently copied subscription observes inactive or a closing TSFN; no queued callback may run after unsubscribe returns. If unsubscribe is re-entered from the active JS callback stack for the same subscription, it must not wait on that same callback frame; instead the callback unwind completes the owner release after the stack returns. Unknown IDs are a no-op, while non-uint32 arguments throw `CoreError`.
 
 - [ ] **Step 6: Publish the module only after backend/core initialization and install one cleanup hook**
 
@@ -958,7 +958,7 @@ Run:
 ```bash
 node harmony/tools/build-mihomo-ohos.mjs
 node --test harmony/tests/structure/phase1-bridge-contract.test.mjs
-cd harmony && ./hvigorw --mode module -p module=entry@default -p product=default -p buildMode=debug :entry:compileNative
+cd harmony && ./hvigorw --mode module -p module=entry@default -p product=default -p buildMode=debug compileNative
 cd ..
 node harmony/tools/test-native-host.mjs --case napi-environment
 node harmony/tools/test-native-host.mjs --case mihomo-backend
@@ -1198,8 +1198,10 @@ absolute SDK paths. Extend `toolchain-discovery.test.mjs` with missing,
 non-executable, and successful fixtures before changing production code.
 
 The orchestrator also parses one fresh `hvigorw ... taskTree` result before the
-native run. Isolate the `:entry:compileNative` root branch by indentation; require
-`BuildNativeWithCmake` within that branch and forbid `PackageHap`. Name this
+native run. Isolate the display-only `:entry:compileNative` root branch by
+indentation; require `BuildNativeWithCmake` within that branch and forbid
+`PackageHap`. The later execution argv uses `compileNative` without the display
+prefix. Name this
 operation `prepare-addon`, not `configure-addon`: correctness relies only on it
 not packaging a HAP, not on whether a future Hvigor version also compiles part
 of the graph.
@@ -1224,11 +1226,13 @@ repository/worktree root. The execution sequence is normative:
    single canonical `harmony/artifacts/libcmfa_mihomo.so` created after
    `startedAt`.
 3. Immediately hash and inspect that raw core.
-4. Run the verified non-packaging Hvigor native-preparation task:
+4. Run the verified non-packaging Hvigor native-preparation task using the
+   execution argv, while keeping the display-path parser anchored on the
+   `:entry:compileNative` branch from `taskTree`:
 
    ```text
    ./hvigorw --mode module -p module=entry@default -p product=default
-   -p buildMode=debug :entry:compileNative
+   -p buildMode=debug compileNative
    ```
 
 5. Use only `inspection.resolved.paths.cmakeExecutable` from the checked-in
