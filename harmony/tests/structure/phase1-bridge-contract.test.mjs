@@ -103,3 +103,14 @@ test('Task 7 host runner accepts only explicit native cases', async () => {
 
   assert.match(runnerSource, new RegExp(mainGuardSnippet.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
 });
+
+test('Task 7 environment ownership is host-testable and SDK-opaque', async () => {
+  const headerPath = path.join(cppIncludeDir, 'napi_environment.h');
+  const header = await fs.readFile(headerPath, 'utf8');
+
+  assert.match(header, /\bclass\s+NapiEnvironmentOwner\s+final\b/u);
+  assert.match(header, /\bCleanupResult\s+cleanup\s*\(\s*\)\s*;/u);
+  assert.doesNotMatch(header, /\bnapi\/native_api\.h\b/u);
+  assert.doesNotMatch(header, /\bnode_api\.h\b/u);
+  assert.doesNotMatch(header, /\bace_napi\.h\b/u);
+});

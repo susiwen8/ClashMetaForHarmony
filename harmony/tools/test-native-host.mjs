@@ -10,8 +10,8 @@ const CONTRACT_SOURCE = path.join(HARMONY_ROOT, 'core', 'abi', 'src', 'cmfa_cont
 const CONTRACT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_contract_test.cpp');
 const MIHOMO_BACKEND_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'cmfa_mihomo_backend.cpp');
 const MIHOMO_BACKEND_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_mihomo_backend_test.cpp');
-const NAPI_ENVIRONMENT_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'cmfa_napi_environment.cpp');
-const NAPI_ENVIRONMENT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_napi_environment_test.cpp');
+const NAPI_ENVIRONMENT_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'napi_environment.cpp');
+const NAPI_ENVIRONMENT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'napi_environment_test.cpp');
 const ENTRY_INCLUDE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'include');
 const CORE_HEADER = path.join(INCLUDE_DIR, 'cmfa_core.h');
 const HOST_HEADER = path.join(INCLUDE_DIR, 'cmfa_host.h');
@@ -262,8 +262,9 @@ const CASES = new Map([
   ['napi-environment', {
     sources: [NAPI_ENVIRONMENT_SOURCE, NAPI_ENVIRONMENT_TEST_SOURCE],
     defines: [],
-    prefix: 'cmfa-napi-environment-test-',
-    outputName: 'cmfa_napi_environment_test',
+    prefix: 'napi-environment-test-',
+    includeDirs: [ENTRY_INCLUDE_DIR],
+    outputName: 'napi_environment_test',
   }],
 ]);
 
