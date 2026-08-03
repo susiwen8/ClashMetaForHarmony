@@ -470,6 +470,7 @@ function hasCompleteRequirements(requirements) {
     Array.isArray(requirements?.files?.arktsDeclarationRoots) &&
     requirements?.files?.ndkSysroot &&
     requirements?.files?.ndkCmake &&
+    requirements?.files?.nativeCmakeBinary &&
     requirements?.files?.clang &&
     requirements?.files?.llvmReadelf &&
     requirements?.files?.hdc
@@ -512,6 +513,7 @@ function buildResolvedPaths(requirements, sdkRoot, contentsRoot, pathModule) {
     toolchainsPackage: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.toolchainsPackage),
     sysroot: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.ndkSysroot),
     cmake: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.ndkCmake),
+    cmakeExecutable: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.nativeCmakeBinary),
     clang: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.clang),
     llvmReadelf: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.llvmReadelf),
     hdc: resolvePathFromRoot(pathModule, sdkRoot, requirements.files.hdc),
@@ -755,8 +757,13 @@ export async function inspectToolchain(input = {}) {
 
   const clangFound = Boolean(resolvedPaths.clang && await isExecutable(options.fs, resolvedPaths.clang));
   const llvmReadelfFound = Boolean(resolvedPaths.llvmReadelf && await isExecutable(options.fs, resolvedPaths.llvmReadelf));
+  const nativeCmakeFound = Boolean(resolvedPaths.cmakeExecutable && await isExecutable(options.fs, resolvedPaths.cmakeExecutable));
+  tools.nativeCmake = createToolStatus(nativeCmakeFound, null);
   tools.ohosClang = createToolStatus(clangFound, null);
   tools.llvmReadelf = createToolStatus(llvmReadelfFound, null);
+  if (!nativeCmakeFound) {
+    pushFailure(failures, 'TOOL_MISSING', 'nativeCmake');
+  }
   if (!clangFound) {
     pushFailure(failures, 'TOOL_MISSING', 'ohosClang');
   }
@@ -790,6 +797,7 @@ export async function inspectToolchain(input = {}) {
       paths: {
         sysroot: resolvedPaths.sysroot,
         cmake: resolvedPaths.cmake,
+        cmakeExecutable: resolvedPaths.cmakeExecutable,
         clang: resolvedPaths.clang,
         llvmReadelf: resolvedPaths.llvmReadelf,
         hdc: resolvedPaths.hdc,

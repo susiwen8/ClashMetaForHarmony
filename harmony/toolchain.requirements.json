@@ -51,6 +51,7 @@
     ],
     "ndkSysroot": "openharmony/native/sysroot",
     "ndkCmake": "openharmony/native/build/cmake/ohos.toolchain.cmake",
+    "nativeCmakeBinary": "openharmony/native/build-tools/cmake/bin/cmake",
     "clang": "openharmony/native/llvm/bin/aarch64-unknown-linux-ohos-clang",
     "llvmReadelf": "openharmony/native/llvm/bin/llvm-readelf",
     "hdc": "openharmony/toolchains/hdc",

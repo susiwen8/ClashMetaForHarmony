@@ -10,6 +10,7 @@ const modulePath = new URL('../../tools/lib/toolchain.mjs', import.meta.url);
 const FIXTURE_SDK_ROOT = '/fixture/DevEco-Studio.app/Contents/sdk/default';
 const FIXTURE_CONTENTS_ROOT = '/fixture/DevEco-Studio.app/Contents';
 const WINDOWS_SDK_ROOT = 'C:\\Users\\name\\Sdk';
+const FIXTURE_NATIVE_CMAKE = `${FIXTURE_SDK_ROOT}/openharmony/native/build-tools/cmake/bin/cmake`;
 
 function normalizeKey(filePath) {
   return path.posix.normalize(filePath);
@@ -108,15 +109,24 @@ function createMemoryFs(fileMap, executableFiles = [], directories = []) {
 }
 
 function createProbeFromFixture(fixture) {
+  const cloned = structuredClone(fixture);
+  cloned.requirements.files.nativeCmakeBinary ??= 'openharmony/native/build-tools/cmake/bin/cmake';
+  if (!cloned.probe.omitNativeCmakeBinary) {
+    cloned.probe.files[FIXTURE_NATIVE_CMAKE] ??= '';
+  }
+  if (!cloned.probe.omitNativeCmakeExecutable && !cloned.probe.executableFiles.includes(FIXTURE_NATIVE_CMAKE)) {
+    cloned.probe.executableFiles.push(FIXTURE_NATIVE_CMAKE);
+  }
+
   return {
-    cwd: fixture.probe.cwd,
-    env: { ...fixture.probe.env },
-    requirements: structuredClone(fixture.requirements),
-    versions: { ...fixture.probe.versions },
-    fs: createMemoryFs(fixture.probe.files, fixture.probe.executableFiles, fixture.probe.directories),
+    cwd: cloned.probe.cwd,
+    env: { ...cloned.probe.env },
+    requirements: structuredClone(cloned.requirements),
+    versions: { ...cloned.probe.versions },
+    fs: createMemoryFs(cloned.probe.files, cloned.probe.executableFiles, cloned.probe.directories),
     execFile(command, args) {
       const key = `${command} ${args.join(' ')}`.trim();
-      const result = fixture.probe.commandResults?.[key];
+      const result = cloned.probe.commandResults?.[key];
       if (!result) {
         return Promise.resolve({ stdout: '', stderr: '' });
       }
@@ -475,4 +485,71 @@ test('discoverToolchain stays hermetic when caller provides complete requirement
   } finally {
     await fs.rm(tempModulePath, { force: true });
   }
+});
+
+test('inspectToolchain exposes the integrated native cmake executable only through runtime resolved paths', async () => {
+  const [{ inspectToolchain }, fixture] = await Promise.all([
+    import(modulePath),
+    fs.readFile(fixturePath, 'utf8').then((raw) => JSON.parse(raw))
+  ]);
+
+  fixture.requirements.files.nativeCmakeBinary = 'openharmony/native/build-tools/cmake/bin/cmake';
+  fixture.probe.files[`${FIXTURE_SDK_ROOT}/openharmony/native/build-tools/cmake/bin/cmake`] = '';
+  fixture.probe.executableFiles.push(`${FIXTURE_SDK_ROOT}/openharmony/native/build-tools/cmake/bin/cmake`);
+
+  const inspection = await inspectToolchain(createProbeFromFixture(fixture));
+
+  assert.equal(inspection.report.result, 'pass');
+  assert.deepEqual(inspection.report.tools.nativeCmake, { found: true, version: null });
+  assert.equal(
+    inspection.resolved.paths.cmakeExecutable,
+    `${FIXTURE_SDK_ROOT}/openharmony/native/build-tools/cmake/bin/cmake`
+  );
+  assert.equal(
+    inspection.resolved.paths.cmake,
+    `${FIXTURE_SDK_ROOT}/openharmony/native/build/cmake/ohos.toolchain.cmake`
+  );
+
+  const persisted = JSON.stringify(inspection.report);
+  assert.doesNotMatch(persisted, /build-tools\/cmake\/bin\/cmake/u);
+});
+
+test('discoverToolchain reports TOOL_MISSING when the integrated native cmake executable is absent', async () => {
+  const [{ discoverToolchain }, fixture] = await Promise.all([
+    import(modulePath),
+    fs.readFile(fixturePath, 'utf8').then((raw) => JSON.parse(raw))
+  ]);
+
+  fixture.requirements.files.nativeCmakeBinary = 'openharmony/native/build-tools/cmake/bin/cmake';
+  fixture.probe.omitNativeCmakeBinary = true;
+  fixture.probe.omitNativeCmakeExecutable = true;
+
+  const report = await discoverToolchain(createProbeFromFixture(fixture));
+
+  assert.equal(report.result, 'incomplete');
+  assert.deepEqual(report.tools.nativeCmake, { found: false, version: null });
+  assert.deepEqual(report.failures.find((entry) => entry.code === 'TOOL_MISSING' && entry.detail === 'nativeCmake'), {
+    code: 'TOOL_MISSING',
+    detail: 'nativeCmake'
+  });
+});
+
+test('discoverToolchain reports TOOL_MISSING when the integrated native cmake executable is not executable', async () => {
+  const [{ discoverToolchain }, fixture] = await Promise.all([
+    import(modulePath),
+    fs.readFile(fixturePath, 'utf8').then((raw) => JSON.parse(raw))
+  ]);
+
+  fixture.requirements.files.nativeCmakeBinary = 'openharmony/native/build-tools/cmake/bin/cmake';
+  fixture.probe.files[`${FIXTURE_SDK_ROOT}/openharmony/native/build-tools/cmake/bin/cmake`] = '';
+  fixture.probe.omitNativeCmakeExecutable = true;
+
+  const report = await discoverToolchain(createProbeFromFixture(fixture));
+
+  assert.equal(report.result, 'incomplete');
+  assert.deepEqual(report.tools.nativeCmake, { found: false, version: null });
+  assert.deepEqual(report.failures.find((entry) => entry.code === 'TOOL_MISSING' && entry.detail === 'nativeCmake'), {
+    code: 'TOOL_MISSING',
+    detail: 'nativeCmake'
+  });
 });
