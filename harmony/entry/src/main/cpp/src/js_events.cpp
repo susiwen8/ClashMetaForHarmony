@@ -22,11 +22,30 @@ public:
     if (!engaged_ || subscription_ == nullptr) {
       return;
     }
-    std::lock_guard<std::mutex> lock(subscription_->mutex);
-    if (subscription_->in_flight_js > 0) {
-      subscription_->in_flight_js -= 1;
+    SubscriptionDelivery *delivery = nullptr;
+    bool release_reference = false;
+    {
+      std::lock_guard<std::mutex> lock(subscription_->mutex);
+      if (subscription_->in_flight_js > 0) {
+        subscription_->in_flight_js -= 1;
+      }
+      if (subscription_->in_flight_js == 0) {
+        subscription_->callback_thread_id = std::thread::id{};
+      }
+      if (subscription_->teardown_requested && !subscription_->teardown_started && subscription_->in_flight_js == 0) {
+        subscription_->teardown_started = true;
+        delivery = subscription_->delivery;
+        subscription_->delivery = nullptr;
+        release_reference = true;
+      }
+      subscription_->in_flight_js_cv.notify_all();
     }
-    subscription_->in_flight_js_cv.notify_all();
+    if (subscription_->addon != nullptr && release_reference) {
+      if (delivery != nullptr) {
+        (void)subscription_->addon->owner.release_delivery(delivery, true);
+      }
+      (void)subscription_->addon->owner.release_reference(subscription_);
+    }
   }
 
 private:
@@ -34,12 +53,23 @@ private:
   bool engaged_;
 };
 
-void wait_for_in_flight(std::condition_variable &in_flight_js_cv,
-                        std::unique_lock<std::mutex> &lock,
-                        Subscription &subscription) {
-  while (subscription.in_flight_js != 0) {
-    in_flight_js_cv.wait(lock);
+bool mark_delivery_teardown(Subscription &subscription,
+                            SubscriptionDelivery *delivery,
+                            std::unique_lock<std::mutex> &lock) {
+  subscription.active = false;
+  subscription.teardown_requested = true;
+  const bool reentrant_from_callback =
+      subscription.callback_thread_id == std::this_thread::get_id() && subscription.in_flight_js != 0;
+  if (!reentrant_from_callback) {
+    while (subscription.in_flight_js != 0) {
+      subscription.in_flight_js_cv.wait(lock);
+    }
   }
+  if (subscription.delivery == delivery) {
+    subscription.delivery = nullptr;
+  }
+  subscription.teardown_started = true;
+  return reentrant_from_callback;
 }
 
 void release_reference_handle(void *handle) {
@@ -54,11 +84,7 @@ void abort_subscription_delivery(void *handle) {
   auto *delivery = static_cast<SubscriptionDelivery *>(handle);
   if (const std::shared_ptr<Subscription> subscription = delivery->subscription.lock()) {
     std::unique_lock<std::mutex> lock(subscription->mutex);
-    subscription->active = false;
-    wait_for_in_flight(subscription->in_flight_js_cv, lock, *subscription);
-    if (subscription->delivery == delivery) {
-      subscription->delivery = nullptr;
-    }
+    (void)mark_delivery_teardown(*subscription, delivery, lock);
   }
   bool expected = false;
   if (delivery->abort_consumed.compare_exchange_strong(expected, true, std::memory_order_acq_rel)) {
@@ -70,11 +96,7 @@ void release_subscription_delivery(void *handle) {
   auto *delivery = static_cast<SubscriptionDelivery *>(handle);
   if (const std::shared_ptr<Subscription> subscription = delivery->subscription.lock()) {
     std::unique_lock<std::mutex> lock(subscription->mutex);
-    subscription->active = false;
-    wait_for_in_flight(subscription->in_flight_js_cv, lock, *subscription);
-    if (subscription->delivery == delivery) {
-      subscription->delivery = nullptr;
-    }
+    (void)mark_delivery_teardown(*subscription, delivery, lock);
   }
   if (!delivery->abort_consumed.load(std::memory_order_acquire)) {
     (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_release);
@@ -102,6 +124,7 @@ void deliver_event_to_js(napi_env env, napi_value, void *context, void *data) {
       return;
     }
     subscription->in_flight_js += 1;
+    subscription->callback_thread_id = std::this_thread::get_id();
     in_flight.engage();
   }
 
@@ -435,17 +458,29 @@ napi_value unsubscribe(napi_env env, napi_callback_info info) {
     }
 
     if (subscription != nullptr) {
-        SubscriptionDelivery *delivery = nullptr;
-        {
-          std::unique_lock<std::mutex> lock(subscription->mutex);
-          subscription->active = false;
-          wait_for_in_flight(subscription->in_flight_js_cv, lock, *subscription);
+      SubscriptionDelivery *delivery = nullptr;
+      bool reentrant_from_callback = false;
+      {
+        std::unique_lock<std::mutex> lock(subscription->mutex);
+        subscription->active = false;
+        subscription->teardown_requested = true;
+        reentrant_from_callback =
+            subscription->callback_thread_id == std::this_thread::get_id() && subscription->in_flight_js != 0;
+        if (!reentrant_from_callback) {
+          while (subscription->in_flight_js != 0) {
+            subscription->in_flight_js_cv.wait(lock);
+          }
           delivery = subscription->delivery;
+          subscription->delivery = nullptr;
+          subscription->teardown_started = true;
         }
-      if (delivery != nullptr) {
-        (void)addon->owner.release_delivery(delivery, true);
       }
-      (void)addon->owner.release_reference(subscription.get());
+      if (!reentrant_from_callback) {
+        if (delivery != nullptr) {
+          (void)addon->owner.release_delivery(delivery, true);
+        }
+        (void)addon->owner.release_reference(subscription.get());
+      }
     }
 
     napi_value result = nullptr;

@@ -38,6 +38,9 @@ void request_cancel_async(void *handle) {
 
 void join_async(void *handle) {
   auto *async_handle = static_cast<AsyncThreadHandle *>(handle);
+  if (async_handle->worker.get_id() == std::this_thread::get_id()) {
+    return;
+  }
   if (async_handle->worker.joinable()) {
     async_handle->worker.join();
   }
@@ -45,6 +48,11 @@ void join_async(void *handle) {
 
 void release_async(void *handle) {
   auto *async_handle = static_cast<AsyncThreadHandle *>(handle);
+  if (async_handle->worker.joinable() && async_handle->worker.get_id() == std::this_thread::get_id()) {
+    async_handle->worker.detach();
+    delete async_handle;
+    return;
+  }
   if (async_handle->worker.joinable()) {
     async_handle->worker.join();
   }
@@ -67,8 +75,19 @@ void release_delivery_handle(void *handle) {
   delete delivery;
 }
 
-void tsfn_finalize_async(napi_env, void *finalize_data, void *) {
-  delete static_cast<AsyncTsfnFinalizerState *>(finalize_data);
+void tsfn_finalize_async(napi_env env, void *finalize_data, void *) {
+  auto *state = static_cast<AsyncTsfnFinalizerState *>(finalize_data);
+  if (state == nullptr) {
+    return;
+  }
+  if (state->job->queue_failed.load(std::memory_order_acquire) && env != nullptr) {
+    reject_deferred_with_napi_failure(
+        env,
+        state->job->deferred,
+        async_operation_name(state->job->input.op),
+        static_cast<napi_status>(state->job->queue_failure_status.load(std::memory_order_acquire)));
+  }
+  delete state;
 }
 
 bool build_async_result_value(napi_env env, const AsyncResult &result, napi_value *value) {
@@ -231,8 +250,12 @@ void run_async_worker(AsyncPromiseJob *job) {
   const napi_status status =
       napi_call_threadsafe_function(job->delivery->tsfn, payload, napi_tsfn_nonblocking);
   if (status != napi_ok && status != napi_closing) {
+    job->queue_failure_status.store(static_cast<int32_t>(status), std::memory_order_release);
+    job->queue_failed.store(true, std::memory_order_release);
     job->completion_payload = nullptr;
     delete payload;
+    (void)finish_async(job->addon, job->async_handle);
+    (void)release_delivery(job->addon, job->delivery, true);
   } else if (status == napi_closing) {
     job->completion_payload = nullptr;
     delete payload;
@@ -240,16 +263,23 @@ void run_async_worker(AsyncPromiseJob *job) {
 }
 
 napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) {
+  AddonState *addon = decoded.addon;
   napi_deferred deferred = nullptr;
+  napi_value promise = nullptr;
+  AsyncDelivery *delivery = nullptr;
+  AsyncThreadHandle *async_handle = nullptr;
+  AsyncCompletionPayload *prepared_payload = nullptr;
+  AsyncTsfnFinalizerState *finalizer_state = nullptr;
+  bool delivery_registered = false;
+  bool async_registered = false;
+  bool tsfn_created = false;
   try {
-    auto *addon = decoded.addon;
     const AsyncOp op = decoded.input.op;
     if (addon == nullptr || !addon->owner.can_deliver()) {
       throw_core_error(env, make_core_error(CMFA_INVALID_STATE, async_operation_name(op)));
       return nullptr;
     }
 
-    napi_value promise = nullptr;
     const napi_status promise_status = napi_create_promise(env, &deferred, &promise);
     if (promise_status != napi_ok) {
       throw_napi_failure(env, async_operation_name(op), promise_status);
@@ -266,13 +296,15 @@ napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) 
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
     }
+    prepared_payload = payload;
     payload->job = job;
     job->completion_payload = payload;
 
-    auto *finalizer_state = new (std::nothrow) AsyncTsfnFinalizerState{};
+    finalizer_state = new (std::nothrow) AsyncTsfnFinalizerState{};
     if (finalizer_state == nullptr) {
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
     }
@@ -285,15 +317,17 @@ napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) 
       delete finalizer_state;
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), async_name_status);
       return promise;
     }
 
-    auto *delivery = new (std::nothrow) AsyncDelivery{};
+    delivery = new (std::nothrow) AsyncDelivery{};
     if (delivery == nullptr) {
       delete finalizer_state;
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
     }
@@ -311,25 +345,31 @@ napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) 
     if (tsfn_status != napi_ok) {
       delete delivery;
       delete finalizer_state;
+      finalizer_state = nullptr;
       job->completion_payload = nullptr;
       delete payload;
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), tsfn_status);
       return promise;
     }
+    tsfn_created = true;
     job->delivery = delivery;
 
     if (!addon->owner.try_add_delivery({delivery, abort_delivery, release_delivery_handle})) {
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_abort);
+      delete delivery;
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
     }
+    delivery_registered = true;
 
-    auto *async_handle = new (std::nothrow) AsyncThreadHandle{};
+    async_handle = new (std::nothrow) AsyncThreadHandle{};
     if (async_handle == nullptr) {
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       (void)release_delivery(addon, delivery, true);
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
@@ -338,24 +378,44 @@ napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) 
       delete async_handle;
       job->completion_payload = nullptr;
       delete payload;
+      prepared_payload = nullptr;
       (void)release_delivery(addon, delivery, true);
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
     }
     job->async_handle = async_handle;
+    async_registered = true;
 
     async_handle->worker = std::thread([job] { run_async_worker(job.get()); });
     return promise;
-    } catch (...) {
+  } catch (...) {
+    if (deferred != nullptr) {
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(decoded.input.op), napi_generic_failure);
-      if (deferred != nullptr) {
-        napi_value promise = nullptr;
-        if (napi_get_undefined(env, &promise) == napi_ok) {
-          return promise;
-        }
-      }
-      throw_napi_failure(env, async_operation_name(decoded.input.op), napi_generic_failure);
-      return nullptr;
+    }
+    if (async_registered) {
+      (void)finish_async(addon, async_handle);
+    } else if (async_handle != nullptr) {
+      delete async_handle;
+    }
+    if (delivery_registered) {
+      (void)release_delivery(addon, delivery, true);
+    } else if (tsfn_created && delivery != nullptr) {
+      (void)napi_release_threadsafe_function(delivery->tsfn, napi_tsfn_abort);
+      delete delivery;
+    } else if (delivery != nullptr) {
+      delete delivery;
+    }
+    if (!tsfn_created && finalizer_state != nullptr) {
+      delete finalizer_state;
+    }
+    if (prepared_payload != nullptr) {
+      delete prepared_payload;
+    }
+    if (promise != nullptr) {
+      return promise;
+    }
+    throw_napi_failure(env, async_operation_name(decoded.input.op), napi_generic_failure);
+    return nullptr;
   }
 }
 

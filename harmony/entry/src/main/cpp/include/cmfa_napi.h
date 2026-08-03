@@ -122,6 +122,8 @@ struct AsyncPromiseJob {
   AsyncDelivery *delivery = nullptr;
   AsyncThreadHandle *async_handle = nullptr;
   AsyncCompletionPayload *completion_payload = nullptr;
+  std::atomic<bool> queue_failed{false};
+  std::atomic<int32_t> queue_failure_status{static_cast<int32_t>(napi_ok)};
 };
 
 struct SubscriptionDelivery {
@@ -136,7 +138,10 @@ struct Subscription {
   std::mutex mutex;
   std::condition_variable in_flight_js_cv;
   bool active = true;
+  bool teardown_requested = false;
+  bool teardown_started = false;
   uint32_t in_flight_js = 0;
+  std::thread::id callback_thread_id{};
   napi_ref callback_ref = nullptr;
   SubscriptionDelivery *delivery = nullptr;
 };
