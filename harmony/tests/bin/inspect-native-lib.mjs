@@ -11,7 +11,8 @@ const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const ALLOWLIST_PATH = path.join(HARMONY_ROOT, 'toolchain.native-allowlist.json');
 const COMPONENT_ALLOWLIST_KEYS = {
   probe: 'goProbe',
-  mihomoCore: 'mihomoCore'
+  mihomoCore: 'mihomoCore',
+  nodeAddon: 'nodeAddon'
 };
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const REQUIRED_EXPORTS = {
@@ -21,6 +22,11 @@ const REQUIRED_EXPORTS = {
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
 const EXPORT_SENTINEL_PATTERN = /(?:test|fake|stub)/iu;
+const NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS = [
+  { code: 'PUBLIC_CMFA_EXPORT_FORBIDDEN', pattern: /^cmfa_/u },
+  { code: 'INTERNAL_SYMBOL_FORBIDDEN', pattern: /cmfa_internal_register_backend/u },
+  { code: 'BACKEND_REGISTER_SYMBOL_FORBIDDEN', pattern: /register_mihomo_backend|unregister_mihomo_backend/u }
+];
 const DEFAULT_LLVM_READELF_TIMEOUT_MS = 30_000;
 
 function isoTimestamp(date = new Date()) {
@@ -114,7 +120,7 @@ function parseExportedSymbols(stdout) {
 
     const columns = line.split(/\s+/u);
     const symbolName = columns.at(-1);
-    if (symbolName && !symbolName.startsWith('_')) {
+    if (symbolName) {
       exported.add(symbolName);
     }
   }
@@ -133,6 +139,9 @@ function inferComponent(component, libPath) {
   }
   if (baseName.includes('core') || baseName.includes('mihomo')) {
     return 'mihomoCore';
+  }
+  if (baseName === 'libentry.so' || baseName.includes('entry')) {
+    return 'nodeAddon';
   }
 
   throw Object.assign(new Error(`Unable to infer component from ${baseName}`), { code: 'COMPONENT_REQUIRED' });
@@ -170,7 +179,7 @@ export async function inspectNativeLibrary({
   }
 
   const [allowlist, inspection] = await Promise.all([
-    fs.readFile(allowlistPath, 'utf8').then((raw) => JSON.parse(raw)),
+    fsApi.readFile(allowlistPath, 'utf8').then((raw) => JSON.parse(raw)),
     toolchainInspectorImpl({ cwd: repoRoot })
   ]);
 
@@ -217,6 +226,27 @@ export async function inspectNativeLibrary({
   for (const lib of neededLibraries) {
     if (!allowlistedNeeded.includes(lib)) {
       failures.push(createFailure('DT_NEEDED_NOT_ALLOWLISTED', lib));
+    }
+  }
+  if (selectedComponent === 'nodeAddon') {
+    if (neededLibraries.includes('libdl.so')) {
+      failures.push(createFailure('LIBDL_FORBIDDEN', 'libdl.so'));
+    }
+    if (neededLibraries.includes('libc++_shared.so')) {
+      failures.push(createFailure('LIBCXX_SHARED_FORBIDDEN', 'libc++_shared.so'));
+    }
+    if (neededLibraries.join('\0') !== allowlistedNeeded.join('\0')) {
+      failures.push(createFailure('DT_NEEDED_SET_MISMATCH', neededLibraries.join(',')));
+    }
+    for (const symbol of exportedSymbols) {
+      for (const forbidden of NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS) {
+        if (forbidden.pattern.test(symbol)) {
+          failures.push(createFailure(forbidden.code, symbol));
+        }
+      }
+      if (EXPORT_SENTINEL_PATTERN.test(symbol)) {
+        failures.push(createFailure('EXPORT_SENTINEL_FORBIDDEN', symbol));
+      }
     }
   }
 
