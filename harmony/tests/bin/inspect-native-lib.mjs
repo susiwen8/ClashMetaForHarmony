@@ -13,11 +13,14 @@ const COMPONENT_ALLOWLIST_KEYS = {
   probe: 'goProbe',
   mihomoCore: 'mihomoCore'
 };
+const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
-  mihomoCore: ['cmfa_core_version']
+  mihomoCore: [RAW_VERSION_EXPORT],
+  nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
+const EXPORT_SENTINEL_PATTERN = /(?:test|fake|stub)/iu;
 const DEFAULT_LLVM_READELF_TIMEOUT_MS = 30_000;
 
 function isoTimestamp(date = new Date()) {
@@ -227,6 +230,28 @@ export async function inspectNativeLibrary({
     const publicExports = exportedSymbols.filter((entry) => entry.startsWith('cmfa_'));
     if (publicExports.length !== requiredExports.length || publicExports.some((entry, index) => entry !== requiredExports[index])) {
       failures.push(createFailure('EXPORT_SET_MISMATCH', publicExports.join(',')));
+    }
+  }
+
+  if (selectedComponent === 'mihomoCore') {
+    const publicExports = exportedSymbols.filter((entry) => entry.startsWith('cmfa_'));
+
+    if (exportedSymbols.includes('cmfa_core_version')) {
+      failures.push(createFailure('EXPORT_FORBIDDEN', 'cmfa_core_version'));
+    }
+
+    if (publicExports.length !== requiredExports.length || publicExports.some((entry, index) => entry !== requiredExports[index])) {
+      failures.push(createFailure('EXPORT_SET_MISMATCH', publicExports.join(',')));
+    }
+
+    for (const symbol of exportedSymbols) {
+      if (EXPORT_SENTINEL_PATTERN.test(symbol)) {
+        failures.push(createFailure('EXPORT_SENTINEL_FORBIDDEN', symbol));
+      }
+    }
+
+    if (neededLibraries.includes('libdl.so')) {
+      failures.push(createFailure('LIBDL_FORBIDDEN', 'libdl.so'));
     }
   }
 

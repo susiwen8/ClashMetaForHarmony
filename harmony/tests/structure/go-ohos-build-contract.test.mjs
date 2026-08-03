@@ -9,7 +9,9 @@ const coreHelperPath = new URL('../../tools/build-mihomo-ohos.mjs', import.meta.
 const inspectLibPath = new URL('../bin/inspect-native-lib.mjs', import.meta.url);
 const upstreamLockPath = new URL('../../core/go/upstream.lock.json', import.meta.url);
 const probeModulePath = new URL('../../core/go/probe/go.mod', import.meta.url);
+const coreMainPath = new URL('../../core/go/cmd/cmfa_core/main.go', import.meta.url);
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
+const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 
 function joinFragments(parts) {
   return parts.join('');
@@ -46,6 +48,13 @@ test('Task 5 keeps probe as an independent Go module', async () => {
   assert.match(goModRaw, /^module /mu);
   assert.doesNotMatch(goModRaw, /replace\s+\.\.\//u);
   assert.doesNotMatch(probeMainRaw, /internal\/version/u);
+});
+
+test('Task 7 gives the real Go version getter one backend-private export', async () => {
+  const coreMainRaw = await fs.readFile(coreMainPath, 'utf8');
+
+  assert.match(coreMainRaw, new RegExp(String.raw`//export ${RAW_VERSION_EXPORT}\b`, 'u'));
+  assert.doesNotMatch(coreMainRaw, /\/\/export cmfa_core_version\b/u);
 });
 
 test('Task 5 pins mihomo upstream metadata and never leaks absolute host paths into incomplete proof output', async () => {
@@ -263,7 +272,7 @@ test('Task 5 probe helper does not allow caller options to override the probe bu
       modulePath: 'core/go',
       packagePath: './cmd/cmfa_core',
       artifactFileName: 'libcmfa_mihomo.so',
-      expectedExports: ['cmfa_core_version'],
+      expectedExports: [RAW_VERSION_EXPORT],
       targetName: 'attacker target',
       toolchainInspectorImpl: async () => ({
         report: {
@@ -484,7 +493,7 @@ test('Task 5 core helper aggregates fresh probe and mihomo builds into one canon
           artifact: { path: 'harmony/artifacts/libcmfa_mihomo.so', headerPath: 'harmony/artifacts/libcmfa_mihomo.h', exists: true },
           build: { command: ['go', 'build', '-mod=readonly', '-ldflags', input.extraGoArgs[1], './cmd/cmfa_core'], env: { GOOS: 'linux' } },
           checks: { toolchain: { result: 'pass' }, build: { result: 'pass' }, elfInspection: { result: 'pass' } },
-          elfInspection: { result: 'pass', exportedSymbols: ['cmfa_core_version'], failures: [] },
+          elfInspection: { result: 'pass', exportedSymbols: [RAW_VERSION_EXPORT], failures: [] },
           failures: [],
           timestamps: { startedAt: '2026-08-03T00:00:02.000Z', completedAt: '2026-08-03T00:00:03.000Z' }
         };
@@ -668,6 +677,99 @@ test('Task 5 inspect rejects non-regular files without spawning readelf and time
       new Promise((resolve) => setTimeout(() => resolve('test-timeout'), 200))
     ]);
     assert.equal(timeoutOutcome, 'LLVMREADELF_TIMEOUT');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async () => {
+  const [{ inspectNativeLibrary }] = await Promise.all([
+    import(inspectLibPath)
+  ]);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-mihomo-elf-'));
+  const fakeLibPath = path.join(tempRoot, 'libcmfa_mihomo.so');
+
+  const makeReadelfOutput = ({ neededLibraries = ['libc.so'], exportedSymbols = [RAW_VERSION_EXPORT] } = {}) => ({
+    header: 'ELF Header:\n  Machine:                           AArch64\n',
+    dynamic: neededLibraries.map((entry) => `0x0000000000000001 (NEEDED)             Shared library: [${entry}]`).join('\n'),
+    symbols: exportedSymbols.map((entry, index) => `    ${index + 1}: 0000000000000000     0 FUNC    GLOBAL DEFAULT   12 ${entry}`).join('\n')
+  });
+
+  const inspectSynthetic = async ({ neededLibraries, exportedSymbols }) => {
+    const outputs = makeReadelfOutput({ neededLibraries, exportedSymbols });
+    const spawnImpl = (_command, args) => {
+      const stdoutText = args[0] === '-h' ? outputs.header : args[0] === '-d' ? outputs.dynamic : outputs.symbols;
+      return {
+        stdout: {
+          setEncoding() {},
+          on(event, handler) {
+            if (event === 'data' && stdoutText) {
+              setImmediate(() => handler(stdoutText));
+            }
+          }
+        },
+        stderr: {
+          setEncoding() {},
+          on() {}
+        },
+        on(event, handler) {
+          if (event === 'close') {
+            setImmediate(() => handler(0, null));
+          }
+        },
+        kill() {}
+      };
+    };
+
+    return await inspectNativeLibrary({
+      libPath: fakeLibPath,
+      component: 'mihomoCore',
+      toolchainInspectorImpl: async () => ({
+        report: { result: 'pass' },
+        resolved: { paths: { llvmReadelf: fakeToolchainReadelfPath } }
+      }),
+      spawnImpl
+    });
+  };
+
+  await fs.writeFile(fakeLibPath, 'fake-mihomo-so', 'utf8');
+
+  try {
+    const validInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: [RAW_VERSION_EXPORT]
+    });
+    assert.equal(validInspection.result, 'pass');
+    assert.deepEqual(validInspection.exportedSymbols, [RAW_VERSION_EXPORT]);
+    assert.deepEqual(validInspection.failures, []);
+
+    const forbiddenInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: ['cmfa_core_version']
+    });
+    assert.equal(forbiddenInspection.result, 'fail');
+    assert.ok(forbiddenInspection.failures.some((entry) => entry.code === 'EXPORT_FORBIDDEN' && entry.detail === 'cmfa_core_version'));
+
+    const mismatchInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: [RAW_VERSION_EXPORT, 'cmfa_extra_symbol']
+    });
+    assert.equal(mismatchInspection.result, 'fail');
+    assert.ok(mismatchInspection.failures.some((entry) => entry.code === 'EXPORT_SET_MISMATCH'));
+
+    const sentinelInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: [RAW_VERSION_EXPORT, 'cmfa_Test_Helper']
+    });
+    assert.equal(sentinelInspection.result, 'fail');
+    assert.ok(sentinelInspection.failures.some((entry) => entry.code === 'EXPORT_SENTINEL_FORBIDDEN' && entry.detail === 'cmfa_Test_Helper'));
+
+    const libdlInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so', 'libdl.so'],
+      exportedSymbols: [RAW_VERSION_EXPORT]
+    });
+    assert.equal(libdlInspection.result, 'fail');
+    assert.ok(libdlInspection.failures.some((entry) => entry.code === 'LIBDL_FORBIDDEN' && entry.detail === 'libdl.so'));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

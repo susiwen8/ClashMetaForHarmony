@@ -20,8 +20,8 @@ func goCoreVersion() string {
 	return version.Mihomo()
 }
 
-//export cmfa_core_version
-func cmfa_core_version() *C.char {
+//export cmfa_mihomo_core_version_cstr_v1
+func cmfa_mihomo_core_version_cstr_v1() *C.char {
 	coreVersionOnce.Do(func() {
 		coreVersionCStr = C.CString(goCoreVersion())
 	})

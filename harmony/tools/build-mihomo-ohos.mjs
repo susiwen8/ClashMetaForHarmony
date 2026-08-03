@@ -19,7 +19,7 @@ const PROBE_COMPONENT_CONFIG = {
 const CORE_COMPONENT_CONFIG = {
   component: 'mihomoCore',
   artifactFileName: 'libcmfa_mihomo.so',
-  expectedExports: ['cmfa_core_version'],
+  expectedExports: ['cmfa_mihomo_core_version_cstr_v1'],
   modulePath: 'core/go',
   packagePath: './cmd/cmfa_core',
   targetName: 'HarmonyOS 6/API 20/arm64'
