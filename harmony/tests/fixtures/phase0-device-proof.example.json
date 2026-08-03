@@ -1,0 +1,91 @@
+{
+  "schemaVersion": "1.0.0",
+  "phase": 0,
+  "result": "incomplete",
+  "outputPath": "harmony/artifacts/phase0-device-proof.json",
+  "bundle": "com.github.kr328.clash.harmony",
+  "ability": "EntryAbility",
+  "timestamps": {
+    "startedAt": "2026-07-31T12:00:00.000Z",
+    "completedAt": "2026-07-31T12:00:02.000Z"
+  },
+  "toolchain": {
+    "nodeVersion": "22.17.0",
+    "hvigorVersion": "6.23.7",
+    "ohpmVersion": "6.1.1.830",
+    "hdcVersion": "6.1.0.105",
+    "devecoVersion": "6.1.0.860",
+    "sdkVersion": "6.1.0.105",
+    "ndkVersion": "6.1.0.105"
+  },
+  "hap": {
+    "path": "harmony/artifacts/example-signed.hap",
+    "sha256": "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+    "sizeBytes": 1048576
+  },
+  "device": {
+    "identityMasked": "target-83e1d9a4",
+    "buildVersion": null,
+    "apiVersion": null,
+    "abi": null,
+    "model": null
+  },
+  "build": {
+    "result": "incomplete",
+    "command": [
+      "harmony/hvigorw",
+      "--mode",
+      "module",
+      "-p",
+      "module=entry@default",
+      "-p",
+      "product=default",
+      "-p",
+      "buildMode=debug",
+      "assembleHap"
+    ],
+    "exitCode": 1,
+    "stdout": "",
+    "stderr": "No signingConfig found"
+  },
+  "install": {
+    "result": "not-run",
+    "command": null,
+    "exitCode": null,
+    "stdout": "",
+    "stderr": ""
+  },
+  "launch": {
+    "result": "not-run",
+    "command": null,
+    "exitCode": null,
+    "stdout": "",
+    "stderr": ""
+  },
+  "cleanup": {
+    "forceStop": {
+      "result": "pass",
+      "command": null,
+      "exitCode": null,
+      "stdout": "",
+      "stderr": ""
+    }
+  },
+  "targetDiscovery": {
+    "command": ["hdc", "list", "targets"],
+    "count": 0,
+    "identitiesMasked": []
+  },
+  "failures": [
+    {
+      "code": "SIGNING_REQUIRED",
+      "detail": "Example only: local signing material is not configured.",
+      "stage": "build"
+    },
+    {
+      "code": "DEVICE_TARGET_MISSING",
+      "detail": "Example only: no authorized HarmonyOS device target is connected.",
+      "stage": "device"
+    }
+  ]
+}

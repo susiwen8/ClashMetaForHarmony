@@ -41,6 +41,7 @@ cmake-build-*
 # local.properties
 local.properties
 /harmony/local.properties
+/harmony/.idea/
 /harmony/.hvigor/
 /harmony/oh_modules/
 /harmony/build/

@@ -1,7 +1,9 @@
 {
   "modelVersion": "5.0.0",
   "dependencies": {},
-  "execution": {},
+  "execution": {
+    "daemon": false
+  },
   "logging": {},
   "debugging": {},
   "nodeOptions": {}

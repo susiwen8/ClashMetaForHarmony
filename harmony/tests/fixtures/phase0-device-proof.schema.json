@@ -1,0 +1,221 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kr328/ClashMetaForAndroid/harmony/tests/fixtures/phase0-device-proof.schema.json",
+  "schemaVersion": "1.0.0",
+  "title": "Phase 0 HarmonyOS Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "result",
+    "outputPath",
+    "bundle",
+    "ability",
+    "timestamps",
+    "toolchain",
+    "hap",
+    "device",
+    "build",
+    "install",
+    "launch",
+    "cleanup",
+    "targetDiscovery",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "phase": {
+      "const": 0
+    },
+    "result": {
+      "enum": ["pass", "fail", "incomplete"]
+    },
+    "outputPath": {
+      "type": ["string", "null"]
+    },
+    "bundle": {
+      "const": "com.github.kr328.clash.harmony"
+    },
+    "ability": {
+      "const": "EntryAbility"
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "completedAt"],
+      "properties": {
+        "startedAt": {
+          "type": "string",
+          "format": "date-time"
+        },
+        "completedAt": {
+          "type": "string",
+          "format": "date-time"
+        }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "nodeVersion",
+        "hvigorVersion",
+        "ohpmVersion",
+        "hdcVersion",
+        "devecoVersion",
+        "sdkVersion",
+        "ndkVersion"
+      ],
+      "properties": {
+        "nodeVersion": { "type": "string" },
+        "hvigorVersion": { "type": "string" },
+        "ohpmVersion": { "type": "string" },
+        "hdcVersion": { "type": "string" },
+        "devecoVersion": { "type": "string" },
+        "sdkVersion": { "type": "string" },
+        "ndkVersion": { "type": "string" }
+      }
+    },
+    "hap": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": {
+          "type": ["string", "null"],
+          "pattern": "^[a-f0-9]{64}$"
+        },
+        "sizeBytes": {
+          "type": ["integer", "null"],
+          "minimum": 0
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "identityMasked",
+        "buildVersion",
+        "apiVersion",
+        "abi",
+        "model"
+      ],
+      "properties": {
+        "identityMasked": {
+          "type": ["string", "null"],
+          "pattern": "^target-[a-f0-9]{8}$"
+        },
+        "buildVersion": {
+          "type": ["string", "null"]
+        },
+        "apiVersion": {
+          "type": ["string", "null"]
+        },
+        "abi": {
+          "type": ["string", "null"]
+        },
+        "model": {
+          "type": ["string", "null"]
+        }
+      },
+      "not": {
+        "required": ["serial"]
+      }
+    },
+    "build": {
+      "$ref": "#/$defs/step"
+    },
+    "install": {
+      "$ref": "#/$defs/step"
+    },
+    "launch": {
+      "$ref": "#/$defs/step"
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "forceStop": {
+          "$ref": "#/$defs/step"
+        }
+      }
+    },
+    "targetDiscovery": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "command": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "count": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "identitiesMasked": {
+          "type": "array",
+          "items": {
+            "type": "string",
+            "pattern": "^target-[a-f0-9]{8}$"
+          }
+        }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/failure"
+      }
+    }
+  },
+  "$defs": {
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result"],
+      "properties": {
+        "result": {
+          "enum": ["pass", "fail", "incomplete", "not-run"]
+        },
+        "command": {
+          "type": ["array", "null"],
+          "items": {
+            "type": "string"
+          }
+        },
+        "exitCode": {
+          "type": ["integer", "null"]
+        },
+        "stdout": {
+          "type": "string"
+        },
+        "stderr": {
+          "type": "string"
+        }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail"],
+      "properties": {
+        "code": {
+          "type": "string"
+        },
+        "detail": {
+          "type": "string"
+        },
+        "stage": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

@@ -133,6 +133,12 @@ test('phase0 wrapper is a POSIX adapter for the integrated DevEco hvigor wrapper
   assert.match(wrapperSource, /\bexec\b/u);
 });
 
+test('phase0 hvigor config disables daemon for deterministic non-interactive builds', async () => {
+  const hvigorConfig = await readJson5('hvigor/hvigor-config.json5');
+
+  assert.equal(hvigorConfig.execution?.daemon, false);
+});
+
 test('phase0 template PNG assets stay non-executable', async () => {
   const pngAssets = [
     'AppScope/resources/base/media/background.png',
