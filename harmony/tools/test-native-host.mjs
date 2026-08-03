@@ -20,10 +20,10 @@ const TIMEOUT_MS = 30_000;
 const ARGUMENT_INVALID_EXIT_CODE = 2;
 const USAGE_LINES = [
   'Usage:',
-  'node harmony/tools/test-native-host.mjs',
-  '  --case contract',
-  '  --case mihomo-backend',
-  '  --case napi-environment',
+  '  node harmony/tools/test-native-host.mjs',
+  '  node harmony/tools/test-native-host.mjs --case contract',
+  '  node harmony/tools/test-native-host.mjs --case mihomo-backend',
+  '  node harmony/tools/test-native-host.mjs --case napi-environment',
 ];
 
 function formatUsage() {

@@ -11,6 +11,13 @@ const backendSourceName = 'cmfa_mihomo_backend.cpp';
 const rawVersionSymbol = 'cmfa_mihomo_core_version_cstr_v1';
 const mainGuardSnippet =
   'process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)';
+const expectedUsage = [
+  'Usage:',
+  '  node harmony/tools/test-native-host.mjs',
+  '  node harmony/tools/test-native-host.mjs --case contract',
+  '  node harmony/tools/test-native-host.mjs --case mihomo-backend',
+  '  node harmony/tools/test-native-host.mjs --case napi-environment',
+].join('\n');
 
 async function readTreeFiles(rootDir) {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
@@ -88,6 +95,11 @@ test('Task 7 host runner accepts only explicit native cases', async () => {
   expectArgumentInvalid(runnerModule.parseCliArguments, ['--case', 'unknown'], 'unknown case should fail');
   expectArgumentInvalid(runnerModule.parseCliArguments, ['--case', 'contract', 'extra'], 'extra args should fail');
   expectArgumentInvalid(runnerModule.parseCliArguments, ['contract'], 'positional case should fail');
+  assert.throws(
+    () => runnerModule.parseCliArguments(['--case']),
+    (error) => error?.code === 'ARGUMENT_INVALID' && error.message === expectedUsage,
+    'usage contract must be an exact five-line string'
+  );
 
   assert.match(runnerSource, new RegExp(mainGuardSnippet.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
 });

@@ -267,6 +267,28 @@ void test_non_terminated_256_byte_raw_fails_without_overread() {
 #endif
 }
 
+void test_non_terminated_256_byte_raw_in_regular_memory_is_malformed() {
+  reset_contract();
+  HostCapture capture;
+  initialize_backend(&capture);
+  std::array<char, 256> raw{};
+  raw.fill('m');
+  g_raw_version = raw.data();
+  std::array<char, 32> version{};
+  version.fill('X');
+  ErrorBox error;
+
+  const cmfa_status status = cmfa_core_version(version.data(), version.size(), &error.error);
+
+  expect_status_message(status,
+                        CMFA_BACKEND_ERROR,
+                        error,
+                        "mihomo version is malformed",
+                        "regular 256-byte non-terminated raw version");
+  expect_eq(version.front(), '\0', "regular malformed version should clear output");
+  reset_contract();
+}
+
 void test_255_byte_raw_rejects_too_small_output_buffer() {
   reset_contract();
   HostCapture capture;
@@ -318,6 +340,9 @@ void test_unavailable_backend_operations_and_runtime_snapshot() {
                         error,
                         "mihomo backend does not support start_local",
                         "start_local should stay unavailable");
+  expect_eq(start_snapshot.state, CMFA_RUNTIME_STOPPED, "failed start should leave snapshot stopped");
+  expect_string_eq(std::string(start_snapshot.active_config_path), "", "failed start should clear snapshot path");
+  expect_eq(start_snapshot.mixed_port, static_cast<uint32_t>(0), "failed start should clear snapshot port");
   expect_eq(capture.event_count, static_cast<uint32_t>(0), "start_local should not emit runtime events");
 
   cmfa_runtime_snapshot snapshot{};
@@ -363,6 +388,7 @@ int main() {
       {"null raw version", test_null_raw_version_reports_backend_error},
       {"empty raw version", test_empty_raw_version_reports_backend_error},
       {"guard-page raw version", test_non_terminated_256_byte_raw_fails_without_overread},
+      {"regular malformed 256-byte raw version", test_non_terminated_256_byte_raw_in_regular_memory_is_malformed},
       {"255-byte raw version", test_255_byte_raw_rejects_too_small_output_buffer},
       {"unavailable operations and runtime snapshot", test_unavailable_backend_operations_and_runtime_snapshot},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
