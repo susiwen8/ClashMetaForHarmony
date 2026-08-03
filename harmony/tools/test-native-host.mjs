@@ -7,11 +7,35 @@ import { fileURLToPath } from 'node:url';
 const HARMONY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const INCLUDE_DIR = path.join(HARMONY_ROOT, 'core', 'abi', 'include');
 const CONTRACT_SOURCE = path.join(HARMONY_ROOT, 'core', 'abi', 'src', 'cmfa_contract.cpp');
-const TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_contract_test.cpp');
+const CONTRACT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_contract_test.cpp');
+const MIHOMO_BACKEND_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'cmfa_mihomo_backend.cpp');
+const MIHOMO_BACKEND_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_mihomo_backend_test.cpp');
+const NAPI_ENVIRONMENT_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'cmfa_napi_environment.cpp');
+const NAPI_ENVIRONMENT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_napi_environment_test.cpp');
+const ENTRY_INCLUDE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'include');
 const CORE_HEADER = path.join(INCLUDE_DIR, 'cmfa_core.h');
 const HOST_HEADER = path.join(INCLUDE_DIR, 'cmfa_host.h');
 const TYPES_HEADER = path.join(INCLUDE_DIR, 'cmfa_types.h');
 const TIMEOUT_MS = 30_000;
+const ARGUMENT_INVALID_EXIT_CODE = 2;
+const USAGE_LINES = [
+  'Usage:',
+  'node harmony/tools/test-native-host.mjs',
+  '  --case contract',
+  '  --case mihomo-backend',
+  '  --case napi-environment',
+];
+
+function formatUsage() {
+  return USAGE_LINES.join('\n');
+}
+
+class ArgumentError extends Error {
+  constructor(message = formatUsage()) {
+    super(message);
+    this.code = 'ARGUMENT_INVALID';
+  }
+}
 
 function summarize(result) {
   const stdout = result.stdout.trim();
@@ -220,13 +244,52 @@ async function verifyProductionBuildHidesTestHook(tempDir) {
   }
 }
 
-async function main() {
-  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), 'cmfa-host-test-'));
-  const outputBinary = path.join(tempDir, 'cmfa_contract_test');
+const CASES = new Map([
+  ['contract', {
+    sources: [CONTRACT_SOURCE, CONTRACT_TEST_SOURCE],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_CONTRACT_TESTING=1'],
+    prefix: 'cmfa-contract-test-',
+    beforeCompile: verifyContractPreflight,
+    outputName: 'cmfa_contract_test',
+  }],
+  ['mihomo-backend', {
+    sources: [CONTRACT_SOURCE, MIHOMO_BACKEND_SOURCE, MIHOMO_BACKEND_TEST_SOURCE],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1'],
+    prefix: 'cmfa-mihomo-backend-test-',
+    includeDirs: [ENTRY_INCLUDE_DIR],
+    outputName: 'cmfa_mihomo_backend_test',
+  }],
+  ['napi-environment', {
+    sources: [NAPI_ENVIRONMENT_SOURCE, NAPI_ENVIRONMENT_TEST_SOURCE],
+    defines: [],
+    prefix: 'cmfa-napi-environment-test-',
+    outputName: 'cmfa_napi_environment_test',
+  }],
+]);
 
+async function verifyContractPreflight(tempDir) {
+  await verifyPublicHeaders(tempDir);
+  await verifyProductionBuildHidesTestHook(tempDir);
+}
+
+export function parseCliArguments(args) {
+  if (args.length === 0) {
+    return { caseName: 'contract' };
+  }
+  if (args.length === 2 && args[0] === '--case' && CASES.has(args[1])) {
+    return { caseName: args[1] };
+  }
+  throw new ArgumentError();
+}
+
+async function compileAndRunCase(caseConfig) {
+  const tempDir = await fs.mkdtemp(path.join(os.tmpdir(), caseConfig.prefix));
+  const outputBinary = path.join(tempDir, caseConfig.outputName);
   try {
-    await verifyPublicHeaders(tempDir);
-    await verifyProductionBuildHidesTestHook(tempDir);
+    if (typeof caseConfig.beforeCompile === 'function') {
+      await caseConfig.beforeCompile(tempDir);
+    }
+
     const compiler = await detectCompiler();
     const compileArgs = [
       '-std=c++17',
@@ -234,12 +297,11 @@ async function main() {
       '-Wextra',
       '-Werror',
       '-pthread',
-      '-DCMFA_INTERNAL_BACKEND_API=1',
-      '-DCMFA_CONTRACT_TESTING=1',
+      ...caseConfig.defines.map((define) => `-D${define}`),
       '-I',
       INCLUDE_DIR,
-      CONTRACT_SOURCE,
-      TEST_SOURCE,
+      ...(caseConfig.includeDirs ?? []).flatMap((includeDir) => ['-I', includeDir]),
+      ...caseConfig.sources,
       '-o',
       outputBinary,
     ];
@@ -251,14 +313,12 @@ async function main() {
     if (compileResult.timedOut) {
       console.error(`Compile timed out after ${TIMEOUT_MS}ms`);
       console.error(summarize(compileResult));
-      process.exitCode = 1;
-      return;
+      return 1;
     }
     if (compileResult.exitCode !== 0) {
       console.error('Compile failed');
       console.error(summarize(compileResult));
-      process.exitCode = compileResult.exitCode ?? 1;
-      return;
+      return compileResult.exitCode ?? 1;
     }
 
     const runResult = await runCommand(outputBinary, [], HARMONY_ROOT);
@@ -268,18 +328,33 @@ async function main() {
     if (runResult.timedOut) {
       console.error(`Test run timed out after ${TIMEOUT_MS}ms`);
       console.error(summarize(runResult));
-      process.exitCode = 1;
-      return;
+      return 1;
     }
     process.stdout.write(`${runResult.stdout}`);
     process.stderr.write(`${runResult.stderr}`);
     if (runResult.exitCode !== 0) {
       console.error(summarize(runResult));
-      process.exitCode = runResult.exitCode ?? 1;
+      return runResult.exitCode ?? 1;
     }
+    return 0;
   } finally {
     await fs.rm(tempDir, { recursive: true, force: true });
   }
 }
 
-await main();
+export async function runCli(argv = process.argv.slice(2)) {
+  try {
+    const { caseName } = parseCliArguments(argv);
+    return await compileAndRunCase(CASES.get(caseName));
+  } catch (error) {
+    if (error?.code === 'ARGUMENT_INVALID') {
+      console.error(`${error.code}\n${error.message}`);
+      return ARGUMENT_INVALID_EXIT_CODE;
+    }
+    throw error;
+  }
+}
+
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  process.exitCode = await runCli();
+}
