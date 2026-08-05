@@ -27,6 +27,24 @@
   },
   "modules": [
     {
+      "name": "shared",
+      "srcPath": "./shared",
+      "targets": [
+        {
+          "name": "default"
+        }
+      ]
+    },
+    {
+      "name": "core",
+      "srcPath": "./core",
+      "targets": [
+        {
+          "name": "default"
+        }
+      ]
+    },
+    {
       "name": "entry",
       "srcPath": "./entry",
       "targets": [

@@ -348,6 +348,8 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   });
   assert.equal(buildProfile.buildOptionSet.find((item) => item.name === 'debug')?.nativeLib?.debugSymbol?.strip, false);
   assert.deepEqual(entryPackage.dependencies, {
+    '@cmfa/core': 'file:../core',
+    '@cmfa/shared': 'file:../shared',
     'libentry.so': 'file:./src/main/cpp/types/libentry'
   });
   assert.deepEqual(typesPackage, {

@@ -36,6 +36,12 @@ function containsHarmonyProjectLiteral(source) {
   return /":harmony(?::[^"]+)?"/u.test(source);
 }
 
+function extractLoadContentRoute(source) {
+  const match = source.match(/loadContent\('([^']+)'/u);
+  assert.ok(match, 'EntryAbility must load a page route through windowStage.loadContent');
+  return match[1];
+}
+
 test('phase0 layout helpers reject harmony project literals across multi-arg includes and decode encoded spaces', () => {
   const includeSamples = [
     `include(":${['app'].join('')}", ":${['harm', 'ony'].join('')}")`,
@@ -101,7 +107,10 @@ test('phase0 Stage skeleton matches the HarmonyOS 6/API 20 contract', async () =
     'utf8'
   );
   assert.match(entryAbilitySource, /class\s+EntryAbility\s+extends\s+UIAbility/u);
-  assert.match(entryAbilitySource, /loadContent\('pages\/Index'/u);
+  const currentRoute = extractLoadContentRoute(entryAbilitySource);
+  assert.equal(currentRoute, 'pages/CoreDebugPage');
+  assert.ok(mainPages.src.includes(currentRoute), `${currentRoute} must be registered in main_pages.json`);
+  assert.ok(mainPages.src.includes('pages/Index'));
 
   const indexSource = await fs.readFile(
     path.join(harmonyRoot, 'entry/src/main/ets/pages/Index.ets'),

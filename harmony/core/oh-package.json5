@@ -1,0 +1,11 @@
+{
+  "name": "@cmfa/core",
+  "version": "1.0.0",
+  "description": "ArkTS bridge adapter for the Harmony native core.",
+  "main": "Index.ets",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "@cmfa/shared": "file:../shared"
+  }
+}

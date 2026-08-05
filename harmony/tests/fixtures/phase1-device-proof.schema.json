@@ -1,0 +1,169 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://github.com/kr328/ClashMetaForAndroid/harmony/tests/fixtures/phase1-device-proof.schema.json",
+  "schemaVersion": "1.0.0",
+  "title": "Phase 1 HarmonyOS Native Bridge Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion", "phase", "result", "runId", "outputPath", "bundle", "ability",
+    "timestamps", "toolchainLock", "hap", "native", "device", "app", "steps", "checks", "failures"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "phase": { "const": 1 },
+    "result": { "enum": ["pass", "fail", "incomplete"] },
+    "runId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "outputPath": { "type": "string" },
+    "bundle": { "const": "com.github.kr328.clash.harmony" },
+    "ability": { "const": "EntryAbility" },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runnerStartedAt", "appStartedAt", "proofAt", "runnerFinishedAt"],
+      "properties": {
+        "runnerStartedAt": { "type": "string", "format": "date-time" },
+        "appStartedAt": { "type": ["string", "null"], "format": "date-time" },
+        "proofAt": { "type": ["string", "null"], "format": "date-time" },
+        "runnerFinishedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "toolchainLock": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256"],
+      "properties": {
+        "path": { "const": "harmony/toolchain.lock.json" },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "hap": { "$ref": "#/$defs/repoArtifact" },
+    "native": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["addon", "core"],
+      "properties": {
+        "addon": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nativeArtifact" }] },
+        "core": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/nativeArtifact" }] }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["identityMasked", "buildVersion", "apiVersion", "abi", "model"],
+      "properties": {
+        "identityMasked": { "type": ["string", "null"], "pattern": "^target-[a-f0-9]{8}$" },
+        "buildVersion": { "type": ["string", "null"] },
+        "apiVersion": { "type": ["string", "null"] },
+        "abi": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] }
+      },
+      "not": { "required": ["serial"] }
+    },
+    "app": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bridgeVersion", "coreVersion", "eventCount", "lastError"],
+      "properties": {
+        "bridgeVersion": { "type": ["string", "null"] },
+        "coreVersion": { "type": ["string", "null"] },
+        "eventCount": { "type": "integer", "minimum": 0 },
+        "lastError": { "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/coreError" }] }
+      }
+    },
+    "steps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["nativeManifest", "install", "launch", "pull", "cleanup"],
+      "properties": {
+        "nativeManifest": { "$ref": "#/$defs/step" },
+        "install": { "$ref": "#/$defs/step" },
+        "launch": { "$ref": "#/$defs/step" },
+        "pull": { "$ref": "#/$defs/step" },
+        "cleanup": { "$ref": "#/$defs/step" }
+      }
+    },
+    "checks": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/check" }
+    },
+    "failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure" }
+    }
+  },
+  "$defs": {
+    "repoArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "nativeArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes", "elfMachine", "exportListSha256", "requiredExports"],
+      "properties": {
+        "path": { "type": "string" },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": "integer", "minimum": 1 },
+        "elfMachine": { "const": "AArch64" },
+        "exportListSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "requiredExports": { "type": "array", "items": { "type": "string" }, "uniqueItems": true }
+      }
+    },
+    "step": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result"],
+      "properties": { "result": { "enum": ["pass", "fail", "incomplete", "not-run"] } }
+    },
+    "check": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "result", "detail"],
+      "properties": {
+        "id": { "type": "string" },
+        "result": { "enum": ["pass", "fail", "not-run"] },
+        "detail": { "type": "string" }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail", "stage"],
+      "properties": {
+        "code": { "type": "string" },
+        "detail": { "type": "string" },
+        "stage": { "type": "string" }
+      }
+    },
+    "coreError": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "code", "category", "message", "detail", "retryable", "action", "context"],
+      "properties": {
+        "name": { "const": "CoreError" },
+        "code": { "type": "string" },
+        "category": { "enum": ["CoreError", "StateError"] },
+        "message": { "type": "string" },
+        "detail": { "type": "string" },
+        "retryable": { "type": "boolean" },
+        "action": { "type": "string" },
+        "context": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["operation", "status"],
+          "properties": {
+            "operation": { "type": "string" },
+            "status": { "type": "integer" }
+          }
+        }
+      }
+    }
+  }
+}

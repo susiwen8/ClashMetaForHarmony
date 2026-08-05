@@ -1,0 +1,9 @@
+{
+  "name": "@cmfa/shared",
+  "version": "1.0.0",
+  "description": "Shared ArkTS contracts for the Harmony native bridge.",
+  "main": "Index.ets",
+  "author": "",
+  "license": "",
+  "dependencies": {}
+}

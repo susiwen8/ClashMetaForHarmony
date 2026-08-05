@@ -1,0 +1,63 @@
+{
+  "schemaVersion": "1.0.0",
+  "phase": 1,
+  "result": "incomplete",
+  "runId": "7fb2e6cd-50f0-4a57-9392-6c75ec0c8f18",
+  "outputPath": "harmony/artifacts/phase1-device-proof.json",
+  "bundle": "com.github.kr328.clash.harmony",
+  "ability": "EntryAbility",
+  "timestamps": {
+    "runnerStartedAt": "2026-08-05T01:00:00.000Z",
+    "appStartedAt": null,
+    "proofAt": null,
+    "runnerFinishedAt": "2026-08-05T01:00:00.001Z"
+  },
+  "toolchainLock": {
+    "path": "harmony/toolchain.lock.json",
+    "sha256": null
+  },
+  "hap": {
+    "path": null,
+    "sha256": null,
+    "sizeBytes": null
+  },
+  "native": {
+    "addon": null,
+    "core": null
+  },
+  "device": {
+    "identityMasked": null,
+    "buildVersion": null,
+    "apiVersion": null,
+    "abi": null,
+    "model": null
+  },
+  "app": {
+    "bridgeVersion": null,
+    "coreVersion": null,
+    "eventCount": 0,
+    "lastError": null
+  },
+  "steps": {
+    "nativeManifest": { "result": "incomplete" },
+    "install": { "result": "not-run" },
+    "launch": { "result": "not-run" },
+    "pull": { "result": "not-run" },
+    "cleanup": { "result": "not-run" }
+  },
+  "checks": [
+    { "id": "nativeHello", "result": "not-run", "detail": "Input HAP is unavailable." },
+    { "id": "coreVersion", "result": "not-run", "detail": "Input HAP is unavailable." },
+    { "id": "promiseResolution", "result": "not-run", "detail": "Input HAP is unavailable." },
+    { "id": "typedRejection", "result": "not-run", "detail": "Input HAP is unavailable." },
+    { "id": "eventDelivery", "result": "not-run", "detail": "Input HAP is unavailable." },
+    { "id": "unsubscribeSilence", "result": "not-run", "detail": "Input HAP is unavailable." }
+  ],
+  "failures": [
+    {
+      "code": "INPUT_HAP_MISSING",
+      "detail": "Example only: a signed HAP was not supplied.",
+      "stage": "input"
+    }
+  ]
+}

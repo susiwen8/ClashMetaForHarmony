@@ -6,6 +6,8 @@
   "author": "",
   "license": "",
   "dependencies": {
+    "@cmfa/core": "file:../core",
+    "@cmfa/shared": "file:../shared",
     "libentry.so": "file:./src/main/cpp/types/libentry"
   }
 }

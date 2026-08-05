@@ -1,5 +1,6 @@
 {
   "src": [
+    "pages/CoreDebugPage",
     "pages/Index"
   ]
 }

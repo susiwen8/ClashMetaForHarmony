@@ -466,8 +466,9 @@ harmony/
   build proof at `harmony/artifacts/go-ohos-build-proof.json` and diagnose
   before Tasks 6–8. Do not introduce a stub fallback. Tasks 6–7 may build the
   adapter only after this compile gate. Task 8 is the sole versioned
-  dynamic-load/invocation gate, and no Phase 2 task may begin until its fresh
-  device proof passes.
+  direct-link device invocation gate, and no Phase 2 task may begin until its
+  fresh device proof passes. It must preserve Task 7's direct link from
+  `libentry.so` to `libcmfa_mihomo.so`; `dlopen`/`dlsym` are forbidden.
 
 - [ ] **Step 8: Commit the testable build lane**
 
@@ -624,6 +625,7 @@ harmony/
 - Create: `harmony/core/src/main/ets/CoreNativeAdapter.ets`
 - Create: `harmony/entry/src/main/ets/bootstrap/CoreComposition.ets`
 - Create: `harmony/entry/src/main/ets/pages/CoreDebugPage.ets`
+- Modify: `harmony/entry/src/main/ets/entryability/EntryAbility.ets`
 - Create: `harmony/tests/bin/run-phase1-device-proof.mjs`
 - Create: `harmony/tests/fixtures/phase1-device-proof.schema.json`
 - Create: `harmony/tests/fixtures/phase1-device-proof.example.json`
@@ -643,8 +645,8 @@ harmony/
     `result: pass | fail | incomplete`;
   - a runner-generated `runId`, start/finish timestamps, and proof timestamp;
   - exact toolchain-lock digest and device build/API/ABI facts;
-  - HAP hash, packaged native-library hash/path, ELF machine, and inspected
-    export list digest;
+  - HAP hash, packaged addon/core native-library hashes and paths, ELF
+    machines, and inspected export-list digests;
   - structured check results and failures.
 
   A pass additionally requires:
@@ -659,8 +661,10 @@ harmony/
 
   Validation rejects a stale or synthetic artifact unless the app echoes the
   exact Want `runId`, timestamps fall inside the runner interval, hashes match
-  the just-installed HAP, and the inspected AArch64 library contains
-  `cmfa_core_version`.
+  the just-installed HAP, the AArch64 addon still passes Task 7's exact
+  Node-API ELF/dependency contract, and the packaged real core exports
+  `cmfa_mihomo_core_version_cstr_v1`. The obsolete conflicting raw
+  `cmfa_core_version` export is forbidden.
 
 - [ ] **Step 2: Run the proof test to verify RED**
 
