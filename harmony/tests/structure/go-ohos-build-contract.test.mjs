@@ -1122,6 +1122,7 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
   ]);
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-mihomo-elf-'));
   const fakeLibPath = path.join(tempRoot, 'libcmfa_mihomo.so');
+  const fakeBuildInfo = '{"version":"v1.19.29","upstreamCommit":"e26714a181ac0e2fa803453c0a8e9a9ce94e31cb","abiVersion":"cmfa-harmony-v1","buildId":"0123456789abcdef"}';
 
   const makeReadelfOutput = ({ neededLibraries = ['libc.so'], exportedSymbols = CORE_EXPORTS } = {}) => ({
     header: 'ELF Header:\n  Machine:                           AArch64\n',
@@ -1166,7 +1167,7 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     });
   };
 
-  await fs.writeFile(fakeLibPath, 'fake-mihomo-so', 'utf8');
+  await fs.writeFile(fakeLibPath, `fake-mihomo-so\0${fakeBuildInfo}\0v1.19.29`, 'utf8');
 
   try {
     const validInspection = await inspectSynthetic({
@@ -1175,6 +1176,7 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     });
     assert.equal(validInspection.result, 'pass');
     assert.deepEqual(validInspection.exportedSymbols, CORE_EXPORTS);
+    assert.equal(validInspection.buildInfo?.version, 'v1.19.29');
     assert.deepEqual(validInspection.failures, []);
 
     const forbiddenInspection = await inspectSynthetic({

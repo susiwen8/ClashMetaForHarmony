@@ -29,6 +29,11 @@ const REQUIRED_EXPORTS = {
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
 const EXPORT_SENTINEL_PATTERN = /(?:^|[_$])(?:test|fake|stub)(?:[_$]|$)/iu;
+const BUILD_INFO_JSON_PATTERN = /\{"version":"[^"]+","upstreamCommit":"[0-9a-f]{40}","abiVersion":"[^"]+","buildId":"[^"]+"\}/u;
+const JNI_CONTENT_PATTERN = /\bJNI_OnLoad\b|\bJava_[A-Za-z0-9_]+\b/u;
+const DLOPEN_CONTENT_PATTERN = /\bdlopen\b|\bdlsym\b|\blibdl\b/u;
+const PROBE_BACKEND_SENTINEL_PATTERN = /probe-backend/iu;
+const STUB_BUILD_CONTENT_PATTERN = /ohos_mihomo_stub_build/u;
 const NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS = [
   { code: 'PUBLIC_CMFA_EXPORT_FORBIDDEN', pattern: /^cmfa_/u },
   { code: 'INTERNAL_SYMBOL_FORBIDDEN', pattern: /cmfa_internal_register_backend/u },
@@ -135,6 +140,44 @@ function parseExportedSymbols(stdout) {
   return [...exported].sort();
 }
 
+function parseBuildInfo(binaryText) {
+  const match = binaryText.match(BUILD_INFO_JSON_PATTERN);
+  if (!match) {
+    return { buildInfo: null, rawVersion: null, parseError: 'missing' };
+  }
+
+  try {
+    const buildInfo = JSON.parse(match[0]);
+    return {
+      buildInfo,
+      rawVersion: typeof buildInfo?.version === 'string' ? buildInfo.version : null,
+      parseError: null
+    };
+  } catch (error) {
+    return {
+      buildInfo: null,
+      rawVersion: null,
+      parseError: error?.message ?? 'invalid build info json'
+    };
+  }
+}
+
+function validateBuildInfo(buildInfo, failures) {
+  if (!buildInfo) {
+    failures.push(createFailure('BUILD_INFO_MISSING', `Expected ${BUILD_INFO_EXPORT} to embed upstream build metadata.`));
+    return;
+  }
+
+  if (
+    typeof buildInfo.version !== 'string' || buildInfo.version.trim().length === 0 ||
+    typeof buildInfo.upstreamCommit !== 'string' || !/^[0-9a-f]{40}$/u.test(buildInfo.upstreamCommit) ||
+    typeof buildInfo.abiVersion !== 'string' || buildInfo.abiVersion.trim().length === 0 ||
+    typeof buildInfo.buildId !== 'string' || buildInfo.buildId.trim().length === 0
+  ) {
+    failures.push(createFailure('BUILD_INFO_INVALID', 'Build info export must include non-empty version, upstreamCommit, abiVersion, and buildId.'));
+  }
+}
+
 function inferComponent(component, libPath) {
   if (component) {
     return component;
@@ -218,6 +261,11 @@ export async function inspectNativeLibrary({
 
   const neededLibraries = parseNeededLibraries(dynamicResult.stdout);
   const exportedSymbols = parseExportedSymbols(symbolsResult.stdout);
+  const binaryBuffer = await fsApi.readFile(absoluteLibPath);
+  const binaryText = Buffer.isBuffer(binaryBuffer)
+    ? binaryBuffer.toString('latin1')
+    : Buffer.from(binaryBuffer).toString('latin1');
+  const { buildInfo, rawVersion, parseError } = parseBuildInfo(binaryText);
   const allowlistedNeeded = [...(allowlist?.[allowlistKey] ?? [])].sort();
   const requiredExports = REQUIRED_EXPORTS[selectedComponent];
   const failures = [];
@@ -273,6 +321,11 @@ export async function inspectNativeLibrary({
   if (selectedComponent === 'mihomoCore') {
     const publicExports = exportedSymbols.filter((entry) => entry.startsWith('cmfa_'));
 
+    if (parseError && parseError !== 'missing') {
+      failures.push(createFailure('BUILD_INFO_INVALID', parseError));
+    }
+    validateBuildInfo(buildInfo, failures);
+
     if (exportedSymbols.includes('cmfa_core_version')) {
       failures.push(createFailure('EXPORT_FORBIDDEN', 'cmfa_core_version'));
     }
@@ -290,6 +343,27 @@ export async function inspectNativeLibrary({
     if (neededLibraries.includes('libdl.so')) {
       failures.push(createFailure('LIBDL_FORBIDDEN', 'libdl.so'));
     }
+    if (STUB_BUILD_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('BUILD_INFO_STUB_FORBIDDEN', 'ohos_mihomo_stub_build'));
+    }
+    if (PROBE_BACKEND_SENTINEL_PATTERN.test(binaryText)) {
+      failures.push(createFailure('PROBE_BACKEND_SENTINEL_FORBIDDEN', 'probe-backend'));
+    }
+    if (JNI_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('ANDROID_JNI_FORBIDDEN', 'JNI_OnLoad'));
+    }
+    if (DLOPEN_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('DLOPEN_SENTINEL_FORBIDDEN', 'dlopen/dlsym/libdl'));
+    }
+  }
+
+  if (selectedComponent === 'nodeAddon') {
+    if (JNI_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('ANDROID_JNI_FORBIDDEN', 'JNI_OnLoad'));
+    }
+    if (DLOPEN_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('DLOPEN_SENTINEL_FORBIDDEN', 'dlopen/dlsym/libdl'));
+    }
   }
 
   return {
@@ -304,6 +378,8 @@ export async function inspectNativeLibrary({
     allowedNeededLibraries: allowlistedNeeded,
     exportedSymbols,
     requiredExports,
+    rawVersion,
+    buildInfo,
     failures
   };
 }

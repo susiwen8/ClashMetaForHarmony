@@ -27,6 +27,7 @@ const PROOF_FILE_NAME: string = 'phase1-device-proof.json';
 const PHASE2_PROOF_FILE_NAME: string = 'phase2-device-proof.json';
 const PHASE2_CONFIG_FILE_NAME: string = 'phase2-match-direct.yaml';
 const PHASE2_CONFIG_SOURCE: string = 'mode: rule\nmixed-port: 0\nrules:\n  - MATCH,DIRECT\n';
+const PHASE2_SELF_TEST_BUILD_FLAG: string = 'CMFA_ENABLE_PHASE2_SELFTEST';
 const INVALID_SELF_TEST_PATH: string = '';
 const PHASE2_MIXED_PORT: number = 17890;
 
@@ -42,9 +43,17 @@ interface Phase2ProbeFailure {
 
 interface Phase2ProbeEntry {
   protocol: ProbeProtocol;
-  result: 'pass' | 'fail';
+  result: 'pass' | 'fail' | 'incomplete';
   detail: string;
   probe: Phase2ProbeResult;
+  requestId: string | null;
+  originRequestId: string | null;
+  appProbeId: string | null;
+  coreEventId: string | null;
+  coreConnectionId: string | null;
+  clientSourcePort: number | null;
+  destination: string | null;
+  upstreamInboundType: string | null;
 }
 
 interface Phase2ProbeTimestamps {
@@ -60,9 +69,16 @@ interface Phase2SelfTestProof {
   timestamps: Phase2ProbeTimestamps;
   bridgeVersion: string;
   coreVersion: string;
+  selfTestBuildEnabled: boolean;
+  buildFlag: string;
+  appProcessId: number | null;
+  fixtureConfigPath: string;
+  fixtureOriginUrl: string;
+  fixtureExpectedBodySha256: string;
   httpAddress: string;
   socksAddress: string;
   probes: Phase2ProbeEntry[];
+  stopResult: string;
   failures: Phase2ProbeFailure[];
 }
 
@@ -70,6 +86,15 @@ function wait(milliseconds: number): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
     setTimeout(resolve, milliseconds);
   });
+}
+
+function parseSourcePort(address: string): number | null {
+  const separator: number = address.lastIndexOf(':');
+  if (separator < 0 || separator === address.length - 1) {
+    return null;
+  }
+  const value: number = Number.parseInt(address.slice(separator + 1), 10);
+  return Number.isInteger(value) && value > 0 ? value : null;
 }
 
 function failedCheck(id: Phase1CheckId, detail: string): Phase1Check {
@@ -315,8 +340,43 @@ struct CoreDebugPage {
     const configPath: string = `${context.filesDir}/${PHASE2_CONFIG_FILE_NAME}`;
     const probes: Phase2ProbeEntry[] = [];
     const failures: Phase2ProbeFailure[] = [];
+    const probeService = getSelfTestCoreService();
+    const selfTestBuildEnabled: boolean = typeof probeService.probeHttpsForSelfTest === 'function';
     let httpAddress: string = '';
     let socksAddress: string = '';
+    let stopResult: string = 'not-run';
+
+    if (!selfTestBuildEnabled) {
+      const phase2Proof: Phase2SelfTestProof = {
+        schemaVersion: '1.0.0',
+        phase: 2,
+        result: 'incomplete',
+        runId: context.runId,
+        timestamps: {
+          startedAt,
+          proofAt: new Date().toISOString()
+        },
+        bridgeVersion: this.bridgeVersion,
+        coreVersion: this.coreVersion,
+        selfTestBuildEnabled,
+        buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
+        appProcessId: null,
+        fixtureConfigPath: configPath,
+        fixtureOriginUrl: context.probeOriginUrl,
+        fixtureExpectedBodySha256: context.probeExpectedBodySha256,
+        httpAddress,
+        socksAddress,
+        probes,
+        stopResult,
+        failures: [{
+          code: 'PHASE2_SELFTEST_DISABLED',
+          detail: `${PHASE2_SELF_TEST_BUILD_FLAG} is disabled in the default lane.`,
+          stage: 'phase2'
+        }]
+      };
+      this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
+      return;
+    }
 
     try {
       this.writeTextFile(configPath, PHASE2_CONFIG_SOURCE);
@@ -337,14 +397,21 @@ struct CoreDebugPage {
           caPem: context.probeCaPem,
           expectedBodySha256: context.probeExpectedBodySha256
         };
-        const probeService = getSelfTestCoreService();
         const probe: Phase2ProbeResult = await probeService.probeHttpsForSelfTest(request);
         const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
         probes.push({
           protocol,
           result: passed ? 'pass' : 'fail',
           detail: passed ? probe.tracker.connectionId : `${probe.error.code}:${probe.error.detail}`,
-          probe
+          probe,
+          requestId: probe.requestIdEcho,
+          originRequestId: probe.requestIdEcho,
+          appProbeId: request.probeRunId,
+          coreEventId: probe.tracker.connectionId,
+          coreConnectionId: probe.tracker.connectionId,
+          clientSourcePort: parseSourcePort(probe.clientLocalAddress),
+          destination: probe.tracker.destinationAddress,
+          upstreamInboundType: probe.tracker.inboundType
         });
         if (!passed) {
           failures.push({
@@ -363,14 +430,16 @@ struct CoreDebugPage {
     } finally {
       try {
         await this.coreService.stopRuntime();
-        } catch (error) {
-          failures.push({
-            code: 'PHASE2_STOP_FAILED',
-            detail: (error as Error).message ?? 'failed to stop local runtime after phase2 probe',
-            stage: 'cleanup'
-          });
-        }
+        stopResult = 'pass';
+      } catch (error) {
+        stopResult = 'fail';
+        failures.push({
+          code: 'PHASE2_STOP_FAILED',
+          detail: (error as Error).message ?? 'failed to stop local runtime after phase2 probe',
+          stage: 'cleanup'
+        });
       }
+    }
 
     const phase2Timestamps: Phase2ProbeTimestamps = {
       startedAt,
@@ -379,14 +448,21 @@ struct CoreDebugPage {
     const phase2Proof: Phase2SelfTestProof = {
       schemaVersion: '1.0.0',
       phase: 2,
-      result: failures.length === 0 && probes.length === 2 ? 'pass' : 'fail',
+      result: failures.length === 0 && probes.length === 2 ? 'pass' : 'incomplete',
       runId: context.runId,
       timestamps: phase2Timestamps,
       bridgeVersion: this.bridgeVersion,
       coreVersion: this.coreVersion,
+      selfTestBuildEnabled,
+      buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
+      appProcessId: null,
+      fixtureConfigPath: configPath,
+      fixtureOriginUrl: context.probeOriginUrl,
+      fixtureExpectedBodySha256: context.probeExpectedBodySha256,
       httpAddress,
       socksAddress,
       probes,
+      stopResult,
       failures
     };
     this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);

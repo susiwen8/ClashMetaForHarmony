@@ -1,0 +1,166 @@
+{
+  "schemaVersion": "1.0.0",
+  "phase": 2,
+  "result": "incomplete",
+  "runId": "980cbe02-b817-4db1-99bc-e8e4e6523daf",
+  "outputPath": "harmony/artifacts/phase2-device-proof.json",
+  "bundle": "com.github.kr328.clash.harmony",
+  "ability": "EntryAbility",
+  "timestamps": {
+    "runnerStartedAt": "2026-08-06T02:00:00.000Z",
+    "appStartedAt": null,
+    "proofAt": null,
+    "runnerFinishedAt": "2026-08-06T02:00:00.001Z"
+  },
+  "toolchain": {
+    "devecoVersion": "6.1.0.860",
+    "sdkVersion": "6.1.0.105",
+    "ndkVersion": "6.1.0.105",
+    "hvigorVersion": "6.23.7",
+    "nodeVersion": "22.17.0",
+    "hdcVersion": "6.1.0.105"
+  },
+  "device": {
+    "targetKind": "host",
+    "identityMasked": null,
+    "model": null,
+    "product": null,
+    "buildVersion": null,
+    "apiVersion": null,
+    "abi": null
+  },
+  "hap": {
+    "path": null,
+    "sha256": null,
+    "sizeBytes": null
+  },
+  "packaged": {
+    "core": {
+      "path": null,
+      "sha256": null,
+      "sizeBytes": null
+    },
+    "addon": {
+      "path": null,
+      "sha256": null,
+      "sizeBytes": null
+    }
+  },
+  "fixtures": {
+    "matchConfig": {
+      "path": "harmony/tests/fixtures/phase2-match-direct.yaml",
+      "sha256": "04df3246f0f9f3ce153a366f3ec2c618af5ab8c4795d897ff9abd74458413762",
+      "sizeBytes": 43
+    },
+    "originBody": {
+      "path": "harmony/tests/fixtures/origin-body.txt",
+      "sha256": "9082975fc1e6817974c2bf9933e7d7f912be9e90f420d4c34d885da7b80f0272",
+      "sizeBytes": 26
+    }
+  },
+  "origin": {
+    "originId": null,
+    "originUrl": null,
+    "bindAddress": null,
+    "tlsCertSha256": null,
+    "responseSha256": "9082975fc1e6817974c2bf9933e7d7f912be9e90f420d4c34d885da7b80f0272"
+  },
+  "core": {
+    "version": null,
+    "httpListenerAddress": null,
+    "socksListenerAddress": null
+  },
+  "stubDetection": {
+    "stubDetected": null,
+    "checks": [
+      {
+        "id": "manifestInspection",
+        "result": "not-run",
+        "detail": "A fresh self-test HAP inspection did not run."
+      },
+      {
+        "id": "nativeLibraryInspection",
+        "result": "not-run",
+        "detail": "No packaged AArch64 core was available for inspection."
+      }
+    ]
+  },
+  "appEvidence": {
+    "path": null,
+    "sha256": null,
+    "sizeBytes": null,
+    "runId": null,
+    "appProcessId": null,
+    "stopResult": null
+  },
+  "probes": {
+    "http": {
+      "protocol": "HTTP_CONNECT",
+      "status": "not-run",
+      "runId": "980cbe02-b817-4db1-99bc-e8e4e6523daf",
+      "probeRunId": null,
+      "requestId": null,
+      "originRequestId": null,
+      "appProbeId": null,
+      "coreEventId": null,
+      "originId": null,
+      "appProcessId": null,
+      "coreConnectionId": null,
+      "clientSourcePort": null,
+      "destination": null,
+      "upstreamInboundType": null,
+      "listenerAddress": null,
+      "tlsPeerSha256": null,
+      "httpStatus": null,
+      "responseBytes": null,
+      "responseSha256": null,
+      "startedAt": null,
+      "completedAt": null,
+      "error": {
+        "code": "PHYSICAL_DEVICE_REQUIRED",
+        "stage": "target",
+        "detail": "Only a physical HarmonyOS 6 device can complete Phase 2."
+      }
+    },
+    "socks": {
+      "protocol": "SOCKS5",
+      "status": "not-run",
+      "runId": "980cbe02-b817-4db1-99bc-e8e4e6523daf",
+      "probeRunId": null,
+      "requestId": null,
+      "originRequestId": null,
+      "appProbeId": null,
+      "coreEventId": null,
+      "originId": null,
+      "appProcessId": null,
+      "coreConnectionId": null,
+      "clientSourcePort": null,
+      "destination": null,
+      "upstreamInboundType": null,
+      "listenerAddress": null,
+      "tlsPeerSha256": null,
+      "httpStatus": null,
+      "responseBytes": null,
+      "responseSha256": null,
+      "startedAt": null,
+      "completedAt": null,
+      "error": {
+        "code": "PHYSICAL_DEVICE_REQUIRED",
+        "stage": "target",
+        "detail": "Only a physical HarmonyOS 6 device can complete Phase 2."
+      }
+    }
+  },
+  "failures": [
+    {
+      "code": "INPUT_HAP_MISSING",
+      "detail": "Example only: a signed self-test HAP was not supplied.",
+      "stage": "input"
+    },
+    {
+      "code": "PHYSICAL_DEVICE_REQUIRED",
+      "detail": "Example only: host and simulator targets must remain incomplete.",
+      "stage": "target"
+    }
+  ]
+}

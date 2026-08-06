@@ -1,0 +1,249 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://clashmeta.dev/harmony/tests/fixtures/phase2-device-proof.schema.json",
+  "schemaVersion": "1.0.0",
+  "title": "Harmony Phase 2 Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "result",
+    "runId",
+    "outputPath",
+    "bundle",
+    "ability",
+    "timestamps",
+    "toolchain",
+    "device",
+    "hap",
+    "packaged",
+    "fixtures",
+    "origin",
+    "core",
+    "stubDetection",
+    "appEvidence",
+    "probes",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "phase": { "const": 2 },
+    "result": { "enum": ["pass", "fail", "incomplete"] },
+    "runId": { "type": "string" },
+    "outputPath": { "type": "string" },
+    "bundle": { "const": "com.github.kr328.clash.harmony" },
+    "ability": { "const": "EntryAbility" },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runnerStartedAt", "appStartedAt", "proofAt", "runnerFinishedAt"],
+      "properties": {
+        "runnerStartedAt": { "type": "string", "format": "date-time" },
+        "appStartedAt": { "type": ["string", "null"], "format": "date-time" },
+        "proofAt": { "type": ["string", "null"], "format": "date-time" },
+        "runnerFinishedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["devecoVersion", "sdkVersion", "ndkVersion", "hvigorVersion", "nodeVersion", "hdcVersion"],
+      "properties": {
+        "devecoVersion": { "type": ["string", "null"] },
+        "sdkVersion": { "type": ["string", "null"] },
+        "ndkVersion": { "type": ["string", "null"] },
+        "hvigorVersion": { "type": ["string", "null"] },
+        "nodeVersion": { "type": ["string", "null"] },
+        "hdcVersion": { "type": ["string", "null"] }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetKind", "identityMasked", "model", "product", "buildVersion", "apiVersion", "abi"],
+      "properties": {
+        "targetKind": { "enum": ["physical", "simulator", "host", "unknown"] },
+        "identityMasked": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "product": { "type": ["string", "null"] },
+        "buildVersion": { "type": ["string", "null"] },
+        "apiVersion": { "type": ["string", "null"] },
+        "abi": { "type": ["string", "null"] }
+      }
+    },
+    "hap": { "$ref": "#/$defs/digestArtifact" },
+    "packaged": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["core", "addon"],
+      "properties": {
+        "core": { "$ref": "#/$defs/digestArtifact" },
+        "addon": { "$ref": "#/$defs/digestArtifact" }
+      }
+    },
+    "fixtures": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["matchConfig", "originBody"],
+      "properties": {
+        "matchConfig": { "$ref": "#/$defs/digestArtifact" },
+        "originBody": { "$ref": "#/$defs/digestArtifact" }
+      }
+    },
+    "origin": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["originId", "originUrl", "bindAddress", "tlsCertSha256", "responseSha256"],
+      "properties": {
+        "originId": { "type": ["string", "null"] },
+        "originUrl": { "type": ["string", "null"] },
+        "bindAddress": { "type": ["string", "null"] },
+        "tlsCertSha256": { "type": ["string", "null"] },
+        "responseSha256": { "type": ["string", "null"] }
+      }
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "httpListenerAddress", "socksListenerAddress"],
+      "properties": {
+        "version": { "type": ["string", "null"] },
+        "httpListenerAddress": { "type": ["string", "null"] },
+        "socksListenerAddress": { "type": ["string", "null"] }
+      }
+    },
+    "stubDetection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["stubDetected", "checks"],
+      "properties": {
+        "stubDetected": { "enum": [false, true, null] },
+        "checks": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/stubCheck" }
+        }
+      }
+    },
+    "appEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes", "runId", "appProcessId", "stopResult"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "runId": { "type": ["string", "null"] },
+        "appProcessId": { "type": ["integer", "null"], "minimum": 1 },
+        "stopResult": { "type": ["string", "null"] }
+      }
+    },
+    "probes": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http", "socks"],
+      "properties": {
+        "http": { "$ref": "#/$defs/probe" },
+        "socks": { "$ref": "#/$defs/probe" }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/failure" }
+    }
+  },
+  "$defs": {
+    "digestArtifact": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes"],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"] },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "stubCheck": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["id", "result", "detail"],
+      "properties": {
+        "id": { "type": "string" },
+        "result": { "enum": ["pass", "fail", "not-run"] },
+        "detail": { "type": "string" }
+      }
+    },
+    "failure": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["code", "detail", "stage"],
+      "properties": {
+        "code": { "type": "string" },
+        "detail": { "type": "string" },
+        "stage": { "type": "string" }
+      }
+    },
+    "structuredError": {
+      "type": ["object", "null"],
+      "additionalProperties": false,
+      "required": ["code", "stage", "detail"],
+      "properties": {
+        "code": { "type": "string" },
+        "stage": { "type": "string" },
+        "detail": { "type": "string" }
+      }
+    },
+    "probe": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "protocol",
+        "status",
+        "runId",
+        "probeRunId",
+        "requestId",
+        "originRequestId",
+        "appProbeId",
+        "coreEventId",
+        "originId",
+        "appProcessId",
+        "coreConnectionId",
+        "clientSourcePort",
+        "destination",
+        "upstreamInboundType",
+        "listenerAddress",
+        "tlsPeerSha256",
+        "httpStatus",
+        "responseBytes",
+        "responseSha256",
+        "startedAt",
+        "completedAt",
+        "error"
+      ],
+      "properties": {
+        "protocol": { "enum": ["HTTP_CONNECT", "SOCKS5"] },
+        "status": { "enum": ["pass", "fail", "incomplete", "not-run"] },
+        "runId": { "type": ["string", "null"] },
+        "probeRunId": { "type": ["string", "null"] },
+        "requestId": { "type": ["string", "null"] },
+        "originRequestId": { "type": ["string", "null"] },
+        "appProbeId": { "type": ["string", "null"] },
+        "coreEventId": { "type": ["string", "null"] },
+        "originId": { "type": ["string", "null"] },
+        "appProcessId": { "type": ["integer", "null"], "minimum": 1 },
+        "coreConnectionId": { "type": ["string", "null"] },
+        "clientSourcePort": { "type": ["integer", "null"], "minimum": 1, "maximum": 65535 },
+        "destination": { "type": ["string", "null"] },
+        "upstreamInboundType": { "type": ["string", "null"] },
+        "listenerAddress": { "type": ["string", "null"] },
+        "tlsPeerSha256": { "type": ["string", "null"] },
+        "httpStatus": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "responseBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "responseSha256": { "type": ["string", "null"] },
+        "startedAt": { "type": ["string", "null"], "format": "date-time" },
+        "completedAt": { "type": ["string", "null"], "format": "date-time" },
+        "error": { "$ref": "#/$defs/structuredError" }
+      }
+    }
+  }
+}
