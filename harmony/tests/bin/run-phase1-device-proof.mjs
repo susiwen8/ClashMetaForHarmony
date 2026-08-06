@@ -40,7 +40,7 @@ const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 export const DEFAULT_OUTPUT_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-device-proof.json');
 export const DEFAULT_MANIFEST_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-native-provenance.json');
 
-const PRIVATE_CORE_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
+const PRIVATE_CORE_EXPORTS = ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 const FINAL_RESULTS = new Set(['pass', 'fail', 'incomplete']);
@@ -393,8 +393,8 @@ function validateNativeArtifact(value, key, requireConcrete, errors) {
   if (!Array.isArray(value.requiredExports)) {
     errors.push(`native.${key}.requiredExports must be an array.`);
   }
-  if (key === 'core' && (!Array.isArray(value.requiredExports) || value.requiredExports.length !== 1 || value.requiredExports[0] !== PRIVATE_CORE_EXPORT)) {
-    errors.push(`native.core.requiredExports must contain only ${PRIVATE_CORE_EXPORT}.`);
+  if (key === 'core' && JSON.stringify(value.requiredExports) !== JSON.stringify(PRIVATE_CORE_EXPORTS)) {
+    errors.push(`native.core.requiredExports must contain only ${PRIVATE_CORE_EXPORTS.join(', ')}.`);
   }
 }
 

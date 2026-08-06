@@ -1,6 +1,7 @@
 package runtime
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 )
@@ -14,6 +15,8 @@ const (
 	StateStopped      State = "stopped"
 	StateShutdown     State = "shutdown"
 )
+
+var ErrIllegalTransition = errors.New("illegal lifecycle transition")
 
 type Lifecycle struct {
 	mu    sync.RWMutex
@@ -35,11 +38,17 @@ func (l *Lifecycle) Transition(next State) error {
 	defer l.mu.Unlock()
 
 	if !transitionAllowed(l.state, next) {
-		return fmt.Errorf("illegal transition: %s -> %s", l.state, next)
+		return fmt.Errorf("%w: %s -> %s", ErrIllegalTransition, l.state, next)
 	}
 
 	l.state = next
 	return nil
+}
+
+func (l *Lifecycle) CanTransition(next State) bool {
+	l.mu.RLock()
+	defer l.mu.RUnlock()
+	return transitionAllowed(l.state, next)
 }
 
 func transitionAllowed(current, next State) bool {

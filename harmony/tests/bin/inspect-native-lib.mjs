@@ -14,10 +14,11 @@ const COMPONENT_ALLOWLIST_KEYS = {
   mihomoCore: 'mihomoCore',
   nodeAddon: 'nodeAddon'
 };
+const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
-  mihomoCore: [RAW_VERSION_EXPORT],
+  mihomoCore: [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT],
   nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;

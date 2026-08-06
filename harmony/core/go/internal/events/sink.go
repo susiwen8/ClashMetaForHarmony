@@ -4,6 +4,8 @@ import "sync"
 
 type Event struct {
 	Kind    string
+	Path    string
+	State   string
 	Message string
 }
 
@@ -35,3 +37,7 @@ func (b *Buffer) Events() []Event {
 	copy(cloned, b.events)
 	return cloned
 }
+
+type Discard struct{}
+
+func (Discard) Publish(Event) {}

@@ -50,16 +50,16 @@ function runGo(args) {
   });
 }
 
-async function goList(importPath) {
-  const result = await runGo(['list', '-find', '-e', '-json', importPath]);
+async function goList(importPath, runGoImpl = runGo) {
+  const result = await runGoImpl(['list', '-find', '-e', '-json', importPath]);
   if (result.code !== 0) {
     throw new Error(`go list failed for ${importPath}: ${result.stderr || result.stdout}`.trim());
   }
   return JSON.parse(result.stdout);
 }
 
-async function goDoc(symbolRef) {
-  return await runGo(['doc', '-src', symbolRef]);
+async function goDoc(importPath, symbolName, runGoImpl = runGo) {
+  return await runGoImpl(['doc', '-src', importPath, symbolName]);
 }
 
 async function readJson(filePath) {
@@ -70,15 +70,15 @@ async function readFile(filePath) {
   return await fs.readFile(filePath, 'utf8');
 }
 
-async function loadPackage(importPath) {
-  const pkg = await goList(importPath);
+async function loadPackage(importPath, { runGoImpl = runGo, readFileImpl = readFile } = {}) {
+  const pkg = await goList(importPath, runGoImpl);
   const files = await Promise.all(
     (pkg.GoFiles || []).map(async (name) => {
       const absolutePath = path.join(pkg.Dir, name);
       return {
         name,
         absolutePath,
-        source: await readFile(absolutePath),
+        source: await readFileImpl(absolutePath),
       };
     }),
   );
@@ -118,16 +118,19 @@ function auditFlags(files) {
   return findings;
 }
 
-async function resolveSymbol(importPath, definition) {
-  const loaded = await loadPackage(importPath);
+async function resolveSymbol(importPath, definition, { runGoImpl = runGo, readFileImpl = readFile } = {}) {
+  const loaded = await loadPackage(importPath, { runGoImpl, readFileImpl });
   const symbolRef = `${importPath}.${definition.goDocName}`;
-  const docResult = await goDoc(symbolRef);
+  const docResult = await goDoc(importPath, definition.goDocName, runGoImpl);
+  if (docResult.code !== 0 || docResult.stdout.trim() === '') {
+    throw new Error(`go doc failed for ${symbolRef}: ${(docResult.stderr || docResult.stdout || 'empty output').trim()}`);
+  }
   const fallback = scanForSymbol(loaded.files, definition.sourcePattern);
   if (!fallback) {
     throw new Error(`Unable to locate ${symbolRef} in pinned source`);
   }
 
-  const signature = docResult.code === 0 && docResult.stdout.trim() !== '' ? docResult.stdout.trim() : fallback.snippet;
+  const signature = docResult.stdout.trim();
   return {
     importPath,
     packageDir: normalizePath(path.relative(loaded.pkg.Root, loaded.pkg.Dir)) || '.',
@@ -163,11 +166,21 @@ function discoverSocksSymbol(loaded) {
   return exact;
 }
 
-export async function auditMihomoApi() {
-  await fs.mkdir(DEFAULT_GOCACHE, { recursive: true });
+export async function auditMihomoApi(options = {}) {
+  const fsApi = options.fsApi ?? fs;
+  const runGoImpl = options.runGoImpl ?? runGo;
+  const readJsonImpl = options.readJsonImpl ?? readJson;
+  const readFileImpl = options.readFileImpl ?? readFile;
+  const outputPath = options.outputPath ?? OUTPUT_PATH;
+  const writeOutput = options.writeOutput ?? true;
 
-  const upstreamLock = await readJson(UPSTREAM_LOCK_PATH);
-  const socksPackage = await loadPackage('github.com/metacubex/mihomo/listener/socks');
+  await fsApi.mkdir(DEFAULT_GOCACHE, { recursive: true });
+
+  const upstreamLock = options.upstreamLock ?? await readJsonImpl(UPSTREAM_LOCK_PATH);
+  const socksPackage = await loadPackage('github.com/metacubex/mihomo/listener/socks', {
+    runGoImpl,
+    readFileImpl
+  });
   const discoveredSocks = discoverSocksSymbol(socksPackage);
 
   const entries = await Promise.all([
@@ -178,7 +191,7 @@ export async function auditMihomoApi() {
       constructorInputs: ['path string'],
       ownership: 'caller owns the path and receives an immutable parsed config snapshot',
       requiredCloseOrder: [],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'ParseWithBytes',
       goDocName: 'ParseWithBytes',
@@ -186,7 +199,7 @@ export async function auditMihomoApi() {
       constructorInputs: ['buf []byte'],
       ownership: 'caller owns the buffer and receives an immutable parsed config snapshot',
       requiredCloseOrder: [],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'ApplyConfig',
       goDocName: 'ApplyConfig',
@@ -194,7 +207,7 @@ export async function auditMihomoApi() {
       constructorInputs: ['cfg *config.Config', 'force bool'],
       ownership: 'caller retains cfg; callee mutates global mihomo runtime state',
       requiredCloseOrder: ['Close local listeners before executor.Shutdown when embedding runtime'],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/listener/http', {
       symbol: 'NewWithAuthenticate',
       goDocName: 'NewWithAuthenticate',
@@ -202,7 +215,7 @@ export async function auditMihomoApi() {
       constructorInputs: ['addr string', 'tunnel C.Tunnel', 'authenticate bool', 'additions ...inbound.Addition'],
       ownership: 'caller owns returned *Listener and must Close it explicitly',
       requiredCloseOrder: ['Listener.Close', 'executor.Shutdown'],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/listener/socks', {
       symbol: discoveredSocks.name,
       goDocName: discoveredSocks.name,
@@ -210,15 +223,15 @@ export async function auditMihomoApi() {
       constructorInputs: ['addr string', 'tunnel C.Tunnel', 'additions ...inbound.Addition'],
       ownership: 'caller owns returned *Listener and must Close it explicitly',
       requiredCloseOrder: ['Listener.Close', 'executor.Shutdown'],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/tunnel/statistic', {
       symbol: 'DefaultManager.Range',
-      goDocName: '(*Manager).Range',
+      goDocName: 'Manager.Range',
       sourcePattern: /func \(m \*Manager\) Range\(f func\(c Tracker\) bool\)/u,
       constructorInputs: ['f func(c Tracker) bool'],
       ownership: 'borrowed tracker handles; callback may close trackers before global shutdown',
       requiredCloseOrder: ['DefaultManager.Range(Tracker.Close)', 'executor.Shutdown'],
-    }),
+    }, { runGoImpl, readFileImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'Shutdown',
       goDocName: 'Shutdown',
@@ -226,19 +239,20 @@ export async function auditMihomoApi() {
       constructorInputs: [],
       ownership: 'global shutdown entry point; caller owns call ordering and idempotence fences',
       requiredCloseOrder: ['Close listeners', 'Close tracked connections', 'executor.Shutdown'],
-    }),
+    }, { runGoImpl, readFileImpl }),
   ]);
 
   const payload = {
     schemaVersion: '1.0.0',
-    auditedAt: new Date().toISOString(),
     module: upstreamLock.module,
     version: upstreamLock.version,
     commit: upstreamLock.commit,
     symbols: entries,
   };
 
-  await fs.writeFile(OUTPUT_PATH, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  if (writeOutput) {
+    await fsApi.writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, 'utf8');
+  }
   return payload;
 }
 

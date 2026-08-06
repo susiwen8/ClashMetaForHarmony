@@ -22,7 +22,7 @@ const PROBE_COMPONENT_CONFIG = {
 const CORE_COMPONENT_CONFIG = {
   component: 'mihomoCore',
   artifactFileName: 'libcmfa_mihomo.so',
-  expectedExports: ['cmfa_mihomo_core_version_cstr_v1'],
+  expectedExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
   modulePath: 'core/go',
   packagePath: './cmd/cmfa_core',
   targetName: 'HarmonyOS 6/API 20/arm64'
@@ -154,6 +154,43 @@ async function readUpstreamLock({ upstreamLock, upstreamLockPath = UPSTREAM_LOCK
   return validateUpstreamLock(parsed);
 }
 
+async function readUpstreamApiLock({ upstreamApiLockPath = UPSTREAM_API_LOCK_PATH, fsApi = fs }) {
+  let raw;
+  try {
+    raw = await fsApi.readFile(upstreamApiLockPath, 'utf8');
+  } catch (error) {
+    throw Object.assign(new Error(error?.message ?? 'Failed to read upstream API lock'), {
+      code: error?.code ?? 'UPSTREAM_API_LOCK_READ_FAILED'
+    });
+  }
+
+  try {
+    return JSON.parse(raw);
+  } catch (error) {
+    throw Object.assign(new Error(error?.message ?? 'Failed to parse upstream API lock'), {
+      code: 'UPSTREAM_API_LOCK_INVALID'
+    });
+  }
+}
+
+function stableStringify(value) {
+  if (Array.isArray(value)) {
+    return `[${value.map((entry) => stableStringify(entry)).join(',')}]`;
+  }
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${stableStringify(value[key])}`).join(',')}}`;
+  }
+  return JSON.stringify(value);
+}
+
+function assertApiLockMatches(checkedIn, audited) {
+  if (stableStringify(checkedIn) !== stableStringify(audited)) {
+    throw Object.assign(new Error('Checked-in upstream.api-lock.json does not match the pinned mihomo audit output.'), {
+      code: 'UPSTREAM_API_LOCK_MISMATCH'
+    });
+  }
+}
+
 function deriveOverallResult(aggregateProof) {
   const probeResult = aggregateProof.components.probe?.result ?? 'incomplete';
   const coreResult = aggregateProof.components.mihomoCore?.result ?? 'incomplete';
@@ -184,8 +221,13 @@ export async function buildMihomoOhos(options = {}) {
       upstreamLockPath: options.upstreamLockPath,
       fsApi
     });
-    const apiLock = options.upstreamApiLock ?? await auditMihomoApi();
-    await fsApi.writeFile(UPSTREAM_API_LOCK_PATH, `${JSON.stringify(apiLock, null, 2)}\n`, 'utf8');
+    const checkedInApiLock = options.upstreamApiLock ?? await readUpstreamApiLock({
+      upstreamApiLockPath: options.upstreamApiLockPath,
+      fsApi
+    });
+    const auditMihomoApiImpl = options.auditMihomoApiImpl ?? auditMihomoApi;
+    const auditedApiLock = await auditMihomoApiImpl({ writeOutput: false });
+    assertApiLockMatches(checkedInApiLock, auditedApiLock);
     const buildId = computeBuildId({ version: upstreamLock.version, commit: upstreamLock.commit });
 
     const buildProbeComponentImpl = options.buildProbeComponentImpl ?? buildGoComponent;

@@ -11,7 +11,7 @@ import { inspectNativeLibrary } from '../../tests/bin/inspect-native-lib.mjs';
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const SIGNING_TOKEN_PATTERN = /(^|[\s"'(=\[])([^\s"'<>]*\.(?:p12|cer|p7b|pem|pfx))(?=$|[\s"'<>)}\]])/giu;
-const CORE_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
+const CORE_EXPORTS = ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'];
 const NODE_ADDON_ALLOWED_NEEDED = ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const CORE_ALLOWED_NEEDED = ['libc.so'];
 const TOOLCHAIN_LOCK_IDENTITY = 'harmony/toolchain.lock.json';
@@ -346,13 +346,13 @@ export function collectArtifactElfContractErrors(elf, artifactKind) {
     if (JSON.stringify(elf.allowedNeededLibraries) !== JSON.stringify(CORE_ALLOWED_NEEDED)) {
       errors.push('allowedNeededLibraries must match the core dependency contract');
     }
-    if (JSON.stringify(elf.requiredExports) !== JSON.stringify([CORE_EXPORT])) {
+    if (JSON.stringify(elf.requiredExports) !== JSON.stringify(CORE_EXPORTS)) {
       errors.push('requiredExports must match the core export contract');
     }
-    if (!Array.isArray(elf.exportedSymbols) || !elf.exportedSymbols.includes(CORE_EXPORT)) {
-      errors.push(`exportedSymbols must include ${CORE_EXPORT}`);
+    if (!Array.isArray(elf.exportedSymbols) || CORE_EXPORTS.some((symbol) => !elf.exportedSymbols.includes(symbol))) {
+      errors.push(`exportedSymbols must include ${CORE_EXPORTS.join(', ')}`);
     }
-    if (Array.isArray(elf.exportedSymbols) && elf.exportedSymbols.some((symbol) => symbol.startsWith('cmfa_') && symbol !== CORE_EXPORT)) {
+    if (Array.isArray(elf.exportedSymbols) && elf.exportedSymbols.some((symbol) => symbol.startsWith('cmfa_') && !CORE_EXPORTS.includes(symbol))) {
       errors.push('exportedSymbols must not expose extra cmfa_* symbols');
     }
   }

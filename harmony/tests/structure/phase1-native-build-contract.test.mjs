@@ -134,8 +134,8 @@ function createElfReport(component, overrides = {}) {
       architecture: 'AArch64',
       neededLibraries: ['libc.so'],
       allowedNeededLibraries: ['libc.so'],
-      exportedSymbols: ['cmfa_mihomo_core_version_cstr_v1'],
-      requiredExports: ['cmfa_mihomo_core_version_cstr_v1'],
+      exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+      requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
       failures: []
     };
 
@@ -1155,7 +1155,7 @@ test('verifyPhase1NativeManifest rejects persisted ELF reports that do not match
       ],
       artifacts: {
         rawCore: createArtifact('harmony/artifacts/libcmfa_mihomo.so', 'core-bytes', createElfReport('mihomoCore', {
-          exportedSymbols: ['_init', 'cmfa_mihomo_core_version_cstr_v1']
+          exportedSymbols: ['_init', 'cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
         })),
         prePackageCore: null,
         prePackageAddon: null,

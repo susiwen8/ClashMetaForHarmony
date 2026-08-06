@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	mihomocfg "github.com/metacubex/mihomo/config"
 	mihomoexecutor "github.com/metacubex/mihomo/hub/executor"
 )
 
@@ -16,17 +17,19 @@ var (
 )
 
 func ValidateFile(sandboxRoot, candidate string) error {
-	_, _, err := parseWithinSandbox(sandboxRoot, candidate)
+	_, _, err := parseWithinSandbox(sandboxRoot, candidate, mihomoexecutor.ParseWithPath)
 	return err
 }
 
-func parseWithinSandbox(sandboxRoot, candidate string) (string, any, error) {
+type ParseFunc func(path string) (*mihomocfg.Config, error)
+
+func parseWithinSandbox(sandboxRoot, candidate string, parse ParseFunc) (string, *mihomocfg.Config, error) {
 	resolvedPath, err := resolvePath(sandboxRoot, candidate)
 	if err != nil {
 		return "", nil, err
 	}
 
-	cfg, err := mihomoexecutor.ParseWithPath(resolvedPath)
+	cfg, err := parse(resolvedPath)
 	if err != nil {
 		return "", nil, err
 	}

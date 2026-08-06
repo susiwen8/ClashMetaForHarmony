@@ -29,7 +29,7 @@ const COMPONENT_CONFIG = {
   mihomoCore: {
     component: 'mihomoCore',
     artifactFileName: 'libcmfa_mihomo.so',
-    expectedExports: ['cmfa_mihomo_core_version_cstr_v1'],
+    expectedExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
     modulePath: 'core/go',
     packagePath: './cmd/cmfa_core',
     targetName: TARGET_NAME

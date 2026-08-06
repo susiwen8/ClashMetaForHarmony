@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { spawn as spawnChild } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -8,10 +9,13 @@ const probeHelperPath = new URL('../../tools/build-go-ohos-probe.mjs', import.me
 const coreHelperPath = new URL('../../tools/build-mihomo-ohos.mjs', import.meta.url);
 const inspectLibPath = new URL('../bin/inspect-native-lib.mjs', import.meta.url);
 const upstreamLockPath = new URL('../../core/go/upstream.lock.json', import.meta.url);
+const upstreamApiLockPath = new URL('../../core/go/upstream.api-lock.json', import.meta.url);
 const probeModulePath = new URL('../../core/go/probe/go.mod', import.meta.url);
 const coreMainPath = new URL('../../core/go/cmd/cmfa_core/main.go', import.meta.url);
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
+const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
+const CORE_EXPORTS = [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT];
 
 function joinFragments(parts) {
   return parts.join('');
@@ -25,6 +29,34 @@ const fakeTrustedGoPath = joinFragments(['/tr', 'usted/toolchains/go/bin/go']);
 const fakeUsrBinPath = joinFragments(['/us', 'r/bin']);
 const fakeSecretUrl = joinFragments(['https://', 'user', ':', 'token', '@example.invalid/private.zip']);
 const fakeWindowsSdkPath = joinFragments(['C:\\', 'Users\\me\\sdk']);
+const task9GoModCache = process.env.GOMODCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-mod-cache-task9']);
+const task9GoBuildCache = process.env.GOCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-build-cache-task9']);
+const task9GoProxy = process.env.GOPROXY || `file://${path.join(task9GoModCache, 'cache', 'download')}`;
+
+function createGoRunner(envOverrides = {}) {
+  return (args) => new Promise((resolve) => {
+    const child = spawnChild('go', args, {
+      cwd: path.join(harmonyRoot, 'core', 'go'),
+      env: { ...process.env, ...envOverrides },
+      shell: false,
+      stdio: ['ignore', 'pipe', 'pipe']
+    });
+
+    let stdout = '';
+    let stderr = '';
+    child.stdout.setEncoding('utf8');
+    child.stderr.setEncoding('utf8');
+    child.stdout.on('data', (chunk) => {
+      stdout += chunk;
+    });
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    child.on('close', (code) => {
+      resolve({ code, stdout, stderr });
+    });
+  });
+}
 
 test('Task 5 build surfaces exist and export the documented entry points', async () => {
   const [{ buildGoOhosProbe, GO_OHOS_PROOF_PATH }, { buildMihomoOhos }, { inspectNativeLibrary }] = await Promise.all([
@@ -54,7 +86,209 @@ test('Task 7 gives the real Go version getter one backend-private export', async
   const coreMainRaw = await fs.readFile(coreMainPath, 'utf8');
 
   assert.match(coreMainRaw, new RegExp(String.raw`//export ${RAW_VERSION_EXPORT}\b`, 'u'));
+  assert.match(coreMainRaw, new RegExp(String.raw`//export ${BUILD_INFO_EXPORT}\b`, 'u'));
   assert.doesNotMatch(coreMainRaw, /\/\/export cmfa_core_version\b/u);
+});
+
+test('Task 9 audit output is deterministic and omits volatile timestamps', async () => {
+  const [{ auditMihomoApi }] = await Promise.all([
+    import(new URL('../../tools/audit-mihomo-api.mjs', import.meta.url))
+  ]);
+
+  const packageRoots = {
+    'github.com/metacubex/mihomo/hub/executor': {
+      Dir: '/tmp/mihomo/hub/executor',
+      Root: '/tmp/mihomo',
+      GoFiles: ['executor.go']
+    },
+    'github.com/metacubex/mihomo/listener/http': {
+      Dir: '/tmp/mihomo/listener/http',
+      Root: '/tmp/mihomo',
+      GoFiles: ['server.go']
+    },
+    'github.com/metacubex/mihomo/listener/socks': {
+      Dir: '/tmp/mihomo/listener/socks',
+      Root: '/tmp/mihomo',
+      GoFiles: ['tcp.go']
+    },
+    'github.com/metacubex/mihomo/tunnel/statistic': {
+      Dir: '/tmp/mihomo/tunnel/statistic',
+      Root: '/tmp/mihomo',
+      GoFiles: ['manager.go']
+    }
+  };
+  const fileBodies = new Map([
+    ['/tmp/mihomo/hub/executor/executor.go', '//go:build amd64 || arm64\npackage executor\nfunc ParseWithPath(path string) (*config.Config, error) { return nil, nil }\nfunc ParseWithBytes(buf []byte) (*config.Config, error) { return nil, nil }\nfunc ApplyConfig(cfg *config.Config, force bool) {}\nfunc Shutdown() {}\n'],
+    ['/tmp/mihomo/listener/http/server.go', 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
+    ['/tmp/mihomo/listener/socks/tcp.go', 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
+    ['/tmp/mihomo/tunnel/statistic/manager.go', 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n']
+  ]);
+  const docBodies = new Map([
+    ['github.com/metacubex/mihomo/hub/executor|ParseWithPath', 'func ParseWithPath(path string) (*config.Config, error)'],
+    ['github.com/metacubex/mihomo/hub/executor|ParseWithBytes', 'func ParseWithBytes(buf []byte) (*config.Config, error)'],
+    ['github.com/metacubex/mihomo/hub/executor|ApplyConfig', 'func ApplyConfig(cfg *config.Config, force bool)'],
+    ['github.com/metacubex/mihomo/hub/executor|Shutdown', 'func Shutdown()'],
+    ['github.com/metacubex/mihomo/listener/http|NewWithAuthenticate', 'func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)'],
+    ['github.com/metacubex/mihomo/listener/socks|New', 'func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)'],
+    ['github.com/metacubex/mihomo/tunnel/statistic|Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)']
+  ]);
+  const runGoImpl = async (args) => {
+    if (args[0] === 'list') {
+      const payload = packageRoots[args.at(-1)];
+      return { code: 0, stdout: JSON.stringify(payload), stderr: '' };
+    }
+    if (args[0] === 'doc') {
+      const payload = docBodies.get(`${args[2]}|${args[3]}`);
+      return { code: 0, stdout: payload, stderr: '' };
+    }
+    throw new Error(`unexpected go call: ${args.join(' ')}`);
+  };
+  const first = await auditMihomoApi({
+    writeOutput: false,
+    runGoImpl,
+    upstreamLock: {
+      schemaVersion: '1.0.0',
+      module: 'github.com/metacubex/mihomo',
+      version: 'v1.19.29',
+      commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+      remote: 'https://github.com/MetaCubeX/mihomo',
+      ref: 'refs/tags/v1.19.29'
+    },
+    readFileImpl: async (filePath) => fileBodies.get(filePath)
+  });
+  const second = await auditMihomoApi({
+    writeOutput: false,
+    runGoImpl,
+    upstreamLock: {
+      schemaVersion: '1.0.0',
+      module: 'github.com/metacubex/mihomo',
+      version: 'v1.19.29',
+      commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+      remote: 'https://github.com/MetaCubeX/mihomo',
+      ref: 'refs/tags/v1.19.29'
+    },
+    readFileImpl: async (filePath) => fileBodies.get(filePath)
+  });
+
+  assert.deepEqual(first, second);
+  assert.equal('auditedAt' in first, false);
+});
+
+test('Task 9 audit hard-fails when go doc fails for a locked symbol', async () => {
+  const [{ auditMihomoApi }] = await Promise.all([
+    import(new URL('../../tools/audit-mihomo-api.mjs', import.meta.url))
+  ]);
+
+  await assert.rejects(
+    () => auditMihomoApi({
+      writeOutput: false,
+      runGoImpl: async (args) => {
+        if (args[0] === 'list') {
+          return {
+            code: 0,
+            stdout: JSON.stringify({
+              Dir: '/tmp/mihomo/listener/http',
+              Root: '/tmp/mihomo',
+              GoFiles: ['server.go']
+            }),
+            stderr: ''
+          };
+        }
+        if (args[0] === 'doc') {
+          return { code: 1, stdout: '', stderr: 'doc boom' };
+        }
+        throw new Error(`unexpected go invocation: ${args.join(' ')}`);
+      },
+      readJsonImpl: async (filePath) => {
+        if (String(filePath).endsWith('upstream.lock.json')) {
+          return {
+            schemaVersion: '1.0.0',
+            module: 'github.com/metacubex/mihomo',
+            version: 'v1.19.29',
+            commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+            remote: 'https://github.com/MetaCubeX/mihomo',
+            ref: 'refs/tags/v1.19.29'
+          };
+        }
+        throw new Error(`unexpected json read: ${filePath}`);
+      },
+      readFileImpl: async () => 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }'
+    }),
+    /go doc failed/u
+  );
+});
+
+test('Task 9 core helper refuses checked-in API-lock drift before starting a build and does not rewrite the lock', async () => {
+  const [{ buildMihomoOhos }] = await Promise.all([
+    import(coreHelperPath)
+  ]);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-api-lock-drift-'));
+  const fakeHarmonyRoot = path.join(tempRoot, 'harmony');
+  const fakeLockPath = path.join(fakeHarmonyRoot, 'core', 'go', 'upstream.api-lock.json');
+  let probeCalled = false;
+  let coreCalled = false;
+
+  await fs.mkdir(path.dirname(fakeLockPath), { recursive: true });
+  const checkedInLock = {
+    schemaVersion: '1.0.0',
+    module: 'github.com/metacubex/mihomo',
+    version: 'v1.19.29',
+    commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+    symbols: [
+      {
+        importPath: 'github.com/metacubex/mihomo/listener/http',
+        symbol: 'NewWithAuthenticate',
+        signatureDigest: 'old-digest',
+        ownership: 'old-ownership',
+        requiredCloseOrder: []
+      }
+    ]
+  };
+  await fs.writeFile(fakeLockPath, `${JSON.stringify(checkedInLock, null, 2)}\n`, 'utf8');
+
+  try {
+    const proof = await buildMihomoOhos({
+      harmonyRoot: fakeHarmonyRoot,
+      upstreamLock: {
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        remote: 'https://github.com/MetaCubeX/mihomo',
+        ref: 'refs/tags/v1.19.29'
+      },
+      upstreamApiLockPath: fakeLockPath,
+      auditMihomoApiImpl: async () => ({
+        ...checkedInLock,
+        symbols: [
+          {
+            importPath: 'github.com/metacubex/mihomo/listener/http',
+            symbol: 'NewWithAuthenticate',
+            signatureDigest: 'new-digest',
+            ownership: 'new-ownership',
+            requiredCloseOrder: ['Listener.Close']
+          }
+        ]
+      }),
+      buildProbeComponentImpl: async () => {
+        probeCalled = true;
+        throw new Error('probe build should not run on API-lock drift');
+      },
+      buildCoreComponentImpl: async () => {
+        coreCalled = true;
+        throw new Error('core build should not run on API-lock drift');
+      }
+    });
+
+    assert.equal(proof.result, 'fail');
+    assert.equal(probeCalled, false);
+    assert.equal(coreCalled, false);
+    assert.ok(proof.failures.some((entry) => entry.code === 'UPSTREAM_API_LOCK_MISMATCH'));
+    const persisted = await fs.readFile(fakeLockPath, 'utf8');
+    assert.equal(persisted, `${JSON.stringify(checkedInLock, null, 2)}\n`);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('Task 5 pins mihomo upstream metadata and never leaks absolute host paths into incomplete proof output', async () => {
@@ -272,7 +506,7 @@ test('Task 5 probe helper does not allow caller options to override the probe bu
       modulePath: 'core/go',
       packagePath: './cmd/cmfa_core',
       artifactFileName: 'libcmfa_mihomo.so',
-      expectedExports: [RAW_VERSION_EXPORT],
+      expectedExports: CORE_EXPORTS,
       targetName: 'attacker target',
       toolchainInspectorImpl: async () => ({
         report: {
@@ -472,6 +706,20 @@ test('Task 5 core helper aggregates fresh probe and mihomo builds into one canon
   try {
     const proof = await buildMihomoOhos({
       harmonyRoot: fakeHarmonyRoot,
+      upstreamApiLock: {
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        symbols: []
+      },
+      auditMihomoApiImpl: async () => ({
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        symbols: []
+      }),
       buildProbeComponentImpl: async () => {
         calls.push('probe');
         return {
@@ -493,7 +741,7 @@ test('Task 5 core helper aggregates fresh probe and mihomo builds into one canon
           artifact: { path: 'harmony/artifacts/libcmfa_mihomo.so', headerPath: 'harmony/artifacts/libcmfa_mihomo.h', exists: true },
           build: { command: ['go', 'build', '-mod=readonly', '-ldflags', input.extraGoArgs[1], './cmd/cmfa_core'], env: { GOOS: 'linux' } },
           checks: { toolchain: { result: 'pass' }, build: { result: 'pass' }, elfInspection: { result: 'pass' } },
-          elfInspection: { result: 'pass', exportedSymbols: [RAW_VERSION_EXPORT], failures: [] },
+          elfInspection: { result: 'pass', exportedSymbols: CORE_EXPORTS, failures: [] },
           failures: [],
           timestamps: { startedAt: '2026-08-03T00:00:02.000Z', completedAt: '2026-08-03T00:00:03.000Z' }
         };
@@ -551,6 +799,20 @@ test('Task 5 core helper never reports overall pass when a component fails and s
         remote: 'https://github.com/MetaCubeX/mihomo',
         ref: 'refs/tags/v1.19.29'
       },
+      upstreamApiLock: {
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        symbols: []
+      },
+      auditMihomoApiImpl: async () => ({
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        symbols: []
+      }),
       buildProbeComponentImpl: async () => ({
         component: 'probe',
         result: 'pass',
@@ -689,7 +951,7 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-mihomo-elf-'));
   const fakeLibPath = path.join(tempRoot, 'libcmfa_mihomo.so');
 
-  const makeReadelfOutput = ({ neededLibraries = ['libc.so'], exportedSymbols = [RAW_VERSION_EXPORT] } = {}) => ({
+  const makeReadelfOutput = ({ neededLibraries = ['libc.so'], exportedSymbols = CORE_EXPORTS } = {}) => ({
     header: 'ELF Header:\n  Machine:                           AArch64\n',
     dynamic: neededLibraries.map((entry) => `0x0000000000000001 (NEEDED)             Shared library: [${entry}]`).join('\n'),
     symbols: exportedSymbols.map((entry, index) => `    ${index + 1}: 0000000000000000     0 FUNC    GLOBAL DEFAULT   12 ${entry}`).join('\n')
@@ -737,10 +999,10 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
   try {
     const validInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],
-      exportedSymbols: [RAW_VERSION_EXPORT]
+      exportedSymbols: CORE_EXPORTS
     });
     assert.equal(validInspection.result, 'pass');
-    assert.deepEqual(validInspection.exportedSymbols, [RAW_VERSION_EXPORT]);
+    assert.deepEqual(validInspection.exportedSymbols, CORE_EXPORTS);
     assert.deepEqual(validInspection.failures, []);
 
     const forbiddenInspection = await inspectSynthetic({
@@ -752,21 +1014,21 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
 
     const mismatchInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],
-      exportedSymbols: [RAW_VERSION_EXPORT, 'cmfa_extra_symbol']
+      exportedSymbols: [...CORE_EXPORTS, 'cmfa_extra_symbol']
     });
     assert.equal(mismatchInspection.result, 'fail');
     assert.ok(mismatchInspection.failures.some((entry) => entry.code === 'EXPORT_SET_MISMATCH'));
 
     const sentinelInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],
-      exportedSymbols: [RAW_VERSION_EXPORT, 'cmfa_Test_Helper']
+      exportedSymbols: [...CORE_EXPORTS, 'cmfa_Test_Helper']
     });
     assert.equal(sentinelInspection.result, 'fail');
     assert.ok(sentinelInspection.failures.some((entry) => entry.code === 'EXPORT_SENTINEL_FORBIDDEN' && entry.detail === 'cmfa_Test_Helper'));
 
     const libdlInspection = await inspectSynthetic({
       neededLibraries: ['libc.so', 'libdl.so'],
-      exportedSymbols: [RAW_VERSION_EXPORT]
+      exportedSymbols: CORE_EXPORTS
     });
     assert.equal(libdlInspection.result, 'fail');
     assert.ok(libdlInspection.failures.some((entry) => entry.code === 'LIBDL_FORBIDDEN' && entry.detail === 'libdl.so'));

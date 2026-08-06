@@ -71,7 +71,7 @@ function createPassProof() {
         sizeBytes: 768,
         elfMachine: 'AArch64',
         exportListSha256: DIGEST_B,
-        requiredExports: ['cmfa_mihomo_core_version_cstr_v1']
+        requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
       }
     },
     device: {
@@ -225,7 +225,7 @@ test('Phase 1 merged pass proof requires fresh app evidence and exact native has
     ['HAP digest mismatch', (proof) => { proof.hap.sha256 = DIGEST_C; }, /HAP digest/u],
     ['core digest missing', (proof) => { proof.native.core.sha256 = null; }, /native\.core\.sha256/u],
     ['wrong architecture', (proof) => { proof.native.addon.elfMachine = 'x86_64'; }, /AArch64/u],
-    ['old conflicting export admitted', (proof) => { proof.native.core.requiredExports = ['cmfa_core_version']; }, /cmfa_mihomo_core_version_cstr_v1/u],
+    ['old conflicting export admitted', (proof) => { proof.native.core.requiredExports = ['cmfa_core_version']; }, /cmfa_mihomo_core_build_info_json_cstr_v1|cmfa_mihomo_core_version_cstr_v1/u],
     ['required self-test check missing', (proof) => { proof.checks.pop(); }, /unsubscribeSilence/u],
     ['typed error absent', (proof) => { proof.app.lastError = null; }, /typed CoreError/u]
   ];
@@ -311,8 +311,8 @@ test('Phase 1 runner records a simulator target as incomplete rather than a devi
           elf: {
             result: 'pass',
             architecture: 'AArch64',
-            exportedSymbols: ['cmfa_mihomo_core_version_cstr_v1'],
-            requiredExports: ['cmfa_mihomo_core_version_cstr_v1']
+            exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+            requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
           }
         }
       }
@@ -422,8 +422,8 @@ test('Phase 1 runner preserves a valid failing app proof as the final device fai
           elf: {
             result: 'pass',
             architecture: 'AArch64',
-            exportedSymbols: ['cmfa_mihomo_core_version_cstr_v1'],
-            requiredExports: ['cmfa_mihomo_core_version_cstr_v1']
+            exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+            requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
           }
         }
       }
