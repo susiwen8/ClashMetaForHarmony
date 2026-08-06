@@ -11,6 +11,7 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strings"
 	"time"
@@ -32,6 +33,7 @@ type HTTPSRequest struct {
 	OriginURL          string
 	CAPEM              []byte
 	ExpectedBodySHA256 string
+	AwaitTracker       func(context.Context, FlowObservation) (TrackerRecord, error)
 }
 
 type HTTPSResult struct {
@@ -47,6 +49,7 @@ type HTTPSResult struct {
 	CompletedAt        time.Time
 	ClientLocalAddress string
 	ClientRemoteAddress string
+	Tracker            TrackerRecord
 }
 
 type Error struct {
@@ -60,6 +63,23 @@ func (e *Error) Error() string {
 		return ""
 	}
 	return fmt.Sprintf("%s (%s): %s", e.Code, e.Stage, e.Detail)
+}
+
+type FlowObservation struct {
+	ProbeRunID          string
+	Protocol            Protocol
+	TargetAddress       string
+	ClientLocalAddress  string
+	ClientRemoteAddress string
+	OriginURL           string
+}
+
+type TrackerRecord struct {
+	ConnectionID       string
+	SourceAddress      string
+	DestinationAddress string
+	InboundType        string
+	OpenedAt           time.Time
 }
 
 func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
@@ -153,6 +173,23 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	}
 	defer response.Body.Close()
 
+	awaitTracker := request.AwaitTracker
+	if awaitTracker == nil {
+		awaitTracker = AwaitRealTracker
+	}
+	trackerRecord, err := awaitTracker(ctx, FlowObservation{
+		ProbeRunID:          request.ProbeRunID,
+		Protocol:            request.Protocol,
+		TargetAddress:       targetAddress,
+		ClientLocalAddress:  result.ClientLocalAddress,
+		ClientRemoteAddress: result.ClientRemoteAddress,
+		OriginURL:           request.OriginURL,
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Tracker = trackerRecord
+
 	bodyReader := io.LimitReader(response.Body, maxResponseBodyBytes+1)
 	bodyHasher := sha256.New()
 	bodyBytes, err := io.Copy(bodyHasher, bodyReader)
@@ -181,6 +218,14 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	}
 
 	return result, nil
+}
+
+func sourcePortFromAddress(address string) (uint16, error) {
+	addrPort, err := netip.ParseAddrPort(address)
+	if err != nil {
+		return 0, &Error{Code: "CLIENT_ADDRESS_INVALID", Stage: "tracker", Detail: err.Error()}
+	}
+	return addrPort.Port(), nil
 }
 
 func dialTunnel(ctx context.Context, protocol Protocol, listenerAddress string, targetAddress string) (net.Conn, *bufio.Reader, error) {

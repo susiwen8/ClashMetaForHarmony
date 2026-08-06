@@ -36,6 +36,23 @@ function parseArgs(argv) {
   return args;
 }
 
+async function resolveRepoScopedBodyFile(bodyFile) {
+  const resolved = path.resolve(bodyFile);
+  const relative = path.relative(repoRoot, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw new Error('--body-file resolves outside the repository');
+  }
+  const [realRepoRoot, realBodyFile] = await Promise.all([
+    fsp.realpath(repoRoot),
+    fsp.realpath(resolved),
+  ]);
+  const realRelative = path.relative(realRepoRoot, realBodyFile);
+  if (realRelative.startsWith('..') || path.isAbsolute(realRelative)) {
+    throw new Error('--body-file resolves outside the repository');
+  }
+  return realBodyFile;
+}
+
 async function generateCertificate(originRoot, host) {
   await fsp.mkdir(originRoot, { recursive: true });
   const keyPath = path.join(originRoot, 'origin-key.pem');
@@ -92,7 +109,8 @@ IP.1 = 127.0.0.1
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const [host, rawPort] = args.bind.split(':');
-  const body = await fsp.readFile(path.resolve(repoRoot, args.bodyFile), 'utf8');
+  const bodyPath = await resolveRepoScopedBodyFile(args.bodyFile);
+  const body = await fsp.readFile(bodyPath, 'utf8');
   const originId = crypto.randomUUID();
   const bodySha256 = crypto.createHash('sha256').update(body).digest('hex');
   const originRoot = path.join(artifactsRoot, originId);
@@ -141,11 +159,23 @@ async function main() {
   };
   process.stdout.write(`${JSON.stringify(payload)}\n`);
 
+  let shuttingDown = false;
   const shutdown = () => {
-    server.close(() => process.exit(0));
+    if (shuttingDown) {
+      return;
+    }
+    shuttingDown = true;
+    server.closeAllConnections?.();
+    server.closeIdleConnections?.();
+    const forcedExit = setTimeout(() => process.exit(0), 250);
+    forcedExit.unref();
+    server.close(() => {
+      clearTimeout(forcedExit);
+      process.exit(0);
+    });
   };
-  process.on('SIGINT', shutdown);
-  process.on('SIGTERM', shutdown);
+  process.once('SIGINT', shutdown);
+  process.once('SIGTERM', shutdown);
 }
 
 main().catch((error) => {

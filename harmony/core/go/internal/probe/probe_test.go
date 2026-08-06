@@ -17,6 +17,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	configpkg "github.com/clashmetaforandroid/harmony/core/go/internal/config"
+	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 )
 
 const (
@@ -78,6 +81,9 @@ func TestHTTPSProbeThroughHTTPConnectAndSOCKS5(t *testing.T) {
 				OriginURL:         origin.info.OriginURL,
 				CAPEM:             []byte(origin.info.CAPEM),
 				ExpectedBodySHA256: origin.bodyHash,
+				AwaitTracker: func(context.Context, FlowObservation) (TrackerRecord, error) {
+					return TrackerRecord{}, nil
+				},
 			})
 			if err != nil {
 				t.Fatalf("HTTPS(...) returned error: %v", err)
@@ -137,6 +143,9 @@ func TestHTTPSProbeReturnsStructuredErrors(t *testing.T) {
 		OriginURL:         origin.info.OriginURL,
 		CAPEM:             []byte(origin.info.CAPEM),
 		ExpectedBodySHA256: strings.Repeat("0", 64),
+		AwaitTracker: func(context.Context, FlowObservation) (TrackerRecord, error) {
+			return TrackerRecord{}, nil
+		},
 	})
 
 	var probeErr *Error
@@ -151,6 +160,66 @@ func TestHTTPSProbeReturnsStructuredErrors(t *testing.T) {
 	}
 	if probeErr.Detail == "" {
 		t.Fatal("probe error detail must be populated")
+	}
+}
+
+func TestHTTPSProbeThroughRealMihomoListenersIncludesTracker(t *testing.T) {
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+
+	origin := startOriginProcess(t)
+	defer origin.stop(t)
+
+	proxy := startLocalProxy(t)
+	defer stopLocalProxy(t, proxy)
+
+	for _, testCase := range []struct {
+		name                string
+		protocol            Protocol
+		listenerAddress     string
+		expectedInboundType string
+	}{
+		{
+			name:                "http_connect",
+			protocol:            ProtocolHTTPConnect,
+			listenerAddress:     proxy.Snapshot().HTTPAddress,
+			expectedInboundType: "HTTP",
+		},
+		{
+			name:                "socks5",
+			protocol:            ProtocolSOCKS5,
+			listenerAddress:     proxy.Snapshot().SOCKSAddress,
+			expectedInboundType: "Socks5",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			result, err := HTTPS(ctx, HTTPSRequest{
+				ProbeRunID:          fmt.Sprintf("mihomo-%s", testCase.name),
+				Protocol:            testCase.protocol,
+				ListenerAddress:     testCase.listenerAddress,
+				OriginURL:           origin.info.OriginURL,
+				CAPEM:               []byte(origin.info.CAPEM),
+				ExpectedBodySHA256:  origin.bodyHash,
+			})
+			if err != nil {
+				t.Fatalf("HTTPS(...) through mihomo returned error: %v", err)
+			}
+			if result.Tracker.ConnectionID == "" {
+				t.Fatal("Tracker.ConnectionID must be populated")
+			}
+			if result.Tracker.SourceAddress == "" {
+				t.Fatal("Tracker.SourceAddress must be populated")
+			}
+			if result.Tracker.DestinationAddress != origin.info.Address {
+				t.Fatalf("Tracker.DestinationAddress = %q, want %q", result.Tracker.DestinationAddress, origin.info.Address)
+			}
+			if result.Tracker.InboundType != testCase.expectedInboundType {
+				t.Fatalf("Tracker.InboundType = %q, want %q", result.Tracker.InboundType, testCase.expectedInboundType)
+			}
+			if result.Tracker.OpenedAt.IsZero() {
+				t.Fatal("Tracker.OpenedAt must be populated")
+			}
+		})
 	}
 }
 
@@ -196,6 +265,42 @@ func startOriginProcess(t *testing.T) *originProcess {
 		info:     info,
 		stderr:   stderr,
 		bodyHash: hex.EncodeToString(sum[:]),
+	}
+}
+
+func startLocalProxy(t *testing.T) *runtimepkg.LocalProxy {
+	t.Helper()
+
+	repoRoot := repoRootFromTestFile(t)
+	configPath := filepath.Join(repoRoot, "harmony", "tests", "fixtures", "phase2-match-direct.yaml")
+	proxy := runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
+		Prepare: func(path string) error {
+			sandboxRoot := filepath.Dir(path)
+			candidate := filepath.Base(path)
+			return configpkg.NewLoader(sandboxRoot).Load(candidate)
+		},
+	})
+	snapshot, err := proxy.Start(runtimepkg.StartOptions{
+		ConfigPath:         configPath,
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("start local proxy: %v (snapshot=%+v)", err, snapshot)
+	}
+	if snapshot.HTTPAddress == "" || snapshot.SOCKSAddress == "" {
+		t.Fatalf("proxy snapshot missing listener addresses: %+v", snapshot)
+	}
+	return proxy
+}
+
+func stopLocalProxy(t *testing.T, proxy *runtimepkg.LocalProxy) {
+	t.Helper()
+	if proxy == nil {
+		return
+	}
+	if _, err := proxy.Stop(); err != nil {
+		t.Fatalf("stop local proxy: %v", err)
 	}
 }
 

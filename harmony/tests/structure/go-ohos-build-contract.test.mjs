@@ -130,7 +130,12 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     'github.com/metacubex/mihomo/tunnel/statistic': {
       Dir: '/tmp/mihomo/tunnel/statistic',
       Root: '/tmp/mihomo',
-      GoFiles: ['manager.go']
+      GoFiles: ['manager.go', 'tracker.go']
+    },
+    'github.com/metacubex/mihomo/constant': {
+      Dir: '/tmp/mihomo/constant',
+      Root: '/tmp/mihomo',
+      GoFiles: ['metadata.go']
     }
   };
   const fileBodies = new Map([
@@ -138,7 +143,9 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     ['/tmp/mihomo/listener/http/server.go', 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
     ['/tmp/mihomo/listener/socks/tcp.go', 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
     ['/tmp/mihomo/tunnel/tunnel.go', 'package tunnel\ntype tunnel struct{}\nvar Tunnel = tunnel{}\n'],
-    ['/tmp/mihomo/tunnel/statistic/manager.go', 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n']
+    ['/tmp/mihomo/tunnel/statistic/manager.go', 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n'],
+    ['/tmp/mihomo/tunnel/statistic/tracker.go', 'package statistic\ntype Tracker interface {\n\tID() string\n\tInfo() *TrackerInfo\n}\ntype TrackerInfo struct {\n\tMetadata *C.Metadata\n\tStart time.Time\n}\nfunc (tt *tcpTracker) ID() string { return tt.UUID.String() }\nfunc (tt *tcpTracker) Info() *TrackerInfo { return tt.TrackerInfo }\n'],
+    ['/tmp/mihomo/constant/metadata.go', 'package constant\ntype Type int\nfunc (t Type) String() string { return \"HTTP\" }\ntype Metadata struct {\n\tType Type\n\tSrcPort uint16\n\tDstPort uint16\n}\nfunc (m *Metadata) RemoteAddress() string { return \"127.0.0.1:443\" }\nfunc (m *Metadata) SourceAddress() string { return \"127.0.0.1:12345\" }\n']
   ]);
   const docBodies = new Map([
     ['github.com/metacubex/mihomo/hub/executor.ParseWithPath', 'func ParseWithPath(path string) (*config.Config, error)'],
@@ -148,14 +155,21 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     ['github.com/metacubex/mihomo/listener/http.NewWithAuthenticate', 'func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)'],
     ['github.com/metacubex/mihomo/listener/socks.New', 'func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)'],
     ['github.com/metacubex/mihomo/tunnel.Tunnel', 'var Tunnel = tunnel{}'],
-    ['github.com/metacubex/mihomo/tunnel/statistic.Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)']
+    ['github.com/metacubex/mihomo/tunnel/statistic.Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)'],
+    ['github.com/metacubex/mihomo/tunnel/statistic.Tracker.ID', 'func (tt *tcpTracker) ID() string'],
+    ['github.com/metacubex/mihomo/tunnel/statistic.Tracker.Info', 'func (tt *tcpTracker) Info() *TrackerInfo'],
+    ['github.com/metacubex/mihomo/tunnel/statistic.TrackerInfo', 'type TrackerInfo struct { Metadata *C.Metadata; Start time.Time }'],
+    ['github.com/metacubex/mihomo/constant.Metadata.RemoteAddress', 'func (m *Metadata) RemoteAddress() string'],
+    ['github.com/metacubex/mihomo/constant.Metadata.SourceAddress', 'func (m *Metadata) SourceAddress() string'],
+    ['github.com/metacubex/mihomo/constant.Type.String', 'func (t Type) String() string']
   ]);
   const dirEntries = new Map([
     ['/tmp/mihomo/hub/executor', [{ name: 'executor.go', isFile: () => true }]],
     ['/tmp/mihomo/listener/http', [{ name: 'server.go', isFile: () => true }]],
     ['/tmp/mihomo/listener/socks', [{ name: 'tcp.go', isFile: () => true }]],
     ['/tmp/mihomo/tunnel', [{ name: 'tunnel.go', isFile: () => true }]],
-    ['/tmp/mihomo/tunnel/statistic', [{ name: 'manager.go', isFile: () => true }]]
+    ['/tmp/mihomo/tunnel/statistic', [{ name: 'manager.go', isFile: () => true }, { name: 'tracker.go', isFile: () => true }]],
+    ['/tmp/mihomo/constant', [{ name: 'metadata.go', isFile: () => true }]]
   ]);
   const runGoImpl = async ({ args }) => {
     if (args[0] === 'list') {
@@ -205,6 +219,17 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     /var Tunnel = tunnel\{\}/u.test(entry.signature) &&
     /global shared tunnel/u.test(entry.ownership)
   ));
+  assert.ok(first.symbols.some((entry) =>
+    entry.importPath === 'github.com/metacubex/mihomo/tunnel/statistic' &&
+    entry.symbol === 'Tracker.Info' &&
+    /TrackerInfo/u.test(entry.signature) &&
+    /borrowed live tracker metadata/u.test(entry.ownership)
+  ));
+  assert.ok(first.symbols.some((entry) =>
+    entry.importPath === 'github.com/metacubex/mihomo/constant' &&
+    entry.symbol === 'Metadata.SourceAddress' &&
+    /SourceAddress/u.test(entry.signature)
+  ));
 });
 
 test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir go files for risk', async () => {
@@ -236,7 +261,10 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
           return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel'), Root: tempRoot, GoFiles: ['tunnel.go'] }), stderr: '' };
         }
         if (importPath === 'github.com/metacubex/mihomo/tunnel/statistic') {
-          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel', 'statistic'), Root: tempRoot, GoFiles: ['manager.go'] }), stderr: '' };
+          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel', 'statistic'), Root: tempRoot, GoFiles: ['manager.go', 'tracker.go'] }), stderr: '' };
+        }
+        if (importPath === 'github.com/metacubex/mihomo/constant') {
+          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'constant'), Root: tempRoot, GoFiles: ['metadata.go'] }), stderr: '' };
         }
         return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'hub', 'executor'), Root: tempRoot, GoFiles: ['executor.go'] }), stderr: '' };
       }
@@ -262,6 +290,8 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
         if (filePath.endsWith('tcp.go')) return 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n';
         if (filePath.endsWith(`${path.sep}tunnel.go`)) return 'package tunnel\ntype tunnel struct{}\nvar Tunnel = tunnel{}\n';
         if (filePath.endsWith('manager.go')) return 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n';
+        if (filePath.endsWith('tracker.go')) return 'package statistic\ntype Tracker interface { ID() string; Info() *TrackerInfo }\ntype TrackerInfo struct { Metadata *C.Metadata; Start time.Time }\nfunc (tt *tcpTracker) ID() string { return tt.UUID.String() }\nfunc (tt *tcpTracker) Info() *TrackerInfo { return tt.TrackerInfo }\n';
+        if (filePath.endsWith('metadata.go')) return 'package constant\ntype Type int\nfunc (t Type) String() string { return \"HTTP\" }\ntype Metadata struct { Type Type; SrcPort uint16; DstPort uint16 }\nfunc (m *Metadata) RemoteAddress() string { return \"127.0.0.1:443\" }\nfunc (m *Metadata) SourceAddress() string { return \"127.0.0.1:12345\" }\n';
         return await fs.readFile(filePath, 'utf8');
       },
       readDirImpl: async (dirPath) => {
@@ -279,7 +309,10 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
           return [{ name: 'tunnel.go', isFile: () => true }];
         }
         if (dirPath.endsWith(path.join('tunnel', 'statistic'))) {
-          return [{ name: 'manager.go', isFile: () => true }];
+          return [{ name: 'manager.go', isFile: () => true }, { name: 'tracker.go', isFile: () => true }];
+        }
+        if (dirPath.endsWith(path.join('constant'))) {
+          return [{ name: 'metadata.go', isFile: () => true }];
         }
         if (dirPath.endsWith(path.join('hub', 'executor'))) {
           return [{ name: 'executor.go', isFile: () => true }];
