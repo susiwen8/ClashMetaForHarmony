@@ -413,6 +413,49 @@ test('Phase 2 origin parser accepts split JSONL records and ignores wrong-run ob
   assert.ok(snapshot.invalid.some((entry) => /runId mismatch/u.test(entry.error)));
 });
 
+test('Phase 2 startOriginProcess forwards the exact runId into the origin CLI argv seam', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const originModule = await import(pathToFileURL(ORIGIN_MODULE_PATH).href);
+  const observed = { command: null, args: null };
+
+  const handle = await runner.startOriginProcess({
+    repoRoot: REPO_ROOT,
+    originBodyPath: path.join(REPO_ROOT, 'harmony', 'tests', 'fixtures', 'origin-body.txt'),
+    runId: EXPECTED_RUN_ID,
+    spawnImpl: (command, args) => {
+      observed.command = command;
+      observed.args = args;
+      const child = new EventEmitter();
+      child.stdout = new EventEmitter();
+      child.stderr = new EventEmitter();
+      child.stdout.setEncoding = () => {};
+      child.stderr.setEncoding = () => {};
+      child.kill = () => {
+        setImmediate(() => child.emit('exit', 0, null));
+      };
+      setImmediate(() => {
+        child.stdout.emit('data', `${JSON.stringify(originModule.createStartedRecord({
+          runId: EXPECTED_RUN_ID,
+          originId: 'origin-123',
+          originUrl: 'https://127.0.0.1:18443/',
+          address: '127.0.0.1:18443',
+          caPem: certPemLiteral,
+          bodySha256: digest('e'),
+          bindHost: '127.0.0.1',
+          files: { [certPathKey]: certPemPath, [keyPathKey]: keyPemPath },
+          pid: 4312
+        }))}\n`);
+      });
+      return child;
+    }
+  });
+
+  assert.equal(observed.command, 'node');
+  assert.ok(observed.args.includes('--run-id'));
+  assert.equal(observed.args[observed.args.indexOf('--run-id') + 1], EXPECTED_RUN_ID);
+  await handle.stop();
+});
+
 test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays plus wrong originRunId', async () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
   const canonical = await readAppEvidenceFixture();
@@ -629,8 +672,9 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
       resolved: { paths: { hdc: '/sdk/hdc' } }
     }),
     execImpl,
-    startOriginImpl: async () => {
+    startOriginImpl: async (options) => {
       events.push('startOrigin');
+      assert.equal(options.runId, EXPECTED_RUN_ID);
       const startedRecord = originModule.createStartedRecord({
         runId: EXPECTED_RUN_ID,
         originId: 'origin-123',

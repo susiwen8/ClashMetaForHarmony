@@ -1217,7 +1217,8 @@ export async function runPhase2DeviceProof({
     try {
       originHandle = await startOriginImpl({
         repoRoot,
-        originBodyPath: originBodyDigest.absolutePath
+        originBodyPath: originBodyDigest.absolutePath,
+        runId: proof.runId
       });
     } catch (error) {
       pushFailure(proof, error?.code ?? 'ORIGIN_START_FAILED', sanitizeText(error?.message ?? 'Unable to start the HTTPS origin.', replacements), 'origin');
