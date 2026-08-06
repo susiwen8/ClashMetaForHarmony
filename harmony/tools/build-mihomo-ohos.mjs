@@ -1,13 +1,16 @@
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
+import { auditMihomoApi } from './audit-mihomo-api.mjs';
 import { buildGoComponent, GO_OHOS_PROOF_PATH } from './build-go-ohos-probe.mjs';
 import { createRedactionReplacements, sanitizeForPersistence, sanitizeText } from './lib/proof-redaction.mjs';
 
 const HARMONY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const UPSTREAM_LOCK_PATH = path.join(HARMONY_ROOT, 'core', 'go', 'upstream.lock.json');
+const UPSTREAM_API_LOCK_PATH = path.join(HARMONY_ROOT, 'core', 'go', 'upstream.api-lock.json');
 const PROBE_COMPONENT_CONFIG = {
   component: 'probe',
   artifactFileName: 'libcmfa_probe.so',
@@ -163,6 +166,10 @@ function deriveOverallResult(aggregateProof) {
   return 'incomplete';
 }
 
+function computeBuildId({ version, commit }) {
+  return crypto.createHash('sha256').update(`${version}|${commit}|cmfa-harmony-v1`).digest('hex').slice(0, 16);
+}
+
 export async function buildMihomoOhos(options = {}) {
   const proofPath = options.proofPath ?? GO_OHOS_PROOF_PATH;
   const harmonyRoot = options.harmonyRoot ?? HARMONY_ROOT;
@@ -177,6 +184,9 @@ export async function buildMihomoOhos(options = {}) {
       upstreamLockPath: options.upstreamLockPath,
       fsApi
     });
+    const apiLock = options.upstreamApiLock ?? await auditMihomoApi();
+    await fsApi.writeFile(UPSTREAM_API_LOCK_PATH, `${JSON.stringify(apiLock, null, 2)}\n`, 'utf8');
+    const buildId = computeBuildId({ version: upstreamLock.version, commit: upstreamLock.commit });
 
     const buildProbeComponentImpl = options.buildProbeComponentImpl ?? buildGoComponent;
     const buildCoreComponentImpl = options.buildCoreComponentImpl ?? buildGoComponent;
@@ -208,7 +218,14 @@ export async function buildMihomoOhos(options = {}) {
       readGoVersionImpl: options.readGoVersionImpl,
       readToolchainVersionsImpl: options.readToolchainVersionsImpl,
       resolveGoBinaryImpl: options.resolveGoBinaryImpl,
-      extraGoArgs: ['-ldflags', `-X github.com/metacubex/mihomo/constant.Version=${upstreamLock.version}`]
+      extraGoArgs: [
+        '-ldflags',
+        [
+          `-X github.com/metacubex/mihomo/constant.Version=${upstreamLock.version}`,
+          `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.upstreamCommit=${upstreamLock.commit}`,
+          `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.buildID=${buildId}`
+        ].join(' ')
+      ]
     });
     mergeComponent(aggregateProof, coreProof);
 

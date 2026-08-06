@@ -17,7 +17,7 @@ var (
 )
 
 func goCoreVersion() string {
-	return version.Mihomo()
+	return version.Build().Version
 }
 
 //export cmfa_mihomo_core_version_cstr_v1
@@ -28,5 +28,4 @@ func cmfa_mihomo_core_version_cstr_v1() *C.char {
 
 	return coreVersionCStr
 }
-
 func main() {}

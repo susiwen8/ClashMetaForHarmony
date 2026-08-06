@@ -1,0 +1,173 @@
+{
+  "schemaVersion": "1.0.0",
+  "auditedAt": "2026-08-06T02:25:23.465Z",
+  "module": "github.com/metacubex/mihomo",
+  "version": "v1.19.29",
+  "commit": "e26714a181ac0e2fa803453c0a8e9a9ce94e31cb",
+  "symbols": [
+    {
+      "importPath": "github.com/metacubex/mihomo/hub/executor",
+      "packageDir": "hub/executor",
+      "symbol": "ParseWithPath",
+      "docRef": "github.com/metacubex/mihomo/hub/executor.ParseWithPath",
+      "file": "executor.go",
+      "signature": "func ParseWithPath(path string) (*config.Config, error)",
+      "signatureDigest": "35572bfc4b8d925f6db3d1f11d42ac8e232d9a1437c50228bf03028387fff34a",
+      "constructorInputs": [
+        "path string"
+      ],
+      "ownership": "caller owns the path and receives an immutable parsed config snapshot",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_unlimit.go",
+          "value": "386 || amd64 || arm64 || arm64be"
+        },
+        {
+          "type": "filesystemAssumption",
+          "file": "executor.go"
+        }
+      ]
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/hub/executor",
+      "packageDir": "hub/executor",
+      "symbol": "ParseWithBytes",
+      "docRef": "github.com/metacubex/mihomo/hub/executor.ParseWithBytes",
+      "file": "executor.go",
+      "signature": "func ParseWithBytes(buf []byte) (*config.Config, error)",
+      "signatureDigest": "e522305b75be0473c8097aa19c8cb1611ad138d6f597d533097695683f81c6ad",
+      "constructorInputs": [
+        "buf []byte"
+      ],
+      "ownership": "caller owns the buffer and receives an immutable parsed config snapshot",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_unlimit.go",
+          "value": "386 || amd64 || arm64 || arm64be"
+        },
+        {
+          "type": "filesystemAssumption",
+          "file": "executor.go"
+        }
+      ]
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/hub/executor",
+      "packageDir": "hub/executor",
+      "symbol": "ApplyConfig",
+      "docRef": "github.com/metacubex/mihomo/hub/executor.ApplyConfig",
+      "file": "executor.go",
+      "signature": "func ApplyConfig(cfg *config.Config, force bool)",
+      "signatureDigest": "826ffd8e5fb73739a54c20451c22d3aac1c8464bf303c552b1cef73325a32791",
+      "constructorInputs": [
+        "cfg *config.Config",
+        "force bool"
+      ],
+      "ownership": "caller retains cfg; callee mutates global mihomo runtime state",
+      "requiredCloseOrder": [
+        "Close local listeners before executor.Shutdown when embedding runtime"
+      ],
+      "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_unlimit.go",
+          "value": "386 || amd64 || arm64 || arm64be"
+        },
+        {
+          "type": "filesystemAssumption",
+          "file": "executor.go"
+        }
+      ]
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/listener/http",
+      "packageDir": "listener/http",
+      "symbol": "NewWithAuthenticate",
+      "docRef": "github.com/metacubex/mihomo/listener/http.NewWithAuthenticate",
+      "file": "server.go",
+      "signature": "func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)",
+      "signatureDigest": "d0a4e5ff58955c7d3322bd05d1b49ff19eee659a62568a3f9c41987a100cf9a4",
+      "constructorInputs": [
+        "addr string",
+        "tunnel C.Tunnel",
+        "authenticate bool",
+        "additions ...inbound.Addition"
+      ],
+      "ownership": "caller owns returned *Listener and must Close it explicitly",
+      "requiredCloseOrder": [
+        "Listener.Close",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/listener/socks",
+      "packageDir": "listener/socks",
+      "symbol": "New",
+      "docRef": "github.com/metacubex/mihomo/listener/socks.New",
+      "file": "tcp.go",
+      "signature": "func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)",
+      "signatureDigest": "be4c2423294044bcb304415aa18f3cba257c8dec505c8b4a088576c8757c8a08",
+      "constructorInputs": [
+        "addr string",
+        "tunnel C.Tunnel",
+        "additions ...inbound.Addition"
+      ],
+      "ownership": "caller owns returned *Listener and must Close it explicitly",
+      "requiredCloseOrder": [
+        "Listener.Close",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/tunnel/statistic",
+      "packageDir": "tunnel/statistic",
+      "symbol": "DefaultManager.Range",
+      "docRef": "github.com/metacubex/mihomo/tunnel/statistic.(*Manager).Range",
+      "file": "manager.go",
+      "signature": "func (m *Manager) Range(f func(c Tracker) bool)",
+      "signatureDigest": "0e39a7dfe1a74d88b069edfeeb77e9849a020ded449307218ab047a7bd1df66b",
+      "constructorInputs": [
+        "f func(c Tracker) bool"
+      ],
+      "ownership": "borrowed tracker handles; callback may close trackers before global shutdown",
+      "requiredCloseOrder": [
+        "DefaultManager.Range(Tracker.Close)",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/hub/executor",
+      "packageDir": "hub/executor",
+      "symbol": "Shutdown",
+      "docRef": "github.com/metacubex/mihomo/hub/executor.Shutdown",
+      "file": "executor.go",
+      "signature": "func Shutdown()",
+      "signatureDigest": "8f2c4ce0a719f7ebb9c421911946ad23d84d0e2fd3749462528574bdd622b5e2",
+      "constructorInputs": [],
+      "ownership": "global shutdown entry point; caller owns call ordering and idempotence fences",
+      "requiredCloseOrder": [
+        "Close listeners",
+        "Close tracked connections",
+        "executor.Shutdown"
+      ],
+      "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_unlimit.go",
+          "value": "386 || amd64 || arm64 || arm64be"
+        },
+        {
+          "type": "filesystemAssumption",
+          "file": "executor.go"
+        }
+      ]
+    }
+  ]
+}
