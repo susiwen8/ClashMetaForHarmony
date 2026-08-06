@@ -338,7 +338,8 @@
           },
           "stop": {
             "properties": {
-              "result": { "const": "pass" }
+              "result": { "const": "pass" },
+              "forceStopResult": { "const": "pass" }
             }
           }
         }

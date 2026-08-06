@@ -20,6 +20,7 @@ export const PHASE_NUMBER = 2;
 export const BUNDLE_NAME = 'com.github.kr328.clash.harmony';
 export const ENTRY_ABILITY_NAME = 'EntryAbility';
 export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/files/phase2-device-proof.json';
+export const MAX_PHASE2_APP_EVIDENCE_BYTES = 1024 * 1024;
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
@@ -131,10 +132,11 @@ async function hashFile(fsApi, filePath) {
 }
 
 async function hashRepoFile(fsApi, repoRoot, filePath, option) {
+  const logicalPath = path.resolve(filePath);
   const resolved = await resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option);
   const digest = await hashFile(fsApi, resolved);
   return {
-    path: normalizePathForReport(repoRoot, resolved),
+    path: normalizePathForReport(repoRoot, logicalPath),
     sha256: digest.sha256,
     sizeBytes: digest.sizeBytes,
     absolutePath: resolved
@@ -388,7 +390,10 @@ function canPass(proof) {
   if (proof.appEvidence?.runId !== proof.runId || proof.appEvidence?.originRunId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence.appProcessId < 1 || proof.appEvidence?.stopResult !== 'pass') {
     return false;
   }
-  if (proof.stop?.result !== 'pass') {
+  if (proof.appEvidence?.fixturePath !== proof.fixtures?.matchConfig?.path || proof.appEvidence?.fixtureSha256 !== proof.fixtures?.matchConfig?.sha256) {
+    return false;
+  }
+  if (proof.stop?.result !== 'pass' || proof.stop?.forceStopResult !== 'pass') {
     return false;
   }
   if (!Array.isArray(proof.failures) || proof.failures.length > 0) {
@@ -541,14 +546,17 @@ export function validatePhase2Proof(proof) {
       if (!allStubChecksPass(proof.stubDetection?.checks)) {
         errors.push('pass requires every stubDetection check to pass.');
       }
-      if (proof.stop?.result !== 'pass') {
-        errors.push('pass requires stop.result pass.');
+      if (proof.stop?.result !== 'pass' || proof.stop?.forceStopResult !== 'pass') {
+        errors.push('pass requires stop.result and stop.forceStopResult pass.');
       }
       if (!Array.isArray(proof.failures) || proof.failures.length !== 0) {
         errors.push('pass requires failures to stay empty.');
       }
       if (proof.appEvidence?.runId !== proof.runId || proof.appEvidence?.originRunId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence?.stopResult !== 'pass') {
         errors.push('pass requires exact appEvidence runId/originRunId/appProcessId/stopResult.');
+      }
+      if (proof.appEvidence?.fixturePath !== proof.fixtures?.matchConfig?.path || proof.appEvidence?.fixtureSha256 !== proof.fixtures?.matchConfig?.sha256) {
+        errors.push('pass requires app evidence fixture path/hash to match proof.fixtures.matchConfig.');
       }
       if (!isNonEmptyString(proof.origin?.originRunId) || proof.origin.originRunId !== proof.runId) {
         errors.push('pass requires explicit origin/app/core run correlation to equal proof.runId.');
@@ -596,6 +604,30 @@ async function writeProof(proof, outputPath, fsApi = fs, repoRoot = REPO_ROOT) {
   const tempPath = `${safeOutputPath}.${process.pid}.tmp`;
   await fsApi.writeFile(tempPath, `${JSON.stringify(proof, null, 2)}\n`, 'utf8');
   await fsApi.rename(tempPath, safeOutputPath);
+}
+
+export async function writeArgumentErrorProof({
+  outputPath = DEFAULT_OUTPUT_PATH,
+  repoRoot = REPO_ROOT,
+  fsApi = fs,
+  randomUUID = () => crypto.randomUUID(),
+  now = () => new Date(),
+  detail = 'Invalid CLI arguments.'
+} = {}) {
+  const startedAt = now();
+  const replacements = createRedactionReplacements({ repoRoot, env: process.env });
+  const proof = createBaseProof({ repoRoot, outputPath, runId: randomUUID(), startedAt });
+  proof.toolchain = await readToolchainVersions(fsApi, path.join(repoRoot, 'harmony'));
+  proof.timestamps.runnerFinishedAt = isoTimestamp(now());
+  pushFailure(proof, 'ARGUMENT_INVALID', sanitizeText(detail, replacements), 'cli');
+  const sanitized = sanitizeForPersistence(finalizeResult(proof), replacements);
+  const validation = validatePhase2Proof(sanitized);
+  if (!validation.valid) {
+    sanitized.result = 'fail';
+    sanitized.failures.push(createFailure('PHASE2_PROOF_INVALID', validation.errors.join('; '), 'proof'));
+  }
+  await writeProof(sanitized, outputPath, fsApi, repoRoot);
+  return sanitized;
 }
 
 function requireValue(argv, index, option) {
@@ -908,9 +940,17 @@ export async function startOriginProcess({ repoRoot, originBodyPath, runId, spaw
 export function parsePhase2AppEvidence(raw, options = {}) {
   const errors = [];
   const expectedRunId = options.expectedRunId ?? null;
+  const expectedFixturePath = options.expectedFixturePath ?? null;
+  const expectedFixtureSha256 = options.expectedFixtureSha256 ?? null;
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     errors.push('app evidence must be an object.');
     return { valid: false, errors, normalized: null };
+  }
+  if (raw.schemaVersion !== PROOF_SCHEMA_VERSION) {
+    errors.push(`app evidence schemaVersion must be ${PROOF_SCHEMA_VERSION}.`);
+  }
+  if (raw.phase !== PHASE_NUMBER) {
+    errors.push('app evidence phase must be 2.');
   }
   if (raw.runId !== expectedRunId) {
     errors.push('app evidence runId mismatch.');
@@ -925,6 +965,15 @@ export function parsePhase2AppEvidence(raw, options = {}) {
     if (!isNonEmptyString(raw[key])) {
       errors.push(`app evidence ${key} must be non-empty.`);
     }
+  }
+  if (expectedFixturePath !== null && raw.fixturePath !== expectedFixturePath) {
+    errors.push('app evidence fixturePath mismatch.');
+  }
+  if (expectedFixtureSha256 !== null && raw.fixtureSha256 !== expectedFixtureSha256) {
+    errors.push('app evidence fixtureSha256 mismatch.');
+  }
+  if (!isDigest(raw.fixtureSha256 ?? '')) {
+    errors.push('app evidence fixtureSha256 must be a digest.');
   }
   if (!raw.stop || raw.stop.result !== 'pass') {
     errors.push('app evidence stop.result must be pass.');
@@ -952,6 +1001,15 @@ export function parsePhase2AppEvidence(raw, options = {}) {
       if (probe.originEventRunId !== expectedRunId || probe.appEventRunId !== expectedRunId || probe.coreEventRunId !== expectedRunId) {
         errors.push(`app evidence probes.${key} run correlation mismatch.`);
       }
+      if (!isDigest(probe.tlsPeerSha256 ?? '')) {
+        errors.push(`app evidence probes.${key}.tlsPeerSha256 must be a digest.`);
+      }
+      if (!isDigest(probe.responseSha256 ?? '')) {
+        errors.push(`app evidence probes.${key}.responseSha256 must be a digest.`);
+      }
+      if (!isIsoTimestamp(probe.startedAt) || !isIsoTimestamp(probe.completedAt) || Date.parse(probe.completedAt) < Date.parse(probe.startedAt)) {
+        errors.push(`app evidence probes.${key} timestamps must be ordered ISO-8601 values.`);
+      }
       if (!Number.isInteger(probe.clientSourcePort) || probe.clientSourcePort < 1) {
         errors.push(`app evidence probes.${key}.clientSourcePort must be a positive integer.`);
       }
@@ -969,7 +1027,55 @@ export function parsePhase2AppEvidence(raw, options = {}) {
   return { valid: errors.length === 0, errors, normalized: errors.length === 0 ? raw : null };
 }
 
-async function pullPhase2AppEvidence({
+async function ensureRepoScopedPullPath(fsApi, repoRoot, localPath) {
+  const resolved = path.resolve(localPath);
+  if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
+    throw Object.assign(new Error('pull path must stay inside the repository root.'), { code: 'APP_EVIDENCE_PATH_OUTSIDE_REPO' });
+  }
+  const realRepoRoot = await fsApi.realpath(repoRoot);
+  let existingAncestor = path.dirname(resolved);
+  while (true) {
+    try {
+      const stats = await fsApi.lstat(existingAncestor);
+      if (stats.isSymbolicLink()) {
+        throw Object.assign(new Error('pull path parent must not be a symlink.'), { code: 'APP_EVIDENCE_PATH_SYMLINK' });
+      }
+      const realAncestor = await fsApi.realpath(existingAncestor);
+      if (!isWithinRepo(realRepoRoot, realAncestor)) {
+        throw Object.assign(new Error('pull path parent resolves outside the repository.'), { code: 'APP_EVIDENCE_PATH_OUTSIDE_REPO' });
+      }
+      break;
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        const parent = path.dirname(existingAncestor);
+        if (parent === existingAncestor) {
+          throw error;
+        }
+        existingAncestor = parent;
+        continue;
+      }
+      throw error;
+    }
+  }
+  await fsApi.mkdir(path.dirname(resolved), { recursive: true });
+  const realParent = await fsApi.realpath(path.dirname(resolved));
+  if (!isWithinRepo(realRepoRoot, realParent)) {
+    throw Object.assign(new Error('pull path parent resolves outside the repository.'), { code: 'APP_EVIDENCE_PATH_OUTSIDE_REPO' });
+  }
+  try {
+    const stats = await fsApi.lstat(resolved);
+    if (stats.isSymbolicLink()) {
+      throw Object.assign(new Error('pull path target must not be a symlink.'), { code: 'APP_EVIDENCE_PATH_SYMLINK' });
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+  return path.join(realParent, path.basename(resolved));
+}
+
+export async function pullPhase2AppEvidence({
   fsApi,
   execImpl,
   hdcCommand,
@@ -979,18 +1085,43 @@ async function pullPhase2AppEvidence({
   expectedRunId,
   waitImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 } = {}) {
+  let safeLocalPath = localPath;
+  try {
+    safeLocalPath = await ensureRepoScopedPullPath(fsApi, cwd, localPath);
+  } catch (error) {
+    return {
+      ok: false,
+      invalid: createFailure(error?.code ?? 'APP_EVIDENCE_PATH_INVALID', error?.message ?? 'Invalid pull path.', 'app-proof')
+    };
+  }
   let lastFailure = null;
   for (let attempt = 0; attempt < 20; attempt += 1) {
-    const result = await execImpl(hdcCommand, buildPullArgs(target, localPath), { cwd });
+    const result = await execImpl(hdcCommand, buildPullArgs(target, safeLocalPath), { cwd });
     if (!result?.error && result?.exitCode === 0 && !result?.timedOut) {
       try {
-        const validation = parsePhase2AppEvidence(await readJson(fsApi, localPath, 'APP_EVIDENCE_INVALID'), { expectedRunId });
+        const fileStats = await fsApi.lstat(safeLocalPath);
+        if (fileStats.isSymbolicLink()) {
+          throw Object.assign(new Error('Pulled app evidence must not be a symlink.'), { code: 'APP_EVIDENCE_PATH_SYMLINK' });
+        }
+        const regularStats = await fsApi.stat(safeLocalPath);
+        if (!regularStats.isFile()) {
+          throw Object.assign(new Error('Pulled app evidence must be a regular file.'), { code: 'APP_EVIDENCE_NOT_REGULAR' });
+        }
+        if (regularStats.size < 1) {
+          throw Object.assign(new Error('Pulled app evidence must not be empty.'), { code: 'APP_EVIDENCE_SIZE_INVALID' });
+        }
+        if (regularStats.size > MAX_PHASE2_APP_EVIDENCE_BYTES) {
+          throw Object.assign(new Error(`Pulled app evidence exceeds ${MAX_PHASE2_APP_EVIDENCE_BYTES} bytes.`), { code: 'APP_EVIDENCE_SIZE_INVALID' });
+        }
+        const validation = parsePhase2AppEvidence(await readJson(fsApi, safeLocalPath, 'APP_EVIDENCE_INVALID'), { expectedRunId });
         if (validation.valid) {
-          return { ok: true, result, proof: validation.normalized, localPath };
+          return { ok: true, result, proof: validation.normalized, localPath: safeLocalPath };
         }
         lastFailure = createFailure('APP_EVIDENCE_INVALID', validation.errors.join('; '), 'app-proof');
+        return { ok: false, result, invalid: lastFailure };
       } catch (error) {
         lastFailure = createFailure(error?.code ?? 'APP_EVIDENCE_INVALID', error?.message ?? 'Unable to parse app evidence.', 'app-proof');
+        return { ok: false, result, invalid: lastFailure };
       }
     }
     await waitImpl(250);
@@ -1288,7 +1419,8 @@ export async function runPhase2DeviceProof({
     }
     proof.timestamps.appStartedAt = isoTimestamp(now());
 
-    const localEvidencePath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-pull', `${proof.runId}.json`);
+    const pullDirectory = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-pull', proof.runId);
+    const localEvidencePath = path.join(pullDirectory, 'phase2-device-proof.json');
     const pulled = await pullPhase2AppEvidenceImpl({
       fsApi,
       execImpl,
@@ -1299,7 +1431,7 @@ export async function runPhase2DeviceProof({
       expectedRunId: proof.runId,
       waitImpl
     });
-  const pulledOk = pulled?.ok === true || (pulled && pulled.proof && pulled.localPath);
+    const pulledOk = pulled?.ok === true || (pulled && pulled.proof && pulled.localPath);
     if (!pulledOk) {
       const failure = pulled?.invalid ?? createFailure('APP_EVIDENCE_MISSING', 'The app did not produce a usable Phase 2 evidence file.', 'app-proof');
       pushFailure(proof, failure.code, failure.detail, failure.stage);
@@ -1307,7 +1439,11 @@ export async function runPhase2DeviceProof({
     }
 
     const evidenceDigest = await hashFile(fsApi, pulled.localPath);
-    const appValidation = parsePhase2AppEvidence(pulled.proof, { expectedRunId: proof.runId });
+    const appValidation = parsePhase2AppEvidence(pulled.proof, {
+      expectedRunId: proof.runId,
+      expectedFixturePath: proof.fixtures.matchConfig.path,
+      expectedFixtureSha256: proof.fixtures.matchConfig.sha256
+    });
     if (!appValidation.valid) {
       pushFailure(proof, 'APP_EVIDENCE_INVALID', appValidation.errors.join('; '), 'app-proof');
       return await finish();
@@ -1335,6 +1471,10 @@ export async function runPhase2DeviceProof({
 
     if (proof.appEvidence.runId !== proof.runId || proof.appEvidence.originRunId !== proof.runId) {
       pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence runId/originRunId did not match the runner runId.', 'app-proof');
+      return await finish();
+    }
+    if (proof.appEvidence.fixturePath !== proof.fixtures.matchConfig.path || proof.appEvidence.fixtureSha256 !== proof.fixtures.matchConfig.sha256) {
+      pushFailure(proof, 'APP_EVIDENCE_FIXTURE_MISMATCH', 'Pulled app evidence fixture identity/hash did not match the runner fixture.', 'app-proof');
       return await finish();
     }
 
@@ -1376,12 +1516,22 @@ export async function runPhase2DeviceProof({
         pushFailure(proof, 'ORIGIN_STOP_FAILED', sanitizeText(error?.message ?? 'Failed to stop the HTTPS origin.', replacements), 'cleanup');
       }
     }
+    await fsApi.rm(path.join(repoRoot, 'harmony', 'artifacts', 'phase2-pull', proof.runId), { recursive: true, force: true }).catch(() => {});
     if (installed && hdcCommand && target) {
       try {
         const stopResult = await execImpl(hdcCommand, buildTargetedHdcArgs(target, ['shell', 'aa', 'force-stop', BUNDLE_NAME]), { cwd: repoRoot });
         proof.stop.forceStopResult = (!stopResult?.timedOut && !stopResult?.error && stopResult?.exitCode === 0) ? 'pass' : 'fail';
+        if (proof.stop.forceStopResult !== 'pass') {
+          pushFailure(
+            proof,
+            stopResult?.timedOut ? 'HDC_TIMEOUT' : 'DEVICE_FORCE_STOP_FAILED',
+            'The Phase 2 runner could not force-stop the installed proof app.',
+            'cleanup'
+          );
+        }
       } catch {
         proof.stop.forceStopResult = 'fail';
+        pushFailure(proof, 'DEVICE_FORCE_STOP_FAILED', 'The Phase 2 runner could not force-stop the installed proof app.', 'cleanup');
       }
     }
   }
@@ -1412,22 +1562,14 @@ export async function runCli({
       fixturePath: path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase2-match-direct.yaml'),
       outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json')
     };
-    const proof = await runPhase2DeviceProof({
-      ...partial,
+    await writeArgumentErrorProof({
+      outputPath: partial.outputPath,
       repoRoot,
       fsApi,
       randomUUID,
       now,
-      buildPhase1NativeImpl,
-      inspectHapImpl,
-      toolchainInspectorImpl,
-      execImpl,
-      startOriginImpl,
-      pullPhase2AppEvidenceImpl
+      detail: error?.message ?? 'Invalid CLI arguments.'
     });
-    proof.failures.push(createFailure(error?.code ?? 'ARGUMENT_INVALID', error?.message ?? 'Invalid CLI arguments.', 'cli'));
-    proof.result = proof.failures.some((entry) => !PHYSICAL_INCOMPLETE_CODES.has(entry.code)) ? 'fail' : 'incomplete';
-    await writeProof(proof, partial.outputPath, fsApi, repoRoot);
     return 1;
   }
 

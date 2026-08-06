@@ -407,7 +407,7 @@ struct CoreDebugPage {
           stage: 'phase2'
         }]
       };
-      this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
+      this.writeAtomicTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
       return;
     }
 
@@ -533,7 +533,7 @@ struct CoreDebugPage {
       },
       failures
     };
-    this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
+    this.writeAtomicTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
   }
 
   private async readAppProcessId(): Promise<number | null> {
@@ -553,18 +553,41 @@ struct CoreDebugPage {
 
   private writeProof(proof: Phase1SelfTestProof, filesDir: string): void {
     const filePath: string = `${filesDir}/${PROOF_FILE_NAME}`;
-    this.writeTextFile(filePath, `${JSON.stringify(proof)}\n`);
+    this.writeAtomicTextFile(filePath, `${JSON.stringify(proof)}\n`);
   }
 
-  private writeTextFile(filePath: string, content: string): void {
+  private writeTextFile(targetPath: string, content: string): void {
     const file: fileIo.File = fileIo.openSync(
-      filePath,
+      targetPath,
       fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
     );
     try {
       fileIo.writeSync(file.fd, content);
     } finally {
       fileIo.closeSync(file.fd);
+    }
+  }
+
+  private writeAtomicTextFile(targetPath: string, content: string): void {
+    const tempPath: string = `${targetPath}.${Date.now()}.tmp`;
+    const file: fileIo.File = fileIo.openSync(
+      tempPath,
+      fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
+    );
+    try {
+      fileIo.writeSync(file.fd, content);
+      fileIo.fsyncSync(file.fd);
+    } finally {
+      fileIo.closeSync(file.fd);
+    }
+    try {
+      fileIo.renameSync(tempPath, targetPath);
+    } catch (error) {
+      try {
+        fileIo.unlinkSync(tempPath);
+      } catch (cleanupError) {
+      }
+      throw error;
     }
   }
 

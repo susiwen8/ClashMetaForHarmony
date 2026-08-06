@@ -340,6 +340,73 @@ test('Phase 2 CLI uses build-manifest/fixture/out and always writes a legal pars
   assert.ok(persisted.failures.some((entry) => entry.code === 'ARGUMENT_INVALID'));
 });
 
+test('Phase 2 CLI parse errors write minimal proofs and never invoke build/device/origin callbacks', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-cli-no-side-effects-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  await fs.mkdir(path.join(harmonyRoot, 'artifacts'), { recursive: true });
+  await fs.mkdir(path.join(harmonyRoot, 'tests', 'fixtures'), { recursive: true });
+  await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({ installed: { hdcVersion: '6.1.0.105' } }), 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml'), 'mode: rule\nrules:\n  - MATCH,DIRECT\n', 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'fixture-body', 'utf8');
+
+  for (const variant of [
+    {
+      label: 'unknown option',
+      argv: ['--bogus'],
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json')
+    },
+    {
+      label: 'missing value',
+      argv: ['--build-manifest'],
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json')
+    },
+    {
+      label: 'duplicate option',
+      argv: ['--out', 'harmony/artifacts/custom-proof.json', '--out', 'harmony/artifacts/other.json'],
+      outputPath: path.join(harmonyRoot, 'artifacts', 'custom-proof.json')
+    },
+    {
+      label: 'repo escape out falls back to default proof path',
+      argv: ['--out', '../escape.json'],
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json')
+    }
+  ]) {
+    const calls = {
+      build: 0,
+      inspect: 0,
+      toolchain: 0,
+      exec: 0,
+      origin: 0,
+      pull: 0
+    };
+    const exitCode = await runner.runCli({
+      argv: variant.argv,
+      repoRoot,
+      buildPhase1NativeImpl: async () => { calls.build += 1; throw new Error('build should not run'); },
+      inspectHapImpl: async () => { calls.inspect += 1; throw new Error('inspect should not run'); },
+      toolchainInspectorImpl: async () => { calls.toolchain += 1; throw new Error('toolchain should not run'); },
+      execImpl: async () => { calls.exec += 1; throw new Error('exec should not run'); },
+      startOriginImpl: async () => { calls.origin += 1; throw new Error('origin should not run'); },
+      pullPhase2AppEvidenceImpl: async () => { calls.pull += 1; throw new Error('pull should not run'); }
+    });
+    assert.equal(exitCode, 1, variant.label);
+    assert.deepEqual(calls, {
+      build: 0,
+      inspect: 0,
+      toolchain: 0,
+      exec: 0,
+      origin: 0,
+      pull: 0
+    }, variant.label);
+    const persisted = JSON.parse(await fs.readFile(variant.outputPath, 'utf8'));
+    assert.equal(persisted.outputPath, path.relative(repoRoot, variant.outputPath).split(path.sep).join('/'), variant.label);
+    assert.ok(persisted.failures.some((entry) => entry.code === 'ARGUMENT_INVALID'), variant.label);
+    assert.equal(runner.validatePhase2Proof(persisted).valid, true, variant.label);
+  }
+});
+
 test('Phase 2 pass validator rejects fabricated partial passes and accepts fully correlated proofs only', () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
   const passProof = createValidPassProof();
@@ -352,9 +419,12 @@ test('Phase 2 pass validator rejects fabricated partial passes and accepts fully
     ['origin/app/core run correlation broken', (proof) => { proof.probes.http.coreEventRunId = 'mismatch'; }, /run correlation|coreEventRunId/u],
     ['probe source port missing', (proof) => { proof.probes.socks.clientSourcePort = null; }, /source port|clientSourcePort/u],
     ['stop failed', (proof) => { proof.stop.result = 'fail'; }, /stop/u],
+    ['force-stop failed', (proof) => { proof.stop.forceStopResult = 'fail'; }, /forceStopResult|cleanup/u],
     ['stub detection not false', (proof) => { proof.stubDetection.stubDetected = null; }, /stubDetected/u],
     ['pass with failure array', (proof) => { proof.failures.push({ code: 'BAD', detail: 'should not pass', stage: 'proof' }); }, /failures/u],
-    ['app evidence originRunId missing', (proof) => { proof.appEvidence.originRunId = null; }, /originRunId/u]
+    ['app evidence originRunId missing', (proof) => { proof.appEvidence.originRunId = null; }, /originRunId/u],
+    ['app evidence fixture path drift', (proof) => { proof.appEvidence.fixturePath = 'harmony/tests/fixtures/other.yaml'; }, /fixturePath|fixture/u],
+    ['app evidence fixture hash drift', (proof) => { proof.appEvidence.fixtureSha256 = digest('0'); }, /fixtureSha256|fixture/u]
   ];
 
   for (const [label, mutate, expected] of mutations) {
@@ -459,21 +529,165 @@ test('Phase 2 startOriginProcess forwards the exact runId into the origin CLI ar
 test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays plus wrong originRunId', async () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
   const canonical = await readAppEvidenceFixture();
-  assert.equal(runner.parsePhase2AppEvidence(canonical, { expectedRunId: EXPECTED_RUN_ID }).valid, true);
+  assert.equal(runner.parsePhase2AppEvidence(canonical, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  }).valid, true);
   const legacy = {
     ...canonical,
     probes: [{ protocol: 'HTTP_CONNECT' }, { protocol: 'SOCKS5' }]
   };
-  const legacyValidation = runner.parsePhase2AppEvidence(legacy, { expectedRunId: EXPECTED_RUN_ID });
+  const legacyValidation = runner.parsePhase2AppEvidence(legacy, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
   assert.equal(legacyValidation.valid, false);
   assert.match(legacyValidation.errors.join('\n'), /probes must be an object|probes\.http/u);
   const wrongOriginRunId = {
     ...canonical,
     originRunId: '5582eb4a-df59-48cb-a3d8-d6e79c7eaebd'
   };
-  const wrongOriginValidation = runner.parsePhase2AppEvidence(wrongOriginRunId, { expectedRunId: EXPECTED_RUN_ID });
+  const wrongOriginValidation = runner.parsePhase2AppEvidence(wrongOriginRunId, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
   assert.equal(wrongOriginValidation.valid, false);
   assert.match(wrongOriginValidation.errors.join('\n'), /originRunId/u);
+  const wrongSchemaVersion = {
+    ...canonical,
+    schemaVersion: '9.9.9'
+  };
+  const wrongSchemaValidation = runner.parsePhase2AppEvidence(wrongSchemaVersion, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongSchemaValidation.valid, false);
+  assert.match(wrongSchemaValidation.errors.join('\n'), /schemaVersion/u);
+  const wrongPhase = {
+    ...canonical,
+    phase: 1
+  };
+  const wrongPhaseValidation = runner.parsePhase2AppEvidence(wrongPhase, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongPhaseValidation.valid, false);
+  assert.match(wrongPhaseValidation.errors.join('\n'), /phase/u);
+  const wrongFixturePath = {
+    ...canonical,
+    fixturePath: 'harmony/tests/fixtures/other.yaml'
+  };
+  const wrongFixturePathValidation = runner.parsePhase2AppEvidence(wrongFixturePath, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongFixturePathValidation.valid, false);
+  assert.match(wrongFixturePathValidation.errors.join('\n'), /fixturePath/u);
+  const wrongFixtureHash = {
+    ...canonical,
+    fixtureSha256: digest('0')
+  };
+  const wrongFixtureHashValidation = runner.parsePhase2AppEvidence(wrongFixtureHash, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongFixtureHashValidation.valid, false);
+  assert.match(wrongFixtureHashValidation.errors.join('\n'), /fixtureSha256/u);
+  const wrongTimestamp = structuredClone(canonical);
+  wrongTimestamp.probes.http.completedAt = 'nope';
+  const wrongTimestampValidation = runner.parsePhase2AppEvidence(wrongTimestamp, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongTimestampValidation.valid, false);
+  assert.match(wrongTimestampValidation.errors.join('\n'), /completedAt|timestamp/u);
+  const wrongDigest = structuredClone(canonical);
+  wrongDigest.probes.http.tlsPeerSha256 = 'bad';
+  const wrongDigestValidation = runner.parsePhase2AppEvidence(wrongDigest, {
+    expectedRunId: EXPECTED_RUN_ID,
+    expectedFixturePath: canonical.fixturePath,
+    expectedFixtureSha256: canonical.fixtureSha256
+  });
+  assert.equal(wrongDigestValidation.valid, false);
+  assert.match(wrongDigestValidation.errors.join('\n'), /tlsPeerSha256|digest/u);
+});
+
+test('Phase 2 pull helper auto-creates a run-scoped parent, rejects oversize and invalid JSON, and blocks symlink escapes', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-pull-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const runDir = path.join(harmonyRoot, 'artifacts', 'phase2-pull', EXPECTED_RUN_ID);
+  const localPath = path.join(runDir, 'phase2-device-proof.json');
+  await fs.mkdir(harmonyRoot, { recursive: true });
+
+  let execCount = 0;
+  const invalidJsonPull = await runner.pullPhase2AppEvidence({
+    fsApi: await import('node:fs/promises').then((module) => module.default),
+    execImpl: async () => {
+      execCount += 1;
+      await fs.mkdir(runDir, { recursive: true });
+      await fs.writeFile(localPath, '{bad json', 'utf8');
+      return { command: '/sdk/hdc', args: [], exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+    },
+    hdcCommand: '/sdk/hdc',
+    target: 'device',
+    localPath,
+    cwd: repoRoot,
+    expectedRunId: EXPECTED_RUN_ID,
+    waitImpl: async () => {}
+  });
+  assert.equal(execCount, 1);
+  assert.equal(invalidJsonPull.ok, false);
+  assert.match(invalidJsonPull.invalid.detail, /parse|JSON|app evidence/u);
+
+  const oversizePull = await runner.pullPhase2AppEvidence({
+    fsApi: await import('node:fs/promises').then((module) => module.default),
+    execImpl: async () => {
+      await fs.mkdir(runDir, { recursive: true });
+      await fs.writeFile(localPath, 'x'.repeat((runner.MAX_PHASE2_APP_EVIDENCE_BYTES ?? 1024 * 1024) + 1), 'utf8');
+      return { command: '/sdk/hdc', args: [], exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+    },
+    hdcCommand: '/sdk/hdc',
+    target: 'device',
+    localPath,
+    cwd: repoRoot,
+    expectedRunId: EXPECTED_RUN_ID,
+    waitImpl: async () => {}
+  });
+  assert.equal(oversizePull.ok, false);
+  assert.match(oversizePull.invalid.detail, /exceeds|size/u);
+
+  const outsideRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-pull-outside-'));
+  const symlinkParent = path.join(harmonyRoot, 'artifacts', 'phase2-pull');
+  await fs.rm(symlinkParent, { recursive: true, force: true });
+  await fs.mkdir(path.dirname(symlinkParent), { recursive: true });
+  await fs.symlink(outsideRoot, symlinkParent);
+  let escapedExecCount = 0;
+  const symlinkPull = await runner.pullPhase2AppEvidence({
+    fsApi: await import('node:fs/promises').then((module) => module.default),
+    execImpl: async () => {
+      escapedExecCount += 1;
+      return { command: '/sdk/hdc', args: [], exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+    },
+    hdcCommand: '/sdk/hdc',
+    target: 'device',
+    localPath: path.join(symlinkParent, EXPECTED_RUN_ID, 'phase2-device-proof.json'),
+    cwd: repoRoot,
+    expectedRunId: EXPECTED_RUN_ID,
+    waitImpl: async () => {}
+  });
+  assert.equal(escapedExecCount, 0);
+  assert.equal(symlinkPull.ok, false);
+  assert.match(symlinkPull.invalid.detail, /symlink|repository/u);
 });
 
 test('Phase 2 runner executes the exact build-origin-device-app trace and rejects stale mismatched app evidence', async () => {
@@ -627,6 +841,9 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
       return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'start ability successfully', stderr: '' };
     }
     if (joined.includes('file recv -b')) {
+      const destinationPath = args.at(-1);
+      await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+      await fs.writeFile(destinationPath, `${JSON.stringify(appEvidence)}\n`, 'utf8');
       return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
     }
     if (joined.includes('shell aa force-stop')) {
@@ -724,6 +941,130 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
   assert.equal(proof.probes.http.appEventRunId, EXPECTED_RUN_ID);
   assert.equal(proof.probes.socks.coreEventRunId, EXPECTED_RUN_ID);
 
+  const cleanupTempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-force-stop-'));
+  const cleanupRepoRoot = path.join(cleanupTempRoot, 'repo');
+  const cleanupHarmonyRoot = path.join(cleanupRepoRoot, 'harmony');
+  const cleanupBuildManifestPath = path.join(cleanupHarmonyRoot, 'artifacts', 'phase2-build-manifest.json');
+  const cleanupOutputPath = path.join(cleanupHarmonyRoot, 'artifacts', 'phase2-device-proof.json');
+  const cleanupFixturePath = path.join(cleanupHarmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml');
+  const cleanupPullDir = path.join(cleanupHarmonyRoot, 'artifacts', 'phase2-pull', EXPECTED_RUN_ID);
+  const cleanupEvidencePath = path.join(cleanupPullDir, 'phase2-device-proof.json');
+  const cleanupSignedHapPath = path.join(cleanupHarmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  const cleanupRawCorePath = path.join(cleanupHarmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  const cleanupPrePackageCorePath = path.join(cleanupHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const cleanupPrePackageAddonPath = path.join(cleanupHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+
+  await fs.mkdir(path.dirname(cleanupSignedHapPath), { recursive: true });
+  await fs.mkdir(path.dirname(cleanupRawCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(cleanupPrePackageCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(cleanupFixturePath), { recursive: true });
+  await fs.writeFile(path.join(cleanupHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
+    installed: {
+      devecoVersion: '6.1.0.860',
+      sdkVersion: '6.1.0.105',
+      ndkVersion: '6.1.0.105',
+      hvigorVersion: '6.23.7',
+      hdcVersion: '6.1.0.105'
+    }
+  }), 'utf8');
+  await fs.writeFile(cleanupFixturePath, 'mode: rule\nmixed-port: 0\nrules:\n  - MATCH,DIRECT\n', 'utf8');
+  await fs.writeFile(path.join(cleanupHarmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'origin-body', 'utf8');
+  await fs.writeFile(cleanupSignedHapPath, 'signed-hap', 'utf8');
+  await fs.writeFile(cleanupRawCorePath, 'real-core', 'utf8');
+  await fs.writeFile(cleanupPrePackageCorePath, 'real-core', 'utf8');
+  await fs.writeFile(cleanupPrePackageAddonPath, 'real-addon', 'utf8');
+
+  const forceStopProof = await runner.runPhase2DeviceProof({
+    repoRoot: cleanupRepoRoot,
+    buildManifestPath: cleanupBuildManifestPath,
+    fixturePath: cleanupFixturePath,
+    outputPath: cleanupOutputPath,
+    randomUUID: () => EXPECTED_RUN_ID,
+    buildPhase1NativeImpl: async () => buildManifest,
+    inspectHapImpl: async () => ({
+      result: 'pass',
+      stubDetected: false,
+      packaged: {
+        rawCore: { identity: buildManifest.artifacts.rawCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        prePackageCore: { identity: buildManifest.artifacts.prePackageCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        prePackageAddon: { identity: buildManifest.artifacts.prePackageAddon.identity, sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } },
+        core: { identity: 'libs/arm64-v8a/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        addon: { identity: 'libs/arm64-v8a/libentry.so', sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } }
+      },
+      provenance: {
+        expected: buildManifest.provenance.upstream,
+        observed: buildManifest.provenance.upstream,
+        verified: 'pass'
+      },
+      failures: []
+    }),
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: '/sdk/hdc' } }
+    }),
+    execImpl: async (_command, args) => {
+      const joined = args.join(' ');
+      if (joined === 'help') return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'list targets [-v]\ninstall [-r|-s|-cwd|option] src\nshell [-b bundlename] [COMMAND...]', stderr: '' };
+      if (joined === 'list targets') return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'device-serial-1\n', stderr: '' };
+      if (joined.includes('param get const.product.software.version')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'HarmonyOS 6.0.1.123\n', stderr: '' };
+      if (joined.includes('param get const.ohos.apiversion')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: '20\n', stderr: '' };
+      if (joined.includes('param get const.product.cpu.abilist')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'arm64-v8a\n', stderr: '' };
+      if (joined.includes('param get const.product.model')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'Harmony Phone\n', stderr: '' };
+      if (joined.includes('param get const.product.name')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'PuraX\n', stderr: '' };
+      if (joined.includes('install -r')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'successfully', stderr: '' };
+      if (joined.includes('shell aa start')) return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'start ability successfully', stderr: '' };
+      if (joined.includes('file recv -b')) {
+        await fs.mkdir(cleanupPullDir, { recursive: true });
+        await fs.writeFile(cleanupEvidencePath, JSON.stringify(await readAppEvidenceFixture()), 'utf8');
+        return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+      }
+      if (joined.includes('shell aa force-stop')) return { command: '/sdk/hdc', args, exitCode: 1, stdout: '', stderr: 'force-stop failed' };
+      throw new Error(`unexpected command ${joined}`);
+    },
+    startOriginImpl: async () => {
+      const startedRecord = originModule.createStartedRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        originUrl: 'https://127.0.0.1:18443/',
+        address: '127.0.0.1:18443',
+        caPem: certPemLiteral,
+        bodySha256: digest('e'),
+        bindHost: '127.0.0.1',
+        files: { [certPathKey]: certPemPath, [keyPathKey]: keyPemPath },
+        pid: 4312
+      });
+      const httpRecord = originModule.createRequestRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        requestId: 'req-http',
+        protocol: 'HTTP_CONNECT',
+        method: 'CONNECT',
+        pathName: '/',
+        receivedAt: '2026-08-06T02:00:04.000Z',
+        responseBytes: 26,
+        responseSha256: digest('e')
+      });
+      const socksRecord = originModule.createRequestRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        requestId: 'req-socks',
+        protocol: 'SOCKS5',
+        method: 'CONNECT',
+        pathName: '/',
+        receivedAt: '2026-08-06T02:00:05.000Z',
+        responseBytes: 26,
+        responseSha256: digest('e')
+      });
+      return createOriginHandle([
+        `${JSON.stringify(startedRecord)}\n${JSON.stringify(httpRecord)}\n${JSON.stringify(socksRecord)}\n`
+      ]);
+    }
+  });
+  assert.equal(forceStopProof.result, 'fail');
+  assert.equal(forceStopProof.stop.forceStopResult, 'fail');
+  assert.ok(forceStopProof.failures.some((entry) => entry.code === 'DEVICE_FORCE_STOP_FAILED'));
+  await assert.rejects(fs.access(cleanupPullDir));
+
   await fs.writeFile(appEvidencePath, `${JSON.stringify(staleProof)}\n`, 'utf8');
   const failingProof = await runner.runPhase2DeviceProof({
     repoRoot,
@@ -753,7 +1094,16 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
       report: { result: 'pass' },
       resolved: { paths: { hdc: '/sdk/hdc' } }
     }),
-    execImpl,
+    execImpl: async (_command, args) => {
+      const joined = args.join(' ');
+      if (joined.includes('file recv -b')) {
+        const destinationPath = args.at(-1);
+        await fs.mkdir(path.dirname(destinationPath), { recursive: true });
+        await fs.writeFile(destinationPath, `${JSON.stringify(staleProof)}\n`, 'utf8');
+        return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+      }
+      return await execImpl(_command, args);
+    },
     startOriginImpl: async () => createOriginHandle([
       `${JSON.stringify(originModule.createStartedRecord({
         runId: EXPECTED_RUN_ID,
@@ -769,7 +1119,7 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
     ])
   });
   assert.equal(failingProof.result, 'fail');
-  assert.ok(failingProof.failures.some((entry) => /RUN_ID|APP_EVIDENCE/i.test(entry.code)));
+  assert.ok(failingProof.failures.some((entry) => /APP_EVIDENCE/i.test(entry.code)));
 });
 
 test('Phase 2 runner always writes a repo-contained incomplete proof when no signed physical-device input exists', async () => {
@@ -960,6 +1310,10 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   assert.match(debugPageSource, /ProcessInfo/u);
   assert.match(debugPageSource, /probes:\s*\{\s*http:\s*httpProbe,\s*socks:\s*socksProbe/u);
   assert.match(debugPageSource, /httpProbe !== null && socksProbe !== null/u);
+  assert.match(debugPageSource, /writeAtomicTextFile/u);
+  assert.match(debugPageSource, /renameSync/u);
+  assert.match(debugPageSource, /fsyncSync|flushSync/u);
   assert.doesNotMatch(debugPageSource, /probes:\s*Phase2ProbeEntry\[\]/u);
   assert.doesNotMatch(debugPageSource, /probes\.length/u);
+  assert.doesNotMatch(debugPageSource, /openSync\(\s*filePath[\s\S]*OpenMode\.TRUNC/u);
 });
