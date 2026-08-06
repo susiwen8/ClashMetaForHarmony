@@ -476,7 +476,7 @@ func TestLocalProxyPartialBindFailureReportsCleanupFailureAndConsistentSnapshot(
 		t.Fatalf("snapshot.LastError = %q", snapshot.LastError)
 	}
 	if strings.Contains(snapshot.LastError, "hunter2") {
-		t.Fatalf("snapshot.LastError leaked secret: %q", snapshot.LastError)
+		t.Fatalf("snapshot.LastError should redact sensitive text: %q", snapshot.LastError)
 	}
 }
 
@@ -502,7 +502,7 @@ func TestLocalProxyStopFailureMatchesSnapshotLastError(t *testing.T) {
 		t.Fatalf("snapshot.LastError = %q want err %q", snapshot.LastError, err.Error())
 	}
 	if strings.Contains(snapshot.LastError, "secret") || strings.Contains(snapshot.LastError, "abc123") {
-		t.Fatalf("snapshot.LastError leaked secret: %q", snapshot.LastError)
+		t.Fatalf("snapshot.LastError should redact sensitive text: %q", snapshot.LastError)
 	}
 }
 
