@@ -10,7 +10,6 @@ const UPSTREAM_LOCK_PATH = path.join(GO_MODULE_ROOT, 'upstream.lock.json');
 const OUTPUT_PATH = path.join(GO_MODULE_ROOT, 'upstream.api-lock.json');
 const DEFAULT_GOMODCACHE = process.env.GOMODCACHE || path.join(HARMONY_ROOT, 'artifacts', 'go-mod-cache');
 const DEFAULT_GOCACHE = process.env.GOCACHE || path.join(HARMONY_ROOT, 'artifacts', 'go-cache-task9');
-const DEFAULT_GOPROXY = process.env.GOPROXY || 'https://goproxy.cn';
 
 function sha256(value) {
   return crypto.createHash('sha256').update(value).digest('hex');
@@ -20,17 +19,23 @@ function normalizePath(relativePath) {
   return relativePath.split(path.sep).join('/');
 }
 
-function runGo(args) {
+function createTargetGoEnv(overrides = {}) {
+  return {
+    ...process.env,
+    GOMODCACHE: DEFAULT_GOMODCACHE,
+    GOCACHE: DEFAULT_GOCACHE,
+    ...overrides,
+    GOOS: 'linux',
+    GOARCH: 'arm64',
+    CGO_ENABLED: '1',
+  };
+}
+
+function runGo({ args, env = {} }) {
   return new Promise((resolve) => {
     const child = spawn('go', args, {
       cwd: GO_MODULE_ROOT,
-      env: {
-        ...process.env,
-        GOMODCACHE: DEFAULT_GOMODCACHE,
-        GOCACHE: DEFAULT_GOCACHE,
-        GOPROXY: DEFAULT_GOPROXY,
-        GOSUMDB: 'off',
-      },
+      env: createTargetGoEnv(env),
       stdio: ['ignore', 'pipe', 'pipe'],
     });
 
@@ -51,7 +56,7 @@ function runGo(args) {
 }
 
 async function goList(importPath, runGoImpl = runGo) {
-  const result = await runGoImpl(['list', '-find', '-e', '-json', importPath]);
+  const result = await runGoImpl({ args: ['list', '-find', '-e', '-json', importPath], env: createTargetGoEnv() });
   if (result.code !== 0) {
     throw new Error(`go list failed for ${importPath}: ${result.stderr || result.stdout}`.trim());
   }
@@ -59,7 +64,7 @@ async function goList(importPath, runGoImpl = runGo) {
 }
 
 async function goDoc(importPath, symbolName, runGoImpl = runGo) {
-  return await runGoImpl(['doc', '-src', importPath, symbolName]);
+  return await runGoImpl({ args: ['doc', '-src', `${importPath}.${symbolName}`], env: createTargetGoEnv() });
 }
 
 async function readJson(filePath) {
@@ -70,10 +75,15 @@ async function readFile(filePath) {
   return await fs.readFile(filePath, 'utf8');
 }
 
-async function loadPackage(importPath, { runGoImpl = runGo, readFileImpl = readFile } = {}) {
+async function readDir(dirPath) {
+  return await fs.readdir(dirPath, { withFileTypes: true });
+}
+
+async function loadPackage(importPath, { runGoImpl = runGo, readFileImpl = readFile, readDirImpl = readDir } = {}) {
   const pkg = await goList(importPath, runGoImpl);
+  const targetFileNames = [...new Set([...(pkg.GoFiles || []), ...(pkg.CgoFiles || [])])].sort();
   const files = await Promise.all(
-    (pkg.GoFiles || []).map(async (name) => {
+    targetFileNames.map(async (name) => {
       const absolutePath = path.join(pkg.Dir, name);
       return {
         name,
@@ -82,7 +92,22 @@ async function loadPackage(importPath, { runGoImpl = runGo, readFileImpl = readF
       };
     }),
   );
-  return { pkg, files };
+  const allEntries = await readDirImpl(pkg.Dir);
+  const auditFileNames = allEntries
+    .filter((entry) => entry.isFile() && entry.name.endsWith('.go'))
+    .map((entry) => entry.name)
+    .sort();
+  const auditFiles = await Promise.all(
+    auditFileNames.map(async (name) => {
+      const absolutePath = path.join(pkg.Dir, name);
+      return {
+        name,
+        absolutePath,
+        source: await readFileImpl(absolutePath),
+      };
+    }),
+  );
+  return { pkg, files, auditFiles };
 }
 
 function scanForSymbol(files, matcher) {
@@ -115,11 +140,15 @@ function auditFlags(files) {
     }
   }
 
-  return findings;
+  return [...new Map(
+    findings
+      .sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)))
+      .map((entry) => [JSON.stringify(entry), entry])
+  ).values()];
 }
 
-async function resolveSymbol(importPath, definition, { runGoImpl = runGo, readFileImpl = readFile } = {}) {
-  const loaded = await loadPackage(importPath, { runGoImpl, readFileImpl });
+async function resolveSymbol(importPath, definition, { runGoImpl = runGo, readFileImpl = readFile, readDirImpl = readDir } = {}) {
+  const loaded = await loadPackage(importPath, { runGoImpl, readFileImpl, readDirImpl });
   const symbolRef = `${importPath}.${definition.goDocName}`;
   const docResult = await goDoc(importPath, definition.goDocName, runGoImpl);
   if (docResult.code !== 0 || docResult.stdout.trim() === '') {
@@ -142,7 +171,7 @@ async function resolveSymbol(importPath, definition, { runGoImpl = runGo, readFi
     constructorInputs: definition.constructorInputs,
     ownership: definition.ownership,
     requiredCloseOrder: definition.requiredCloseOrder,
-    packageAudit: auditFlags(loaded.files),
+    packageAudit: auditFlags(loaded.auditFiles),
   };
 }
 
@@ -171,6 +200,7 @@ export async function auditMihomoApi(options = {}) {
   const runGoImpl = options.runGoImpl ?? runGo;
   const readJsonImpl = options.readJsonImpl ?? readJson;
   const readFileImpl = options.readFileImpl ?? readFile;
+  const readDirImpl = options.readDirImpl ?? readDir;
   const outputPath = options.outputPath ?? OUTPUT_PATH;
   const writeOutput = options.writeOutput ?? true;
 
@@ -179,7 +209,8 @@ export async function auditMihomoApi(options = {}) {
   const upstreamLock = options.upstreamLock ?? await readJsonImpl(UPSTREAM_LOCK_PATH);
   const socksPackage = await loadPackage('github.com/metacubex/mihomo/listener/socks', {
     runGoImpl,
-    readFileImpl
+    readFileImpl,
+    readDirImpl
   });
   const discoveredSocks = discoverSocksSymbol(socksPackage);
 
@@ -191,7 +222,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['path string'],
       ownership: 'caller owns the path and receives an immutable parsed config snapshot',
       requiredCloseOrder: [],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'ParseWithBytes',
       goDocName: 'ParseWithBytes',
@@ -199,7 +230,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['buf []byte'],
       ownership: 'caller owns the buffer and receives an immutable parsed config snapshot',
       requiredCloseOrder: [],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'ApplyConfig',
       goDocName: 'ApplyConfig',
@@ -207,7 +238,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['cfg *config.Config', 'force bool'],
       ownership: 'caller retains cfg; callee mutates global mihomo runtime state',
       requiredCloseOrder: ['Close local listeners before executor.Shutdown when embedding runtime'],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/listener/http', {
       symbol: 'NewWithAuthenticate',
       goDocName: 'NewWithAuthenticate',
@@ -215,7 +246,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['addr string', 'tunnel C.Tunnel', 'authenticate bool', 'additions ...inbound.Addition'],
       ownership: 'caller owns returned *Listener and must Close it explicitly',
       requiredCloseOrder: ['Listener.Close', 'executor.Shutdown'],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/listener/socks', {
       symbol: discoveredSocks.name,
       goDocName: discoveredSocks.name,
@@ -223,7 +254,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['addr string', 'tunnel C.Tunnel', 'additions ...inbound.Addition'],
       ownership: 'caller owns returned *Listener and must Close it explicitly',
       requiredCloseOrder: ['Listener.Close', 'executor.Shutdown'],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/tunnel/statistic', {
       symbol: 'DefaultManager.Range',
       goDocName: 'Manager.Range',
@@ -231,7 +262,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: ['f func(c Tracker) bool'],
       ownership: 'borrowed tracker handles; callback may close trackers before global shutdown',
       requiredCloseOrder: ['DefaultManager.Range(Tracker.Close)', 'executor.Shutdown'],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/hub/executor', {
       symbol: 'Shutdown',
       goDocName: 'Shutdown',
@@ -239,7 +270,7 @@ export async function auditMihomoApi(options = {}) {
       constructorInputs: [],
       ownership: 'global shutdown entry point; caller owns call ordering and idempotence fences',
       requiredCloseOrder: ['Close listeners', 'Close tracked connections', 'executor.Shutdown'],
-    }, { runGoImpl, readFileImpl }),
+    }, { runGoImpl, readFileImpl, readDirImpl }),
   ]);
 
   const payload = {

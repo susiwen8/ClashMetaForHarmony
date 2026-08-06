@@ -13,7 +13,7 @@ import (
 type ApplyFunc func(cfg *mihomocfg.Config, force bool) error
 
 type LoaderDeps struct {
-	Parse     ParseFunc
+	ParseBytes ParseBytesFunc
 	Apply     ApplyFunc
 	Lifecycle *runtimepkg.Lifecycle
 	Events    eventspkg.Sink
@@ -22,7 +22,7 @@ type LoaderDeps struct {
 type Loader struct {
 	sandboxRoot string
 
-	parse     ParseFunc
+	parseBytes ParseBytesFunc
 	apply     ApplyFunc
 	lifecycle *runtimepkg.Lifecycle
 	events    eventspkg.Sink
@@ -37,9 +37,9 @@ func NewLoader(sandboxRoot string) *Loader {
 }
 
 func NewLoaderWithDeps(sandboxRoot string, deps LoaderDeps) *Loader {
-	parse := deps.Parse
-	if parse == nil {
-		parse = mihomoexecutor.ParseWithPath
+	parseBytes := deps.ParseBytes
+	if parseBytes == nil {
+		parseBytes = mihomoexecutor.ParseWithBytes
 	}
 
 	apply := deps.Apply
@@ -62,7 +62,7 @@ func NewLoaderWithDeps(sandboxRoot string, deps LoaderDeps) *Loader {
 
 	return &Loader{
 		sandboxRoot: sandboxRoot,
-		parse:       parse,
+		parseBytes:  parseBytes,
 		apply:       apply,
 		lifecycle:   lifecycle,
 		events:      sink,
@@ -80,7 +80,7 @@ func (l *Loader) Load(candidate string) error {
 		State: string(currentState),
 	})
 
-	resolvedPath, cfg, err := parseWithinSandbox(l.sandboxRoot, candidate, l.parse)
+	resolvedPath, cfg, err := parseWithinSandbox(l.sandboxRoot, candidate, l.parseBytes)
 	if err != nil {
 		l.events.Publish(eventspkg.Event{
 			Kind:    "config.load.failed",
@@ -91,28 +91,9 @@ func (l *Loader) Load(candidate string) error {
 		return err
 	}
 
-	if !l.lifecycle.CanTransition(runtimepkg.StateConfigLoaded) {
-		err = runtimepkg.ErrIllegalTransition
-		l.events.Publish(eventspkg.Event{
-			Kind:    "config.load.failed",
-			Path:    resolvedPath,
-			State:   string(l.lifecycle.State()),
-			Message: err.Error(),
-		})
-		return err
-	}
-
-	if err := l.apply(cfg, true); err != nil {
-		l.events.Publish(eventspkg.Event{
-			Kind:    "config.load.failed",
-			Path:    resolvedPath,
-			State:   string(l.lifecycle.State()),
-			Message: err.Error(),
-		})
-		return err
-	}
-
-	if err := l.lifecycle.Transition(runtimepkg.StateConfigLoaded); err != nil {
+	if err := l.lifecycle.TransitionWith(runtimepkg.StateConfigLoaded, func() error {
+		return l.apply(cfg, true)
+	}); err != nil {
 		l.events.Publish(eventspkg.Event{
 			Kind:    "config.load.failed",
 			Path:    resolvedPath,

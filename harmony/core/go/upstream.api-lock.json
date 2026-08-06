@@ -20,6 +20,16 @@
       "packageAudit": [
         {
           "type": "buildTag",
+          "file": "concurrent_load_limit.go",
+          "value": "!386 && !amd64 && !arm64 && !arm64be && !mipsle && !mips"
+        },
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_single.go",
+          "value": "mips || mipsle"
+        },
+        {
+          "type": "buildTag",
           "file": "concurrent_load_unlimit.go",
           "value": "386 || amd64 || arm64 || arm64be"
         },
@@ -43,6 +53,16 @@
       "ownership": "caller owns the buffer and receives an immutable parsed config snapshot",
       "requiredCloseOrder": [],
       "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_limit.go",
+          "value": "!386 && !amd64 && !arm64 && !arm64be && !mipsle && !mips"
+        },
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_single.go",
+          "value": "mips || mipsle"
+        },
         {
           "type": "buildTag",
           "file": "concurrent_load_unlimit.go",
@@ -71,6 +91,16 @@
         "Close local listeners before executor.Shutdown when embedding runtime"
       ],
       "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_limit.go",
+          "value": "!386 && !amd64 && !arm64 && !arm64be && !mipsle && !mips"
+        },
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_single.go",
+          "value": "mips || mipsle"
+        },
         {
           "type": "buildTag",
           "file": "concurrent_load_unlimit.go",
@@ -157,6 +187,16 @@
         "executor.Shutdown"
       ],
       "packageAudit": [
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_limit.go",
+          "value": "!386 && !amd64 && !arm64 && !arm64be && !mipsle && !mips"
+        },
+        {
+          "type": "buildTag",
+          "file": "concurrent_load_single.go",
+          "value": "mips || mipsle"
+        },
         {
           "type": "buildTag",
           "file": "concurrent_load_unlimit.go",

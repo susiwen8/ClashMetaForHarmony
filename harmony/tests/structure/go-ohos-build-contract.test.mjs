@@ -124,21 +124,27 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     ['/tmp/mihomo/tunnel/statistic/manager.go', 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n']
   ]);
   const docBodies = new Map([
-    ['github.com/metacubex/mihomo/hub/executor|ParseWithPath', 'func ParseWithPath(path string) (*config.Config, error)'],
-    ['github.com/metacubex/mihomo/hub/executor|ParseWithBytes', 'func ParseWithBytes(buf []byte) (*config.Config, error)'],
-    ['github.com/metacubex/mihomo/hub/executor|ApplyConfig', 'func ApplyConfig(cfg *config.Config, force bool)'],
-    ['github.com/metacubex/mihomo/hub/executor|Shutdown', 'func Shutdown()'],
-    ['github.com/metacubex/mihomo/listener/http|NewWithAuthenticate', 'func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)'],
-    ['github.com/metacubex/mihomo/listener/socks|New', 'func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)'],
-    ['github.com/metacubex/mihomo/tunnel/statistic|Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)']
+    ['github.com/metacubex/mihomo/hub/executor.ParseWithPath', 'func ParseWithPath(path string) (*config.Config, error)'],
+    ['github.com/metacubex/mihomo/hub/executor.ParseWithBytes', 'func ParseWithBytes(buf []byte) (*config.Config, error)'],
+    ['github.com/metacubex/mihomo/hub/executor.ApplyConfig', 'func ApplyConfig(cfg *config.Config, force bool)'],
+    ['github.com/metacubex/mihomo/hub/executor.Shutdown', 'func Shutdown()'],
+    ['github.com/metacubex/mihomo/listener/http.NewWithAuthenticate', 'func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)'],
+    ['github.com/metacubex/mihomo/listener/socks.New', 'func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)'],
+    ['github.com/metacubex/mihomo/tunnel/statistic.Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)']
   ]);
-  const runGoImpl = async (args) => {
+  const dirEntries = new Map([
+    ['/tmp/mihomo/hub/executor', [{ name: 'executor.go', isFile: () => true }]],
+    ['/tmp/mihomo/listener/http', [{ name: 'server.go', isFile: () => true }]],
+    ['/tmp/mihomo/listener/socks', [{ name: 'tcp.go', isFile: () => true }]],
+    ['/tmp/mihomo/tunnel/statistic', [{ name: 'manager.go', isFile: () => true }]]
+  ]);
+  const runGoImpl = async ({ args }) => {
     if (args[0] === 'list') {
       const payload = packageRoots[args.at(-1)];
       return { code: 0, stdout: JSON.stringify(payload), stderr: '' };
     }
     if (args[0] === 'doc') {
-      const payload = docBodies.get(`${args[2]}|${args[3]}`);
+      const payload = docBodies.get(args.at(-1));
       return { code: 0, stdout: payload, stderr: '' };
     }
     throw new Error(`unexpected go call: ${args.join(' ')}`);
@@ -154,7 +160,8 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
       remote: 'https://github.com/MetaCubeX/mihomo',
       ref: 'refs/tags/v1.19.29'
     },
-    readFileImpl: async (filePath) => fileBodies.get(filePath)
+    readFileImpl: async (filePath) => fileBodies.get(filePath),
+    readDirImpl: async (dirPath) => dirEntries.get(dirPath) ?? []
   });
   const second = await auditMihomoApi({
     writeOutput: false,
@@ -167,11 +174,101 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
       remote: 'https://github.com/MetaCubeX/mihomo',
       ref: 'refs/tags/v1.19.29'
     },
-    readFileImpl: async (filePath) => fileBodies.get(filePath)
+    readFileImpl: async (filePath) => fileBodies.get(filePath),
+    readDirImpl: async (dirPath) => dirEntries.get(dirPath) ?? []
   });
 
   assert.deepEqual(first, second);
   assert.equal('auditedAt' in first, false);
+});
+
+test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir go files for risk', async () => {
+  const [{ auditMihomoApi }] = await Promise.all([
+    import(new URL('../../tools/audit-mihomo-api.mjs', import.meta.url))
+  ]);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'task9-audit-scan-'));
+  const pkgDir = path.join(tempRoot, 'listener', 'http');
+  const invocations = [];
+
+  await fs.mkdir(pkgDir, { recursive: true });
+  await fs.writeFile(path.join(pkgDir, 'server.go'), 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n', 'utf8');
+  await fs.writeFile(path.join(pkgDir, 'cgo_risk.go'), 'package http\nimport _ "golang.org/x/sys/unix"\n', 'utf8');
+  await fs.writeFile(path.join(pkgDir, 'linux_tag.go'), '//go:build linux && arm64\npackage http\n', 'utf8');
+
+  try {
+    const runGoImpl = async (invocation) => {
+      invocations.push(invocation);
+      const { args } = invocation;
+      if (args[0] === 'list') {
+        const importPath = args.at(-1);
+        if (importPath === 'github.com/metacubex/mihomo/listener/http') {
+          return { code: 0, stdout: JSON.stringify({ Dir: pkgDir, Root: tempRoot, GoFiles: ['server.go'], CgoFiles: ['cgo_risk.go'] }), stderr: '' };
+        }
+        if (importPath === 'github.com/metacubex/mihomo/listener/socks') {
+          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'listener', 'socks'), Root: tempRoot, GoFiles: ['tcp.go'] }), stderr: '' };
+        }
+        if (importPath === 'github.com/metacubex/mihomo/tunnel/statistic') {
+          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel', 'statistic'), Root: tempRoot, GoFiles: ['manager.go'] }), stderr: '' };
+        }
+        return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'hub', 'executor'), Root: tempRoot, GoFiles: ['executor.go'] }), stderr: '' };
+      }
+      if (args[0] === 'doc') {
+        return { code: 0, stdout: `package fake // import "fake"\n\nfunc ${args.at(-1)}() {}\n`, stderr: '' };
+      }
+      throw new Error(`unexpected go call: ${args.join(' ')}`);
+    };
+
+    const payload = await auditMihomoApi({
+      writeOutput: false,
+      runGoImpl,
+      upstreamLock: {
+        schemaVersion: '1.0.0',
+        module: 'github.com/metacubex/mihomo',
+        version: 'v1.19.29',
+        commit: 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb',
+        remote: 'https://github.com/MetaCubeX/mihomo',
+        ref: 'refs/tags/v1.19.29'
+      },
+      readFileImpl: async (filePath) => {
+        if (filePath.endsWith('executor.go')) return 'package executor\nfunc ParseWithPath(path string) (*config.Config, error) { return nil, nil }\nfunc ParseWithBytes(buf []byte) (*config.Config, error) { return nil, nil }\nfunc ApplyConfig(cfg *config.Config, force bool) {}\nfunc Shutdown() {}\n';
+        if (filePath.endsWith('tcp.go')) return 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n';
+        if (filePath.endsWith('manager.go')) return 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n';
+        return await fs.readFile(filePath, 'utf8');
+      },
+      readDirImpl: async (dirPath) => {
+        if (dirPath === pkgDir) {
+          return [
+            { name: 'server.go', isFile: () => true },
+            { name: 'cgo_risk.go', isFile: () => true },
+            { name: 'linux_tag.go', isFile: () => true }
+          ];
+        }
+        if (dirPath.endsWith(path.join('listener', 'socks'))) {
+          return [{ name: 'tcp.go', isFile: () => true }];
+        }
+        if (dirPath.endsWith(path.join('tunnel', 'statistic'))) {
+          return [{ name: 'manager.go', isFile: () => true }];
+        }
+        if (dirPath.endsWith(path.join('hub', 'executor'))) {
+          return [{ name: 'executor.go', isFile: () => true }];
+        }
+        return [];
+      }
+    });
+
+    for (const invocation of invocations) {
+      assert.equal(invocation.env.GOOS, 'linux');
+      assert.equal(invocation.env.GOARCH, 'arm64');
+      assert.equal(invocation.env.CGO_ENABLED, '1');
+    }
+
+    const httpEntry = payload.symbols.find((entry) => entry.importPath === 'github.com/metacubex/mihomo/listener/http');
+    assert.ok(httpEntry);
+    assert.ok(httpEntry.packageAudit.some((entry) => entry.type === 'flaggedImport' && entry.file === 'cgo_risk.go' && entry.value === 'golang.org/x/sys/unix'));
+    assert.ok(httpEntry.packageAudit.some((entry) => entry.type === 'buildTag' && entry.file === 'linux_tag.go' && entry.value === 'linux && arm64'));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('Task 9 audit hard-fails when go doc fails for a locked symbol', async () => {
@@ -182,7 +279,7 @@ test('Task 9 audit hard-fails when go doc fails for a locked symbol', async () =
   await assert.rejects(
     () => auditMihomoApi({
       writeOutput: false,
-      runGoImpl: async (args) => {
+      runGoImpl: async ({ args }) => {
         if (args[0] === 'list') {
           return {
             code: 0,
@@ -212,7 +309,8 @@ test('Task 9 audit hard-fails when go doc fails for a locked symbol', async () =
         }
         throw new Error(`unexpected json read: ${filePath}`);
       },
-      readFileImpl: async () => 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }'
+      readFileImpl: async () => 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }',
+      readDirImpl: async () => [{ name: 'server.go', isFile: () => true }]
     }),
     /go doc failed/u
   );

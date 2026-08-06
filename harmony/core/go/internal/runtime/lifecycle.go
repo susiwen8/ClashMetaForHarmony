@@ -45,6 +45,20 @@ func (l *Lifecycle) Transition(next State) error {
 	return nil
 }
 
+func (l *Lifecycle) TransitionWith(next State, fn func() error) error {
+	l.mu.Lock()
+	defer l.mu.Unlock()
+
+	if !transitionAllowed(l.state, next) {
+		return fmt.Errorf("%w: %s -> %s", ErrIllegalTransition, l.state, next)
+	}
+	if err := fn(); err != nil {
+		return err
+	}
+	l.state = next
+	return nil
+}
+
 func (l *Lifecycle) CanTransition(next State) bool {
 	l.mu.RLock()
 	defer l.mu.RUnlock()

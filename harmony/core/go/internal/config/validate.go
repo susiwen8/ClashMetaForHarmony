@@ -17,19 +17,19 @@ var (
 )
 
 func ValidateFile(sandboxRoot, candidate string) error {
-	_, _, err := parseWithinSandbox(sandboxRoot, candidate, mihomoexecutor.ParseWithPath)
+	_, _, err := parseWithinSandbox(sandboxRoot, candidate, mihomoexecutor.ParseWithBytes)
 	return err
 }
 
-type ParseFunc func(path string) (*mihomocfg.Config, error)
+type ParseBytesFunc func([]byte) (*mihomocfg.Config, error)
 
-func parseWithinSandbox(sandboxRoot, candidate string, parse ParseFunc) (string, *mihomocfg.Config, error) {
-	resolvedPath, err := resolvePath(sandboxRoot, candidate)
+func parseWithinSandbox(sandboxRoot, candidate string, parse ParseBytesFunc) (string, *mihomocfg.Config, error) {
+	resolvedPath, body, err := readWithinSandbox(sandboxRoot, candidate)
 	if err != nil {
 		return "", nil, err
 	}
 
-	cfg, err := parse(resolvedPath)
+	cfg, err := parse(body)
 	if err != nil {
 		return "", nil, err
 	}
@@ -37,42 +37,48 @@ func parseWithinSandbox(sandboxRoot, candidate string, parse ParseFunc) (string,
 	return resolvedPath, cfg, nil
 }
 
-func resolvePath(sandboxRoot, candidate string) (string, error) {
+func readWithinSandbox(sandboxRoot, candidate string) (string, []byte, error) {
 	if strings.HasPrefix(candidate, "content://") {
-		return "", ErrContentURIUnsupported
+		return "", nil, ErrContentURIUnsupported
 	}
 
 	if sandboxRoot == "" {
-		return "", errors.New("sandbox root is required")
+		return "", nil, errors.New("sandbox root is required")
 	}
 
 	root, err := filepath.Abs(sandboxRoot)
 	if err != nil {
-		return "", fmt.Errorf("resolve sandbox root: %w", err)
+		return "", nil, fmt.Errorf("resolve sandbox root: %w", err)
 	}
 	if resolvedRoot, err := filepath.EvalSymlinks(root); err == nil {
 		root = resolvedRoot
 	}
 
-	target := candidate
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(root, target)
+	if filepath.IsAbs(candidate) {
+		return "", nil, ErrPathOutsideSandbox
 	}
 
-	target = filepath.Clean(target)
-	if _, err := os.Stat(target); err == nil {
-		if resolvedTarget, evalErr := filepath.EvalSymlinks(target); evalErr == nil {
-			target = resolvedTarget
-		}
+	target := filepath.Clean(candidate)
+	if target == "." || target == "" {
+		return "", nil, ErrPathOutsideSandbox
+	}
+	if target == ".." || strings.HasPrefix(target, ".."+string(filepath.Separator)) {
+		return "", nil, ErrPathOutsideSandbox
 	}
 
-	rel, err := filepath.Rel(root, target)
+	sandbox, err := os.OpenRoot(root)
 	if err != nil {
-		return "", fmt.Errorf("resolve relative path: %w", err)
+		return "", nil, fmt.Errorf("open sandbox root: %w", err)
 	}
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", ErrPathOutsideSandbox
+	defer sandbox.Close()
+
+	body, err := sandbox.ReadFile(target)
+	if err != nil {
+		if _, statErr := os.Lstat(filepath.Join(root, target)); statErr == nil {
+			return "", nil, fmt.Errorf("%w: %s", ErrPathOutsideSandbox, target)
+		}
+		return "", nil, err
 	}
 
-	return target, nil
+	return filepath.Join(root, target), body, nil
 }
