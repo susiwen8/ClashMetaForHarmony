@@ -24,6 +24,7 @@ import (
 
 const (
 	testProbeTimeout = 10 * time.Second
+	testOriginRunID  = "00000000-0000-4000-8000-000000000011"
 )
 
 type originProcess struct {
@@ -457,7 +458,13 @@ func startOriginProcess(t *testing.T) *originProcess {
 
 	scriptPath := filepath.Join(repoRoot, "harmony", "tests", "bin", "phase2-origin.mjs")
 	bodyPath := filepath.Join(repoRoot, "harmony", "tests", "fixtures", "origin-body.txt")
-	cmd := exec.Command("node", scriptPath, "--bind", "127.0.0.1:0", "--body-file", bodyPath)
+	cmd := exec.Command(
+		"node",
+		scriptPath,
+		"--bind", "127.0.0.1:0",
+		"--body-file", bodyPath,
+		"--run-id", testOriginRunID,
+	)
 	cmd.Dir = repoRoot
 	stdout, err := cmd.StdoutPipe()
 	if err != nil {

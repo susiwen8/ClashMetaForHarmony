@@ -239,6 +239,12 @@ export async function buildMihomoOhos(options = {}) {
     const auditedApiLock = await auditMihomoApiImpl({ writeOutput: false });
     assertApiLockMatches(checkedInApiLock, auditedApiLock);
     const buildId = computeBuildId({ version: upstreamLock.version, commit: upstreamLock.commit });
+    const embeddedBuildInfoJSON = JSON.stringify({
+      version: upstreamLock.version,
+      upstreamCommit: upstreamLock.commit,
+      abiVersion: 'cmfa-harmony-v1',
+      buildId
+    });
 
     const buildProbeComponentImpl = options.buildProbeComponentImpl ?? buildGoComponent;
     const buildCoreComponentImpl = options.buildCoreComponentImpl ?? buildGoComponent;
@@ -275,7 +281,8 @@ export async function buildMihomoOhos(options = {}) {
         [
           `-X github.com/metacubex/mihomo/constant.Version=${upstreamLock.version}`,
           `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.upstreamCommit=${upstreamLock.commit}`,
-          `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.buildID=${buildId}`
+          `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.buildID=${buildId}`,
+          `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.embeddedBuildInfoJSON=${embeddedBuildInfoJSON}`
         ].join(' ')
       ]
     });

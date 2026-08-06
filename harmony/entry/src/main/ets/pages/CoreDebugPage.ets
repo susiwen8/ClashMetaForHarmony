@@ -1,4 +1,5 @@
 import { fileIo } from '@kit.CoreFileKit';
+import { process } from '@kit.ArkTS';
 
 import {
   getBridgeVersion,
@@ -73,9 +74,13 @@ interface Phase2ProbeTimestamps {
   proofAt: string;
 }
 
-interface ProcessInfo {
-  pid: number;
-  processName: string;
+interface Phase2ProbeCollection {
+  http: Phase2ProbeEntry | null;
+  socks: Phase2ProbeEntry | null;
+}
+
+interface Phase2StopEvidence {
+  result: string;
 }
 
 interface Phase2SelfTestProof {
@@ -96,13 +101,8 @@ interface Phase2SelfTestProof {
   fixtureExpectedBodySha256: string;
   httpListenerAddress: string;
   socksListenerAddress: string;
-  probes: {
-    http: Phase2ProbeEntry | null;
-    socks: Phase2ProbeEntry | null;
-  };
-  stop: {
-    result: string;
-  };
+  probes: Phase2ProbeCollection;
+  stop: Phase2StopEvidence;
   failures: Phase2ProbeFailure[];
 }
 
@@ -367,21 +367,34 @@ struct CoreDebugPage {
     const failures: Phase2ProbeFailure[] = [];
     const probeService = getSelfTestCoreService();
     const selfTestBuildEnabled: boolean = typeof probeService.probeHttpsForSelfTest === 'function';
-    const appProcessId: number | null = await this.readAppProcessId();
+    const appProcessId: number | null = this.readAppProcessId();
     let httpAddress: string = '';
     let socksAddress: string = '';
     let stopResult: string = 'not-run';
 
     if (!selfTestBuildEnabled) {
+      const phase2Timestamps: Phase2ProbeTimestamps = {
+        startedAt,
+        proofAt: new Date().toISOString()
+      };
+      const phase2Probes: Phase2ProbeCollection = {
+        http: httpProbe,
+        socks: socksProbe
+      };
+      const phase2Stop: Phase2StopEvidence = {
+        result: stopResult
+      };
+      const disabledFailure: Phase2ProbeFailure = {
+        code: 'PHASE2_SELFTEST_DISABLED',
+        detail: `${PHASE2_SELF_TEST_BUILD_FLAG} is disabled in the default lane.`,
+        stage: 'phase2'
+      };
       const phase2Proof: Phase2SelfTestProof = {
         schemaVersion: '1.0.0',
         phase: 2,
         result: 'incomplete',
         runId: context.runId,
-        timestamps: {
-          startedAt,
-          proofAt: new Date().toISOString()
-        },
+        timestamps: phase2Timestamps,
         bridgeVersion: this.bridgeVersion,
         coreVersion: this.coreVersion,
         selfTestBuildEnabled,
@@ -394,18 +407,9 @@ struct CoreDebugPage {
         fixtureExpectedBodySha256: context.probeExpectedBodySha256,
         httpListenerAddress: httpAddress,
         socksListenerAddress: socksAddress,
-        probes: {
-          http: httpProbe,
-          socks: socksProbe
-        },
-        stop: {
-          result: stopResult
-        },
-        failures: [{
-          code: 'PHASE2_SELFTEST_DISABLED',
-          detail: `${PHASE2_SELF_TEST_BUILD_FLAG} is disabled in the default lane.`,
-          stage: 'phase2'
-        }]
+        probes: phase2Probes,
+        stop: phase2Stop,
+        failures: [disabledFailure]
       };
       this.writeAtomicTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
       return;
@@ -506,6 +510,13 @@ struct CoreDebugPage {
       startedAt,
       proofAt: new Date().toISOString()
     };
+    const phase2Probes: Phase2ProbeCollection = {
+      http: httpProbe,
+      socks: socksProbe
+    };
+    const phase2Stop: Phase2StopEvidence = {
+      result: stopResult
+    };
     const phase2Proof: Phase2SelfTestProof = {
       schemaVersion: '1.0.0',
       phase: 2,
@@ -524,28 +535,17 @@ struct CoreDebugPage {
       fixtureExpectedBodySha256: context.probeExpectedBodySha256,
       httpListenerAddress: httpAddress,
       socksListenerAddress: socksAddress,
-      probes: {
-        http: httpProbe,
-        socks: socksProbe
-      },
-      stop: {
-        result: stopResult
-      },
+      probes: phase2Probes,
+      stop: phase2Stop,
       failures
     };
     this.writeAtomicTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
   }
 
-  private async readAppProcessId(): Promise<number | null> {
+  private readAppProcessId(): number | null {
     try {
-      const hostContext: Object | undefined = this.getUIContext().getHostContext();
-      const maybeProcessInfo: (() => Promise<ProcessInfo>) | undefined =
-        (hostContext as { getProcessInfo?: () => Promise<ProcessInfo> }).getProcessInfo;
-      if (typeof maybeProcessInfo !== 'function') {
-        return null;
-      }
-      const processInfo: ProcessInfo = await maybeProcessInfo.call(hostContext);
-      return Number.isInteger(processInfo.pid) && processInfo.pid > 0 ? processInfo.pid : null;
+      const appProcessId: number = process.pid;
+      return Number.isInteger(appProcessId) && appProcessId > 0 ? appProcessId : null;
     } catch (error) {
       return null;
     }
@@ -587,7 +587,7 @@ struct CoreDebugPage {
         fileIo.unlinkSync(tempPath);
       } catch (cleanupError) {
       }
-      throw error;
+      throw new Error('Failed to atomically publish proof evidence.');
     }
   }
 

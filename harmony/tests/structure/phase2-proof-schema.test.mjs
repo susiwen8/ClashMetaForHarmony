@@ -1454,9 +1454,11 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   }
   assert.match(debugPageSource, /selfTestBuildEnabled/u);
   assert.match(debugPageSource, /result: 'incomplete'/u);
-  assert.match(debugPageSource, /getProcessInfo/u);
-  assert.match(debugPageSource, /ProcessInfo/u);
-  assert.match(debugPageSource, /probes:\s*\{\s*http:\s*httpProbe,\s*socks:\s*socksProbe/u);
+  assert.match(debugPageSource, /process\.pid/u);
+  assert.doesNotMatch(debugPageSource, /\.call\(/u);
+  assert.doesNotMatch(debugPageSource, /interface\s+ProcessInfo/u);
+  assert.match(debugPageSource, /const phase2Probes:\s*Phase2ProbeCollection\s*=\s*\{\s*http:\s*httpProbe,\s*socks:\s*socksProbe/u);
+  assert.match(debugPageSource, /probes:\s*phase2Probes/u);
   assert.match(debugPageSource, /httpProbe !== null && socksProbe !== null/u);
   assert.match(debugPageSource, /writeAtomicTextFile/u);
   assert.match(debugPageSource, /renameSync/u);

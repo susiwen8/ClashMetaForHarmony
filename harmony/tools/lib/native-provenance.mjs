@@ -836,13 +836,13 @@ function stripElfReport(report) {
   };
 }
 
-export function normalizeElfReport(report, expectedComponent = null) {
+export function normalizeElfReport(report, expectedComponent = null, { includeBuildInfo = false } = {}) {
   const stripped = stripElfReport(report);
   if (!stripped || typeof stripped !== 'object') {
     return stripped;
   }
 
-  return {
+  const normalized = {
     result: stripped.result ?? 'fail',
     component: stripped.component ?? expectedComponent ?? null,
     architecture: stripped.architecture ?? null,
@@ -858,6 +858,15 @@ export function normalizeElfReport(report, expectedComponent = null) {
       }))
       : []
   };
+
+  if (includeBuildInfo) {
+    normalized.rawVersion = typeof report.rawVersion === 'string' ? report.rawVersion : null;
+    normalized.buildInfo = report.buildInfo && typeof report.buildInfo === 'object' && !Array.isArray(report.buildInfo)
+      ? { ...report.buildInfo }
+      : null;
+  }
+
+  return normalized;
 }
 
 export async function listHapEntries(hapPath, options = {}) {
@@ -889,7 +898,7 @@ export async function extractAndHashHapEntry(hapPath, entryPath, options = {}) {
     const elf = normalizeElfReport(await (options.inspectNativeLibraryImpl ?? inspectNativeLibrary)({
       libPath: path.resolve(extraction.tempFilePath),
       component: expectedComponent
-    }), expectedComponent);
+    }), expectedComponent, { includeBuildInfo: options.includeBuildInfo === true });
     return {
       identity: entryPath,
       sha256: extraction.sha256,
@@ -971,7 +980,7 @@ export async function inspectHapNativeEntries(input, options = {}) {
         const elf = normalizeElfReport(await (options.inspectNativeLibraryImpl ?? inspectNativeLibrary)({
           libPath: path.resolve(extraction.tempFilePath),
           component: expectedComponent
-        }), expectedComponent);
+        }), expectedComponent, { includeBuildInfo: options.includeBuildInfo === true });
         artifacts[componentKey] = {
           identity: entryPath,
           sha256: extraction.sha256,

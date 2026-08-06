@@ -141,11 +141,7 @@ func goCoreVersion() string {
 }
 
 func goBuildInfoJSON() string {
-	payload, err := json.Marshal(version.Build())
-	if err != nil {
-		return `{"error":"marshal build info"}`
-	}
-	return string(payload)
+	return version.BuildInfoJSON()
 }
 
 func loadConfigForLocalProxy(configPath string) error {

@@ -4959,6 +4959,31 @@ test('normalizeElfReport preserves the actual component and falls back only when
   assert.equal(missingActual.component, 'mihomoCore');
 });
 
+test('normalizeElfReport exposes core build provenance only for explicit live inspection', async () => {
+  const { normalizeElfReport } = await import(provenanceModulePath);
+  const buildInfo = {
+    version: 'v1.19.29',
+    upstreamCommit: '0123456789abcdef0123456789abcdef01234567',
+    abiVersion: 'cmfa-harmony-v1',
+    buildId: '0123456789abcdef'
+  };
+  const inspected = {
+    ...createElfReport('mihomoCore'),
+    rawVersion: buildInfo.version,
+    buildInfo
+  };
+
+  const persistedManifestReport = normalizeElfReport(inspected, 'mihomoCore');
+  assert.equal('rawVersion' in persistedManifestReport, false);
+  assert.equal('buildInfo' in persistedManifestReport, false);
+
+  const liveInspectionReport = normalizeElfReport(inspected, 'mihomoCore', {
+    includeBuildInfo: true
+  });
+  assert.equal(liveInspectionReport.rawVersion, buildInfo.version);
+  assert.deepEqual(liveInspectionReport.buildInfo, buildInfo);
+});
+
 test('strict validator rejects forged native pass manifests with missing artifacts, wrong identities, and blocker inconsistency', async () => {
   const { validatePhase1NativeManifest } = await import(provenanceModulePath);
 

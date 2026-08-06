@@ -308,7 +308,8 @@ export async function inspectHap({
     }, {
       fsApi,
       inspectNativeLibraryImpl: inspectNativeLibraryImpl ?? undefined,
-      captureInspectErrors: true
+      captureInspectErrors: true,
+      includeBuildInfo: true
     });
 
   report.archive = {

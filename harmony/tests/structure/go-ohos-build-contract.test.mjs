@@ -15,6 +15,7 @@ const coreMainPath = new URL('../../core/go/cmd/cmfa_core/main.go', import.meta.
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
+const EXPECTED_BUILD_INFO_JSON = '{"version":"v1.19.29","upstreamCommit":"e26714a181ac0e2fa803453c0a8e9a9ce94e31cb","abiVersion":"cmfa-harmony-v1","buildId":"ea041f1758f53faf"}';
 const CORE_EXPORTS = [
   BUILD_INFO_EXPORT,
   RAW_VERSION_EXPORT,
@@ -100,6 +101,7 @@ test('Task 7 gives the real Go version getter one backend-private export', async
 
   assert.match(coreMainRaw, new RegExp(String.raw`//export ${RAW_VERSION_EXPORT}\b`, 'u'));
   assert.match(coreMainRaw, new RegExp(String.raw`//export ${BUILD_INFO_EXPORT}\b`, 'u'));
+  assert.match(coreMainRaw, /version\.BuildInfoJSON\(\)/u);
   assert.doesNotMatch(coreMainRaw, /\/\/export cmfa_core_version\b/u);
 });
 
@@ -919,6 +921,11 @@ test('Task 5 core helper aggregates fresh probe and mihomo builds into one canon
     assert.equal(proof.components.mihomoCore.result, 'pass');
     assert.equal(proof.components.mihomoCore.artifact.path, 'harmony/artifacts/libcmfa_mihomo.so');
     assert.match(proof.components.mihomoCore.build.command.join(' '), /constant\.Version=v1\.19\.29/u);
+    assert.ok(
+      proof.components.mihomoCore.build.command.join(' ').includes(
+        `-X github.com/clashmetaforandroid/harmony/core/go/internal/version.embeddedBuildInfoJSON=${EXPECTED_BUILD_INFO_JSON}`
+      )
+    );
     assert.equal(proof.failures.length, 0);
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
