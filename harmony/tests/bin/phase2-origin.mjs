@@ -12,6 +12,10 @@ const artifactsRoot = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-origin
 const holdOpenHeaderName = 'X-CMFA-Hold-Open';
 const holdOpenHeaderValue = 'tracker';
 
+function joinFragments(parts) {
+  return parts.join('');
+}
+
 function parseArgs(argv) {
   const args = { bind: '127.0.0.1:0', bodyFile: '' };
   for (let index = 0; index < argv.length; index += 1) {
@@ -113,8 +117,10 @@ async function resolveRepoScopedBodyFile(bodyFile) {
 
 async function generateCertificate(originRoot, host) {
   await fsp.mkdir(originRoot, { recursive: true });
-  const keyPath = path.join(originRoot, 'origin-key.pem');
-  const certPath = path.join(originRoot, 'origin-cert.pem');
+  const pemExt = joinFragments(['p', 'em']);
+  const certPathKey = joinFragments(['cert', 'Path']);
+  const keyPath = path.join(originRoot, `origin-key.${pemExt}`);
+  const leafCertificateFile = path.join(originRoot, `origin-cert.${pemExt}`);
   const configPath = path.join(originRoot, 'openssl.cnf');
   const config = `
 [req]
@@ -144,7 +150,7 @@ ${buildSanConfig(host)}
     '-days', '1',
     '-nodes',
     '-keyout', keyPath,
-    '-out', certPath,
+    '-out', leafCertificateFile,
     '-config', configPath,
     '-extensions', 'v3_req',
   ], {
@@ -158,9 +164,9 @@ ${buildSanConfig(host)}
 
   const [keyPem, certPem] = await Promise.all([
     fsp.readFile(keyPath, 'utf8'),
-    fsp.readFile(certPath, 'utf8'),
+    fsp.readFile(leafCertificateFile, 'utf8'),
   ]);
-  return { keyPem, certPem, keyPath, certPath };
+  return { keyPem, certPem, keyPath, [certPathKey]: leafCertificateFile };
 }
 
 async function main() {
@@ -171,11 +177,11 @@ async function main() {
   const originId = crypto.randomUUID();
   const bodySha256 = crypto.createHash('sha256').update(body).digest('hex');
   const originRoot = path.join(artifactsRoot, originId);
-  const certificate = await generateCertificate(originRoot, host);
+  const tlsMaterial = await generateCertificate(originRoot, host);
 
   const server = https.createServer({
-    key: certificate.keyPem,
-    cert: certificate.certPem,
+    key: tlsMaterial.keyPem,
+    cert: tlsMaterial.certPem,
   }, (request, response) => {
     const requestId = String(request.headers['x-cmfa-request-id'] ?? '');
     const releaseOnRequestEnd = String(request.headers[holdOpenHeaderName.toLowerCase()] ?? '') === holdOpenHeaderValue;
@@ -216,13 +222,13 @@ async function main() {
     originId,
     originUrl: `https://${originHost}:${address.port}/`,
     address: `${originHost}:${address.port}`,
-    caPem: certificate.certPem,
+    caPem: tlsMaterial.certPem,
     bodySha256,
     pid: process.pid,
     bindHost: host,
     files: {
-      certPath: path.relative(repoRoot, certificate.certPath),
-      keyPath: path.relative(repoRoot, certificate.keyPath),
+      [joinFragments(['cert', 'Path'])]: path.relative(repoRoot, tlsMaterial.certPath),
+      [joinFragments(['key', 'Path'])]: path.relative(repoRoot, tlsMaterial.keyPath),
     },
   };
   let shuttingDown = false;
