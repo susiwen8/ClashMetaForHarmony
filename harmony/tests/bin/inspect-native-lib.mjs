@@ -17,13 +17,14 @@ const COMPONENT_ALLOWLIST_KEYS = {
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const PROBE_HTTPS_EXPORT = 'cmfa_mihomo_probe_https_v1';
+const PROBE_CANCEL_EXPORT = 'cmfa_mihomo_probe_cancel_v1';
 const TAKE_LOG_EXPORT = 'cmfa_mihomo_take_runtime_log_v1';
 const RUNTIME_STATE_EXPORT = 'cmfa_mihomo_runtime_state_v1';
 const START_LOCAL_EXPORT = 'cmfa_mihomo_start_local_v1';
 const STOP_EXPORT = 'cmfa_mihomo_stop_v1';
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
-  mihomoCore: [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT, PROBE_HTTPS_EXPORT, RUNTIME_STATE_EXPORT, START_LOCAL_EXPORT, STOP_EXPORT, TAKE_LOG_EXPORT],
+  mihomoCore: [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT, PROBE_CANCEL_EXPORT, PROBE_HTTPS_EXPORT, RUNTIME_STATE_EXPORT, START_LOCAL_EXPORT, STOP_EXPORT, TAKE_LOG_EXPORT],
   nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;

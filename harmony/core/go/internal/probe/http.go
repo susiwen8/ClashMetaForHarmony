@@ -212,6 +212,8 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (result HTTPSResult, err e
 	})
 	if err != nil {
 		_ = requestBodyWriter.CloseWithError(err)
+		_ = tlsConn.Close()
+		_ = proxyConn.Close()
 		<-requestWriteDone
 		return result, classifyProbeError(ctx, "tracker", err)
 	}

@@ -146,11 +146,5 @@ func splitTrackerAddress(address string) (string, string, error) {
 	if err == nil {
 		return host, port, nil
 	}
-	if strings.Count(address, ":") > 1 && !strings.HasPrefix(address, "[") {
-		index := strings.LastIndex(address, ":")
-		if index > 0 && index < len(address)-1 {
-			return address[:index], address[index+1:], nil
-		}
-	}
 	return "", "", err
 }

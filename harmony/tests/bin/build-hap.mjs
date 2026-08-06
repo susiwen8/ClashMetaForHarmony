@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
+import { inspectNativeLibrary } from './inspect-native-lib.mjs';
 import { normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
 
 export const BUILD_SCHEMA_VERSION = '1.0.0';
@@ -449,6 +450,51 @@ async function stagePackagedCore({ harmonyRoot, fsApi }) {
   };
 }
 
+async function validateRawCoreForPackaging({
+  harmonyRoot,
+  repoRoot,
+  fsApi,
+  inspectNativeLibraryImpl
+}) {
+  const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
+  try {
+    await fsApi.access(rawCorePath);
+  } catch {
+    return null;
+  }
+
+  try {
+    const elfReport = await inspectNativeLibraryImpl({
+      libPath: rawCorePath,
+      component: 'mihomoCore'
+    });
+    if (elfReport?.result === 'pass') {
+      return null;
+    }
+
+    const failureCode = Array.isArray(elfReport?.failures) && elfReport.failures.length > 0
+      ? elfReport.failures[0].code
+      : 'ELF_CONTRACT_FAILED';
+    return createFailure(
+      'RAW_CORE_ELF_INVALID',
+      `Canonical raw core failed exact export validation before build: ${failureCode}.`,
+      {
+        stage: 'prepare-core',
+        artifact: normalizePathForReport(repoRoot, rawCorePath)
+      }
+    );
+  } catch (error) {
+    return createFailure(
+      'RAW_CORE_ELF_INVALID',
+      `Canonical raw core failed exact export validation before build: ${error?.code ?? error?.message ?? 'unknown error'}.`,
+      {
+        stage: 'prepare-core',
+        artifact: normalizePathForReport(repoRoot, rawCorePath)
+      }
+    );
+  }
+}
+
 async function injectCoreIntoHap({
   harmonyRoot,
   hapPath,
@@ -548,6 +594,7 @@ export async function buildHap({
   outputPath = DEFAULT_EVIDENCE_PATH,
   fsApi = fs,
   spawnImpl = spawnChild,
+  inspectNativeLibraryImpl = inspectNativeLibrary,
   commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   now = () => new Date(),
   env = process.env,
@@ -576,6 +623,17 @@ export async function buildHap({
 
     evidence.wrapper.path = normalizePathForReport(repoRoot, wrapperPath);
     evidence.wrapper.executable = true;
+
+    const rawCoreValidationFailure = await validateRawCoreForPackaging({
+      harmonyRoot,
+      repoRoot,
+      fsApi,
+      inspectNativeLibraryImpl
+    });
+    if (rawCoreValidationFailure) {
+      pushFailure(evidence.failures, rawCoreValidationFailure);
+      return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);
+    }
 
     stagedCore = await stagePackagedCore({ harmonyRoot, fsApi });
 

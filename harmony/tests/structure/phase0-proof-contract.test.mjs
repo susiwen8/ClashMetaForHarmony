@@ -771,6 +771,7 @@ test('phase0 build helper stages the raw core into src/main/libs for packaging a
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      inspectNativeLibraryImpl: async () => ({ result: 'pass' }),
       spawnImpl(command, args) {
         spawnCalls += 1;
         const child = new EventEmitter();
@@ -795,6 +796,60 @@ test('phase0 build helper stages the raw core into src/main/libs for packaging a
     assert.equal(report.result, 'pass');
     assert.equal(spawnCalls, 4);
     await assert.rejects(fs.access(stagedCorePath));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper fails fast on raw core export drift before any hvigor spawn', async () => {
+  const { buildHap } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-raw-core-elf-'));
+  const harmonyRoot = path.join(tempRoot, 'harmony');
+  const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+  const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  let spawnCalls = 0;
+  let inspectCalls = 0;
+
+  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+  await fs.chmod(wrapperPath, 0o755);
+  await fs.writeFile(rawCorePath, 'stale-core-bytes', 'utf8');
+  await writeToolchainLock(harmonyRoot);
+
+  try {
+    const report = await buildHap({
+      harmonyRoot,
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      inspectNativeLibraryImpl: async ({ libPath, component }) => {
+        inspectCalls += 1;
+        assert.equal(component, 'mihomoCore');
+        assert.equal(libPath, rawCorePath);
+        return {
+          result: 'fail',
+          component: 'mihomoCore',
+          architecture: 'AArch64',
+          neededLibraries: ['libc.so'],
+          allowedNeededLibraries: ['libc.so'],
+          exportedSymbols: ['cmfa_mihomo_probe_https_v1'],
+          requiredExports: ['cmfa_mihomo_probe_https_v1', 'cmfa_mihomo_probe_cancel_v1'],
+          failures: [{ code: 'EXPORT_MISSING', detail: 'cmfa_mihomo_probe_cancel_v1' }]
+        };
+      },
+      spawnImpl() {
+        spawnCalls += 1;
+        throw new Error('hvigor should not run after raw core export drift');
+      }
+    });
+
+    assert.equal(inspectCalls, 1);
+    assert.equal(spawnCalls, 0);
+    assert.equal(report.result, 'fail');
+    assert.ok(report.failures.some((entry) =>
+      entry.code === 'RAW_CORE_ELF_INVALID' &&
+      entry.stage === 'prepare-core' &&
+      /EXPORT_MISSING/u.test(entry.detail)
+    ));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }

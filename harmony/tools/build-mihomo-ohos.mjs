@@ -22,6 +22,7 @@ const PROBE_COMPONENT_CONFIG = {
 const CORE_PRIVATE_EXPORTS = [
   'cmfa_mihomo_core_build_info_json_cstr_v1',
   'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_probe_cancel_v1',
   'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
