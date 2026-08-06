@@ -180,8 +180,11 @@ test('phase0 build helper CLI requires explicit self-test flags and forwards str
   const { parseCliArguments, runCli } = await import(buildModulePath);
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-cli-'));
   const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
   const customOut = path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-custom.json');
-  const hapPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  const hapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+
+  await fs.mkdir(harmonyRoot, { recursive: true });
 
   assert.deepEqual(parseCliArguments([], repoRoot), {
     outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-evidence.json'),
@@ -219,7 +222,7 @@ test('phase0 build helper CLI requires explicit self-test flags and forwards str
         observedOptions = options;
         return {
           ...createPassingBuildEvidenceObject({
-            harmonyRoot: path.join(repoRoot, 'harmony'),
+            harmonyRoot,
             hapPath,
             sha256: 'a'.repeat(64)
           }),
@@ -236,8 +239,146 @@ test('phase0 build helper CLI requires explicit self-test flags and forwards str
     assert.equal(exitCode, 0);
     assert.equal(observedOptions.outputPath, customOut);
     assert.equal(observedOptions.phase2SelfTestEnabled, true);
-    assert.equal(observedWrite.outputPath, customOut);
+    assert.equal(observedWrite.outputPath, await fs.realpath(path.dirname(customOut)).then((realParent) => path.join(realParent, path.basename(customOut))));
     assert.deepEqual(observedWrite.report.phase2SelfTest, createPhase2SelfTestEvidence(true));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper rejects repo-local symlink output parents that resolve outside the repository', async () => {
+  const { runCli } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-out-symlink-parent-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const outsideRoot = path.join(tempRoot, 'outside');
+  const linkedArtifacts = path.join(harmonyRoot, 'artifacts-link');
+  const outsideOutput = path.join(outsideRoot, 'evidence.json');
+  let buildInvoked = false;
+
+  await fs.mkdir(harmonyRoot, { recursive: true });
+  await fs.mkdir(outsideRoot, { recursive: true });
+  await fs.symlink(outsideRoot, linkedArtifacts);
+
+  try {
+    const exitCode = await runCli({
+      argv: ['--out', 'harmony/artifacts-link/evidence.json'],
+      repoRoot,
+      buildHapImpl: async () => {
+        buildInvoked = true;
+        return createPassingBuildEvidenceObject({
+          harmonyRoot,
+          hapPath: path.join(harmonyRoot, 'entry-default-signed.hap'),
+          sha256: 'b'.repeat(64)
+        });
+      },
+      stdout: { write() {} },
+      stderr: { write() {} }
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(buildInvoked, false);
+    await assert.rejects(fs.access(outsideOutput));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper rejects repo-local symlink output targets and does not write through them', async () => {
+  const { runCli } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-out-symlink-target-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const artifactsRoot = path.join(harmonyRoot, 'artifacts');
+  const outsideRoot = path.join(tempRoot, 'outside');
+  const outsideOutput = path.join(outsideRoot, 'outside-evidence.json');
+  const linkedOutput = path.join(artifactsRoot, 'linked-evidence.json');
+  let buildInvoked = false;
+
+  await fs.mkdir(artifactsRoot, { recursive: true });
+  await fs.mkdir(outsideRoot, { recursive: true });
+  await fs.writeFile(outsideOutput, 'outside-sentinel', 'utf8');
+  await fs.symlink(outsideOutput, linkedOutput);
+
+  try {
+    const exitCode = await runCli({
+      argv: ['--out', 'harmony/artifacts/linked-evidence.json'],
+      repoRoot,
+      buildHapImpl: async () => {
+        buildInvoked = true;
+        return createPassingBuildEvidenceObject({
+          harmonyRoot,
+          hapPath: path.join(harmonyRoot, 'entry-default-signed.hap'),
+          sha256: 'c'.repeat(64)
+        });
+      },
+      stdout: { write() {} },
+      stderr: { write() {} }
+    });
+
+    assert.equal(exitCode, 2);
+    assert.equal(buildInvoked, false);
+    assert.equal(await fs.readFile(outsideOutput, 'utf8'), 'outside-sentinel');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper creates legal nested repo-scoped output parents and writes evidence there', async () => {
+  const { runCli } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-out-nested-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const hapPath = path.join(harmonyRoot, 'entry-default-signed.hap');
+  const outputPath = path.join(harmonyRoot, 'artifacts', 'nested', 'deeper', 'phase0-build.json');
+
+  await fs.mkdir(harmonyRoot, { recursive: true });
+
+  try {
+    const exitCode = await runCli({
+      argv: ['--out', 'harmony/artifacts/nested/deeper/phase0-build.json'],
+      repoRoot,
+      buildHapImpl: async () => createPassingBuildEvidenceObject({
+        harmonyRoot,
+        hapPath,
+        sha256: 'd'.repeat(64)
+      }),
+      stdout: { write() {} },
+      stderr: { write() {} }
+    });
+
+    assert.equal(exitCode, 0);
+    const persisted = JSON.parse(await fs.readFile(outputPath, 'utf8'));
+    assert.equal(persisted.outputPath, 'harmony/artifacts/phase0-build-evidence.json');
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper fatal catch writes strict fail evidence to a legal repo-scoped custom --out path', async () => {
+  const { runCli } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-fatal-out-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const outputPath = path.join(harmonyRoot, 'artifacts', 'fatal', 'phase0-build.json');
+
+  await fs.mkdir(harmonyRoot, { recursive: true });
+
+  try {
+    const exitCode = await runCli({
+      argv: ['--out', 'harmony/artifacts/fatal/phase0-build.json'],
+      repoRoot,
+      buildHapImpl: async () => {
+        throw Object.assign(new Error('boom'), { code: 'BOOM' });
+      },
+      stdout: { write() {} },
+      stderr: { write() {} }
+    });
+
+    const persisted = JSON.parse(await fs.readFile(outputPath, 'utf8'));
+    assert.equal(exitCode, 2);
+    assert.equal(persisted.outputPath, 'harmony/artifacts/fatal/phase0-build.json');
+    assert.ok(persisted.failures.some((entry) => entry.code === 'BOOM'));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
@@ -1626,8 +1767,11 @@ test('phase0 device proof redacts external absolute paths, file URLs, and signin
 test('phase0 runner CLI fatal catch respects custom --out', async () => {
   const { parseCliArguments, runCli } = await import(runnerModulePath);
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-cli-out-'));
-  const customOut = path.join(tempRoot, 'custom-proof.json');
-  const parsed = parseCliArguments(['--hap', 'harmony/app.hap', '--out', customOut], path.join(tempRoot, 'repo'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  await fs.mkdir(harmonyRoot, { recursive: true });
+  const customOut = path.join(repoRoot, 'harmony', 'artifacts', 'custom-proof.json');
+  const parsed = parseCliArguments(['--hap', 'harmony/app.hap', '--out', customOut], repoRoot);
 
   assert.equal(parsed.outputPath, customOut);
   assert.equal(parsed.hapPath, 'harmony/app.hap');
@@ -1635,7 +1779,13 @@ test('phase0 runner CLI fatal catch respects custom --out', async () => {
   try {
     const exitCode = await runCli({
       argv: ['--hap', 'harmony/app.hap', '--out', customOut],
-      repoRoot: path.join(tempRoot, 'repo'),
+      repoRoot,
+      buildHapImpl: async () => createPassingBuildEvidenceObject({
+        harmonyRoot,
+        hapPath: path.join(harmonyRoot, 'entry-default-signed.hap'),
+        sha256: 'e'.repeat(64)
+      }),
+      writeBuildEvidenceImpl: async () => {},
       runPhase0DeviceProofImpl: async () => {
         throw Object.assign(new Error('boom'), { code: 'BOOM' });
       }
@@ -1643,7 +1793,7 @@ test('phase0 runner CLI fatal catch respects custom --out', async () => {
 
     const persisted = JSON.parse(await fs.readFile(customOut, 'utf8'));
     assert.equal(exitCode, 2);
-    assert.equal(persisted.outputPath, 'custom-proof.json');
+    assert.equal(persisted.outputPath, 'harmony/artifacts/custom-proof.json');
     assert.ok(persisted.failures.some((entry) => entry.code === 'BOOM'));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });

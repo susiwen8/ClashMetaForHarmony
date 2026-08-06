@@ -680,9 +680,25 @@ export async function buildHap({
   return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);
 }
 
-export async function writeBuildEvidence(report, outputPath = DEFAULT_EVIDENCE_PATH, fsApi = fs) {
-  await fsApi.mkdir(path.dirname(outputPath), { recursive: true });
-  await fsApi.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+export async function writeBuildEvidence(
+  report,
+  outputPath = DEFAULT_EVIDENCE_PATH,
+  fsApi = fs,
+  options = {}
+) {
+  const safeOutputPath = options.verifyRepoScope === false
+    ? outputPath
+    : await resolveRepoScopedOutputPath(fsApi, options.repoRoot ?? REPO_ROOT, outputPath, '--out');
+  const tempPath = path.join(
+    path.dirname(safeOutputPath),
+    `.tmp-${path.basename(safeOutputPath)}-${process.pid}-${Date.now()}-${Math.random().toString(16).slice(2)}`
+  );
+  try {
+    await fsApi.writeFile(tempPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
+    await fsApi.rename(tempPath, safeOutputPath);
+  } finally {
+    await fsApi.rm(tempPath, { force: true }).catch(() => {});
+  }
 }
 
 function resolveRepoPath(repoRoot, candidatePath, argumentName) {
@@ -692,6 +708,65 @@ function resolveRepoPath(repoRoot, candidatePath, argumentName) {
     throw Object.assign(new Error(`${argumentName} must stay inside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
   }
   return resolved;
+}
+
+function isWithinRepo(realRepoRoot, candidatePath) {
+  const relative = path.relative(realRepoRoot, candidatePath);
+  return relative === '' || (!relative.startsWith('..') && !path.isAbsolute(relative));
+}
+
+function pathOutsideRepoError(option) {
+  return Object.assign(new Error(`${option} resolves outside the repository through a symlink.`), {
+    code: 'PATH_OUTSIDE_REPO'
+  });
+}
+
+async function resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath, option = '--out') {
+  const resolved = path.resolve(outputPath);
+  const lexicalRelative = path.relative(repoRoot, resolved);
+  if (lexicalRelative.startsWith('..') || path.isAbsolute(lexicalRelative)) {
+    throw pathOutsideRepoError(option);
+  }
+
+  const realRepoRoot = await fsApi.realpath(repoRoot);
+  let existingAncestor = path.dirname(resolved);
+  while (true) {
+    try {
+      const realAncestor = await fsApi.realpath(existingAncestor);
+      if (!isWithinRepo(realRepoRoot, realAncestor)) {
+        throw pathOutsideRepoError(option);
+      }
+      break;
+    } catch (error) {
+      if (error?.code !== 'ENOENT') {
+        throw error;
+      }
+      const parent = path.dirname(existingAncestor);
+      if (parent === existingAncestor) {
+        throw error;
+      }
+      existingAncestor = parent;
+    }
+  }
+
+  await fsApi.mkdir(path.dirname(resolved), { recursive: true });
+  const realParent = await fsApi.realpath(path.dirname(resolved));
+  if (!isWithinRepo(realRepoRoot, realParent)) {
+    throw pathOutsideRepoError(option);
+  }
+
+  try {
+    const outputStats = await fsApi.lstat(resolved);
+    if (outputStats.isSymbolicLink()) {
+      throw pathOutsideRepoError(option);
+    }
+  } catch (error) {
+    if (error?.code !== 'ENOENT') {
+      throw error;
+    }
+  }
+
+  return path.join(realParent, path.basename(resolved));
 }
 
 export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
@@ -734,17 +809,48 @@ export async function runCli({
   argv = process.argv.slice(2),
   repoRoot = REPO_ROOT,
   stdout = process.stdout,
+  stderr = process.stderr,
+  fsApi = fs,
   buildHapImpl = buildHap,
   writeBuildEvidenceImpl = writeBuildEvidence
 } = {}) {
-  const parsed = parseCliArguments(argv, repoRoot);
-  const report = await buildHapImpl({
-    outputPath: parsed.outputPath,
-    phase2SelfTestEnabled: parsed.phase2SelfTestEnabled
-  });
-  await writeBuildEvidenceImpl(report, parsed.outputPath);
-  stdout.write(`${JSON.stringify(report, null, 2)}\n`);
-  return report.result === 'pass' ? 0 : 2;
+  let parsed = null;
+  let safeOutputPath = null;
+
+  try {
+    parsed = parseCliArguments(argv, repoRoot);
+    safeOutputPath = await resolveRepoScopedOutputPath(fsApi, repoRoot, parsed.outputPath, '--out');
+    const report = await buildHapImpl({
+      outputPath: parsed.outputPath,
+      phase2SelfTestEnabled: parsed.phase2SelfTestEnabled
+    });
+    await writeBuildEvidenceImpl(report, safeOutputPath, fsApi, {
+      repoRoot,
+      verifyRepoScope: false
+    });
+    stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+    return report.result === 'pass' ? 0 : 2;
+  } catch (error) {
+    if (safeOutputPath) {
+      const report = createBuildEvidence({
+        repoRoot,
+        harmonyRoot: path.join(repoRoot, 'harmony'),
+        outputPath: parsed?.outputPath ?? safeOutputPath,
+        startedAt: new Date()
+      });
+      report.failures.push(createFailure(error?.code ?? 'BUILD_FATAL', error?.message ?? 'Unknown fatal build error', { stage: 'build' }));
+      report.timestamps.completedAt = isoTimestamp(new Date());
+      await writeBuildEvidenceImpl(report, safeOutputPath, fsApi, {
+        repoRoot,
+        verifyRepoScope: false
+      });
+      stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+      return 2;
+    }
+
+    stderr.write(`${error?.stack ?? error?.message ?? String(error)}\n`);
+    return 2;
+  }
 }
 
 function isDirectExecution() {
@@ -758,18 +864,5 @@ function isDirectExecution() {
 if (isDirectExecution()) {
   runCli().then((exitCode) => {
     process.exitCode = exitCode;
-  }).catch(async (error) => {
-    const harmonyRoot = HARMONY_ROOT;
-    const report = createBuildEvidence({
-      repoRoot: REPO_ROOT,
-      harmonyRoot,
-      outputPath: DEFAULT_EVIDENCE_PATH,
-      startedAt: new Date()
-    });
-
-    report.failures.push(createFailure(error?.code ?? 'BUILD_FATAL', error?.message ?? 'Unknown fatal build error', { stage: 'build' }));
-    report.timestamps.completedAt = isoTimestamp(new Date());
-    await writeBuildEvidence(report);
-    process.exitCode = 2;
   });
 }

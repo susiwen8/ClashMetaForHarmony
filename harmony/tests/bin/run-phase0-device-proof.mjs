@@ -1049,7 +1049,7 @@ export async function runCli({
 
   try {
     const buildEvidence = await buildHapImpl({ harmonyRoot, outputPath: buildEvidencePath });
-    await writeBuildEvidenceImpl(buildEvidence, buildEvidencePath);
+    await writeBuildEvidenceImpl(buildEvidence, buildEvidencePath, fs, { repoRoot });
     const proof = await runPhase0DeviceProofImpl({ hapPath, outputPath, buildEvidencePath, buildEvidence, harmonyRoot });
     await writeProofImpl(proof, outputPath);
     return proof.result === 'pass' ? 0 : 2;
