@@ -43,13 +43,16 @@ interface Phase2ProbeFailure {
 
 interface Phase2ProbeEntry {
   protocol: ProbeProtocol;
-  result: 'pass' | 'fail' | 'incomplete';
+  status: 'pass' | 'fail' | 'incomplete';
   detail: string;
   probe: Phase2ProbeResult;
   requestId: string | null;
   originRequestId: string | null;
   appProbeId: string | null;
   coreEventId: string | null;
+  originEventRunId: string | null;
+  appEventRunId: string | null;
+  coreEventRunId: string | null;
   coreConnectionId: string | null;
   clientSourcePort: number | null;
   destination: string | null;
@@ -422,13 +425,16 @@ struct CoreDebugPage {
         const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
         const probeEntry: Phase2ProbeEntry = {
           protocol,
-          result: passed ? 'pass' : 'fail',
+          status: passed ? 'pass' : 'fail',
           detail: passed ? probe.tracker.connectionId : `${probe.error.code}:${probe.error.detail}`,
           probe,
           requestId: probe.requestIdEcho,
           originRequestId: probe.requestIdEcho,
           appProbeId: request.probeRunId,
           coreEventId: probe.tracker.connectionId,
+          originEventRunId: context.probeOriginRunId.length > 0 ? context.probeOriginRunId : context.runId,
+          appEventRunId: context.runId,
+          coreEventRunId: context.runId,
           coreConnectionId: probe.tracker.connectionId,
           clientSourcePort: parseSourcePort(probe.clientLocalAddress),
           destination: probe.tracker.destinationAddress,
@@ -481,7 +487,7 @@ struct CoreDebugPage {
     const phase2Proof: Phase2SelfTestProof = {
       schemaVersion: '1.0.0',
       phase: 2,
-      result: failures.length === 0 && probes.length === 2 ? 'pass' : 'incomplete',
+      result: failures.length === 0 && httpProbe !== null && socksProbe !== null && stopResult === 'pass' ? 'pass' : 'incomplete',
       runId: context.runId,
       timestamps: phase2Timestamps,
       bridgeVersion: this.bridgeVersion,

@@ -14,6 +14,7 @@ const INSPECT_NATIVE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'inspect-nat
 const ORIGIN_MODULE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'phase2-origin.mjs');
 const SCHEMA_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-device-proof.schema.json');
 const EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-device-proof.example.json');
+const APP_EVIDENCE_EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-app-evidence.example.json');
 const DEBUG_PAGE_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'CoreDebugPage.ets');
 const ENTRY_ABILITY_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'entryability', 'EntryAbility.ets');
 const EXPECTED_RUN_ID = '980cbe02-b817-4db1-99bc-e8e4e6523daf';
@@ -41,6 +42,10 @@ try {
 
 function digest(char) {
   return char.repeat(64);
+}
+
+async function readAppEvidenceFixture() {
+  return JSON.parse(await fs.readFile(APP_EVIDENCE_EXAMPLE_PATH, 'utf8'));
 }
 
 function createValidPassProof() {
@@ -181,6 +186,7 @@ function createValidPassProof() {
       sha256: digest('9'),
       sizeBytes: 1024,
       runId: EXPECTED_RUN_ID,
+      originRunId: EXPECTED_RUN_ID,
       appProcessId: 4312,
       stopResult: 'pass',
       fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
@@ -337,7 +343,8 @@ test('Phase 2 pass validator rejects fabricated partial passes and accepts fully
     ['probe source port missing', (proof) => { proof.probes.socks.clientSourcePort = null; }, /source port|clientSourcePort/u],
     ['stop failed', (proof) => { proof.stop.result = 'fail'; }, /stop/u],
     ['stub detection not false', (proof) => { proof.stubDetection.stubDetected = null; }, /stubDetected/u],
-    ['pass with failure array', (proof) => { proof.failures.push({ code: 'BAD', detail: 'should not pass', stage: 'proof' }); }, /failures/u]
+    ['pass with failure array', (proof) => { proof.failures.push({ code: 'BAD', detail: 'should not pass', stage: 'proof' }); }, /failures/u],
+    ['app evidence originRunId missing', (proof) => { proof.appEvidence.originRunId = null; }, /originRunId/u]
   ];
 
   for (const [label, mutate, expected] of mutations) {
@@ -396,70 +403,9 @@ test('Phase 2 origin parser accepts split JSONL records and ignores wrong-run ob
   assert.ok(snapshot.invalid.some((entry) => /runId mismatch/u.test(entry.error)));
 });
 
-test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays', () => {
+test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays plus wrong originRunId', async () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
-  const canonical = {
-    runId: EXPECTED_RUN_ID,
-    appProcessId: 4312,
-    fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
-    fixtureSha256: digest('d'),
-    coreVersion: CORE_VERSION,
-    httpListenerAddress: '127.0.0.1:19090',
-    socksListenerAddress: '127.0.0.1:19091',
-    stop: { result: 'pass' },
-    probes: {
-      http: {
-        protocol: 'HTTP_CONNECT',
-        status: 'pass',
-        probeRunId: 'probe-http',
-        requestId: 'req-http',
-        originRequestId: 'req-http',
-        appProbeId: 'app-http',
-        coreEventId: 'core-http',
-        originEventRunId: EXPECTED_RUN_ID,
-        appEventRunId: EXPECTED_RUN_ID,
-        coreEventRunId: EXPECTED_RUN_ID,
-        originId: 'origin-123',
-        coreConnectionId: 'conn-http',
-        clientSourcePort: 39111,
-        destination: 'example.com:443',
-        upstreamInboundType: 'HTTP_CONNECT',
-        listenerAddress: '127.0.0.1:19090',
-        tlsPeerSha256: digest('f'),
-        httpStatus: 200,
-        responseBytes: 26,
-        responseSha256: digest('e'),
-        startedAt: '2026-08-06T02:00:03.500Z',
-        completedAt: '2026-08-06T02:00:04.000Z',
-        error: null
-      },
-      socks: {
-        protocol: 'SOCKS5',
-        status: 'pass',
-        probeRunId: 'probe-socks',
-        requestId: 'req-socks',
-        originRequestId: 'req-socks',
-        appProbeId: 'app-socks',
-        coreEventId: 'core-socks',
-        originEventRunId: EXPECTED_RUN_ID,
-        appEventRunId: EXPECTED_RUN_ID,
-        coreEventRunId: EXPECTED_RUN_ID,
-        originId: 'origin-123',
-        coreConnectionId: 'conn-socks',
-        clientSourcePort: 39112,
-        destination: 'example.com:443',
-        upstreamInboundType: 'SOCKS5',
-        listenerAddress: '127.0.0.1:19091',
-        tlsPeerSha256: digest('f'),
-        httpStatus: 200,
-        responseBytes: 26,
-        responseSha256: digest('e'),
-        startedAt: '2026-08-06T02:00:04.200Z',
-        completedAt: '2026-08-06T02:00:05.000Z',
-        error: null
-      }
-    }
-  };
+  const canonical = await readAppEvidenceFixture();
   assert.equal(runner.parsePhase2AppEvidence(canonical, { expectedRunId: EXPECTED_RUN_ID }).valid, true);
   const legacy = {
     ...canonical,
@@ -468,6 +414,13 @@ test('Phase 2 app proof parser accepts canonical writer shape and rejects old pr
   const legacyValidation = runner.parsePhase2AppEvidence(legacy, { expectedRunId: EXPECTED_RUN_ID });
   assert.equal(legacyValidation.valid, false);
   assert.match(legacyValidation.errors.join('\n'), /probes must be an object|probes\.http/u);
+  const wrongOriginRunId = {
+    ...canonical,
+    originRunId: '5582eb4a-df59-48cb-a3d8-d6e79c7eaebd'
+  };
+  const wrongOriginValidation = runner.parsePhase2AppEvidence(wrongOriginRunId, { expectedRunId: EXPECTED_RUN_ID });
+  assert.equal(wrongOriginValidation.valid, false);
+  assert.match(wrongOriginValidation.errors.join('\n'), /originRunId/u);
 });
 
 test('Phase 2 runner executes the exact build-origin-device-app trace and rejects stale mismatched app evidence', async () => {
@@ -506,73 +459,7 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
   await fs.writeFile(prePackageCorePath, 'real-core', 'utf8');
   await fs.writeFile(prePackageAddonPath, 'real-addon', 'utf8');
 
-  const appEvidence = {
-    schemaVersion: '1.0.0',
-    phase: 2,
-    runId: EXPECTED_RUN_ID,
-    appProcessId: 4312,
-    originRunId: EXPECTED_RUN_ID,
-    fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
-    fixtureSha256: digest('d'),
-    coreVersion: CORE_VERSION,
-    httpListenerAddress: '127.0.0.1:19090',
-    socksListenerAddress: '127.0.0.1:19091',
-    stop: {
-      result: 'pass'
-    },
-    probes: {
-      http: {
-        protocol: 'HTTP_CONNECT',
-        status: 'pass',
-        probeRunId: 'probe-http',
-        requestId: 'req-http',
-        originRequestId: 'req-http',
-        appProbeId: 'app-http',
-        coreEventId: 'core-http',
-        originEventRunId: EXPECTED_RUN_ID,
-        appEventRunId: EXPECTED_RUN_ID,
-        coreEventRunId: EXPECTED_RUN_ID,
-        originId: 'origin-123',
-        coreConnectionId: 'conn-http',
-        clientSourcePort: 39111,
-        destination: 'example.com:443',
-        upstreamInboundType: 'HTTP_CONNECT',
-        listenerAddress: '127.0.0.1:19090',
-        tlsPeerSha256: digest('f'),
-        httpStatus: 200,
-        responseBytes: 26,
-        responseSha256: digest('e'),
-        startedAt: '2026-08-06T02:00:03.500Z',
-        completedAt: '2026-08-06T02:00:04.000Z',
-        error: null
-      },
-      socks: {
-        protocol: 'SOCKS5',
-        status: 'pass',
-        probeRunId: 'probe-socks',
-        requestId: 'req-socks',
-        originRequestId: 'req-socks',
-        appProbeId: 'app-socks',
-        coreEventId: 'core-socks',
-        originEventRunId: EXPECTED_RUN_ID,
-        appEventRunId: EXPECTED_RUN_ID,
-        coreEventRunId: EXPECTED_RUN_ID,
-        originId: 'origin-123',
-        coreConnectionId: 'conn-socks',
-        clientSourcePort: 39112,
-        destination: 'example.com:443',
-        upstreamInboundType: 'SOCKS5',
-        listenerAddress: '127.0.0.1:19091',
-        tlsPeerSha256: digest('f'),
-        httpStatus: 200,
-        responseBytes: 26,
-        responseSha256: digest('e'),
-        startedAt: '2026-08-06T02:00:04.200Z',
-        completedAt: '2026-08-06T02:00:05.000Z',
-        error: null
-      }
-    }
-  };
+  const appEvidence = await readAppEvidenceFixture();
   await fs.writeFile(appEvidencePath, `${JSON.stringify(appEvidence)}\n`, 'utf8');
 
   const buildManifest = {
@@ -987,6 +874,7 @@ test('inspect-hap exports strict live rehash helpers and rejects fake packaged c
 });
 
 test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 evidence lanes', async () => {
+  const appEvidenceFixture = await readAppEvidenceFixture();
   const [inspectNativeSource, debugPageSource, entryAbilitySource] = await Promise.all([
     fs.readFile(INSPECT_NATIVE_PATH, 'utf8'),
     fs.readFile(DEBUG_PAGE_PATH, 'utf8'),
@@ -1001,17 +889,15 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   assert.match(inspectNativeSource, /probe-backend/u);
   assert.match(inspectNativeSource, /dlopen|dlsym|libdl/u);
 
-  for (const signal of [
+  const topLevelSignals = [
     'phase2-device-proof.json',
-    'appProcessId',
-    'coreConnectionId',
-    'clientSourcePort',
-    'originRequestId',
-    'appProbeId',
-    'coreEventId',
-    'stopResult',
-    'CMFA_ENABLE_PHASE2_SELFTEST'
-  ]) {
+    'CMFA_ENABLE_PHASE2_SELFTEST',
+    ...Object.keys(appEvidenceFixture),
+    ...Object.keys(appEvidenceFixture.stop),
+    ...Object.keys(appEvidenceFixture.probes.http),
+    ...Object.keys(appEvidenceFixture.probes.socks)
+  ];
+  for (const signal of new Set(topLevelSignals)) {
     assert.match(`${debugPageSource}\n${entryAbilitySource}`, new RegExp(signal.replaceAll('.', '\\.'), 'u'));
   }
   assert.match(debugPageSource, /selfTestBuildEnabled/u);
@@ -1019,5 +905,7 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   assert.match(debugPageSource, /getProcessInfo/u);
   assert.match(debugPageSource, /ProcessInfo/u);
   assert.match(debugPageSource, /probes:\s*\{\s*http:\s*httpProbe,\s*socks:\s*socksProbe/u);
+  assert.match(debugPageSource, /httpProbe !== null && socksProbe !== null/u);
   assert.doesNotMatch(debugPageSource, /probes:\s*Phase2ProbeEntry\[\]/u);
+  assert.doesNotMatch(debugPageSource, /probes\.length/u);
 });

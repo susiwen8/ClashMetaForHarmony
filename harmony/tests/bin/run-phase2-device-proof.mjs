@@ -254,6 +254,7 @@ function createBaseProof({ repoRoot, outputPath, runId, startedAt }) {
       sha256: null,
       sizeBytes: null,
       runId: null,
+      originRunId: null,
       appProcessId: null,
       stopResult: null,
       fixturePath: null,
@@ -384,7 +385,7 @@ function canPass(proof) {
   if (!isDigest(proof.appEvidence?.sha256) || !Number.isInteger(proof.appEvidence?.sizeBytes) || proof.appEvidence.sizeBytes < 1) {
     return false;
   }
-  if (proof.appEvidence?.runId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence.appProcessId < 1 || proof.appEvidence?.stopResult !== 'pass') {
+  if (proof.appEvidence?.runId !== proof.runId || proof.appEvidence?.originRunId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence.appProcessId < 1 || proof.appEvidence?.stopResult !== 'pass') {
     return false;
   }
   if (proof.stop?.result !== 'pass') {
@@ -546,8 +547,8 @@ export function validatePhase2Proof(proof) {
       if (!Array.isArray(proof.failures) || proof.failures.length !== 0) {
         errors.push('pass requires failures to stay empty.');
       }
-      if (proof.appEvidence?.runId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence?.stopResult !== 'pass') {
-        errors.push('pass requires exact appEvidence runId/appProcessId/stopResult.');
+      if (proof.appEvidence?.runId !== proof.runId || proof.appEvidence?.originRunId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence?.stopResult !== 'pass') {
+        errors.push('pass requires exact appEvidence runId/originRunId/appProcessId/stopResult.');
       }
       if (!isNonEmptyString(proof.origin?.originRunId) || proof.origin.originRunId !== proof.runId) {
         errors.push('pass requires explicit origin/app/core run correlation to equal proof.runId.');
@@ -913,6 +914,9 @@ export function parsePhase2AppEvidence(raw, options = {}) {
   }
   if (raw.runId !== expectedRunId) {
     errors.push('app evidence runId mismatch.');
+  }
+  if (raw.originRunId !== expectedRunId) {
+    errors.push('app evidence originRunId mismatch.');
   }
   if (!Number.isInteger(raw.appProcessId) || raw.appProcessId < 1) {
     errors.push('app evidence appProcessId must be a positive integer.');
@@ -1314,6 +1318,7 @@ export async function runPhase2DeviceProof({
       sha256: evidenceDigest.sha256,
       sizeBytes: evidenceDigest.sizeBytes,
       runId: appProof.runId ?? null,
+      originRunId: appProof.originRunId ?? null,
       appProcessId: appProof.appProcessId ?? null,
       stopResult: appProof.stop?.result ?? null,
       fixturePath: appProof.fixturePath ?? null,
@@ -1327,8 +1332,8 @@ export async function runPhase2DeviceProof({
     proof.core.socksListenerAddress = appProof.socksListenerAddress ?? null;
     proof.stop.result = appProof.stop?.result ?? 'fail';
 
-    if (proof.appEvidence.runId !== proof.runId) {
-      pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence runId did not match the runner runId.', 'app-proof');
+    if (proof.appEvidence.runId !== proof.runId || proof.appEvidence.originRunId !== proof.runId) {
+      pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence runId/originRunId did not match the runner runId.', 'app-proof');
       return await finish();
     }
 

@@ -147,12 +147,13 @@
     "appEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "sizeBytes", "runId", "appProcessId", "stopResult", "fixturePath", "fixtureSha256", "coreVersion", "httpListenerAddress", "socksListenerAddress"],
+      "required": ["path", "sha256", "sizeBytes", "runId", "originRunId", "appProcessId", "stopResult", "fixturePath", "fixtureSha256", "coreVersion", "httpListenerAddress", "socksListenerAddress"],
       "properties": {
         "path": { "type": ["string", "null"] },
         "sha256": { "type": ["string", "null"] },
         "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
         "runId": { "type": ["string", "null"] },
+        "originRunId": { "type": ["string", "null"] },
         "appProcessId": { "type": ["integer", "null"], "minimum": 1 },
         "stopResult": { "type": ["string", "null"] },
         "fixturePath": { "type": ["string", "null"] },

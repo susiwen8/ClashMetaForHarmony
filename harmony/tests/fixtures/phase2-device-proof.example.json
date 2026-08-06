@@ -122,6 +122,7 @@
     "sha256": null,
     "sizeBytes": null,
     "runId": null,
+    "originRunId": null,
     "appProcessId": null,
     "stopResult": null,
     "fixturePath": null,
