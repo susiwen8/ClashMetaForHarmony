@@ -28,6 +28,25 @@ func (s *recordingSink) Events() []RuntimeEvent {
 	return cloned
 }
 
+type recordingLogSink struct {
+	mu   sync.Mutex
+	logs []RuntimeLog
+}
+
+func (s *recordingLogSink) Publish(log RuntimeLog) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.logs = append(s.logs, log)
+}
+
+func (s *recordingLogSink) Logs() []RuntimeLog {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	cloned := make([]RuntimeLog, len(s.logs))
+	copy(cloned, s.logs)
+	return cloned
+}
+
 type fakeListener struct {
 	mu      sync.Mutex
 	address string
@@ -102,6 +121,7 @@ func newTestProxy(t *testing.T, sink EventSink, mutate func(*LocalProxyDeps)) *L
 		CloseConnections:  func() error { return nil },
 		Shutdown:          func() error { return nil },
 		Events:            sink,
+		Logs:              DiscardLogs{},
 		MaxMessageBytes:   256,
 		MaxSnapshotBytes:  512,
 		AllowedLoopbackIP: "127.0.0.1",
@@ -342,6 +362,85 @@ func TestLocalProxyFailedRestartRetainsErrorStateAndDiagnosticCause(t *testing.T
 	}
 	if !strings.Contains(last.Message, "127.0.0.1:43002") {
 		t.Fatalf("last.Message = %q want bind diagnostic", last.Message)
+	}
+}
+
+func TestLocalProxyStopPreservesErrorSnapshotAndDiagnostic(t *testing.T) {
+	sink := &recordingSink{}
+	socksFactory := newFakeFactory(42001)
+	socksFactory.failFor = "127.0.0.1:43003"
+	proxy := newTestProxy(t, sink, func(deps *LocalProxyDeps) {
+		deps.SOCKSFactory = socksFactory.newListener
+	})
+
+	_, err := proxy.Start(StartOptions{
+		ConfigPath:         "phase2-match-direct.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:43003",
+	})
+	if err == nil {
+		t.Fatal("Start unexpectedly succeeded")
+	}
+
+	beforeStop := proxy.Snapshot()
+	if beforeStop.State != RuntimeError {
+		t.Fatalf("beforeStop.State = %v want %v", beforeStop.State, RuntimeError)
+	}
+
+	afterStop, err := proxy.Stop()
+	if err != nil {
+		t.Fatalf("Stop error: %v", err)
+	}
+	if afterStop.State != RuntimeError {
+		t.Fatalf("afterStop.State = %v want %v", afterStop.State, RuntimeError)
+	}
+	if afterStop.LastError != beforeStop.LastError {
+		t.Fatalf("afterStop.LastError = %q want %q", afterStop.LastError, beforeStop.LastError)
+	}
+
+	events := sink.Events()
+	last := events[len(events)-1]
+	if last.State != RuntimeError || last.Kind != "runtime.error" {
+		t.Fatalf("last event = %#v want runtime.error/%v", last, RuntimeError)
+	}
+}
+
+func TestLocalProxyProducesBoundedRedactedStructuredLogs(t *testing.T) {
+	logs := &recordingLogSink{}
+	proxy := newTestProxy(t, &recordingSink{}, func(deps *LocalProxyDeps) {
+		deps.Logs = logs
+		deps.MaxLogContextFields = 2
+		deps.MaxLogFieldBytes = 48
+		deps.Prepare = func(string) error {
+			return errors.New("fetch https://alice:secret@example.invalid/config.yaml?token=abc123&password=hunter2 failed")
+		}
+	})
+
+	_, err := proxy.Start(StartOptions{
+		ConfigPath:         "/tmp/profiles/password=letmein-token=abcdef.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:0",
+	})
+	if err == nil {
+		t.Fatal("Start unexpectedly succeeded")
+	}
+
+	entries := logs.Logs()
+	if len(entries) < 2 {
+		t.Fatalf("len(entries) = %d want at least 2", len(entries))
+	}
+	last := entries[len(entries)-1]
+	if last.Level != LogLevelError {
+		t.Fatalf("last.Level = %v want %v", last.Level, LogLevelError)
+	}
+	if last.Category != "runtime.start.failed" {
+		t.Fatalf("last.Category = %q", last.Category)
+	}
+	if last.Context["configPath"] == "/tmp/profiles/password=letmein-token=abcdef.yaml" {
+		t.Fatalf("configPath was not redacted: %#v", last)
+	}
+	if strings.Contains(last.Message, "secret") || strings.Contains(last.Message, "abc123") || strings.Contains(last.Message, "hunter2") {
+		t.Fatalf("failure log leaked secrets: %#v", last)
 	}
 }
 

@@ -154,6 +154,25 @@
       "packageAudit": []
     },
     {
+      "importPath": "github.com/metacubex/mihomo/tunnel",
+      "packageDir": "tunnel",
+      "symbol": "Tunnel",
+      "docRef": "github.com/metacubex/mihomo/tunnel.Tunnel",
+      "file": "tunnel.go",
+      "signature": "package tunnel // import \"github.com/metacubex/mihomo/tunnel\"\n\nvar Tunnel = tunnel{}",
+      "signatureDigest": "07b4a84c3c5cad8d158898220eaf17ffcacb59c8d756856e783bd0953da1dc40",
+      "constructorInputs": [],
+      "ownership": "global shared tunnel singleton borrowed by listener constructors; callers must not replace or close it",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "flaggedImport",
+          "file": "tunnel.go",
+          "value": "android"
+        }
+      ]
+    },
+    {
       "importPath": "github.com/metacubex/mihomo/tunnel/statistic",
       "packageDir": "tunnel/statistic",
       "symbol": "DefaultManager.Range",

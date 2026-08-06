@@ -14,6 +14,12 @@
 #include <string>
 
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void);
+struct cmfa_mihomo_runtime_log_record_v1 {
+  uint32_t struct_size;
+  cmfa_log_level level;
+  char message[4096];
+};
+extern "C" int cmfa_mihomo_take_runtime_log_v1(cmfa_mihomo_runtime_log_record_v1 *record);
 extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
                                                   uint32_t mixed_port,
                                                   cmfa_runtime_snapshot *snapshot,
@@ -79,6 +85,10 @@ bool host_ready_locked() {
   return g_backend_state.attached && g_backend_state.host.host_emit_event != nullptr;
 }
 
+bool log_host_ready_locked() {
+  return g_backend_state.attached && g_backend_state.host.host_emit_log != nullptr;
+}
+
 void emit_runtime_event_locked(cmfa_runtime_state_value state, const char *message) {
   if (!host_ready_locked()) {
     return;
@@ -89,6 +99,30 @@ void emit_runtime_event_locked(cmfa_runtime_state_value state, const char *messa
   event.state = state;
   event.message = message;
   (void)g_backend_state.host.host_emit_event(g_backend_state.host.context, &event, nullptr);
+}
+
+void emit_runtime_logs() {
+  cmfa_backend_host host{};
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    if (!log_host_ready_locked()) {
+      return;
+    }
+    host = g_backend_state.host;
+  }
+
+  while (true) {
+    cmfa_mihomo_runtime_log_record_v1 record{};
+    record.struct_size = sizeof(record);
+    if (cmfa_mihomo_take_runtime_log_v1(&record) == 0) {
+      return;
+    }
+    cmfa_log_message message{};
+    message.struct_size = sizeof(message);
+    message.level = record.level;
+    message.message = record.message;
+    (void)host.host_emit_log(host.context, &message, nullptr);
+  }
 }
 
 std::string snapshot_message(const cmfa_runtime_snapshot &snapshot, const char *fallback) {
@@ -162,6 +196,7 @@ cmfa_status start_local(void *,
 
   const cmfa_status status =
       cmfa_mihomo_start_local_v1(options->config_path, options->mixed_port, snapshot, error);
+  emit_runtime_logs();
   const std::string message = snapshot_message(*snapshot, status == CMFA_OK ? "local proxy running" : "start failed");
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
@@ -176,19 +211,19 @@ cmfa_status stop(void *, cmfa_error *error) {
     emit_runtime_event_locked(CMFA_RUNTIME_STOPPING, "stopping local proxy");
   }
   const cmfa_status status = cmfa_mihomo_stop_v1(error);
+  emit_runtime_logs();
+  cmfa_runtime_snapshot snapshot{};
+  reset_runtime_snapshot(&snapshot);
+  (void)cmfa_mihomo_runtime_state_v1(&snapshot, nullptr);
   if (status != CMFA_OK) {
-    cmfa_runtime_snapshot snapshot{};
-    reset_runtime_snapshot(&snapshot);
-    (void)cmfa_mihomo_runtime_state_v1(&snapshot, nullptr);
     const std::string message = snapshot_message(snapshot, "stop failed");
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
-    emit_runtime_event_locked(CMFA_RUNTIME_ERROR, message.c_str());
+    emit_runtime_event_locked(snapshot.state == CMFA_RUNTIME_STOPPED ? CMFA_RUNTIME_ERROR : snapshot.state, message.c_str());
     return status;
   }
-
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
-    emit_runtime_event_locked(CMFA_RUNTIME_STOPPED, "local proxy stopped");
+    emit_runtime_event_locked(snapshot.state, snapshot_message(snapshot, "local proxy stopped").c_str());
   }
   clear_error(error);
   return CMFA_OK;

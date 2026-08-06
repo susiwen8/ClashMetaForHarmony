@@ -4,6 +4,9 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
+	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -17,6 +20,8 @@ import (
 )
 
 var ErrRuntimeBusy = errors.New("runtime is already transitioning or running")
+var secretQueryPattern = regexp.MustCompile(`(?i)(token|password|secret)=([^&\s]+)`)
+var urlUserinfoPattern = regexp.MustCompile(`://[^/\s:@]+:[^@\s/]+@`)
 
 type ListenerHandle interface {
 	Address() string
@@ -30,9 +35,12 @@ type LocalProxyDeps struct {
 	CloseConnections  func() error
 	Shutdown          func() error
 	Events            EventSink
+	Logs              LogSink
 	MaxMessageBytes   int
 	MaxSnapshotBytes  int
 	AllowedLoopbackIP string
+	MaxLogContextFields int
+	MaxLogFieldBytes    int
 }
 
 type LocalProxy struct {
@@ -81,6 +89,9 @@ func NewLocalProxyWithDeps(deps LocalProxyDeps) *LocalProxy {
 	if deps.Events == nil {
 		deps.Events = DiscardEvents{}
 	}
+	if deps.Logs == nil {
+		deps.Logs = DiscardLogs{}
+	}
 	if deps.MaxMessageBytes <= 0 {
 		deps.MaxMessageBytes = 4096
 	}
@@ -89,6 +100,12 @@ func NewLocalProxyWithDeps(deps LocalProxyDeps) *LocalProxy {
 	}
 	if deps.AllowedLoopbackIP == "" {
 		deps.AllowedLoopbackIP = "127.0.0.1"
+	}
+	if deps.MaxLogContextFields <= 0 {
+		deps.MaxLogContextFields = 4
+	}
+	if deps.MaxLogFieldBytes <= 0 {
+		deps.MaxLogFieldBytes = 256
 	}
 
 	return &LocalProxy{
@@ -125,6 +142,11 @@ func (p *LocalProxy) Start(options StartOptions) (Snapshot, error) {
 	}
 	p.mu.Unlock()
 	p.publish(startingEvent)
+	p.publishLog(LogLevelInfo, "runtime.starting", "starting local proxy", map[string]string{
+		"configPath":  options.ConfigPath,
+		"httpListen":  options.HTTPListenAddress,
+		"socksListen": options.SOCKSListenAddress,
+	})
 
 	if err := p.deps.Prepare(options.ConfigPath); err != nil {
 		return p.failStart(options.ConfigPath, err), err
@@ -162,6 +184,10 @@ func (p *LocalProxy) Start(options StartOptions) (Snapshot, error) {
 		HTTPAddress:  snapshot.HTTPAddress,
 		SOCKSAddress: snapshot.SOCKSAddress,
 	})
+	p.publishLog(LogLevelInfo, "runtime.running", "local proxy running", map[string]string{
+		"httpAddress":  snapshot.HTTPAddress,
+		"socksAddress": snapshot.SOCKSAddress,
+	})
 
 	return snapshot, nil
 }
@@ -178,18 +204,23 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 		return Snapshot{}, ErrRuntimeBusy
 	}
 
+	preserveError := p.state == RuntimeError
+	previous := p.latest
 	httpListener := p.httpListener
 	socksListener := p.socksListener
 	p.httpListener = nil
 	p.socksListener = nil
 	p.state = RuntimeStopping
-	p.latest = Snapshot{State: RuntimeStopping}
+	if !preserveError {
+		p.latest = Snapshot{State: RuntimeStopping}
+	}
 	p.mu.Unlock()
 
 	p.publish(RuntimeEvent{
 		Kind:  "runtime.stopping",
 		State: RuntimeStopping,
 	})
+	p.publishLog(LogLevelInfo, "runtime.stopping", "stopping local proxy", nil)
 
 	if err := closeListener(httpListener); err != nil {
 		return p.failStop(err), err
@@ -205,15 +236,32 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 	}
 
 	snapshot := Snapshot{State: RuntimeStopped}
+	if preserveError {
+		snapshot = previous
+		snapshot.State = RuntimeError
+	}
 	p.mu.Lock()
-	p.state = RuntimeStopped
+	p.state = snapshot.State
 	p.latest = snapshot
 	p.mu.Unlock()
+
+	if preserveError {
+		p.publish(RuntimeEvent{
+			Kind:    "runtime.error",
+			State:   RuntimeError,
+			Message: snapshot.LastError,
+		})
+		p.publishLog(LogLevelError, "runtime.stop.error", snapshot.LastError, map[string]string{
+			"configPath": snapshot.ActiveConfigPath,
+		})
+		return snapshot, nil
+	}
 
 	p.publish(RuntimeEvent{
 		Kind:  "runtime.stopped",
 		State: RuntimeStopped,
 	})
+	p.publishLog(LogLevelInfo, "runtime.stopped", "local proxy stopped", nil)
 
 	return snapshot, nil
 }
@@ -237,6 +285,9 @@ func (p *LocalProxy) failStart(configPath string, err error) Snapshot {
 		State:   RuntimeError,
 		Message: snapshot.LastError,
 	})
+	p.publishLog(LogLevelError, "runtime.start.failed", snapshot.LastError, map[string]string{
+		"configPath": configPath,
+	})
 
 	return snapshot
 }
@@ -255,6 +306,7 @@ func (p *LocalProxy) failStop(err error) Snapshot {
 		State:   RuntimeError,
 		Message: snapshot.LastError,
 	})
+	p.publishLog(LogLevelError, "runtime.stop.failed", snapshot.LastError, nil)
 	return snapshot
 }
 
@@ -263,6 +315,19 @@ func (p *LocalProxy) publish(event RuntimeEvent) {
 	event.HTTPAddress = truncateUTF8(event.HTTPAddress, p.deps.MaxSnapshotBytes)
 	event.SOCKSAddress = truncateUTF8(event.SOCKSAddress, p.deps.MaxSnapshotBytes)
 	p.deps.Events.Publish(event)
+}
+
+func (p *LocalProxy) publishLog(level LogLevel, category, message string, context map[string]string) {
+	configPath := ""
+	if context != nil {
+		configPath = context["configPath"]
+	}
+	p.deps.Logs.Publish(RuntimeLog{
+		Level:    level,
+		Category: truncateUTF8(category, p.deps.MaxLogFieldBytes),
+		Message:  truncateUTF8(redactSecrets(message, configPath), p.deps.MaxLogFieldBytes),
+		Context:  sanitizeContext(context, p.deps.MaxLogContextFields, p.deps.MaxLogFieldBytes),
+	})
 }
 
 func (p *LocalProxy) validateStartOptions(options StartOptions) error {
@@ -313,4 +378,46 @@ func truncateUTF8(text string, maxBytes int) string {
 		truncated = truncated[:len(truncated)-1]
 	}
 	return truncated
+}
+
+func sanitizeContext(values map[string]string, maxFields, maxBytes int) map[string]string {
+	if len(values) == 0 {
+		return nil
+	}
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	sort.Strings(keys)
+	if len(keys) > maxFields {
+		keys = keys[:maxFields]
+	}
+	sanitized := make(map[string]string, len(keys))
+	for _, key := range keys {
+		value := values[key]
+		if key == "configPath" {
+			value = "<redacted-path>"
+		} else {
+			value = redactSecrets(value, "")
+		}
+		sanitized[truncateUTF8(key, maxBytes)] = truncateUTF8(value, maxBytes)
+	}
+	return sanitized
+}
+
+func redactSecrets(text string, configPath string) string {
+	if text == "" {
+		return text
+	}
+	redacted := text
+	if configPath != "" {
+		redacted = strings.ReplaceAll(redacted, configPath, "<redacted-path>")
+	}
+	redacted = urlUserinfoPattern.ReplaceAllString(redacted, "://<redacted>@")
+	redacted = secretQueryPattern.ReplaceAllString(redacted, `$1=<redacted>`)
+	if parsed, err := url.Parse(redacted); err == nil && parsed.User != nil {
+		parsed.User = url.User("<redacted>")
+		redacted = parsed.String()
+	}
+	return redacted
 }

@@ -255,6 +255,14 @@ export async function auditMihomoApi(options = {}) {
       ownership: 'caller owns returned *Listener and must Close it explicitly',
       requiredCloseOrder: ['Listener.Close', 'executor.Shutdown'],
     }, { runGoImpl, readFileImpl, readDirImpl }),
+    resolveSymbol('github.com/metacubex/mihomo/tunnel', {
+      symbol: 'Tunnel',
+      goDocName: 'Tunnel',
+      sourcePattern: /var Tunnel = tunnel\{\}/u,
+      constructorInputs: [],
+      ownership: 'global shared tunnel singleton borrowed by listener constructors; callers must not replace or close it',
+      requiredCloseOrder: [],
+    }, { runGoImpl, readFileImpl, readDirImpl }),
     resolveSymbol('github.com/metacubex/mihomo/tunnel/statistic', {
       symbol: 'DefaultManager.Range',
       goDocName: 'Manager.Range',

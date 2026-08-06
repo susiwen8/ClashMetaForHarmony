@@ -293,6 +293,7 @@ struct FakeBackend {
   bool fail_attach = false;
   bool omit_terminating_nul_in_version = false;
   bool emit_backend_error_without_nul = false;
+  bool preserve_error_on_stop = false;
   uint32_t start_calls = 0;
   uint32_t stop_calls = 0;
   uint32_t shutdown_calls = 0;
@@ -348,6 +349,11 @@ struct FakeBackend {
       set_snapshot_http_locked("");
       set_snapshot_socks_locked("");
     }
+  }
+
+  void set_runtime_last_error(const std::string &message) {
+    std::lock_guard<std::mutex> lock(mutex);
+    set_snapshot_last_error_locked(message);
   }
 
   static cmfa_status attach_host(void *context, const cmfa_backend_host *host, cmfa_error *) {
@@ -447,12 +453,14 @@ struct FakeBackend {
     std::lock_guard<std::mutex> lock(self->mutex);
     self->stop_calls += 1;
     self->stop_called = true;
-    self->snapshot.state = CMFA_RUNTIME_STOPPED;
-    self->snapshot.mixed_port = 0;
-    self->set_snapshot_path_locked("");
-    self->set_snapshot_http_locked("");
-    self->set_snapshot_socks_locked("");
-    self->set_snapshot_last_error_locked("");
+    if (!self->preserve_error_on_stop) {
+      self->snapshot.state = CMFA_RUNTIME_STOPPED;
+      self->snapshot.mixed_port = 0;
+      self->set_snapshot_path_locked("");
+      self->set_snapshot_http_locked("");
+      self->set_snapshot_socks_locked("");
+      self->set_snapshot_last_error_locked("");
+    }
     self->stop_cv.notify_all();
     return CMFA_OK;
   }
@@ -1552,6 +1560,42 @@ void test_snapshot_path_is_caller_owned_and_stable() {
   reset_contract();
 }
 
+void test_stop_preserves_backend_error_snapshot_and_diagnostic() {
+  reset_contract();
+
+  HostCapture capture;
+  auto callbacks = make_host_callbacks(&capture);
+  ErrorBox error;
+  FakeBackend backend;
+  auto api = backend.api();
+  expect_eq(cmfa_internal_register_backend(&api, &error.error), CMFA_OK, "backend registration should succeed");
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+  cmfa_local_options options{};
+  options.struct_size = sizeof(options);
+  options.config_path = "alpha.yaml";
+  options.mixed_port = 7890;
+  cmfa_runtime_snapshot start_snapshot{};
+  start_snapshot.struct_size = sizeof(start_snapshot);
+  expect_eq(cmfa_start_local(&options, &start_snapshot, &error.error), CMFA_OK, "start should succeed");
+
+  backend.preserve_error_on_stop = true;
+  backend.set_runtime_snapshot(CMFA_RUNTIME_ERROR, "alpha.yaml", 7890);
+  backend.set_runtime_last_error("bind socks listener 127.0.0.1:43003 denied");
+
+  expect_eq(cmfa_stop(&error.error), CMFA_OK, "stop should succeed while preserving backend error");
+
+  cmfa_runtime_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  expect_eq(cmfa_runtime_state(&snapshot, &error.error), CMFA_OK, "runtime_state should succeed");
+  expect_eq(snapshot.state, CMFA_RUNTIME_ERROR, "runtime_state should preserve error after stop");
+  expect_string_eq(snapshot_path(snapshot), "alpha.yaml", "runtime_state should preserve error path");
+  expect_string_eq(std::string(snapshot.last_error), "bind socks listener 127.0.0.1:43003 denied",
+                   "runtime_state should preserve stop diagnostic");
+
+  reset_contract();
+}
+
 } // namespace
 
 int main() {
@@ -1590,6 +1634,8 @@ int main() {
       {"reentrant_shutdown_during_backend_start_is_typed_not_deadlocked",
        test_reentrant_shutdown_during_backend_start_is_typed_not_deadlocked},
       {"snapshot_path_is_caller_owned_and_stable", test_snapshot_path_is_caller_owned_and_stable},
+      {"stop_preserves_backend_error_snapshot_and_diagnostic",
+       test_stop_preserves_backend_error_snapshot_and_diagnostic},
   };
 
   size_t failed = 0;

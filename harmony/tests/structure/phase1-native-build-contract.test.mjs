@@ -122,7 +122,8 @@ function createElfReport(component, overrides = {}) {
     'cmfa_mihomo_core_version_cstr_v1',
     'cmfa_mihomo_runtime_state_v1',
     'cmfa_mihomo_start_local_v1',
-    'cmfa_mihomo_stop_v1'
+    'cmfa_mihomo_stop_v1',
+    'cmfa_mihomo_take_runtime_log_v1'
   ];
   const defaults = component === 'nodeAddon'
     ? {

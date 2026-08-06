@@ -21,6 +21,17 @@ namespace {
 
 char *g_raw_version = nullptr;
 cmfa_runtime_snapshot g_runtime_snapshot{};
+bool g_preserve_error_on_stop = false;
+struct cmfa_mihomo_runtime_log_record_v1 {
+  uint32_t struct_size;
+  cmfa_log_level level;
+  char message[4096];
+};
+struct StubRuntimeLog {
+  cmfa_log_level level = CMFA_LOG_INFO;
+  std::string message;
+};
+std::vector<StubRuntimeLog> g_runtime_logs;
 
 void set_snapshot_text(char *buffer, const std::string &value) {
   std::memset(buffer, 0, CMFA_MAX_PATH_BYTES);
@@ -35,6 +46,7 @@ void reset_runtime_snapshot_storage() {
   g_runtime_snapshot = {};
   g_runtime_snapshot.struct_size = sizeof(g_runtime_snapshot);
   g_runtime_snapshot.state = CMFA_RUNTIME_STOPPED;
+  g_runtime_logs.clear();
 }
 
 class TestFailure : public std::runtime_error {
@@ -81,11 +93,15 @@ struct HostCapture {
   uint32_t log_count = 0;
   uint32_t event_count = 0;
   std::vector<cmfa_runtime_state_value> states;
+  std::vector<cmfa_log_level> log_levels;
+  std::vector<std::string> log_messages;
 };
 
-void capture_log(void *context, const cmfa_log_message *) {
+void capture_log(void *context, const cmfa_log_message *message) {
   auto *capture = static_cast<HostCapture *>(context);
   capture->log_count += 1;
+  capture->log_levels.push_back(message != nullptr ? message->level : CMFA_LOG_ERROR);
+  capture->log_messages.push_back(message != nullptr && message->message != nullptr ? message->message : "");
 }
 
 void capture_event(void *context, const cmfa_runtime_event *event) {
@@ -119,6 +135,7 @@ void reset_contract() {
   (void)cmfa_shutdown(&error.error);
   (void)cmfa::unregister_mihomo_backend(&error.error);
   g_raw_version = nullptr;
+  g_preserve_error_on_stop = false;
   reset_runtime_snapshot_storage();
 }
 
@@ -361,6 +378,12 @@ void test_start_stop_and_runtime_snapshot() {
   expect_eq(capture.event_count, static_cast<uint32_t>(2), "start_local should emit STARTING and RUNNING");
   expect_eq(capture.states[0], CMFA_RUNTIME_STARTING, "first event should be STARTING");
   expect_eq(capture.states[1], CMFA_RUNTIME_RUNNING, "second event should be RUNNING");
+  expect_eq(capture.log_count, static_cast<uint32_t>(2), "start should emit runtime logs through host");
+  expect_string_eq(capture.log_messages[0], "{\"category\":\"runtime.starting\",\"message\":\"starting local proxy\"}",
+                   "first log should be structured starting log");
+  expect_string_eq(capture.log_messages[1],
+                   "{\"category\":\"runtime.running\",\"message\":\"local proxy running\",\"context\":{\"httpAddress\":\"127.0.0.1:7890\",\"socksAddress\":\"127.0.0.1:19090\"}}",
+                   "second log should carry structured running context");
 
   cmfa_runtime_snapshot snapshot{};
   snapshot.struct_size = sizeof(snapshot);
@@ -372,9 +395,49 @@ void test_start_stop_and_runtime_snapshot() {
 
   expect_eq(cmfa_stop(&error.error), CMFA_OK, "stop should succeed");
   expect_eq(capture.event_count, static_cast<uint32_t>(4), "stop should emit STOPPING and STOPPED");
+  expect_eq(capture.log_count, static_cast<uint32_t>(4), "stop should append runtime logs through host");
   expect_eq(capture.states[2], CMFA_RUNTIME_STOPPING, "third event should be STOPPING");
   expect_eq(capture.states[3], CMFA_RUNTIME_STOPPED, "fourth event should be STOPPED");
+  expect_string_eq(capture.log_messages[2], "{\"category\":\"runtime.stopping\",\"message\":\"stopping local proxy\"}",
+                   "third log should be structured stopping log");
+  expect_string_eq(capture.log_messages[3], "{\"category\":\"runtime.stopped\",\"message\":\"local proxy stopped\"}",
+                   "fourth log should be structured stopped log");
   reset_contract();
+}
+
+void test_stop_preserves_error_snapshot_event_and_redacted_failure_log() {
+  reset_contract();
+  HostCapture capture;
+  initialize_backend(&capture);
+
+  ErrorBox error;
+  cmfa_runtime_snapshot start_snapshot{};
+  start_snapshot.struct_size = sizeof(start_snapshot);
+  cmfa_local_options options{};
+  options.struct_size = sizeof(options);
+  options.config_path = "/tmp/profiles/password=letmein.yaml";
+  options.mixed_port = 7890;
+  expect_eq(cmfa_start_local(&options, &start_snapshot, &error.error), CMFA_OK, "start_local should succeed");
+
+  g_preserve_error_on_stop = true;
+  g_runtime_snapshot.state = CMFA_RUNTIME_ERROR;
+  set_snapshot_text(g_runtime_snapshot.active_config_path, "/tmp/profiles/password=letmein.yaml");
+  set_snapshot_text(g_runtime_snapshot.last_error,
+                    "fetch https://alice:secret@example.invalid/config.yaml?token=abc123&password=hunter2 failed");
+
+  expect_eq(cmfa_stop(&error.error), CMFA_OK, "stop should succeed while preserving error");
+
+  cmfa_runtime_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  expect_eq(cmfa_runtime_state(&snapshot, &error.error), CMFA_OK, "runtime_state should succeed");
+  expect_eq(snapshot.state, CMFA_RUNTIME_ERROR, "runtime_state should preserve error after stop");
+  expect_string_eq(std::string(snapshot.last_error),
+                   "fetch https://alice:secret@example.invalid/config.yaml?token=abc123&password=hunter2 failed",
+                   "runtime_state should preserve diagnostic after stop");
+  expect_eq(capture.states.back(), CMFA_RUNTIME_ERROR, "final event should remain ERROR");
+  expect(capture.log_messages.back().find("secret") == std::string::npos, "failure log should redact userinfo/password");
+  expect(capture.log_messages.back().find("abc123") == std::string::npos, "failure log should redact token");
+  expect(capture.log_messages.back().find("hunter2") == std::string::npos, "failure log should redact password");
 }
 
 void test_shutdown_and_repeated_unregister_are_safe() {
@@ -414,12 +477,27 @@ extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
   set_snapshot_text(g_runtime_snapshot.active_config_path, config_path);
   set_snapshot_text(g_runtime_snapshot.http_address, "127.0.0.1:" + std::to_string(mixed_port));
   set_snapshot_text(g_runtime_snapshot.socks_address, "127.0.0.1:19090");
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "{\"category\":\"runtime.starting\",\"message\":\"starting local proxy\"}"});
+  g_runtime_logs.push_back(
+      {CMFA_LOG_INFO,
+       "{\"category\":\"runtime.running\",\"message\":\"local proxy running\",\"context\":{\"httpAddress\":\"127.0.0.1:7890\",\"socksAddress\":\"127.0.0.1:19090\"}}"});
   *snapshot = g_runtime_snapshot;
   return CMFA_OK;
 }
 
 extern "C" cmfa_status cmfa_mihomo_stop_v1(cmfa_error *) {
-  reset_runtime_snapshot_storage();
+  if (g_preserve_error_on_stop) {
+    g_runtime_logs.push_back({CMFA_LOG_INFO, "{\"category\":\"runtime.stopping\",\"message\":\"stopping local proxy\"}"});
+    g_runtime_logs.push_back(
+        {CMFA_LOG_ERROR,
+         "{\"category\":\"runtime.stop.error\",\"message\":\"fetch https://<redacted>@example.invalid/config.yaml?token=<redacted>&password=<redacted> failed\",\"context\":{\"configPath\":\"<redacted-path>\"}}"});
+    return CMFA_OK;
+  }
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "{\"category\":\"runtime.stopping\",\"message\":\"stopping local proxy\"}"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "{\"category\":\"runtime.stopped\",\"message\":\"local proxy stopped\"}"});
+  g_runtime_snapshot = {};
+  g_runtime_snapshot.struct_size = sizeof(g_runtime_snapshot);
+  g_runtime_snapshot.state = CMFA_RUNTIME_STOPPED;
   return CMFA_OK;
 }
 
@@ -429,6 +507,24 @@ extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snaps
   }
   *snapshot = g_runtime_snapshot;
   return CMFA_OK;
+}
+
+extern "C" int cmfa_mihomo_take_runtime_log_v1(cmfa_mihomo_runtime_log_record_v1 *record) {
+  if (record == nullptr || g_runtime_logs.empty()) {
+    return 0;
+  }
+  const StubRuntimeLog next = g_runtime_logs.front();
+  g_runtime_logs.erase(g_runtime_logs.begin());
+  record->struct_size = sizeof(*record);
+  record->level = next.level;
+  std::memset(record->message, 0, sizeof(record->message));
+  const size_t copy_length = next.message.size() < (sizeof(record->message) - 1) ? next.message.size()
+                                                                                  : (sizeof(record->message) - 1);
+  if (copy_length > 0) {
+    std::memcpy(record->message, next.message.data(), copy_length);
+  }
+  record->message[copy_length] = '\0';
+  return 1;
 }
 
 int main() {
@@ -442,6 +538,8 @@ int main() {
       {"regular malformed 256-byte raw version", test_non_terminated_256_byte_raw_in_regular_memory_is_malformed},
       {"255-byte raw version", test_255_byte_raw_rejects_too_small_output_buffer},
       {"start stop and runtime snapshot", test_start_stop_and_runtime_snapshot},
+      {"stop preserves error snapshot event and redacted failure log",
+       test_stop_preserves_error_snapshot_event_and_redacted_failure_log},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
   };
 

@@ -20,7 +20,8 @@ const CORE_EXPORTS = [
   RAW_VERSION_EXPORT,
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_stop_v1'
+  'cmfa_mihomo_stop_v1',
+  'cmfa_mihomo_take_runtime_log_v1'
 ];
 
 function joinFragments(parts) {
@@ -38,6 +39,10 @@ const fakeWindowsSdkPath = joinFragments(['C:\\', 'Users\\me\\sdk']);
 const task9GoModCache = process.env.GOMODCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-mod-cache-task9']);
 const task9GoBuildCache = process.env.GOCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-build-cache-task9']);
 const task9GoProxy = process.env.GOPROXY || `file://${path.join(task9GoModCache, 'cache', 'download')}`;
+
+test.afterEach(() => {
+  process.exitCode = undefined;
+});
 
 function createGoRunner(envOverrides = {}) {
   return (args) => new Promise((resolve) => {
@@ -117,6 +122,11 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
       Root: '/tmp/mihomo',
       GoFiles: ['tcp.go']
     },
+    'github.com/metacubex/mihomo/tunnel': {
+      Dir: '/tmp/mihomo/tunnel',
+      Root: '/tmp/mihomo',
+      GoFiles: ['tunnel.go']
+    },
     'github.com/metacubex/mihomo/tunnel/statistic': {
       Dir: '/tmp/mihomo/tunnel/statistic',
       Root: '/tmp/mihomo',
@@ -127,6 +137,7 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     ['/tmp/mihomo/hub/executor/executor.go', '//go:build amd64 || arm64\npackage executor\nfunc ParseWithPath(path string) (*config.Config, error) { return nil, nil }\nfunc ParseWithBytes(buf []byte) (*config.Config, error) { return nil, nil }\nfunc ApplyConfig(cfg *config.Config, force bool) {}\nfunc Shutdown() {}\n'],
     ['/tmp/mihomo/listener/http/server.go', 'package http\nfunc NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
     ['/tmp/mihomo/listener/socks/tcp.go', 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n'],
+    ['/tmp/mihomo/tunnel/tunnel.go', 'package tunnel\ntype tunnel struct{}\nvar Tunnel = tunnel{}\n'],
     ['/tmp/mihomo/tunnel/statistic/manager.go', 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n']
   ]);
   const docBodies = new Map([
@@ -136,12 +147,14 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
     ['github.com/metacubex/mihomo/hub/executor.Shutdown', 'func Shutdown()'],
     ['github.com/metacubex/mihomo/listener/http.NewWithAuthenticate', 'func NewWithAuthenticate(addr string, tunnel C.Tunnel, authenticate bool, additions ...inbound.Addition) (*Listener, error)'],
     ['github.com/metacubex/mihomo/listener/socks.New', 'func New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error)'],
+    ['github.com/metacubex/mihomo/tunnel.Tunnel', 'var Tunnel = tunnel{}'],
     ['github.com/metacubex/mihomo/tunnel/statistic.Manager.Range', 'func (m *Manager) Range(f func(c Tracker) bool)']
   ]);
   const dirEntries = new Map([
     ['/tmp/mihomo/hub/executor', [{ name: 'executor.go', isFile: () => true }]],
     ['/tmp/mihomo/listener/http', [{ name: 'server.go', isFile: () => true }]],
     ['/tmp/mihomo/listener/socks', [{ name: 'tcp.go', isFile: () => true }]],
+    ['/tmp/mihomo/tunnel', [{ name: 'tunnel.go', isFile: () => true }]],
     ['/tmp/mihomo/tunnel/statistic', [{ name: 'manager.go', isFile: () => true }]]
   ]);
   const runGoImpl = async ({ args }) => {
@@ -186,6 +199,12 @@ test('Task 9 audit output is deterministic and omits volatile timestamps', async
 
   assert.deepEqual(first, second);
   assert.equal('auditedAt' in first, false);
+  assert.ok(first.symbols.some((entry) =>
+    entry.importPath === 'github.com/metacubex/mihomo/tunnel' &&
+    entry.symbol === 'Tunnel' &&
+    /var Tunnel = tunnel\{\}/u.test(entry.signature) &&
+    /global shared tunnel/u.test(entry.ownership)
+  ));
 });
 
 test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir go files for risk', async () => {
@@ -213,6 +232,9 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
         if (importPath === 'github.com/metacubex/mihomo/listener/socks') {
           return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'listener', 'socks'), Root: tempRoot, GoFiles: ['tcp.go'] }), stderr: '' };
         }
+        if (importPath === 'github.com/metacubex/mihomo/tunnel') {
+          return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel'), Root: tempRoot, GoFiles: ['tunnel.go'] }), stderr: '' };
+        }
         if (importPath === 'github.com/metacubex/mihomo/tunnel/statistic') {
           return { code: 0, stdout: JSON.stringify({ Dir: path.join(tempRoot, 'tunnel', 'statistic'), Root: tempRoot, GoFiles: ['manager.go'] }), stderr: '' };
         }
@@ -238,6 +260,7 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
       readFileImpl: async (filePath) => {
         if (filePath.endsWith('executor.go')) return 'package executor\nfunc ParseWithPath(path string) (*config.Config, error) { return nil, nil }\nfunc ParseWithBytes(buf []byte) (*config.Config, error) { return nil, nil }\nfunc ApplyConfig(cfg *config.Config, force bool) {}\nfunc Shutdown() {}\n';
         if (filePath.endsWith('tcp.go')) return 'package socks\nfunc New(addr string, tunnel C.Tunnel, additions ...inbound.Addition) (*Listener, error) { return nil, nil }\n';
+        if (filePath.endsWith(`${path.sep}tunnel.go`)) return 'package tunnel\ntype tunnel struct{}\nvar Tunnel = tunnel{}\n';
         if (filePath.endsWith('manager.go')) return 'package statistic\nfunc (m *Manager) Range(f func(c Tracker) bool) {}\n';
         return await fs.readFile(filePath, 'utf8');
       },
@@ -251,6 +274,9 @@ test('Task 9 audit pins linux arm64 cgo env and scans CgoFiles plus package-dir 
         }
         if (dirPath.endsWith(path.join('listener', 'socks'))) {
           return [{ name: 'tcp.go', isFile: () => true }];
+        }
+        if (dirPath.endsWith(path.join('tunnel'))) {
+          return [{ name: 'tunnel.go', isFile: () => true }];
         }
         if (dirPath.endsWith(path.join('tunnel', 'statistic'))) {
           return [{ name: 'manager.go', isFile: () => true }];
@@ -953,11 +979,17 @@ test('Task 5 inspect CLI redacts workspace, SDK, userinfo, file URLs, and Window
   ]);
   const stderrWrites = [];
   const originalWrite = process.stderr.write;
+  const originalExitCode = process.exitCode;
   const fakeWorkspace = joinFragments(['/Us', 'ers/example-user/workspace/ClashMetaForAndroid']);
   const fakeSdkPath = joinFragments(['/Applic', 'ations/DevEco-Studio.app/Contents/sdk/default']);
 
-  process.stderr.write = (chunk) => {
+  process.stderr.write = (chunk, encoding, callback) => {
     stderrWrites.push(String(chunk));
+    if (typeof encoding === 'function') {
+      encoding(null);
+    } else if (typeof callback === 'function') {
+      callback(null);
+    }
     return true;
   };
 
@@ -981,6 +1013,7 @@ test('Task 5 inspect CLI redacts workspace, SDK, userinfo, file URLs, and Window
     assert.match(stderr, /<path>/u);
   } finally {
     process.stderr.write = originalWrite;
+    process.exitCode = originalExitCode;
   }
 });
 
@@ -1148,9 +1181,15 @@ test('Task 5 probe CLI rejects missing --out values with canonical fail proof an
   ]);
   const stdoutWrites = [];
   const originalStdoutWrite = process.stdout.write;
+  const originalExitCode = process.exitCode;
 
-  process.stdout.write = (chunk) => {
+  process.stdout.write = (chunk, encoding, callback) => {
     stdoutWrites.push(String(chunk));
+    if (typeof encoding === 'function') {
+      encoding(null);
+    } else if (typeof callback === 'function') {
+      callback(null);
+    }
     return true;
   };
 
@@ -1167,5 +1206,6 @@ test('Task 5 probe CLI rejects missing --out values with canonical fail proof an
     assert.match(coreSerialized, /ARGUMENT_INVALID/u);
   } finally {
     process.stdout.write = originalStdoutWrite;
+    process.exitCode = originalExitCode;
   }
 });

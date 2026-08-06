@@ -7,6 +7,12 @@ package main
 
 #include "cmfa_types.h"
 
+typedef struct cmfa_mihomo_runtime_log_record_v1 {
+	uint32_t struct_size;
+	cmfa_log_level level;
+	char message[4096];
+} cmfa_mihomo_runtime_log_record_v1;
+
 static char *cmfa_snapshot_active_config_path(cmfa_runtime_snapshot *snapshot) {
 	return snapshot->active_config_path;
 }
@@ -21,6 +27,10 @@ static char *cmfa_snapshot_socks_address(cmfa_runtime_snapshot *snapshot) {
 
 static char *cmfa_snapshot_last_error(cmfa_runtime_snapshot *snapshot) {
 	return snapshot->last_error;
+}
+
+static char *cmfa_runtime_log_message(cmfa_mihomo_runtime_log_record_v1 *record) {
+	return record->message;
 }
 */
 import "C"
@@ -45,8 +55,12 @@ var (
 	coreVersionCStr *C.char
 	buildInfoOnce   sync.Once
 	buildInfoCStr   *C.char
+	runtimeLogs     = runtimepkg.NewLogBuffer(32)
 	localProxy      = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
-		Prepare: loadConfigForLocalProxy,
+		Prepare:            loadConfigForLocalProxy,
+		Logs:               runtimeLogs,
+		MaxLogContextFields: 4,
+		MaxLogFieldBytes:    256,
 	})
 )
 
@@ -142,6 +156,19 @@ func encodeRuntimeState(state runtimepkg.RuntimeState) C.cmfa_runtime_state_valu
 	}
 }
 
+func encodeLogLevel(level runtimepkg.LogLevel) C.cmfa_log_level {
+	switch level {
+	case runtimepkg.LogLevelDebug:
+		return C.CMFA_LOG_DEBUG
+	case runtimepkg.LogLevelWarn:
+		return C.CMFA_LOG_WARN
+	case runtimepkg.LogLevelError:
+		return C.CMFA_LOG_ERROR
+	default:
+		return C.CMFA_LOG_INFO
+	}
+}
+
 func copyCStringBuffer(target *C.char, capacity C.size_t, value string) {
 	if target == nil || capacity == 0 {
 		return
@@ -169,6 +196,24 @@ func writeSnapshot(snapshot *C.cmfa_runtime_snapshot, source runtimepkg.Snapshot
 	copyCStringBuffer(C.cmfa_snapshot_socks_address(snapshot), C.CMFA_MAX_PATH_BYTES, source.SOCKSAddress)
 	copyCStringBuffer(C.cmfa_snapshot_last_error(snapshot), C.CMFA_MAX_PATH_BYTES, source.LastError)
 	snapshot.mixed_port = 0
+}
+
+type runtimeLogEnvelope struct {
+	Category string            `json:"category"`
+	Message  string            `json:"message"`
+	Context  map[string]string `json:"context,omitempty"`
+}
+
+func encodeRuntimeLogMessage(log runtimepkg.RuntimeLog) string {
+	payload, err := json.Marshal(runtimeLogEnvelope{
+		Category: log.Category,
+		Message:  log.Message,
+		Context:  log.Context,
+	})
+	if err != nil {
+		return `{"category":"runtime.log.encode_failed","message":"failed to encode runtime log"}`
+	}
+	return string(payload)
 }
 
 //export cmfa_mihomo_core_version_cstr_v1
@@ -237,5 +282,25 @@ func cmfa_mihomo_runtime_state_v1(snapshot *C.cmfa_runtime_snapshot, errorOut *C
 	writeSnapshot(snapshot, localProxy.Snapshot())
 	clearError(errorOut)
 	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_take_runtime_log_v1
+func cmfa_mihomo_take_runtime_log_v1(record *C.cmfa_mihomo_runtime_log_record_v1) C.int {
+	if record == nil {
+		return 0
+	}
+
+	record.struct_size = C.uint32_t(C.sizeof_cmfa_mihomo_runtime_log_record_v1)
+	record.level = C.CMFA_LOG_INFO
+	copyCStringBuffer(C.cmfa_runtime_log_message(record), C.size_t(len(record.message)), "")
+
+	log, ok := runtimeLogs.Take()
+	if !ok {
+		return 0
+	}
+
+	record.level = encodeLogLevel(log.Level)
+	copyCStringBuffer(C.cmfa_runtime_log_message(record), C.size_t(len(record.message)), encodeRuntimeLogMessage(log))
+	return 1
 }
 func main() {}

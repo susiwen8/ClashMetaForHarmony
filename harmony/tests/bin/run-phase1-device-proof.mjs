@@ -45,7 +45,8 @@ const PRIVATE_CORE_EXPORTS = [
   'cmfa_mihomo_core_version_cstr_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_stop_v1'
+  'cmfa_mihomo_stop_v1',
+  'cmfa_mihomo_take_runtime_log_v1'
 ];
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
