@@ -414,6 +414,10 @@ async function sha256File({ fsApi, filePath }) {
 async function stagePackagedCore({ harmonyRoot, fsApi }) {
   const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
   const stagedCorePath = path.join(harmonyRoot, ...PACKAGED_CORE_STAGE_RELATIVE_PATH);
+  const stageDirectories = [
+    path.join(harmonyRoot, 'entry', 'src', 'main', 'libs', 'arm64-v8a'),
+    path.join(harmonyRoot, 'entry', 'src', 'main', 'libs')
+  ];
 
   await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
 
@@ -424,6 +428,9 @@ async function stagePackagedCore({ harmonyRoot, fsApi }) {
       stagedCorePath,
       cleanup: async () => {
         await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
+        for (const directoryPath of stageDirectories) {
+          await fsApi.rmdir(directoryPath).catch(() => {});
+        }
       }
     };
   }
@@ -435,6 +442,9 @@ async function stagePackagedCore({ harmonyRoot, fsApi }) {
     stagedCorePath,
     cleanup: async () => {
       await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
+      for (const directoryPath of stageDirectories) {
+        await fsApi.rmdir(directoryPath).catch(() => {});
+      }
     }
   };
 }

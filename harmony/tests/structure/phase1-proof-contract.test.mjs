@@ -146,6 +146,7 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
     models: path.join(HARMONY_ROOT, 'shared', 'src', 'main', 'ets', 'core', 'CoreModels.ets'),
     errors: path.join(HARMONY_ROOT, 'shared', 'src', 'main', 'ets', 'core', 'CoreErrors.ets'),
     service: path.join(HARMONY_ROOT, 'shared', 'src', 'main', 'ets', 'core', 'CoreService.ets'),
+    coreIndex: path.join(HARMONY_ROOT, 'core', 'Index.ets'),
     adapter: path.join(HARMONY_ROOT, 'core', 'src', 'main', 'ets', 'CoreNativeAdapter.ets'),
     composition: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'bootstrap', 'CoreComposition.ets'),
     page: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'CoreDebugPage.ets'),
@@ -177,8 +178,13 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
   assert.deepEqual(nodeApiOwners, ['harmony/core/src/main/ets/CoreNativeAdapter.ets']);
   assert.match(sources.adapter, /implements CoreService/u);
   assert.doesNotMatch(sources.adapter, /\bdlopen\b|\bdlsym\b/u);
-  assert.match(sources.composition, /CoreNativeAdapter/u);
+  assert.match(sources.coreIndex, /createCoreService/u);
+  assert.doesNotMatch(sources.coreIndex, /export\s+(?:class|interface|type)\s+CoreNativeAdapter/u);
+  assert.doesNotMatch(sources.coreIndex, /probeHttpsForSelfTest|probeHttps/u);
   assert.match(sources.composition, /CoreService/u);
+  assert.match(sources.composition, /getSelfTestCoreService/u);
+  assert.match(sources.composition, /Phase2SelfTestCoreService/u);
+  assert.match(sources.composition, /probeHttpsForSelfTest/u);
 
   for (const visibleState of ['bridgeVersion', 'coreVersion', 'lastError', 'eventCount', 'proofStatus']) {
     assert.match(sources.page, new RegExp(`\\b${visibleState}\\b`, 'u'));

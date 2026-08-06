@@ -71,7 +71,10 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
   assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreService['"]/u);
   assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreErrors['"]/u);
 
-  assert.match(coreIndex, /export .* from ['"]\.\/src\/main\/ets\/CoreNativeAdapter['"]/u);
+  assert.match(coreIndex, /createCoreService/u);
+  assert.match(coreIndex, /CORE_BRIDGE_VERSION/u);
+  assert.doesNotMatch(coreIndex, /export\s+(?:class|interface|type)\s+CoreNativeAdapter/u, '@cmfa/core root must not export the concrete adapter');
+  assert.doesNotMatch(coreIndex, /probeHttpsForSelfTest|probeHttps/u, '@cmfa/core root must not export self-test probe surface');
 
   for (const [buildProfile, moduleProfile, hvigor, moduleName] of [
     [sharedBuildProfile, sharedModuleProfile, sharedHvigor, 'shared'],
@@ -87,6 +90,10 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
   }
 
   assert.match(composition, /from ['"]@cmfa\/core['"]/u);
+  assert.match(composition, /createCoreService/u);
+  assert.match(composition, /getSelfTestCoreService/u);
+  assert.match(composition, /interface Phase2SelfTestCoreService/u);
+  assert.match(composition, /probeHttpsForSelfTest/u);
   assert.match(composition, /from ['"]@cmfa\/shared['"]/u);
   assert.doesNotMatch(composition, /\.\.\/\.\.\/\.\.\/\.\.\/\.\.\/core/u);
 
@@ -137,6 +144,7 @@ test('CoreDebugPage observes new Want contexts and runs each self-test runId at 
   assert.match(page, /runPhase2ProbeSelfTest\(context: Phase1LaunchContext\)/u);
   assert.match(page, /phase2-device-proof\.json/u);
   assert.match(page, /phase2-match-direct\.yaml/u);
+  assert.match(page, /getSelfTestCoreService/u);
   assert.match(page, /probeHttpsForSelfTest/u);
   assert.match(page, /this\.coreService\.startLocal/u);
   assert.match(page, /this\.coreService\.stopRuntime/u);

@@ -1,4 +1,4 @@
-import { CORE_BRIDGE_VERSION, CoreNativeAdapter } from '@cmfa/core';
+import { CORE_BRIDGE_VERSION, createCoreService } from '@cmfa/core';
 import type { CoreService } from '@cmfa/shared';
 
 export interface Phase1LaunchContext {
@@ -12,6 +12,51 @@ export interface Phase1LaunchContext {
 }
 
 export type Phase1LaunchListener = (context: Phase1LaunchContext) => void;
+
+export interface Phase2SelfTestProbeRequest {
+  probeRunId: string;
+  protocol: string;
+  listenerAddress: string;
+  originUrl: string;
+  caPem: string;
+  expectedBodySha256: string;
+}
+
+export interface Phase2SelfTestProbeTrackerRecord {
+  connectionId: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  inboundType: string;
+  openedAt: string;
+}
+
+export interface Phase2SelfTestProbeError {
+  code: string;
+  stage: string;
+  detail: string;
+}
+
+export interface Phase2SelfTestProbeResult {
+  ok: boolean;
+  protocol: string;
+  httpStatus: number;
+  bodyBytes: number;
+  probeRunId: string;
+  requestIdEcho: string;
+  originId: string;
+  responseSha256: string;
+  tlsPeerSha256: string;
+  startedAt: string;
+  completedAt: string;
+  clientLocalAddress: string;
+  clientRemoteAddress: string;
+  tracker: Phase2SelfTestProbeTrackerRecord;
+  error: Phase2SelfTestProbeError;
+}
+
+export interface Phase2SelfTestCoreService extends CoreService {
+  probeHttpsForSelfTest(request: Phase2SelfTestProbeRequest): Promise<Phase2SelfTestProbeResult>;
+}
 
 interface AppStorageBridge {
   setOrCreate<T>(key: string, value: T): void;
@@ -29,12 +74,16 @@ const phase1DefaultContext: Phase1LaunchContext = {
   probeCaPem: '',
   probeExpectedBodySha256: ''
 };
-const sharedCoreService: CoreService = new CoreNativeAdapter();
+const sharedCoreService: CoreService = createCoreService();
 let phase1LaunchListener: Phase1LaunchListener | undefined = undefined;
 let phase1LaunchListenerId: number = 0;
 
 export function getCoreService(): CoreService {
   return sharedCoreService;
+}
+
+export function getSelfTestCoreService(): Phase2SelfTestCoreService {
+  return sharedCoreService as Phase2SelfTestCoreService;
 }
 
 export function getBridgeVersion(): string {

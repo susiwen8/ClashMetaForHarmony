@@ -3,11 +3,16 @@ import { fileIo } from '@kit.CoreFileKit';
 import {
   getBridgeVersion,
   getCoreService,
+  getSelfTestCoreService,
   getPhase1LaunchContext,
   subscribePhase1LaunchContext,
   unsubscribePhase1LaunchContext
 } from '../bootstrap/CoreComposition';
-import type { Phase1LaunchContext } from '../bootstrap/CoreComposition';
+import type {
+  Phase1LaunchContext,
+  Phase2SelfTestProbeRequest,
+  Phase2SelfTestProbeResult
+} from '../bootstrap/CoreComposition';
 import type { CoreError, CoreErrorContext } from '@cmfa/shared';
 import type {
   Phase1Check,
@@ -26,51 +31,8 @@ const INVALID_SELF_TEST_PATH: string = '';
 const PHASE2_MIXED_PORT: number = 17890;
 
 type ProbeProtocol = 'HTTP_CONNECT' | 'SOCKS5';
-
-interface Phase2ProbeRequest {
-  probeRunId: string;
-  protocol: ProbeProtocol;
-  listenerAddress: string;
-  originUrl: string;
-  caPem: string;
-  expectedBodySha256: string;
-}
-
-interface Phase2ProbeTrackerRecord {
-  connectionId: string;
-  sourceAddress: string;
-  destinationAddress: string;
-  inboundType: string;
-  openedAt: string;
-}
-
-interface Phase2ProbeErrorResult {
-  code: string;
-  stage: string;
-  detail: string;
-}
-
-interface Phase2ProbeResult {
-  ok: boolean;
-  protocol: ProbeProtocol;
-  httpStatus: number;
-  bodyBytes: number;
-  probeRunId: string;
-  requestIdEcho: string;
-  originId: string;
-  responseSha256: string;
-  tlsPeerSha256: string;
-  startedAt: string;
-  completedAt: string;
-  clientLocalAddress: string;
-  clientRemoteAddress: string;
-  tracker: Phase2ProbeTrackerRecord;
-  error: Phase2ProbeErrorResult;
-}
-
-interface Phase2ProbeInvoker {
-  probeHttpsForSelfTest(request: Phase2ProbeRequest): Promise<Phase2ProbeResult>;
-}
+type Phase2ProbeRequest = Phase2SelfTestProbeRequest;
+type Phase2ProbeResult = Phase2SelfTestProbeResult;
 
 interface Phase2ProbeFailure {
   code: string;
@@ -375,7 +337,7 @@ struct CoreDebugPage {
           caPem: context.probeCaPem,
           expectedBodySha256: context.probeExpectedBodySha256
         };
-        const probeService: Phase2ProbeInvoker = this.coreService as Object as Phase2ProbeInvoker;
+        const probeService = getSelfTestCoreService();
         const probe: Phase2ProbeResult = await probeService.probeHttpsForSelfTest(request);
         const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
         probes.push({

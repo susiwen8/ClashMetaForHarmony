@@ -61,7 +61,7 @@ interface InternalProbeNativeModule {
 
 export const CORE_BRIDGE_VERSION: string = '1.0.0';
 
-export class CoreNativeAdapter implements CoreService {
+class CoreNativeAdapter implements CoreService {
   hello(): string {
     try {
       return nativeHello();
@@ -131,4 +131,8 @@ export class CoreNativeAdapter implements CoreService {
       return Promise.reject(normalizeCoreError(operation, error as Object | Error | undefined));
     }
   }
+}
+
+export function createCoreService(): CoreService {
+  return new CoreNativeAdapter();
 }
