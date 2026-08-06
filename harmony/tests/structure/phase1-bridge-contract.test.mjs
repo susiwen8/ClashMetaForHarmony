@@ -38,7 +38,6 @@ const typedValueExports = [
   'coreVersion',
   'validateConfiguration',
   'loadConfiguration',
-  'probeHttps',
   'startLocal',
   'stopRuntime',
   'runtimeSnapshot',
@@ -49,11 +48,6 @@ const typedTypeExports = [
   'RuntimeState',
   'LogLevel',
   'LocalOptions',
-  'ProbeProtocol',
-  'ProbeRequest',
-  'ProbeTrackerRecord',
-  'ProbeErrorResult',
-  'ProbeResult',
   'RuntimeSnapshot',
   'CoreEvent',
   'CoreErrorContext',
@@ -246,9 +240,10 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   const valueExports = parseExportNames(dtsBody, /^export declare function (\w+)\s*\(/gmu);
   const typeExports = parseExportNames(dtsBody, /^export (?:type|interface) (\w+)\b/gmu);
   const classExports = parseExportNames(dtsBody, /^export declare class (\w+)\b/gmu);
-  assert.deepEqual(valueExports, [...typedValueExports].sort(), 'typed facade must expose exactly the documented ten value exports');
+  assert.deepEqual(valueExports, [...typedValueExports].sort(), 'typed facade must expose exactly the documented nine value exports');
   assert.deepEqual(typeExports, [...typedTypeExports].sort(), 'typed facade must expose exactly the documented type exports');
   assert.deepEqual(classExports, [], 'typed facade must not add extra runtime class exports');
+  assert.doesNotMatch(dtsBody, /\bprobeHttps\b/u, 'default production libentry d.ts must not expose probeHttps');
   assert.match(dtsBody, /type RuntimeState = 'STOPPED' \| 'STARTING' \| 'RUNNING' \| 'STOPPING' \| 'ERROR';/u);
   assert.match(dtsBody, /type LogLevel = 'DEBUG' \| 'INFO' \| 'WARN' \| 'ERROR';/u);
   assert.match(dtsBody, /interface CoreError extends Error/u);
@@ -271,12 +266,16 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   const asyncWorkerBody = extractFunctionBody(jsAsyncBody, 'run_async_worker');
   assert.match(jsAsyncBody, /\bstd::thread\b/u);
   assert.match(jsAsyncBody, /\bnapi_create_threadsafe_function\b/u);
+  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_core_module.cpp').body, /#if defined\(CMFA_ENABLE_PHASE2_SELFTEST\)[\s\S]*"probeHttps"/u);
   assert.match(jsEventsBody, /\bnapi_create_reference\b/u);
   assert.match(jsEventsBody, /\bnapi_call_threadsafe_function\b/u);
   assert.match(addonInitBody, /\bnapi_add_env_cleanup_hook\b/u);
   assert.match(addonInitBody, /\bNAPI_MODULE\s*\(\s*libentry\s*,\s*Init\s*\)/u);
   assert.match(addonInitBody, /#include "cmfa_mihomo_backend\.h"/u, 'addon_init.cpp should own the hidden backend include itself');
   assert.match(cmakeRaw, /IMPORTED_NO_SONAME\s+TRUE/u, 'imported real core must link by basename DT_NEEDED');
+  assert.match(cmakeRaw, /set\(CMFA_ENABLE_PHASE2_SELFTEST OFF CACHE BOOL/u, 'phase2 self-test lane must default to OFF');
+  assert.match(cmakeRaw, /if\(DEFINED ENV\{CMFA_ENABLE_PHASE2_SELFTEST\}\)/u, 'phase2 self-test lane must require explicit enablement');
+  assert.match(cmakeRaw, /if\(CMFA_ENABLE_PHASE2_SELFTEST\)[\s\S]*target_compile_definitions\(entry PRIVATE[\s\S]*CMFA_ENABLE_PHASE2_SELFTEST=1[\s\S]*CMFA_TEST_BUILD_ABI=1[\s\S]*\)\s*endif\(\)/u, 'phase2 self-test define must stay inside an explicit gated branch');
   assert.match(cmakeRaw, /--exclude-libs,ALL/u, 'entry addon must hide static archive exports such as libc\+\+');
   assert.match(cmakeRaw, /OHOS/u, 'CMake should gate OHOS-specific warning compatibility explicitly');
   assert.match(cmakeRaw, /Wno-unused-command-line-argument/u, 'toolchain warning suppression must exist for OHOS clang injection');

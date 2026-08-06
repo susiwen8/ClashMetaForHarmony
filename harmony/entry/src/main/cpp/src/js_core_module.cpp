@@ -94,7 +94,9 @@ napi_status define_core_module(napi_env env, napi_value exports, AddonState *sta
       {"coreVersion", nullptr, core_version, nullptr, nullptr, nullptr, napi_default, state},
       {"validateConfiguration", nullptr, validate_configuration, nullptr, nullptr, nullptr, napi_default, state},
       {"loadConfiguration", nullptr, load_configuration, nullptr, nullptr, nullptr, napi_default, state},
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
       {"probeHttps", nullptr, probe_https, nullptr, nullptr, nullptr, napi_default, state},
+#endif
       {"startLocal", nullptr, start_local, nullptr, nullptr, nullptr, napi_default, state},
       {"stopRuntime", nullptr, stop_runtime, nullptr, nullptr, nullptr, napi_default, state},
       {"runtimeSnapshot", nullptr, runtime_snapshot, nullptr, nullptr, nullptr, napi_default, state},

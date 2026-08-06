@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
 import https from 'node:https';
+import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
@@ -67,6 +68,37 @@ function fetchOrigin({ originUrl, caPem, requestId }) {
   });
 }
 
+function openHeldOriginRequest({ originUrl, caPem, requestId }) {
+  return new Promise((resolve, reject) => {
+    const request = https.request(originUrl, {
+      method: 'POST',
+      ca: caPem,
+      headers: {
+        'x-cmfa-request-id': requestId,
+        'x-cmfa-hold-open': 'tracker',
+      },
+    });
+    request.on('error', reject);
+    request.on('response', (response) => {
+      let body = '';
+      response.setEncoding('utf8');
+      response.on('data', (chunk) => {
+        body += chunk;
+      });
+      resolve({ request, response, readBody: () => new Promise((resolveBody) => {
+        response.on('end', () => {
+          resolveBody({
+            statusCode: response.statusCode,
+            headers: response.headers,
+            body,
+          });
+        });
+      }) });
+    });
+    request.flushHeaders();
+  });
+}
+
 test('phase2 origin emits machine-readable startup info and serves request-id echo over HTTPS', async () => {
   const expectedBody = await fs.readFile(fixturePath, 'utf8');
   const expectedBodyHash = crypto.createHash('sha256').update(expectedBody).digest('hex');
@@ -98,6 +130,39 @@ test('phase2 origin emits machine-readable startup info and serves request-id ec
     assert.equal(response.headers['x-cmfa-request-id'], requestId);
     assert.equal(response.headers['x-cmfa-origin-id'], payload.originId);
     assert.equal(response.body, expectedBody);
+  } finally {
+    child.kill('SIGTERM');
+    await waitForExit(child);
+  }
+});
+
+test('phase2 origin hold-open protocol waits for request EOF before sending the fixed body', async () => {
+  const expectedBody = await fs.readFile(fixturePath, 'utf8');
+  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  try {
+    const { line } = await readHandshake(child);
+    const payload = JSON.parse(line);
+    const held = await openHeldOriginRequest({
+      originUrl: payload.originUrl,
+      caPem: payload.caPem,
+      requestId: 'hold-open-test',
+    });
+
+    let sawBodyEarly = false;
+    held.response.on('data', () => {
+      sawBodyEarly = true;
+    });
+    await new Promise((resolve) => setTimeout(resolve, 150));
+    assert.equal(sawBodyEarly, false);
+
+    held.request.end();
+    const completed = await held.readBody();
+    assert.equal(completed.statusCode, 200);
+    assert.equal(completed.body, expectedBody);
   } finally {
     child.kill('SIGTERM');
     await waitForExit(child);
@@ -137,5 +202,57 @@ test('phase2 origin rejects a body fixture path outside the repository', async (
     assert.match(stderr, /outside the repository/u);
   } finally {
     await fs.rm(outsideRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase2 origin rejects wildcard and unbracketed IPv6 bind forms', async () => {
+  for (const bind of ['0.0.0.0:0', '::1:0']) {
+    const child = spawn('node', [scriptPath, '--bind', bind, '--body-file', fixturePath], {
+      cwd: repoRoot,
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    let stderr = '';
+    child.stderr.setEncoding('utf8');
+    child.stderr.on('data', (chunk) => {
+      stderr += chunk;
+    });
+    const exit = await waitForExit(child);
+    assert.notEqual(exit.code, 0);
+    assert.match(stderr, /concrete reachable interface|use \[ipv6\]:port/u);
+  }
+});
+
+test('phase2 origin accepts bracketed IPv6 loopback and returns a bracketed HTTPS URL when IPv6 is available', async (t) => {
+  const availability = await new Promise((resolve) => {
+    const server = net.createServer();
+    server.once('error', (error) => {
+      resolve(error);
+    });
+    server.listen(0, '::1', () => {
+      server.close(() => resolve(null));
+    });
+  });
+  if (availability) {
+    t.skip(`IPv6 loopback unavailable: ${availability.message}`);
+  }
+
+  const child = spawn('node', [scriptPath, '--bind', '[::1]:0', '--body-file', fixturePath], {
+    cwd: repoRoot,
+    stdio: ['ignore', 'pipe', 'pipe'],
+  });
+
+  try {
+    const { line } = await readHandshake(child);
+    const payload = JSON.parse(line);
+    assert.match(payload.originUrl, /^https:\/\/\[[0-9a-f:]+\]:\d+\/$/iu);
+    const response = await fetchOrigin({
+      originUrl: payload.originUrl,
+      caPem: payload.caPem,
+      requestId: 'ipv6-test',
+    });
+    assert.equal(response.statusCode, 200);
+  } finally {
+    child.kill('SIGTERM');
+    await waitForExit(child);
   }
 });

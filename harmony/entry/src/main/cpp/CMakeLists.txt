@@ -17,6 +17,13 @@ set(ABI_INCLUDE_DIR "${HARMONY_ROOT}/core/abi/include")
 set(ABI_SOURCE "${HARMONY_ROOT}/core/abi/src/cmfa_contract.cpp")
 set(CORE_LIBRARY_PATH "${HARMONY_ROOT}/artifacts/libcmfa_mihomo.so")
 
+set(CMFA_ENABLE_PHASE2_SELFTEST OFF CACHE BOOL "Enable phase2 self-test probe surfaces")
+if(DEFINED ENV{CMFA_ENABLE_PHASE2_SELFTEST})
+  if("$ENV{CMFA_ENABLE_PHASE2_SELFTEST}" STREQUAL "1")
+    set(CMFA_ENABLE_PHASE2_SELFTEST ON CACHE BOOL "Enable phase2 self-test probe surfaces" FORCE)
+  endif()
+endif()
+
 if(NOT EXISTS "${CORE_LIBRARY_PATH}")
   message(FATAL_ERROR "Missing real core artifact: ${CORE_LIBRARY_PATH}")
 endif()
@@ -39,10 +46,15 @@ add_library(entry SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/src/addon_init.cpp"
 )
 
+set(CMFA_PRIVATE_SOURCE_DEFINITIONS "CMFA_INTERNAL_BACKEND_API=1")
+if(CMFA_ENABLE_PHASE2_SELFTEST)
+  set(CMFA_PRIVATE_SOURCE_DEFINITIONS "${CMFA_PRIVATE_SOURCE_DEFINITIONS};CMFA_TEST_BUILD_ABI=1")
+endif()
+
 set_source_files_properties(
   "${ABI_SOURCE}"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cmfa_mihomo_backend.cpp"
-  PROPERTIES COMPILE_DEFINITIONS "CMFA_INTERNAL_BACKEND_API=1;CMFA_TEST_BUILD_ABI=1"
+  PROPERTIES COMPILE_DEFINITIONS "${CMFA_PRIVATE_SOURCE_DEFINITIONS}"
 )
 
 target_include_directories(entry PRIVATE
@@ -57,9 +69,12 @@ target_compile_options(entry PRIVATE
   -fvisibility=hidden
 )
 
-target_compile_definitions(entry PRIVATE
-  CMFA_TEST_BUILD_ABI=1
-)
+if(CMFA_ENABLE_PHASE2_SELFTEST)
+  target_compile_definitions(entry PRIVATE
+    CMFA_ENABLE_PHASE2_SELFTEST=1
+    CMFA_TEST_BUILD_ABI=1
+  )
+endif()
 
 if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")
   target_compile_options(entry PRIVATE -Wno-unused-command-line-argument)

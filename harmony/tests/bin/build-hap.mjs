@@ -426,7 +426,9 @@ export async function buildHap({
   fsApi = fs,
   spawnImpl = spawnChild,
   commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
-  now = () => new Date()
+  now = () => new Date(),
+  env = process.env,
+  phase2SelfTestEnabled = false
 } = {}) {
   const repoRoot = path.resolve(harmonyRoot, '..');
   const startedAt = now();
@@ -461,6 +463,7 @@ export async function buildHap({
         command: wrapperPath,
         args,
         cwd: harmonyRoot,
+        env: phase2SelfTestEnabled ? { ...env, CMFA_ENABLE_PHASE2_SELFTEST: '1' } : env,
         spawnImpl,
         timeoutMs: commandTimeoutMs
       });

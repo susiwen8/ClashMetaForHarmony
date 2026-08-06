@@ -890,6 +890,7 @@ export async function buildPhase1Native(options = {}) {
   const manifest = createBaseManifest({ repoRoot, outputPath, startedAt, runId });
   const runCommandImpl = resolveRunCommandImpl(options.runCommandImpl);
   const replacements = createRedactionReplacements({ repoRoot, env });
+  const phase2SelfTestEnv = options.phase2SelfTestEnabled ? { ...env, CMFA_ENABLE_PHASE2_SELFTEST: '1' } : env;
   const toolchainLockPath = path.join(harmonyRoot, 'toolchain.lock.json');
   const rawCorePath = path.join(harmonyRoot, RAW_CORE_RELATIVE_PATH);
   const prePackageDirectory = path.join(harmonyRoot, PRE_PACKAGE_DIRECTORY);
@@ -974,7 +975,7 @@ export async function buildPhase1Native(options = {}) {
       emit(options, 'build-core');
       const coreProof = await (options.buildMihomoOhosImpl ?? buildMihomoOhos)({
         harmonyRoot,
-        env,
+        env: phase2SelfTestEnv,
         fsApi
       });
       manifest.builds.core = createBuildStep(
@@ -1025,7 +1026,7 @@ export async function buildPhase1Native(options = {}) {
         command: hvigorPath,
         args: COMPILE_NATIVE_ARGS,
         cwd: harmonyRoot,
-        env
+        env: phase2SelfTestEnv
       });
       manifest.builds.addonConfigure = buildStepFromCommand(configureResult, repoRoot, replacements);
       if (configureResult.error || configureResult.exitCode !== 0) {
@@ -1043,7 +1044,7 @@ export async function buildPhase1Native(options = {}) {
           command: cmakeCommand,
           args: ['--build', 'entry/.cxx/default/default/debug/arm64-v8a', '--target', 'entry'],
           cwd: harmonyRoot,
-          env
+          env: phase2SelfTestEnv
         });
         manifest.builds.addon = buildStepFromCommand(addonBuildResult, repoRoot, replacements);
         if (addonBuildResult.error || addonBuildResult.exitCode !== 0) {
@@ -1111,7 +1112,9 @@ export async function buildPhase1Native(options = {}) {
     if (!manifest.failures.some((entry) => !classifyNativeFailureCode(entry.code))) {
       emit(options, 'package-hap');
       const buildReport = await (options.buildHapImpl ?? buildHap)({
-        harmonyRoot
+        harmonyRoot,
+        env: phase2SelfTestEnv,
+        phase2SelfTestEnabled: Boolean(options.phase2SelfTestEnabled)
       });
       const normalizedBuildReport = validateBuildHapReport(buildReport);
       if (!normalizedBuildReport.valid) {

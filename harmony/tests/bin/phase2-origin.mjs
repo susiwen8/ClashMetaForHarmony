@@ -1,15 +1,16 @@
 #!/usr/bin/env node
 
 import crypto from 'node:crypto';
-import fs from 'node:fs';
 import fsp from 'node:fs/promises';
 import https from 'node:https';
-import os from 'node:os';
+import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
 
 const repoRoot = path.resolve(new URL('../../..', import.meta.url).pathname);
 const artifactsRoot = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-origin');
+const holdOpenHeaderName = 'X-CMFA-Hold-Open';
+const holdOpenHeaderValue = 'tracker';
 
 function parseArgs(argv) {
   const args = { bind: '127.0.0.1:0', bodyFile: '' };
@@ -34,6 +35,63 @@ function parseArgs(argv) {
     throw new Error('--body-file is required');
   }
   return args;
+}
+
+function parseBindAddress(bind) {
+  if (bind.length === 0) {
+    throw new Error('--bind must not be empty');
+  }
+  if (bind.startsWith('[')) {
+    const closing = bind.indexOf(']');
+    if (closing === -1 || bind.at(closing + 1) !== ':') {
+      throw new Error('--bind must use [ipv6]:port for IPv6');
+    }
+    const host = bind.slice(1, closing);
+    const port = bind.slice(closing + 2);
+    if (host.length === 0 || port.length === 0) {
+      throw new Error('--bind must include both host and port');
+    }
+    return { host, port };
+  }
+  const separator = bind.lastIndexOf(':');
+  if (separator <= 0 || separator === bind.length - 1) {
+    throw new Error('--bind must be host:port or [ipv6]:port');
+  }
+  const host = bind.slice(0, separator);
+  const port = bind.slice(separator + 1);
+  if (host.includes(':')) {
+    throw new Error('--bind must use [ipv6]:port for IPv6');
+  }
+  return { host, port };
+}
+
+function normalizeOriginHost(address) {
+  if (!address || typeof address === 'string') {
+    throw new Error('server did not expose a TCP address');
+  }
+  if (address.family === 'IPv6') {
+    return `[${address.address}]`;
+  }
+  return address.address;
+}
+
+function buildSanConfig(host) {
+  if (host === '0.0.0.0' || host === '::' || host === '*') {
+    throw new Error('--bind host must resolve to a concrete reachable interface');
+  }
+  const isIp = net.isIP(host);
+  const sanLines = [
+    'DNS.1 = localhost',
+    'IP.1 = 127.0.0.1',
+  ];
+  if (isIp === 4 && host !== '127.0.0.1') {
+    sanLines.push(`IP.${sanLines.length + 1} = ${host}`);
+  } else if (isIp === 6) {
+    sanLines.push(`IP.${sanLines.length + 1} = ${host}`);
+  } else if (isIp === 0 && host !== 'localhost') {
+    sanLines.push(`DNS.${sanLines.length + 1} = ${host}`);
+  }
+  return sanLines.join('\n');
 }
 
 async function resolveRepoScopedBodyFile(bodyFile) {
@@ -74,8 +132,7 @@ extendedKeyUsage = serverAuth
 subjectAltName = @alt_names
 
 [alt_names]
-DNS.1 = localhost
-IP.1 = 127.0.0.1
+${buildSanConfig(host)}
 `.trimStart();
   await fsp.writeFile(configPath, config, 'utf8');
 
@@ -108,7 +165,7 @@ IP.1 = 127.0.0.1
 
 async function main() {
   const args = parseArgs(process.argv.slice(2));
-  const [host, rawPort] = args.bind.split(':');
+  const { host, port: rawPort } = parseBindAddress(args.bind);
   const bodyPath = await resolveRepoScopedBodyFile(args.bodyFile);
   const body = await fsp.readFile(bodyPath, 'utf8');
   const originId = crypto.randomUUID();
@@ -121,12 +178,24 @@ async function main() {
     cert: certificate.certPem,
   }, (request, response) => {
     const requestId = String(request.headers['x-cmfa-request-id'] ?? '');
+    const releaseOnRequestEnd = String(request.headers[holdOpenHeaderName.toLowerCase()] ?? '') === holdOpenHeaderValue;
     response.writeHead(200, {
       'content-type': 'text/plain; charset=utf-8',
       'content-length': Buffer.byteLength(body),
       'x-cmfa-request-id': requestId,
       'x-cmfa-origin-id': originId,
     });
+    if (releaseOnRequestEnd) {
+      response.flushHeaders();
+      request.on('end', () => {
+        response.end(body);
+      });
+      request.on('aborted', () => {
+        response.destroy();
+      });
+      request.resume();
+      return;
+    }
     response.end(body);
   });
 
@@ -141,17 +210,16 @@ async function main() {
   });
 
   const address = server.address();
-  if (!address || typeof address === 'string') {
-    throw new Error('server did not expose a TCP address');
-  }
+  const originHost = normalizeOriginHost(address);
 
   const payload = {
     originId,
-    originUrl: `https://${address.address}:${address.port}/`,
-    address: `${address.address}:${address.port}`,
+    originUrl: `https://${originHost}:${address.port}/`,
+    address: `${originHost}:${address.port}`,
     caPem: certificate.certPem,
     bodySha256,
     pid: process.pid,
+    bindHost: host,
     files: {
       certPath: path.relative(repoRoot, certificate.certPath),
       keyPath: path.relative(repoRoot, certificate.keyPath),

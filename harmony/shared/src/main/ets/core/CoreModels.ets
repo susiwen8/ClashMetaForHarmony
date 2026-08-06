@@ -1,51 +1,9 @@
 export type RuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
-export type ProbeProtocol = 'HTTP_CONNECT' | 'SOCKS5';
 
 export interface LocalOptions {
   configPath: string;
   mixedPort: number;
-}
-
-export interface ProbeRequest {
-  probeRunId: string;
-  protocol: ProbeProtocol;
-  listenerAddress: string;
-  originUrl: string;
-  caPem: string;
-  expectedBodySha256: string;
-}
-
-export interface ProbeTrackerRecord {
-  connectionId: string;
-  sourceAddress: string;
-  destinationAddress: string;
-  inboundType: string;
-  openedAt: string;
-}
-
-export interface ProbeErrorResult {
-  code: string;
-  stage: string;
-  detail: string;
-}
-
-export interface ProbeResult {
-  ok: boolean;
-  protocol: ProbeProtocol;
-  httpStatus: number;
-  bodyBytes: number;
-  probeRunId: string;
-  requestIdEcho: string;
-  originId: string;
-  responseSha256: string;
-  tlsPeerSha256: string;
-  startedAt: string;
-  completedAt: string;
-  clientLocalAddress: string;
-  clientRemoteAddress: string;
-  tracker: ProbeTrackerRecord;
-  error: ProbeErrorResult;
 }
 
 export interface RuntimeSnapshot {

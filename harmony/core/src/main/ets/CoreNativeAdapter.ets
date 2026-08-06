@@ -2,7 +2,6 @@ import {
   coreVersion as nativeCoreVersion,
   hello as nativeHello,
   loadConfiguration as nativeLoadConfiguration,
-  probeHttps as nativeProbeHttps,
   runtimeSnapshot as nativeRuntimeSnapshot,
   startLocal as nativeStartLocal,
   stopRuntime as nativeStopRuntime,
@@ -10,9 +9,55 @@ import {
   unsubscribe as nativeUnsubscribe,
   validateConfiguration as nativeValidateConfiguration
 } from 'libentry.so';
+import * as nativeEntry from 'libentry.so';
 
 import { normalizeCoreError } from '@cmfa/shared';
-import type { CoreError, CoreEvent, CoreService, LocalOptions, ProbeRequest, ProbeResult, RuntimeSnapshot } from '@cmfa/shared';
+import type { CoreError, CoreEvent, CoreService, LocalOptions, RuntimeSnapshot } from '@cmfa/shared';
+
+interface InternalProbeRequest {
+  probeRunId: string;
+  protocol: string;
+  listenerAddress: string;
+  originUrl: string;
+  caPem: string;
+  expectedBodySha256: string;
+}
+
+interface InternalProbeTrackerRecord {
+  connectionId: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  inboundType: string;
+  openedAt: string;
+}
+
+interface InternalProbeErrorResult {
+  code: string;
+  stage: string;
+  detail: string;
+}
+
+interface InternalProbeResult {
+  ok: boolean;
+  protocol: string;
+  httpStatus: number;
+  bodyBytes: number;
+  probeRunId: string;
+  requestIdEcho: string;
+  originId: string;
+  responseSha256: string;
+  tlsPeerSha256: string;
+  startedAt: string;
+  completedAt: string;
+  clientLocalAddress: string;
+  clientRemoteAddress: string;
+  tracker: InternalProbeTrackerRecord;
+  error: InternalProbeErrorResult;
+}
+
+interface InternalProbeNativeModule {
+  probeHttps?: (request: InternalProbeRequest) => Promise<InternalProbeResult>;
+}
 
 export const CORE_BRIDGE_VERSION: string = '1.0.0';
 
@@ -35,10 +80,6 @@ export class CoreNativeAdapter implements CoreService {
 
   loadConfiguration(configPath: string): Promise<void> {
     return this.wrapAsync<void>('loadConfiguration', (): Promise<void> => nativeLoadConfiguration(configPath));
-  }
-
-  probeHttps(request: ProbeRequest): Promise<ProbeResult> {
-    return this.wrapAsync<ProbeResult>('probeHttps', (): Promise<ProbeResult> => nativeProbeHttps(request));
   }
 
   startLocal(options: LocalOptions): Promise<RuntimeSnapshot> {
@@ -71,6 +112,14 @@ export class CoreNativeAdapter implements CoreService {
     } catch (error) {
       throw normalizeCoreError('unsubscribe', error as Object | Error | undefined);
     }
+  }
+
+  probeHttpsForSelfTest(request: InternalProbeRequest): Promise<InternalProbeResult> {
+    const probeModule: InternalProbeNativeModule = nativeEntry as InternalProbeNativeModule;
+    if (typeof probeModule.probeHttps !== 'function') {
+      return Promise.reject(normalizeCoreError('probeHttps', new Error('Self-test probe surface is disabled in this build.')));
+    }
+    return this.wrapAsync<InternalProbeResult>('probeHttps', (): Promise<InternalProbeResult> => probeModule.probeHttps!(request));
   }
 
   private wrapAsync<T>(operation: string, invoke: () => Promise<T>): Promise<T> {

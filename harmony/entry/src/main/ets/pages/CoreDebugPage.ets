@@ -10,9 +10,6 @@ import {
 import type { Phase1LaunchContext } from '../bootstrap/CoreComposition';
 import type { CoreError, CoreErrorContext } from '@cmfa/shared';
 import type {
-  ProbeProtocol,
-  ProbeRequest,
-  ProbeResult,
   Phase1Check,
   Phase1CheckId,
   Phase1Timestamps,
@@ -28,6 +25,53 @@ const PHASE2_CONFIG_SOURCE: string = 'mode: rule\nmixed-port: 0\nrules:\n  - MAT
 const INVALID_SELF_TEST_PATH: string = '';
 const PHASE2_MIXED_PORT: number = 17890;
 
+type ProbeProtocol = 'HTTP_CONNECT' | 'SOCKS5';
+
+interface Phase2ProbeRequest {
+  probeRunId: string;
+  protocol: ProbeProtocol;
+  listenerAddress: string;
+  originUrl: string;
+  caPem: string;
+  expectedBodySha256: string;
+}
+
+interface Phase2ProbeTrackerRecord {
+  connectionId: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  inboundType: string;
+  openedAt: string;
+}
+
+interface Phase2ProbeErrorResult {
+  code: string;
+  stage: string;
+  detail: string;
+}
+
+interface Phase2ProbeResult {
+  ok: boolean;
+  protocol: ProbeProtocol;
+  httpStatus: number;
+  bodyBytes: number;
+  probeRunId: string;
+  requestIdEcho: string;
+  originId: string;
+  responseSha256: string;
+  tlsPeerSha256: string;
+  startedAt: string;
+  completedAt: string;
+  clientLocalAddress: string;
+  clientRemoteAddress: string;
+  tracker: Phase2ProbeTrackerRecord;
+  error: Phase2ProbeErrorResult;
+}
+
+interface Phase2ProbeInvoker {
+  probeHttpsForSelfTest(request: Phase2ProbeRequest): Promise<Phase2ProbeResult>;
+}
+
 interface Phase2ProbeFailure {
   code: string;
   detail: string;
@@ -38,7 +82,7 @@ interface Phase2ProbeEntry {
   protocol: ProbeProtocol;
   result: 'pass' | 'fail';
   detail: string;
-  probe: ProbeResult;
+  probe: Phase2ProbeResult;
 }
 
 interface Phase2ProbeTimestamps {
@@ -323,7 +367,7 @@ struct CoreDebugPage {
 
       for (const protocol of ['HTTP_CONNECT', 'SOCKS5'] as ProbeProtocol[]) {
         const listenerAddress: string = protocol === 'HTTP_CONNECT' ? httpAddress : socksAddress;
-        const request: ProbeRequest = {
+        const request: Phase2ProbeRequest = {
           probeRunId: `${context.runId}-${protocol.toLowerCase()}`,
           protocol,
           listenerAddress,
@@ -331,7 +375,8 @@ struct CoreDebugPage {
           caPem: context.probeCaPem,
           expectedBodySha256: context.probeExpectedBodySha256
         };
-        const probe = await this.coreService.probeHttps(request);
+        const probeService: Phase2ProbeInvoker = this.coreService as Object as Phase2ProbeInvoker;
+        const probe: Phase2ProbeResult = await probeService.probeHttpsForSelfTest(request);
         const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
         probes.push({
           protocol,

@@ -101,8 +101,10 @@ bool build_async_result_value(napi_env env, const AsyncResult &result, napi_valu
     case AsyncOp::VALIDATE_CONFIGURATION:
     case AsyncOp::LOAD_CONFIGURATION:
       return napi_get_undefined(env, value) == napi_ok;
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
     case AsyncOp::PROBE_HTTPS:
       return owned_probe_result_to_js(env, result.probe_result, value, &error);
+#endif
     case AsyncOp::START_LOCAL:
     case AsyncOp::STOP_RUNTIME:
       return owned_snapshot_to_js(env, result.snapshot, value, &error);
@@ -161,6 +163,7 @@ AsyncResult run_async_operation(const AsyncInput &input, const std::atomic<bool>
       result.ok = true;
       return result;
     }
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
     case AsyncOp::PROBE_HTTPS: {
       cmfa_probe_request request{};
       request.struct_size = sizeof(request);
@@ -189,6 +192,11 @@ AsyncResult run_async_operation(const AsyncInput &input, const std::atomic<bool>
       result.ok = true;
       return result;
     }
+#else
+    case AsyncOp::PROBE_HTTPS:
+      result.error = make_core_error(CMFA_CORE_UNAVAILABLE, async_operation_name(input.op));
+      return result;
+#endif
     case AsyncOp::START_LOCAL: {
       cmfa_local_options options{};
       options.struct_size = sizeof(options);
@@ -562,6 +570,10 @@ napi_value start_local(napi_env env, napi_callback_info info) {
 }
 
 napi_value probe_https(napi_env env, napi_callback_info info) {
+#if !defined(CMFA_ENABLE_PHASE2_SELFTEST)
+  throw_core_error(env, make_core_error(CMFA_CORE_UNAVAILABLE, "probeHttps"));
+  return nullptr;
+#else
   try {
     size_t argc = 1;
     napi_value argv[1] = {nullptr};
@@ -588,6 +600,7 @@ napi_value probe_https(napi_env env, napi_callback_info info) {
     throw_napi_failure(env, "probeHttps", napi_generic_failure);
     return nullptr;
   }
+#endif
 }
 
 napi_value stop_runtime(napi_env env, napi_callback_info info) {

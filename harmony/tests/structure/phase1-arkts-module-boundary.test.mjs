@@ -137,7 +137,7 @@ test('CoreDebugPage observes new Want contexts and runs each self-test runId at 
   assert.match(page, /runPhase2ProbeSelfTest\(context: Phase1LaunchContext\)/u);
   assert.match(page, /phase2-device-proof\.json/u);
   assert.match(page, /phase2-match-direct\.yaml/u);
-  assert.match(page, /this\.coreService\.probeHttps/u);
+  assert.match(page, /probeHttpsForSelfTest/u);
   assert.match(page, /this\.coreService\.startLocal/u);
   assert.match(page, /this\.coreService\.stopRuntime/u);
 });

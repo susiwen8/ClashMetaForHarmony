@@ -18,6 +18,8 @@ import (
 )
 
 const maxResponseBodyBytes int64 = 1 << 20
+const holdOpenHeader = "X-CMFA-Hold-Open"
+const holdOpenValue = "tracker"
 
 type Protocol string
 
@@ -153,15 +155,20 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	if requestPath == "" {
 		requestPath = "/"
 	}
-	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodGet, request.OriginURL, nil)
+	requestBodyReader, requestBodyWriter := io.Pipe()
+	defer requestBodyWriter.Close()
+
+	httpRequest, err := http.NewRequestWithContext(ctx, http.MethodPost, request.OriginURL, requestBodyReader)
 	if err != nil {
 		return result, &Error{Code: "REQUEST_BUILD_FAILED", Stage: "request", Detail: err.Error()}
 	}
 	httpRequest.Host = originURL.Host
 	httpRequest.Header.Set("X-CMFA-Request-ID", request.ProbeRunID)
-	if err := httpRequest.Write(tlsConn); err != nil {
-		return result, &Error{Code: "REQUEST_WRITE_FAILED", Stage: "request", Detail: err.Error()}
-	}
+	httpRequest.Header.Set(holdOpenHeader, holdOpenValue)
+	requestWriteDone := make(chan error, 1)
+	go func() {
+		requestWriteDone <- httpRequest.Write(tlsConn)
+	}()
 
 	responseReader := bufio.NewReader(tlsConn)
 	if request.Protocol == ProtocolHTTPConnect && buffered != nil && buffered.Buffered() > 0 {
@@ -186,7 +193,15 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 		OriginURL:           request.OriginURL,
 	})
 	if err != nil {
+		_ = requestBodyWriter.CloseWithError(err)
+		<-requestWriteDone
 		return result, err
+	}
+	if err := requestBodyWriter.Close(); err != nil {
+		return result, &Error{Code: "REQUEST_RELEASE_FAILED", Stage: "request", Detail: err.Error()}
+	}
+	if err := <-requestWriteDone; err != nil {
+		return result, &Error{Code: "REQUEST_WRITE_FAILED", Stage: "request", Detail: err.Error()}
 	}
 	result.Tracker = trackerRecord
 	result.RequestIDEcho = response.Header.Get("X-CMFA-Request-ID")
