@@ -4,6 +4,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { inspectHapNativeEntries } from '../../tools/lib/native-provenance.mjs';
+import { inspectNativeLibrary } from './inspect-native-lib.mjs';
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
@@ -11,6 +12,10 @@ const DEFAULT_MANIFEST_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-nativ
 const DEFAULT_UPSTREAM_LOCK_PATH = path.join(HARMONY_ROOT, 'core', 'go', 'upstream.lock.json');
 const HAP_CORE_ENTRY = 'libs/arm64-v8a/libcmfa_mihomo.so';
 const HAP_ADDON_ENTRY = 'libs/arm64-v8a/libentry.so';
+const RAW_CORE_IDENTITY = 'harmony/artifacts/libcmfa_mihomo.so';
+const PREPACKAGE_CORE_IDENTITY = 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so';
+const PREPACKAGE_ADDON_IDENTITY = 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so';
+const HAP_IDENTITY_PATTERN = /^harmony\/entry\/build\/default\/outputs\/default\/[^/]+\.hap$/u;
 
 function isoTimestamp(date = new Date()) {
   return date.toISOString();
@@ -71,8 +76,17 @@ async function readUpstreamLock(fsApi, upstreamLockPath = DEFAULT_UPSTREAM_LOCK_
   const lock = await readJson(fsApi, upstreamLockPath, 'UPSTREAM_LOCK_INVALID');
   return {
     version: lock?.version ?? null,
-    commit: lock?.commit ?? null
+    commit: lock?.commit ?? null,
+    buildInfo: null,
+    buildId: null
   };
+}
+
+async function resolveRepoIdentityPath(fsApi, repoRoot, identity, option) {
+  if (typeof identity !== 'string' || identity.length === 0) {
+    throw Object.assign(new Error(`${option} identity is required.`), { code: 'IDENTITY_REQUIRED' });
+  }
+  return await resolveExistingRepoScopedPath(fsApi, repoRoot, path.resolve(repoRoot, identity), option);
 }
 
 function normalizeArchiveListing(entries) {
@@ -169,6 +183,14 @@ function sameDigest(left, right) {
   return Boolean(left && right && left.sha256 === right.sha256 && left.sizeBytes === right.sizeBytes);
 }
 
+function isExactIdentity(actual, expected) {
+  return typeof actual === 'string' && actual === expected;
+}
+
+function isBuildInfoEqual(left, right) {
+  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+}
+
 export async function inspectHap({
   hapPath,
   manifest,
@@ -178,7 +200,7 @@ export async function inspectHap({
   hashFileImpl = (filePath) => hashFile(filePath, fsApi),
   inspectHapNativeEntriesImpl = inspectHapNativeEntries,
   listHapEntriesImpl = null,
-  inspectNativeLibraryImpl = null
+  inspectNativeLibraryImpl = inspectNativeLibrary
 } = {}) {
   if (!hapPath) {
     throw Object.assign(new Error('--hap is required'), { code: 'HAP_PATH_REQUIRED' });
@@ -201,12 +223,16 @@ export async function inspectHap({
       sizeBytes: null
     },
     packaged: {
+      rawCore: null,
+      prePackageCore: null,
+      prePackageAddon: null,
       core: null,
       addon: null
     },
     provenance: {
       expected: expectedUpstream,
-      observed: null
+      observed: null,
+      verified: 'fail'
     },
     archive: {
       entryCount: 0,
@@ -225,6 +251,48 @@ export async function inspectHap({
 
   if (!sameDigest(liveHap, loadedManifest?.artifacts?.hap)) {
     report.failures.push(createFailure('HAP_REHASH_MISMATCH', 'The supplied HAP bytes do not match the fresh build manifest.'));
+  }
+  if (!HAP_IDENTITY_PATTERN.test(String(loadedManifest?.artifacts?.hap?.identity ?? ''))) {
+    report.failures.push(createFailure('HAP_IDENTITY_INVALID', 'The manifest must pin a canonical signed HAP identity.'));
+  }
+  if (loadedManifest?.nativeBuildResult !== 'pass') {
+    report.failures.push(createFailure('NATIVE_BUILD_RESULT_INVALID', 'Phase 2 inspection requires nativeBuildResult pass.'));
+  }
+  if (loadedManifest?.phase2SelfTest?.enabled !== true) {
+    report.failures.push(createFailure('PHASE2_SELF_TEST_REQUIRED', 'Phase 2 inspection requires an explicit self-test build manifest.'));
+  }
+
+  const liveRepoArtifacts = [
+    ['rawCore', RAW_CORE_IDENTITY, 'mihomoCore'],
+    ['prePackageCore', PREPACKAGE_CORE_IDENTITY, 'mihomoCore'],
+    ['prePackageAddon', PREPACKAGE_ADDON_IDENTITY, 'nodeAddon']
+  ];
+  for (const [key, expectedIdentity, component] of liveRepoArtifacts) {
+    const manifestArtifact = loadedManifest?.artifacts?.[key];
+    if (!manifestArtifact) {
+      report.failures.push(createFailure(`${String(key).toUpperCase()}_MISSING`, `Manifest is missing ${key}.`, 'manifest'));
+      continue;
+    }
+    if (!isExactIdentity(manifestArtifact.identity, expectedIdentity)) {
+      report.failures.push(createFailure(`${String(key).toUpperCase()}_IDENTITY_INVALID`, `${key} must stay pinned to ${expectedIdentity}.`, 'manifest'));
+      continue;
+    }
+    try {
+      const livePath = await resolveRepoIdentityPath(fsApi, repoRoot, manifestArtifact.identity, `--${key}`);
+      const liveDigest = await hashFileImpl(livePath);
+      const elf = await inspectNativeLibraryImpl({ libPath: livePath, component });
+      report.packaged[key] = {
+        identity: manifestArtifact.identity,
+        sha256: liveDigest.sha256,
+        sizeBytes: liveDigest.sizeBytes,
+        elf
+      };
+      if (!sameDigest(liveDigest, manifestArtifact)) {
+        report.failures.push(createFailure(`${String(key).toUpperCase()}_REHASH_MISMATCH`, `${key} does not match the fresh build manifest.`, 'provenance'));
+      }
+    } catch (error) {
+      report.failures.push(createFailure(error?.code ?? `${String(key).toUpperCase()}_READ_FAILED`, error?.message ?? `Unable to inspect ${key}.`, 'provenance'));
+    }
   }
 
   const archive = listHapEntriesImpl && inspectNativeLibraryImpl
@@ -262,6 +330,15 @@ export async function inspectHap({
   if (archive.artifacts?.addon && !sameDigest(archive.artifacts.addon, loadedManifest?.artifacts?.hapAddon)) {
     report.failures.push(createFailure('HAP_ADDON_REHASH_MISMATCH', 'Packaged addon bytes do not match the fresh build manifest.'));
   }
+  if (report.packaged.rawCore && archive.artifacts?.core && !sameDigest(report.packaged.rawCore, archive.artifacts.core)) {
+    report.failures.push(createFailure('RAW_CORE_REHASH_MISMATCH', 'The raw core must byte-match the packaged HAP core.', 'provenance'));
+  }
+  if (report.packaged.prePackageCore && archive.artifacts?.core && !sameDigest(report.packaged.prePackageCore, archive.artifacts.core)) {
+    report.failures.push(createFailure('PREPACKAGE_CORE_REHASH_MISMATCH', 'The pre-package core must byte-match the packaged HAP core.', 'provenance'));
+  }
+  if (report.packaged.prePackageAddon && archive.artifacts?.addon && !sameDigest(report.packaged.prePackageAddon, archive.artifacts.addon)) {
+    report.failures.push(createFailure('PREPACKAGE_ADDON_REHASH_MISMATCH', 'The pre-package addon must byte-match the packaged HAP addon.', 'provenance'));
+  }
 
   const observedBuildInfo = archive.artifacts?.core?.elf?.buildInfo ?? null;
   report.provenance.observed = observedBuildInfo;
@@ -274,7 +351,11 @@ export async function inspectHap({
     ) {
       report.failures.push(createFailure('HAP_CORE_PROVENANCE_MISMATCH', 'Packaged core provenance does not match the pinned upstream lock.'));
     }
+    if (loadedManifest?.provenance?.upstream && !isBuildInfoEqual(observedBuildInfo, loadedManifest.provenance.upstream)) {
+      report.failures.push(createFailure('HAP_CORE_BUILD_INFO_MISMATCH', 'Packaged core build info does not match the manifest upstream provenance.'));
+    }
   }
+  report.provenance.verified = report.failures.length === 0 ? 'pass' : 'fail';
 
   const stubDetected = report.failures.some((entry) => /STUB|FAKE|PROBE_BACKEND/u.test(entry.code));
   report.stubDetected = stubDetected ? true : false;

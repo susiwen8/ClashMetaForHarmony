@@ -15,6 +15,14 @@ const EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-device
 const DEBUG_PAGE_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'CoreDebugPage.ets');
 const ENTRY_ABILITY_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'entryability', 'EntryAbility.ets');
 const EXPECTED_RUN_ID = '980cbe02-b817-4db1-99bc-e8e4e6523daf';
+const CORE_COMMIT = 'e26714a181ac0e2fa803453c0a8e9a9ce94e31cb';
+const CORE_VERSION = 'v1.19.29';
+const BUILD_INFO_JSON = JSON.stringify({
+  version: CORE_VERSION,
+  upstreamCommit: CORE_COMMIT,
+  abiVersion: 'cmfa-harmony-v1',
+  buildId: '0123456789abcdef'
+});
 
 let runner = null;
 let inspectHapModule = null;
@@ -31,6 +39,216 @@ try {
 
 function digest(char) {
   return char.repeat(64);
+}
+
+function createValidPassProof() {
+  return {
+    schemaVersion: '1.0.0',
+    phase: 2,
+    result: 'pass',
+    runId: EXPECTED_RUN_ID,
+    outputPath: 'harmony/artifacts/phase2-device-proof.json',
+    bundle: 'com.github.kr328.clash.harmony',
+    ability: 'EntryAbility',
+    timestamps: {
+      runnerStartedAt: '2026-08-06T02:00:00.000Z',
+      appStartedAt: '2026-08-06T02:00:03.000Z',
+      proofAt: '2026-08-06T02:00:05.000Z',
+      runnerFinishedAt: '2026-08-06T02:00:06.000Z'
+    },
+    toolchain: {
+      devecoVersion: '6.1.0.860',
+      sdkVersion: '6.1.0.105',
+      ndkVersion: '6.1.0.105',
+      hvigorVersion: '6.23.7',
+      nodeVersion: '22.17.0',
+      hdcVersion: '6.1.0.105'
+    },
+    device: {
+      targetKind: 'physical',
+      identityMasked: 'target-83e1d9a4',
+      model: 'Harmony Phone',
+      product: 'PuraX',
+      buildVersion: 'HarmonyOS 6.0.1.123',
+      apiVersion: '20',
+      abi: 'arm64-v8a'
+    },
+    hap: {
+      path: 'harmony/entry/build/default/outputs/default/entry-default-signed.hap',
+      sha256: digest('a'),
+      sizeBytes: 2048
+    },
+    packaged: {
+      rawCore: {
+        path: 'harmony/artifacts/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 512
+      },
+      prePackageCore: {
+        path: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 512
+      },
+      prePackageAddon: {
+        path: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so',
+        sha256: digest('c'),
+        sizeBytes: 256
+      },
+      core: {
+        path: 'libs/arm64-v8a/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 512
+      },
+      addon: {
+        path: 'libs/arm64-v8a/libentry.so',
+        sha256: digest('c'),
+        sizeBytes: 256
+      }
+    },
+    fixtures: {
+      matchConfig: {
+        path: 'harmony/tests/fixtures/phase2-match-direct.yaml',
+        sha256: digest('d'),
+        sizeBytes: 43
+      },
+      originBody: {
+        path: 'harmony/tests/fixtures/origin-body.txt',
+        sha256: digest('e'),
+        sizeBytes: 26
+      }
+    },
+    origin: {
+      originRunId: EXPECTED_RUN_ID,
+      originId: 'origin-123',
+      originUrl: 'https://127.0.0.1:18443/',
+      bindAddress: '127.0.0.1:18443',
+      tlsCertSha256: digest('f'),
+      responseSha256: digest('e'),
+      requestObservations: [
+        {
+          protocol: 'HTTP_CONNECT',
+          requestId: 'req-http',
+          originRequestId: 'req-http',
+          originEventRunId: EXPECTED_RUN_ID,
+          httpStatus: 200,
+          responseBytes: 26,
+          responseSha256: digest('e'),
+          observedAt: '2026-08-06T02:00:04.000Z'
+        },
+        {
+          protocol: 'SOCKS5',
+          requestId: 'req-socks',
+          originRequestId: 'req-socks',
+          originEventRunId: EXPECTED_RUN_ID,
+          httpStatus: 200,
+          responseBytes: 26,
+          responseSha256: digest('e'),
+          observedAt: '2026-08-06T02:00:05.000Z'
+        }
+      ]
+    },
+    core: {
+      version: CORE_VERSION,
+      httpListenerAddress: '127.0.0.1:19090',
+      socksListenerAddress: '127.0.0.1:19091',
+      provenance: {
+        expected: {
+          version: CORE_VERSION,
+          commit: CORE_COMMIT,
+          buildInfo: BUILD_INFO_JSON,
+          buildId: '0123456789abcdef'
+        },
+        observed: {
+          version: CORE_VERSION,
+          commit: CORE_COMMIT,
+          buildInfo: BUILD_INFO_JSON,
+          buildId: '0123456789abcdef'
+        },
+        verified: 'pass'
+      }
+    },
+    stubDetection: {
+      stubDetected: false,
+      checks: [
+        { id: 'manifestInspection', result: 'pass', detail: 'manifest matched' },
+        { id: 'nativeLibraryInspection', result: 'pass', detail: 'real exports and build info matched' }
+      ]
+    },
+    appEvidence: {
+      path: 'harmony/artifacts/phase2-pull/phase2-device-proof.app.json',
+      sha256: digest('9'),
+      sizeBytes: 1024,
+      runId: EXPECTED_RUN_ID,
+      appProcessId: 4312,
+      stopResult: 'pass',
+      fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
+      fixtureSha256: digest('d'),
+      coreVersion: CORE_VERSION,
+      httpListenerAddress: '127.0.0.1:19090',
+      socksListenerAddress: '127.0.0.1:19091'
+    },
+    probes: {
+      http: {
+        protocol: 'HTTP_CONNECT',
+        status: 'pass',
+        runId: EXPECTED_RUN_ID,
+        probeRunId: 'probe-http',
+        requestId: 'req-http',
+        originRequestId: 'req-http',
+        appProbeId: 'app-http',
+        coreEventId: 'core-http',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        appProcessId: 4312,
+        coreConnectionId: 'conn-http',
+        clientSourcePort: 39111,
+        destination: 'example.com:443',
+        upstreamInboundType: 'HTTP_CONNECT',
+        listenerAddress: '127.0.0.1:19090',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:03.500Z',
+        completedAt: '2026-08-06T02:00:04.000Z',
+        error: null
+      },
+      socks: {
+        protocol: 'SOCKS5',
+        status: 'pass',
+        runId: EXPECTED_RUN_ID,
+        probeRunId: 'probe-socks',
+        requestId: 'req-socks',
+        originRequestId: 'req-socks',
+        appProbeId: 'app-socks',
+        coreEventId: 'core-socks',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        appProcessId: 4312,
+        coreConnectionId: 'conn-socks',
+        clientSourcePort: 39112,
+        destination: 'example.com:443',
+        upstreamInboundType: 'SOCKS5',
+        listenerAddress: '127.0.0.1:19091',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:04.200Z',
+        completedAt: '2026-08-06T02:00:05.000Z',
+        error: null
+      }
+    },
+    stop: {
+      result: 'pass',
+      forceStopResult: 'pass'
+    },
+    failures: []
+  };
 }
 
 test('Phase 2 schema/example and runner contract are strict and versioned', async () => {
@@ -61,14 +279,94 @@ test('Phase 2 schema/example and runner contract are strict and versioned', asyn
   assert.doesNotMatch(JSON.stringify(example), /\/Users\/|[A-Za-z]:\\/u);
 });
 
-test('Phase 2 runner always writes a repo-contained incomplete proof when no signed physical-device input exists', async () => {
+test('Phase 2 CLI uses build-manifest/fixture/out and always writes a legal parse-error proof', async () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-runner-'));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-cli-'));
   const repoRoot = path.join(tempRoot, 'repo');
   const harmonyRoot = path.join(repoRoot, 'harmony');
-  const outputPath = path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json');
+  const customProofPath = path.join(harmonyRoot, 'artifacts', 'custom-proof.json');
+  const customManifestPath = path.join(harmonyRoot, 'artifacts', 'custom-build-manifest.json');
+  const fixturePath = path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml');
 
+  await fs.mkdir(path.dirname(fixturePath), { recursive: true });
   await fs.mkdir(path.join(harmonyRoot, 'artifacts'), { recursive: true });
+  await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({ installed: {} }), 'utf8');
+  await fs.writeFile(fixturePath, 'mode: rule\nrules:\n  - MATCH,DIRECT\n', 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'fixture-body', 'utf8');
+
+  assert.deepEqual(runner.parseCliArguments([], repoRoot), {
+    buildManifestPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-build-manifest.json'),
+    fixturePath: path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase2-match-direct.yaml'),
+    outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json')
+  });
+
+  assert.deepEqual(runner.parseCliArguments([
+    '--build-manifest', 'harmony/artifacts/custom-build-manifest.json',
+    '--fixture', 'harmony/tests/fixtures/phase2-match-direct.yaml',
+    '--out', 'harmony/artifacts/custom-proof.json'
+  ], repoRoot), {
+    buildManifestPath: customManifestPath,
+    fixturePath,
+    outputPath: customProofPath
+  });
+
+  const exitCode = await runner.runCli({
+    argv: ['--out', 'harmony/artifacts/custom-proof.json', '--bogus'],
+    repoRoot,
+    fsApi: await import('node:fs/promises').then((module) => module.default)
+  });
+  const persisted = JSON.parse(await fs.readFile(customProofPath, 'utf8'));
+
+  assert.equal(exitCode, 1);
+  assert.equal(persisted.outputPath, 'harmony/artifacts/custom-proof.json');
+  assert.ok(persisted.failures.some((entry) => entry.code === 'ARGUMENT_INVALID'));
+});
+
+test('Phase 2 pass validator rejects fabricated partial passes and accepts fully correlated proofs only', () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const passProof = createValidPassProof();
+  assert.deepEqual(runner.validatePhase2Proof(passProof), { valid: true, errors: [] });
+
+  const mutations = [
+    ['toolchain version missing', (proof) => { proof.toolchain.hdcVersion = null; }, /toolchain|hdcVersion/u],
+    ['device downgraded to simulator', (proof) => { proof.device.targetKind = 'simulator'; }, /simulator|physical/u],
+    ['raw core hash missing', (proof) => { proof.packaged.rawCore.sha256 = null; }, /rawCore|packaged/u],
+    ['origin/app/core run correlation broken', (proof) => { proof.probes.http.coreEventRunId = 'mismatch'; }, /run correlation|coreEventRunId/u],
+    ['probe source port missing', (proof) => { proof.probes.socks.clientSourcePort = null; }, /source port|clientSourcePort/u],
+    ['stop failed', (proof) => { proof.stop.result = 'fail'; }, /stop/u],
+    ['stub detection not false', (proof) => { proof.stubDetection.stubDetected = null; }, /stubDetected/u],
+    ['pass with failure array', (proof) => { proof.failures.push({ code: 'BAD', detail: 'should not pass', stage: 'proof' }); }, /failures/u]
+  ];
+
+  for (const [label, mutate, expected] of mutations) {
+    const proof = structuredClone(passProof);
+    mutate(proof);
+    const validation = runner.validatePhase2Proof(proof);
+    assert.equal(validation.valid, false, label);
+    assert.match(validation.errors.join('\n'), expected, label);
+  }
+});
+
+test('Phase 2 runner executes the exact build-origin-device-app trace and rejects stale mismatched app evidence', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-physical-lane-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const buildManifestPath = path.join(harmonyRoot, 'artifacts', 'phase2-build-manifest.json');
+  const outputPath = path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json');
+  const fixturePath = path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml');
+  const appEvidencePath = path.join(harmonyRoot, 'artifacts', 'pull', 'phase2-device-proof.app.json');
+  const signedHapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  const prePackageCorePath = path.join(harmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const prePackageAddonPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+  const events = [];
+
+  await fs.mkdir(path.dirname(appEvidencePath), { recursive: true });
+  await fs.mkdir(path.dirname(signedHapPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(prePackageCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(fixturePath), { recursive: true });
   await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
       devecoVersion: '6.1.0.860',
@@ -78,6 +376,335 @@ test('Phase 2 runner always writes a repo-contained incomplete proof when no sig
       hdcVersion: '6.1.0.105'
     }
   }), 'utf8');
+  await fs.writeFile(fixturePath, 'mode: rule\nmixed-port: 0\nrules:\n  - MATCH,DIRECT\n', 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'origin-body', 'utf8');
+  await fs.writeFile(signedHapPath, 'signed-hap', 'utf8');
+  await fs.writeFile(rawCorePath, 'real-core', 'utf8');
+  await fs.writeFile(prePackageCorePath, 'real-core', 'utf8');
+  await fs.writeFile(prePackageAddonPath, 'real-addon', 'utf8');
+
+  const appEvidence = {
+    schemaVersion: '1.0.0',
+    phase: 2,
+    runId: EXPECTED_RUN_ID,
+    appProcessId: 4312,
+    fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
+    fixtureSha256: digest('d'),
+    coreVersion: CORE_VERSION,
+    httpListenerAddress: '127.0.0.1:19090',
+    socksListenerAddress: '127.0.0.1:19091',
+    stopResult: 'pass',
+    probes: {
+      http: {
+        protocol: 'HTTP_CONNECT',
+        status: 'pass',
+        probeRunId: 'probe-http',
+        requestId: 'req-http',
+        originRequestId: 'req-http',
+        appProbeId: 'app-http',
+        coreEventId: 'core-http',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        coreConnectionId: 'conn-http',
+        clientSourcePort: 39111,
+        destination: 'example.com:443',
+        upstreamInboundType: 'HTTP_CONNECT',
+        listenerAddress: '127.0.0.1:19090',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:03.500Z',
+        completedAt: '2026-08-06T02:00:04.000Z',
+        error: null
+      },
+      socks: {
+        protocol: 'SOCKS5',
+        status: 'pass',
+        probeRunId: 'probe-socks',
+        requestId: 'req-socks',
+        originRequestId: 'req-socks',
+        appProbeId: 'app-socks',
+        coreEventId: 'core-socks',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        coreConnectionId: 'conn-socks',
+        clientSourcePort: 39112,
+        destination: 'example.com:443',
+        upstreamInboundType: 'SOCKS5',
+        listenerAddress: '127.0.0.1:19091',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:04.200Z',
+        completedAt: '2026-08-06T02:00:05.000Z',
+        error: null
+      }
+    }
+  };
+  await fs.writeFile(appEvidencePath, `${JSON.stringify(appEvidence)}\n`, 'utf8');
+
+  const buildManifest = {
+    result: 'pass',
+    nativeBuildResult: 'pass',
+    phase2SelfTest: {
+      enabled: true,
+      activation: 'explicit',
+      purpose: 'test-only',
+      releaseStatus: 'not-releasable'
+    },
+    signing: { result: 'pass' },
+    artifacts: {
+      hap: {
+        identity: 'harmony/entry/build/default/outputs/default/entry-default-signed.hap',
+        sha256: digest('a'),
+        sizeBytes: 10
+      },
+      rawCore: {
+        identity: 'harmony/artifacts/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 9
+      },
+      prePackageCore: {
+        identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 9
+      },
+      prePackageAddon: {
+        identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so',
+        sha256: digest('c'),
+        sizeBytes: 10
+      },
+      hapCore: {
+        identity: 'libs/arm64-v8a/libcmfa_mihomo.so',
+        sha256: digest('b'),
+        sizeBytes: 9
+      },
+      hapAddon: {
+        identity: 'libs/arm64-v8a/libentry.so',
+        sha256: digest('c'),
+        sizeBytes: 10
+      }
+    },
+    provenance: {
+      upstream: {
+        version: CORE_VERSION,
+        commit: CORE_COMMIT,
+        buildInfo: BUILD_INFO_JSON,
+        buildId: '0123456789abcdef'
+      }
+    }
+  };
+
+  const staleProof = structuredClone(appEvidence);
+  staleProof.runId = '0d65110a-c6d2-42e0-b06d-0f694064cd50';
+
+  const execImpl = async (_command, args) => {
+    events.push(args.join(' '));
+    const joined = args.join(' ');
+    if (joined === 'help') {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'list targets [-v]\ninstall [-r|-s|-cwd|option] src\nshell [-b bundlename] [COMMAND...]', stderr: '' };
+    }
+    if (joined === 'list targets') {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'device-serial-1\n', stderr: '' };
+    }
+    if (joined.includes('param get const.product.software.version')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'HarmonyOS 6.0.1.123\n', stderr: '' };
+    }
+    if (joined.includes('param get const.ohos.apiversion')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: '20\n', stderr: '' };
+    }
+    if (joined.includes('param get const.product.cpu.abilist')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'arm64-v8a\n', stderr: '' };
+    }
+    if (joined.includes('param get const.product.model')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'Harmony Phone\n', stderr: '' };
+    }
+    if (joined.includes('param get const.product.name')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'PuraX\n', stderr: '' };
+    }
+    if (joined.includes('install -r')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'successfully', stderr: '' };
+    }
+    if (joined.includes('shell aa start')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'start ability successfully', stderr: '' };
+    }
+    if (joined.includes('file recv -b')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+    }
+    if (joined.includes('shell aa force-stop')) {
+      return { command: '/sdk/hdc', args, exitCode: 0, stdout: 'force-stop success', stderr: '' };
+    }
+    throw new Error(`unexpected command ${joined}`);
+  };
+
+  const proof = await runner.runPhase2DeviceProof({
+    repoRoot,
+    buildManifestPath,
+    fixturePath,
+    outputPath,
+    randomUUID: () => EXPECTED_RUN_ID,
+    buildPhase1NativeImpl: async (options) => {
+      events.push('buildPhase1Native');
+      assert.equal(options.phase2SelfTestEnabled, true);
+      await fs.writeFile(buildManifestPath, `${JSON.stringify(buildManifest)}\n`, 'utf8');
+      return buildManifest;
+    },
+    inspectHapImpl: async () => {
+      events.push('inspectHap');
+      return {
+        result: 'pass',
+        stubDetected: false,
+        packaged: {
+          rawCore: { identity: buildManifest.artifacts.rawCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+          prePackageCore: { identity: buildManifest.artifacts.prePackageCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+          prePackageAddon: { identity: buildManifest.artifacts.prePackageAddon.identity, sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } },
+          core: { identity: 'libs/arm64-v8a/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+          addon: { identity: 'libs/arm64-v8a/libentry.so', sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } }
+        },
+        provenance: {
+          expected: buildManifest.provenance.upstream,
+          observed: buildManifest.provenance.upstream,
+          verified: 'pass'
+        },
+        failures: []
+      };
+    },
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: '/sdk/hdc' } }
+    }),
+    execImpl,
+    startOriginImpl: async () => {
+      events.push('startOrigin');
+      return {
+        originId: 'origin-123',
+        originRunId: EXPECTED_RUN_ID,
+        originUrl: 'https://127.0.0.1:18443/',
+        address: '127.0.0.1:18443',
+        caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+        tlsCertSha256: digest('f'),
+        bodySha256: digest('e'),
+        requestObservations: [
+          {
+            protocol: 'HTTP_CONNECT',
+            requestId: 'req-http',
+            originRequestId: 'req-http',
+            originEventRunId: EXPECTED_RUN_ID,
+            httpStatus: 200,
+            responseBytes: 26,
+            responseSha256: digest('e'),
+            observedAt: '2026-08-06T02:00:04.000Z'
+          },
+          {
+            protocol: 'SOCKS5',
+            requestId: 'req-socks',
+            originRequestId: 'req-socks',
+            originEventRunId: EXPECTED_RUN_ID,
+            httpStatus: 200,
+            responseBytes: 26,
+            responseSha256: digest('e'),
+            observedAt: '2026-08-06T02:00:05.000Z'
+          }
+        ],
+        stop: async () => {
+          events.push('stopOrigin');
+        }
+      };
+    },
+    pullPhase2AppEvidenceImpl: async () => {
+      events.push('pullAppEvidence');
+      return {
+        localPath: appEvidencePath,
+        proof: appEvidence
+      };
+    }
+  });
+
+  assert.equal(proof.result, 'pass');
+  assert.deepEqual(events.slice(0, 6), ['buildPhase1Native', 'inspectHap', 'startOrigin', 'help', 'list targets', '-t device-serial-1 shell param get const.product.software.version']);
+  assert.ok(events.some((entry) => entry.includes('install -r')));
+  assert.ok(events.some((entry) => entry.includes('shell aa start')));
+  assert.ok(events.includes('pullAppEvidence'));
+  assert.ok(events.some((entry) => entry.includes('shell aa force-stop')));
+  assert.equal(proof.appEvidence.appProcessId, 4312);
+  assert.equal(proof.probes.http.appEventRunId, EXPECTED_RUN_ID);
+  assert.equal(proof.probes.socks.coreEventRunId, EXPECTED_RUN_ID);
+
+  const failingProof = await runner.runPhase2DeviceProof({
+    repoRoot,
+    buildManifestPath,
+    fixturePath,
+    outputPath,
+    randomUUID: () => EXPECTED_RUN_ID,
+    buildPhase1NativeImpl: async () => buildManifest,
+    inspectHapImpl: async () => ({
+      result: 'pass',
+      stubDetected: false,
+      packaged: {
+        rawCore: { identity: buildManifest.artifacts.rawCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        prePackageCore: { identity: buildManifest.artifacts.prePackageCore.identity, sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        prePackageAddon: { identity: buildManifest.artifacts.prePackageAddon.identity, sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } },
+        core: { identity: 'libs/arm64-v8a/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 9, elf: { result: 'pass' } },
+        addon: { identity: 'libs/arm64-v8a/libentry.so', sha256: digest('c'), sizeBytes: 10, elf: { result: 'pass' } }
+      },
+      provenance: {
+        expected: buildManifest.provenance.upstream,
+        observed: buildManifest.provenance.upstream,
+        verified: 'pass'
+      },
+      failures: []
+    }),
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: '/sdk/hdc' } }
+    }),
+    execImpl,
+    startOriginImpl: async () => ({
+      originId: 'origin-123',
+      originRunId: EXPECTED_RUN_ID,
+      originUrl: 'https://127.0.0.1:18443/',
+      address: '127.0.0.1:18443',
+      caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+      tlsCertSha256: digest('f'),
+      bodySha256: digest('e'),
+      requestObservations: [],
+      stop: async () => {}
+    }),
+    pullPhase2AppEvidenceImpl: async () => ({
+      localPath: appEvidencePath,
+      proof: staleProof
+    })
+  });
+  assert.equal(failingProof.result, 'fail');
+  assert.ok(failingProof.failures.some((entry) => /RUN_ID|APP_EVIDENCE/i.test(entry.code)));
+});
+
+test('Phase 2 runner always writes a repo-contained incomplete proof when no signed physical-device input exists', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-runner-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const outputPath = path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json');
+
+  await fs.mkdir(path.join(harmonyRoot, 'artifacts'), { recursive: true });
+  await fs.mkdir(path.join(harmonyRoot, 'tests', 'fixtures'), { recursive: true });
+  await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
+    installed: {
+      devecoVersion: '6.1.0.860',
+      sdkVersion: '6.1.0.105',
+      ndkVersion: '6.1.0.105',
+      hvigorVersion: '6.23.7',
+      hdcVersion: '6.1.0.105'
+    }
+  }), 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml'), 'mode: rule\nrules:\n  - MATCH,DIRECT\n', 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'fixture-body', 'utf8');
 
   const proof = await runner.runPhase2DeviceProof({
     repoRoot,
@@ -93,8 +720,7 @@ test('Phase 2 runner always writes a repo-contained incomplete proof when no sig
   assert.equal(proof.device.targetKind, 'host');
   assert.equal(proof.probes.http.status, 'not-run');
   assert.equal(proof.probes.socks.status, 'not-run');
-  assert.ok(proof.failures.some((entry) => entry.code === 'INPUT_HAP_MISSING'));
-  assert.ok(proof.failures.some((entry) => entry.code === 'PHYSICAL_DEVICE_REQUIRED'));
+  assert.ok(proof.failures.some((entry) => ['INPUT_HAP_MISSING', 'SIGNING_REQUIRED'].includes(entry.code)));
   assert.equal(runner.validatePhase2Proof(persisted).valid, true);
 });
 
@@ -147,6 +773,71 @@ test('inspect-hap exports strict live rehash helpers and rejects fake packaged c
   assert.equal(report.result, 'fail');
   assert.ok(report.failures.some((entry) => entry.code === 'HAP_CORE_REHASH_MISMATCH'));
   assert.ok(report.failures.some((entry) => entry.code === 'HAP_CORE_ELF_INVALID'));
+
+  const rawCorePath = path.join(repoRoot, 'harmony', 'artifacts', 'libcmfa_mihomo.so');
+  const prePackageCorePath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const prePackageAddonPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(prePackageCorePath), { recursive: true });
+  await fs.writeFile(rawCorePath, 'raw-core', 'utf8');
+  await fs.writeFile(prePackageCorePath, 'stale-core', 'utf8');
+  await fs.writeFile(prePackageAddonPath, 'addon', 'utf8');
+
+  const provenanceReport = await inspectHapModule.inspectHap({
+    hapPath,
+    repoRoot,
+    manifestPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json'),
+    fsApi: await import('node:fs/promises').then((module) => module.default),
+    listHapEntriesImpl: async () => ['libs/arm64-v8a/libcmfa_mihomo.so', 'libs/arm64-v8a/libentry.so'],
+    hashFileImpl: async (filePath) => ({
+      sha256: filePath.endsWith('entry-default-signed.hap') ? digest('h') : (filePath.endsWith('libentry.so') ? digest('j') : digest('i')),
+      sizeBytes: 64
+    }),
+    inspectNativeLibraryImpl: async () => ({
+      schemaVersion: '1.0.0',
+      result: 'pass',
+      component: 'mihomoCore',
+      architecture: 'AArch64',
+      exportedSymbols: [],
+      requiredExports: [],
+      buildInfo: {
+        version: CORE_VERSION,
+        upstreamCommit: CORE_COMMIT,
+        abiVersion: 'cmfa-harmony-v1',
+        buildId: '0123456789abcdef'
+      },
+      failures: []
+    }),
+    manifest: {
+      result: 'pass',
+      nativeBuildResult: 'pass',
+      phase2SelfTest: {
+        enabled: false,
+        activation: 'default',
+        purpose: 'production',
+        releaseStatus: 'releasable'
+      },
+      artifacts: {
+        hap: { identity: 'harmony/entry/build/default/outputs/default/entry-default-signed.hap', sha256: digest('h'), sizeBytes: 64 },
+        rawCore: { identity: 'harmony/artifacts/libcmfa_mihomo.so', sha256: digest('i'), sizeBytes: 64 },
+        prePackageCore: { identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so', sha256: digest('k'), sizeBytes: 64 },
+        prePackageAddon: { identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so', sha256: digest('j'), sizeBytes: 64 },
+        hapCore: { identity: 'libs/arm64-v8a/libcmfa_mihomo.so', sha256: digest('i'), sizeBytes: 64 },
+        hapAddon: { identity: 'libs/arm64-v8a/libentry.so', sha256: digest('j'), sizeBytes: 64 }
+      },
+      provenance: {
+        upstream: {
+          version: CORE_VERSION,
+          commit: CORE_COMMIT,
+          buildInfo: BUILD_INFO_JSON,
+          buildId: '0123456789abcdef'
+        }
+      }
+    }
+  });
+
+  assert.equal(provenanceReport.result, 'fail');
+  assert.ok(provenanceReport.failures.some((entry) => /PHASE2_SELF_TEST_REQUIRED|PREPACKAGE_CORE|RAW_CORE/u.test(entry.code)));
 });
 
 test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 evidence lanes', async () => {
@@ -179,4 +870,6 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   }
   assert.match(debugPageSource, /selfTestBuildEnabled/u);
   assert.match(debugPageSource, /result: 'incomplete'/u);
+  assert.match(debugPageSource, /getProcessInfo/u);
+  assert.match(debugPageSource, /ProcessInfo/u);
 });

@@ -35,6 +35,21 @@
     "sizeBytes": null
   },
   "packaged": {
+    "rawCore": {
+      "path": null,
+      "sha256": null,
+      "sizeBytes": null
+    },
+    "prePackageCore": {
+      "path": null,
+      "sha256": null,
+      "sizeBytes": null
+    },
+    "prePackageAddon": {
+      "path": null,
+      "sha256": null,
+      "sizeBytes": null
+    },
     "core": {
       "path": null,
       "sha256": null,
@@ -59,16 +74,33 @@
     }
   },
   "origin": {
+    "originRunId": null,
     "originId": null,
     "originUrl": null,
     "bindAddress": null,
     "tlsCertSha256": null,
-    "responseSha256": "9082975fc1e6817974c2bf9933e7d7f912be9e90f420d4c34d885da7b80f0272"
+    "responseSha256": "9082975fc1e6817974c2bf9933e7d7f912be9e90f420d4c34d885da7b80f0272",
+    "requestObservations": []
   },
   "core": {
     "version": null,
     "httpListenerAddress": null,
-    "socksListenerAddress": null
+    "socksListenerAddress": null,
+    "provenance": {
+      "expected": {
+        "version": null,
+        "commit": null,
+        "buildInfo": null,
+        "buildId": null
+      },
+      "observed": {
+        "version": null,
+        "commit": null,
+        "buildInfo": null,
+        "buildId": null
+      },
+      "verified": "not-run"
+    }
   },
   "stubDetection": {
     "stubDetected": null,
@@ -91,7 +123,12 @@
     "sizeBytes": null,
     "runId": null,
     "appProcessId": null,
-    "stopResult": null
+    "stopResult": null,
+    "fixturePath": null,
+    "fixtureSha256": null,
+    "coreVersion": null,
+    "httpListenerAddress": null,
+    "socksListenerAddress": null
   },
   "probes": {
     "http": {
@@ -103,6 +140,9 @@
       "originRequestId": null,
       "appProbeId": null,
       "coreEventId": null,
+      "originEventRunId": null,
+      "appEventRunId": null,
+      "coreEventRunId": null,
       "originId": null,
       "appProcessId": null,
       "coreConnectionId": null,
@@ -131,6 +171,9 @@
       "originRequestId": null,
       "appProbeId": null,
       "coreEventId": null,
+      "originEventRunId": null,
+      "appEventRunId": null,
+      "coreEventRunId": null,
       "originId": null,
       "appProcessId": null,
       "coreConnectionId": null,
@@ -150,6 +193,10 @@
         "detail": "Only a physical HarmonyOS 6 device can complete Phase 2."
       }
     }
+  },
+  "stop": {
+    "result": "not-run",
+    "forceStopResult": "not-run"
   },
   "failures": [
     {

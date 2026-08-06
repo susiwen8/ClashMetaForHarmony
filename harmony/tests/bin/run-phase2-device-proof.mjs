@@ -1,36 +1,50 @@
 import crypto from 'node:crypto';
+import { spawn as spawnChild } from 'node:child_process';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
-import { normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
-import { createRedactionReplacements, sanitizeForPersistence, sanitizeText } from '../../tools/lib/proof-redaction.mjs';
+import { buildPhase1Native } from './build-phase1-native.mjs';
 import { inspectHap } from './inspect-hap.mjs';
+import { inspectToolchain, normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
+import { createRedactionReplacements, sanitizeForPersistence, sanitizeText } from '../../tools/lib/proof-redaction.mjs';
+import {
+  analyzeTargetDiscovery,
+  buildTargetedHdcArgs,
+  createMaskedDeviceIdentity,
+  execCommand
+} from './run-phase0-device-proof.mjs';
 
 export const PROOF_SCHEMA_VERSION = '1.0.0';
 export const PHASE_NUMBER = 2;
 export const BUNDLE_NAME = 'com.github.kr328.clash.harmony';
 export const ENTRY_ABILITY_NAME = 'EntryAbility';
+export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/files/phase2-device-proof.json';
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
+const ORIGIN_SCRIPT_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'phase2-origin.mjs');
 export const DEFAULT_OUTPUT_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase2-device-proof.json');
-export const DEFAULT_MANIFEST_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-native-provenance.json');
-const DEFAULT_FIXTURE_PATHS = Object.freeze({
-  matchConfig: path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-match-direct.yaml'),
-  originBody: path.join(HARMONY_ROOT, 'tests', 'fixtures', 'origin-body.txt')
-});
+export const DEFAULT_BUILD_MANIFEST_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase2-build-manifest.json');
+
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const FINAL_RESULTS = new Set(['pass', 'fail', 'incomplete']);
 const PROBE_RESULTS = new Set(['pass', 'fail', 'incomplete', 'not-run']);
+const PHYSICAL_INCOMPLETE_CODES = new Set([
+  'INPUT_HAP_MISSING',
+  'INPUT_HAP_UNSIGNED',
+  'SIGNING_REQUIRED',
+  'DEVICE_TARGET_MISSING',
+  'DEVICE_TARGET_AMBIGUOUS',
+  'DEVICE_TARGET_UNSUPPORTED',
+  'DEVICE_FACT_MISSING',
+  'PHYSICAL_DEVICE_REQUIRED',
+  'ORIGIN_BIND_BLOCKED'
+]);
 
 function isoTimestamp(date = new Date()) {
   return date.toISOString();
-}
-
-function createFailure(code, detail, stage = 'proof') {
-  return { code, detail, stage };
 }
 
 function isIsoTimestamp(value) {
@@ -42,12 +56,15 @@ function isUuid(value) {
 }
 
 function isDigest(value) {
-  return value === null || DIGEST_PATTERN.test(String(value ?? ''));
+  return DIGEST_PATTERN.test(String(value ?? ''));
 }
 
-function isWithinRepo(repoRoot, filePath) {
-  const relativePath = path.relative(repoRoot, filePath);
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
+function isNonEmptyString(value) {
+  return typeof value === 'string' && value.trim().length > 0;
+}
+
+function createFailure(code, detail, stage = 'proof') {
+  return { code, detail, stage };
 }
 
 function normalizePathForReport(repoRoot, absolutePath) {
@@ -59,6 +76,11 @@ function normalizePathForReport(repoRoot, absolutePath) {
     return relativePath.split(path.sep).join('/');
   }
   return path.basename(absolutePath);
+}
+
+function isWithinRepo(repoRoot, filePath) {
+  const relativePath = path.relative(repoRoot, filePath);
+  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
 async function resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option) {
@@ -108,25 +130,26 @@ async function hashFile(fsApi, filePath) {
   };
 }
 
-async function hashOptionalRepoFile(fsApi, repoRoot, filePath) {
+async function hashRepoFile(fsApi, repoRoot, filePath, option) {
+  const resolved = await resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option);
+  const digest = await hashFile(fsApi, resolved);
+  return {
+    path: normalizePathForReport(repoRoot, resolved),
+    sha256: digest.sha256,
+    sizeBytes: digest.sizeBytes,
+    absolutePath: resolved
+  };
+}
+
+async function readJson(fsApi, filePath, code) {
   try {
-    const resolved = await resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, '--fixture');
-    const digest = await hashFile(fsApi, resolved);
-    return {
-      path: normalizePathForReport(repoRoot, resolved),
-      sha256: digest.sha256,
-      sizeBytes: digest.sizeBytes
-    };
-  } catch {
-    return {
-      path: normalizePathForReport(repoRoot, path.resolve(filePath)),
-      sha256: null,
-      sizeBytes: null
-    };
+    return JSON.parse(await fsApi.readFile(filePath, 'utf8'));
+  } catch (error) {
+    throw Object.assign(new Error(error?.message ?? `Unable to read ${filePath}`), { code });
   }
 }
 
-function createProbe(protocol, runId, errorCode, detail) {
+function createProbe(protocol, runId) {
   return {
     protocol,
     status: 'not-run',
@@ -136,6 +159,9 @@ function createProbe(protocol, runId, errorCode, detail) {
     originRequestId: null,
     appProbeId: null,
     coreEventId: null,
+    originEventRunId: null,
+    appEventRunId: null,
+    coreEventRunId: null,
     originId: null,
     appProcessId: null,
     coreConnectionId: null,
@@ -149,11 +175,7 @@ function createProbe(protocol, runId, errorCode, detail) {
     responseSha256: null,
     startedAt: null,
     completedAt: null,
-    error: {
-      code: errorCode,
-      stage: 'target',
-      detail
-    }
+    error: null
   };
 }
 
@@ -189,44 +211,42 @@ function createBaseProof({ repoRoot, outputPath, runId, startedAt }) {
       apiVersion: null,
       abi: null
     },
-    hap: {
-      path: null,
-      sha256: null,
-      sizeBytes: null
-    },
+    hap: { path: null, sha256: null, sizeBytes: null },
     packaged: {
-      core: {
-        path: null,
-        sha256: null,
-        sizeBytes: null
-      },
-      addon: {
-        path: null,
-        sha256: null,
-        sizeBytes: null
-      }
+      rawCore: { path: null, sha256: null, sizeBytes: null },
+      prePackageCore: { path: null, sha256: null, sizeBytes: null },
+      prePackageAddon: { path: null, sha256: null, sizeBytes: null },
+      core: { path: null, sha256: null, sizeBytes: null },
+      addon: { path: null, sha256: null, sizeBytes: null }
     },
     fixtures: {
       matchConfig: { path: null, sha256: null, sizeBytes: null },
       originBody: { path: null, sha256: null, sizeBytes: null }
     },
     origin: {
+      originRunId: null,
       originId: null,
       originUrl: null,
       bindAddress: null,
       tlsCertSha256: null,
-      responseSha256: null
+      responseSha256: null,
+      requestObservations: []
     },
     core: {
       version: null,
       httpListenerAddress: null,
-      socksListenerAddress: null
+      socksListenerAddress: null,
+      provenance: {
+        expected: { version: null, commit: null, buildInfo: null, buildId: null },
+        observed: { version: null, commit: null, buildInfo: null, buildId: null },
+        verified: 'not-run'
+      }
     },
     stubDetection: {
       stubDetected: null,
       checks: [
-        { id: 'manifestInspection', result: 'not-run', detail: 'A fresh self-test HAP inspection did not run.' },
-        { id: 'nativeLibraryInspection', result: 'not-run', detail: 'No packaged AArch64 core was available for inspection.' }
+        { id: 'manifestInspection', result: 'not-run', detail: 'No self-test build manifest was inspected.' },
+        { id: 'nativeLibraryInspection', result: 'not-run', detail: 'No packaged core was inspected.' }
       ]
     },
     appEvidence: {
@@ -235,17 +255,37 @@ function createBaseProof({ repoRoot, outputPath, runId, startedAt }) {
       sizeBytes: null,
       runId: null,
       appProcessId: null,
-      stopResult: null
+      stopResult: null,
+      fixturePath: null,
+      fixtureSha256: null,
+      coreVersion: null,
+      httpListenerAddress: null,
+      socksListenerAddress: null
     },
     probes: {
-      http: createProbe('HTTP_CONNECT', runId, 'PHYSICAL_DEVICE_REQUIRED', 'Only a physical HarmonyOS 6 device can complete Phase 2.'),
-      socks: createProbe('SOCKS5', runId, 'PHYSICAL_DEVICE_REQUIRED', 'Only a physical HarmonyOS 6 device can complete Phase 2.')
+      http: createProbe('HTTP_CONNECT', runId),
+      socks: createProbe('SOCKS5', runId)
+    },
+    stop: {
+      result: 'not-run',
+      forceStopResult: 'not-run'
     },
     failures: []
   };
 }
 
+function defaultFixturePathForRepo(repoRoot) {
+  return path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase2-match-direct.yaml');
+}
+
+function defaultOriginBodyPathForRepo(repoRoot) {
+  return path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'origin-body.txt');
+}
+
 function pushFailure(proof, code, detail, stage) {
+  if (proof.failures.some((entry) => entry.code === code && entry.detail === detail && entry.stage === stage)) {
+    return;
+  }
   proof.failures.push(createFailure(code, detail, stage));
 }
 
@@ -272,12 +312,127 @@ async function readToolchainVersions(fsApi, harmonyRoot) {
   }
 }
 
-function resultFromFailures(proof) {
-  const hasActionableFailure = proof.failures.some((entry) => !['INPUT_HAP_MISSING', 'INPUT_HAP_UNSIGNED', 'SIGNING_REQUIRED', 'PHYSICAL_DEVICE_REQUIRED', 'DEVICE_TARGET_MISSING'].includes(entry.code));
-  if (proof.stubDetection.stubDetected === true || hasActionableFailure) {
-    return 'fail';
+function allStubChecksPass(checks) {
+  return Array.isArray(checks) && checks.length > 0 && checks.every((entry) => entry?.result === 'pass');
+}
+
+function deviceLooksPhysical(device) {
+  if (device?.targetKind !== 'physical') {
+    return false;
   }
-  return 'incomplete';
+  if (!/arm64|aarch64/iu.test(String(device?.abi ?? ''))) {
+    return false;
+  }
+  if (Number.parseInt(String(device?.apiVersion ?? ''), 10) < 20) {
+    return false;
+  }
+  const matchedVersion = String(device?.buildVersion ?? '').match(/\b(\d+)(?:\.\d+){0,3}\b/u);
+  if (!matchedVersion || matchedVersion[1] !== '6') {
+    return false;
+  }
+  if (/simulator|emulator/iu.test(`${device?.model ?? ''} ${device?.product ?? ''}`)) {
+    return false;
+  }
+  return isNonEmptyString(device?.identityMasked) && isNonEmptyString(device?.model) && isNonEmptyString(device?.product);
+}
+
+function originObservationMap(origin) {
+  const map = new Map();
+  for (const entry of origin?.requestObservations ?? []) {
+    if (isNonEmptyString(entry?.protocol)) {
+      map.set(entry.protocol, entry);
+    }
+  }
+  return map;
+}
+
+function canPass(proof) {
+  if (!['devecoVersion', 'sdkVersion', 'ndkVersion', 'hvigorVersion', 'nodeVersion', 'hdcVersion'].every((key) => isNonEmptyString(proof.toolchain?.[key]))) {
+    return false;
+  }
+  if (!deviceLooksPhysical(proof.device)) {
+    return false;
+  }
+  for (const artifact of [proof.hap, proof.packaged?.rawCore, proof.packaged?.prePackageCore, proof.packaged?.prePackageAddon, proof.packaged?.core, proof.packaged?.addon, proof.fixtures?.matchConfig, proof.fixtures?.originBody]) {
+    if (!isNonEmptyString(artifact?.path) || !isDigest(artifact?.sha256) || !Number.isInteger(artifact?.sizeBytes) || artifact.sizeBytes < 1) {
+      return false;
+    }
+  }
+  if (proof.stubDetection?.stubDetected !== false || !allStubChecksPass(proof.stubDetection?.checks)) {
+    return false;
+  }
+  if (!isNonEmptyString(proof.origin?.originRunId) || proof.origin.originRunId !== proof.runId) {
+    return false;
+  }
+  if (!isNonEmptyString(proof.origin?.originId) || !isNonEmptyString(proof.origin?.originUrl) || !isNonEmptyString(proof.origin?.bindAddress) || !isDigest(proof.origin?.tlsCertSha256) || !isDigest(proof.origin?.responseSha256)) {
+    return false;
+  }
+  if (!Array.isArray(proof.origin?.requestObservations) || proof.origin.requestObservations.length !== 2) {
+    return false;
+  }
+  if (!isNonEmptyString(proof.core?.version) || !isNonEmptyString(proof.core?.httpListenerAddress) || !isNonEmptyString(proof.core?.socksListenerAddress)) {
+    return false;
+  }
+  if (proof.core?.provenance?.verified !== 'pass') {
+    return false;
+  }
+  for (const key of ['version', 'commit', 'buildInfo', 'buildId']) {
+    if (!isNonEmptyString(proof.core?.provenance?.expected?.[key]) || !isNonEmptyString(proof.core?.provenance?.observed?.[key])) {
+      return false;
+    }
+  }
+  if (!isDigest(proof.appEvidence?.sha256) || !Number.isInteger(proof.appEvidence?.sizeBytes) || proof.appEvidence.sizeBytes < 1) {
+    return false;
+  }
+  if (proof.appEvidence?.runId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence.appProcessId < 1 || proof.appEvidence?.stopResult !== 'pass') {
+    return false;
+  }
+  if (proof.stop?.result !== 'pass') {
+    return false;
+  }
+  if (!Array.isArray(proof.failures) || proof.failures.length > 0) {
+    return false;
+  }
+  const observations = originObservationMap(proof.origin);
+  for (const protocol of ['http', 'socks']) {
+    const probe = proof.probes?.[protocol];
+    const expectedProtocol = protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5';
+    const observation = observations.get(expectedProtocol);
+    if (!probe || probe.protocol !== expectedProtocol || probe.status !== 'pass') {
+      return false;
+    }
+    if (
+      probe.runId !== proof.runId ||
+      probe.originEventRunId !== proof.runId ||
+      probe.appEventRunId !== proof.runId ||
+      probe.coreEventRunId !== proof.runId ||
+      probe.originId !== proof.origin.originId ||
+      probe.appProcessId !== proof.appEvidence.appProcessId ||
+      !isNonEmptyString(probe.probeRunId) ||
+      !isNonEmptyString(probe.requestId) ||
+      !isNonEmptyString(probe.originRequestId) ||
+      !isNonEmptyString(probe.appProbeId) ||
+      !isNonEmptyString(probe.coreEventId) ||
+      !isNonEmptyString(probe.coreConnectionId) ||
+      !Number.isInteger(probe.clientSourcePort) ||
+      !isNonEmptyString(probe.destination) ||
+      !isNonEmptyString(probe.upstreamInboundType) ||
+      !isNonEmptyString(probe.listenerAddress) ||
+      !isDigest(probe.tlsPeerSha256) ||
+      probe.httpStatus !== 200 ||
+      !Number.isInteger(probe.responseBytes) || probe.responseBytes < 1 ||
+      !isDigest(probe.responseSha256) ||
+      !isIsoTimestamp(probe.startedAt) ||
+      !isIsoTimestamp(probe.completedAt) ||
+      probe.error !== null
+    ) {
+      return false;
+    }
+    if (!observation || observation.originEventRunId !== proof.runId || observation.originRequestId !== probe.originRequestId || observation.requestId !== probe.requestId) {
+      return false;
+    }
+  }
+  return true;
 }
 
 export function validatePhase2Proof(proof) {
@@ -287,16 +442,15 @@ export function validatePhase2Proof(proof) {
   if (!FINAL_RESULTS.has(proof?.result)) errors.push('result must be pass, fail, or incomplete.');
   if (!isUuid(proof?.runId)) errors.push('runId must be a UUID.');
   if (proof?.bundle !== BUNDLE_NAME || proof?.ability !== ENTRY_ABILITY_NAME) errors.push('bundle/ability identity mismatch.');
-  if (typeof proof?.outputPath !== 'string' || proof.outputPath.length === 0) errors.push('outputPath must be non-empty.');
+  if (!isNonEmptyString(proof?.outputPath)) errors.push('outputPath must be non-empty.');
 
-  const timestamps = proof?.timestamps ?? {};
-  if (!isIsoTimestamp(timestamps.runnerStartedAt) || !isIsoTimestamp(timestamps.runnerFinishedAt)) {
+  if (!isIsoTimestamp(proof?.timestamps?.runnerStartedAt) || !isIsoTimestamp(proof?.timestamps?.runnerFinishedAt)) {
     errors.push('runner timestamps must be ISO-8601 values.');
   }
-  if (timestamps.appStartedAt !== null && !isIsoTimestamp(timestamps.appStartedAt)) {
+  if (proof?.timestamps?.appStartedAt !== null && !isIsoTimestamp(proof.timestamps.appStartedAt)) {
     errors.push('appStartedAt must be null or ISO-8601.');
   }
-  if (timestamps.proofAt !== null && !isIsoTimestamp(timestamps.proofAt)) {
+  if (proof?.timestamps?.proofAt !== null && !isIsoTimestamp(proof.timestamps.proofAt)) {
     errors.push('proofAt must be null or ISO-8601.');
   }
 
@@ -309,11 +463,30 @@ export function validatePhase2Proof(proof) {
   if (!['physical', 'simulator', 'host', 'unknown'].includes(String(proof?.device?.targetKind ?? ''))) {
     errors.push('device.targetKind must be physical, simulator, host, or unknown.');
   }
-  for (const artifact of [proof?.hap, proof?.packaged?.core, proof?.packaged?.addon, proof?.fixtures?.matchConfig, proof?.fixtures?.originBody]) {
+
+  const allArtifacts = [
+    ['hap', proof?.hap],
+    ['packaged.rawCore', proof?.packaged?.rawCore],
+    ['packaged.prePackageCore', proof?.packaged?.prePackageCore],
+    ['packaged.prePackageAddon', proof?.packaged?.prePackageAddon],
+    ['packaged.core', proof?.packaged?.core],
+    ['packaged.addon', proof?.packaged?.addon],
+    ['fixtures.matchConfig', proof?.fixtures?.matchConfig],
+    ['fixtures.originBody', proof?.fixtures?.originBody]
+  ];
+  for (const [label, artifact] of allArtifacts) {
     if (!artifact || !('path' in artifact) || !('sha256' in artifact) || !('sizeBytes' in artifact)) {
-      errors.push('artifact entries must contain path, sha256, and sizeBytes.');
-    } else if (!isDigest(artifact.sha256)) {
-      errors.push('artifact sha256 values must be null or lower-hex digests.');
+      errors.push(`${label} must contain path, sha256, and sizeBytes.`);
+      continue;
+    }
+    if (artifact.path !== null && !isNonEmptyString(artifact.path)) {
+      errors.push(`${label}.path must be null or a non-empty string.`);
+    }
+    if (artifact.sha256 !== null && !isDigest(artifact.sha256)) {
+      errors.push(`${label}.sha256 must be null or a lower-hex digest.`);
+    }
+    if (artifact.sizeBytes !== null && (!Number.isInteger(artifact.sizeBytes) || artifact.sizeBytes < 0)) {
+      errors.push(`${label}.sizeBytes must be null or a non-negative integer.`);
     }
   }
 
@@ -322,6 +495,9 @@ export function validatePhase2Proof(proof) {
   }
   if (!Array.isArray(proof?.stubDetection?.checks) || proof.stubDetection.checks.length < 1) {
     errors.push('stubDetection.checks must contain at least one check.');
+  }
+  if (!Array.isArray(proof?.origin?.requestObservations)) {
+    errors.push('origin.requestObservations must be an array.');
   }
   if (!Array.isArray(proof?.failures)) {
     errors.push('failures must be an array.');
@@ -336,7 +512,8 @@ export function validatePhase2Proof(proof) {
     if (!PROBE_RESULTS.has(probe.status)) {
       errors.push(`probes.${protocol}.status is invalid.`);
     }
-    if (probe.protocol !== (protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5')) {
+    const expectedProtocol = protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5';
+    if (probe.protocol !== expectedProtocol) {
       errors.push(`probes.${protocol}.protocol mismatch.`);
     }
     if (probe.runId !== proof.runId) {
@@ -344,22 +521,70 @@ export function validatePhase2Proof(proof) {
     }
   }
 
-  const passRequires = proof?.result === 'pass';
-  if (passRequires) {
-    if (proof?.device?.targetKind !== 'physical') errors.push('pass requires a physical HarmonyOS device.');
-    if (proof?.stubDetection?.stubDetected !== false) errors.push('pass requires stubDetection.stubDetected === false.');
-    if (proof?.probes?.http?.status !== 'pass' || proof?.probes?.socks?.status !== 'pass') {
-      errors.push('pass requires both HTTP and SOCKS probes to pass.');
+  if (proof?.result === 'pass') {
+    if (!canPass(proof)) {
+      if (!['devecoVersion', 'sdkVersion', 'ndkVersion', 'hvigorVersion', 'nodeVersion', 'hdcVersion'].every((key) => isNonEmptyString(proof.toolchain?.[key]))) {
+        errors.push('pass requires exact non-null toolchain versions including hdcVersion.');
+      }
+      for (const [label, artifact] of allArtifacts) {
+        if (!artifact || !isNonEmptyString(artifact.path) || !isDigest(artifact.sha256) || !Number.isInteger(artifact.sizeBytes) || artifact.sizeBytes < 1) {
+          errors.push(`pass requires exact non-null ${label} path/hash/sizeBytes.`);
+        }
+      }
+      if (!deviceLooksPhysical(proof.device)) {
+        errors.push('pass requires a physical HarmonyOS 6 API>=20 AArch64 target, never simulator/host.');
+      }
+      if (proof.stubDetection?.stubDetected !== false) {
+        errors.push('pass requires stubDetected === false.');
+      }
+      if (!allStubChecksPass(proof.stubDetection?.checks)) {
+        errors.push('pass requires every stubDetection check to pass.');
+      }
+      if (proof.stop?.result !== 'pass') {
+        errors.push('pass requires stop.result pass.');
+      }
+      if (!Array.isArray(proof.failures) || proof.failures.length !== 0) {
+        errors.push('pass requires failures to stay empty.');
+      }
+      if (proof.appEvidence?.runId !== proof.runId || !Number.isInteger(proof.appEvidence?.appProcessId) || proof.appEvidence?.stopResult !== 'pass') {
+        errors.push('pass requires exact appEvidence runId/appProcessId/stopResult.');
+      }
+      if (!isNonEmptyString(proof.origin?.originRunId) || proof.origin.originRunId !== proof.runId) {
+        errors.push('pass requires explicit origin/app/core run correlation to equal proof.runId.');
+      }
+      if (proof.core?.provenance?.verified !== 'pass') {
+        errors.push('pass requires provenance verified pass.');
+      }
+      const observations = originObservationMap(proof.origin);
+      for (const protocol of ['http', 'socks']) {
+        const probe = proof?.probes?.[protocol];
+        const expectedProtocol = protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5';
+        const observation = observations.get(expectedProtocol);
+        if (!probe || probe.status !== 'pass') {
+          errors.push(`pass requires probes.${protocol}.status pass.`);
+          continue;
+        }
+        if (
+          probe.originEventRunId !== proof.runId ||
+          probe.appEventRunId !== proof.runId ||
+          probe.coreEventRunId !== proof.runId
+        ) {
+          errors.push(`pass requires probes.${protocol} run correlation fields to equal proof.runId.`);
+        }
+        if (!observation || observation.originRequestId !== probe.originRequestId || observation.requestId !== probe.requestId) {
+          errors.push(`pass requires probes.${protocol} request correlation to match origin observations.`);
+        }
+        if (!Number.isInteger(probe.clientSourcePort)) {
+          errors.push(`pass requires probes.${protocol}.clientSourcePort.`);
+        }
+        if (!isNonEmptyString(probe.destination) || !isNonEmptyString(probe.upstreamInboundType)) {
+          errors.push(`pass requires probes.${protocol} destination and inbound type.`);
+        }
+        if (probe.httpStatus !== 200 || !isDigest(probe.tlsPeerSha256) || !isDigest(probe.responseSha256) || probe.error !== null) {
+          errors.push(`pass requires probes.${protocol} TLS/hash/200/error-null fields.`);
+        }
+      }
     }
-    if (proof?.timestamps?.appStartedAt === null || proof?.timestamps?.proofAt === null) {
-      errors.push('pass requires appStartedAt and proofAt.');
-    }
-  }
-  if (proof?.stubDetection?.stubDetected === null && proof?.result === 'pass') {
-    errors.push('stubDetection.stubDetected null can never pass.');
-  }
-  if (proof?.device?.targetKind !== 'physical' && proof?.result === 'pass') {
-    errors.push('host or simulator targets can never pass.');
   }
 
   return { valid: errors.length === 0, errors };
@@ -372,136 +597,612 @@ async function writeProof(proof, outputPath, fsApi = fs, repoRoot = REPO_ROOT) {
   await fsApi.rename(tempPath, safeOutputPath);
 }
 
+function requireValue(argv, index, option) {
+  const value = argv[index + 1];
+  if (!value || value.startsWith('--')) {
+    throw Object.assign(new Error(`${option} requires a value.`), { code: 'ARGUMENT_INVALID' });
+  }
+  return value;
+}
+
+function resolveRepoScopedValue(repoRoot, value, option) {
+  const resolved = path.isAbsolute(value) ? value : path.resolve(repoRoot, value);
+  const relativePath = path.relative(repoRoot, resolved);
+  if (relativePath.startsWith('..') || path.isAbsolute(relativePath)) {
+    throw Object.assign(new Error(`${option} must stay inside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
+  }
+  return resolved;
+}
+
 export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
-  let hapPath = null;
-  let manifestPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json');
+  let buildManifestPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-build-manifest.json');
+  let fixturePath = defaultFixturePathForRepo(repoRoot);
   let outputPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json');
   const seen = new Set();
 
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
-    if (!['--hap', '--manifest', '--out'].includes(option)) {
+    if (!['--build-manifest', '--fixture', '--out'].includes(option)) {
       throw Object.assign(new Error(`Unknown argument: ${option}`), { code: 'ARGUMENT_INVALID' });
     }
     if (seen.has(option)) {
       throw Object.assign(new Error(`${option} may only be provided once.`), { code: 'ARGUMENT_INVALID' });
     }
     seen.add(option);
-    const value = argv[index + 1];
-    if (!value || value.startsWith('--')) {
-      throw Object.assign(new Error(`${option} requires a value.`), { code: 'ARGUMENT_INVALID' });
-    }
-    const resolved = path.resolve(repoRoot, value);
-    if (option === '--hap') hapPath = resolved;
-    if (option === '--manifest') manifestPath = resolved;
+    const value = requireValue(argv, index, option);
+    const resolved = resolveRepoScopedValue(repoRoot, value, option);
+    if (option === '--build-manifest') buildManifestPath = resolved;
+    if (option === '--fixture') fixturePath = resolved;
     if (option === '--out') outputPath = resolved;
     index += 1;
   }
 
-  return { hapPath, manifestPath, outputPath };
+  return { buildManifestPath, fixturePath, outputPath };
+}
+
+function parseCliArgumentsPartial(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
+  let buildManifestPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-build-manifest.json');
+  let fixturePath = defaultFixturePathForRepo(repoRoot);
+  let outputPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json');
+  const seen = new Set();
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (!['--build-manifest', '--fixture', '--out'].includes(option)) {
+      throw Object.assign(new Error(`Unknown argument: ${option}`), { code: 'ARGUMENT_INVALID', partial: { buildManifestPath, fixturePath, outputPath } });
+    }
+    if (seen.has(option)) {
+      throw Object.assign(new Error(`${option} may only be provided once.`), { code: 'ARGUMENT_INVALID', partial: { buildManifestPath, fixturePath, outputPath } });
+    }
+    seen.add(option);
+    const value = argv[index + 1];
+    if (!value || value.startsWith('--')) {
+      throw Object.assign(new Error(`${option} requires a value.`), { code: 'ARGUMENT_INVALID', partial: { buildManifestPath, fixturePath, outputPath } });
+    }
+    const resolved = resolveRepoScopedValue(repoRoot, value, option);
+    if (option === '--build-manifest') buildManifestPath = resolved;
+    if (option === '--fixture') fixturePath = resolved;
+    if (option === '--out') outputPath = resolved;
+    index += 1;
+  }
+
+  return { buildManifestPath, fixturePath, outputPath };
+}
+
+async function resolveHdcCommand(toolchainInspectorImpl, repoRoot) {
+  const inspection = await toolchainInspectorImpl({ cwd: repoRoot });
+  if (inspection?.report?.result !== 'pass' || !inspection?.resolved?.paths?.hdc) {
+    throw Object.assign(new Error('The integrated hdc command is unavailable.'), { code: 'TOOL_MISSING' });
+  }
+  return inspection.resolved.paths.hdc;
+}
+
+async function verifyHdcHelp(execImpl, hdcCommand, cwd) {
+  for (const args of [['help'], ['-h'], ['--help']]) {
+    const result = await execImpl(hdcCommand, args, { cwd });
+    const output = `${result.stdout ?? ''}\n${result.stderr ?? ''}`;
+    if (result?.timedOut) {
+      return { ok: false, failure: createFailure('HDC_TIMEOUT', 'hdc help timed out.', 'toolchain') };
+    }
+    if (result?.error?.code === 'ENOENT') {
+      return { ok: false, failure: createFailure('TOOL_MISSING', 'The integrated hdc command is unavailable.', 'toolchain') };
+    }
+    if (/list\s+targets/iu.test(output) && /install/iu.test(output) && /shell/iu.test(output)) {
+      return { ok: true };
+    }
+  }
+  return { ok: false, failure: createFailure('HDC_HELP_UNSUPPORTED', 'hdc help does not confirm the required command surface.', 'toolchain') };
+}
+
+async function readDeviceFact({ execImpl, hdcCommand, target, candidates, cwd }) {
+  for (const key of candidates) {
+    const result = await execImpl(hdcCommand, buildTargetedHdcArgs(target, ['shell', 'param', 'get', key]), { cwd });
+    if (result?.timedOut) {
+      return { value: null, timedOut: true };
+    }
+    const value = String(result.stdout ?? '').trim();
+    if (!result?.error && result?.exitCode === 0 && value && !/^(?:unknown|null)$/iu.test(value)) {
+      return { value, timedOut: false };
+    }
+  }
+  return { value: null, timedOut: false };
+}
+
+function classifyTarget(device) {
+  if (!isNonEmptyString(device.model) || !isNonEmptyString(device.product) || !isNonEmptyString(device.buildVersion) || !isNonEmptyString(device.apiVersion) || !isNonEmptyString(device.abi)) {
+    return { kind: 'incomplete', code: 'DEVICE_FACT_MISSING', detail: 'The selected target did not expose all required device facts.' };
+  }
+  if (/simulator|emulator/iu.test(`${device.model} ${device.product}`)) {
+    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Simulator targets cannot satisfy Phase 2.' };
+  }
+  if (!/arm64|aarch64/iu.test(device.abi)) {
+    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Only AArch64 physical devices can satisfy Phase 2.' };
+  }
+  if (Number.parseInt(device.apiVersion, 10) < 20) {
+    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires API 20 or later.' };
+  }
+  const matchedVersion = device.buildVersion.match(/\b(\d+)(?:\.\d+){0,3}\b/u);
+  if (!matchedVersion || matchedVersion[1] !== '6') {
+    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires a HarmonyOS 6 physical device.' };
+  }
+  return { kind: 'physical' };
+}
+
+function buildLaunchArgs(target, runId, runnerStartedAt, originPayload) {
+  const wantParameters = {
+    'cmfa.phase1.selfTest': true,
+    'cmfa.phase1.runId': runId,
+    'cmfa.phase1.runnerStartedAt': runnerStartedAt,
+    'cmfa.phase2.originUrl': originPayload.originUrl,
+    'cmfa.phase2.caPem': originPayload.caPem,
+    'cmfa.phase2.expectedBodySha256': originPayload.bodySha256
+  };
+  return buildTargetedHdcArgs(target, [
+    'shell', 'aa', 'start',
+    '-a', ENTRY_ABILITY_NAME,
+    '-b', BUNDLE_NAME,
+    '-p', JSON.stringify(wantParameters)
+  ]);
+}
+
+function buildPullArgs(target, localPath) {
+  return buildTargetedHdcArgs(target, [
+    'file', 'recv', '-b', BUNDLE_NAME,
+    APP_PROOF_REMOTE_PATH,
+    localPath
+  ]);
+}
+
+async function startOriginProcess({ repoRoot, originBodyPath, spawnImpl = spawnChild }) {
+  const child = spawnImpl('node', [ORIGIN_SCRIPT_PATH, '--bind', '127.0.0.1:0', '--body-file', originBodyPath], {
+    cwd: repoRoot,
+    env: process.env,
+    stdio: ['ignore', 'pipe', 'pipe']
+  });
+  let stderr = '';
+  let stdout = '';
+  child.stdout?.setEncoding('utf8');
+  child.stderr?.setEncoding('utf8');
+  child.stderr?.on('data', (chunk) => {
+    stderr += chunk;
+  });
+  const payload = await new Promise((resolve, reject) => {
+    child.stdout?.on('data', (chunk) => {
+      stdout += chunk;
+      const newlineIndex = stdout.indexOf('\n');
+      if (newlineIndex >= 0) {
+        try {
+          resolve(JSON.parse(stdout.slice(0, newlineIndex)));
+        } catch (error) {
+          reject(error);
+        }
+      }
+    });
+    child.once('error', reject);
+    child.once('exit', () => {
+      reject(Object.assign(new Error(stderr || stdout || 'phase2-origin exited before startup'), { code: /EPERM/u.test(stderr) ? 'ORIGIN_BIND_BLOCKED' : 'ORIGIN_START_FAILED' }));
+    });
+  });
+
+  return {
+    ...payload,
+    originRunId: payload.runId ?? null,
+    tlsCertSha256: crypto.createHash('sha256').update(String(payload.caPem ?? '')).digest('hex'),
+    requestObservations: payload.requestObservations ?? [],
+    stop: async () => {
+      await new Promise((resolve) => {
+        child.once('exit', () => resolve());
+        child.kill('SIGTERM');
+      });
+    }
+  };
+}
+
+function normalizeAppEvidenceProof(raw) {
+  if (!raw || typeof raw !== 'object') {
+    return null;
+  }
+  if (raw.probes && raw.coreVersion) {
+    return raw;
+  }
+  return null;
+}
+
+async function pullPhase2AppEvidence({
+  fsApi,
+  execImpl,
+  hdcCommand,
+  target,
+  localPath,
+  cwd,
+  expectedRunId,
+  waitImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+} = {}) {
+  let lastFailure = null;
+  for (let attempt = 0; attempt < 20; attempt += 1) {
+    const result = await execImpl(hdcCommand, buildPullArgs(target, localPath), { cwd });
+    if (!result?.error && result?.exitCode === 0 && !result?.timedOut) {
+      try {
+        const parsed = normalizeAppEvidenceProof(await readJson(fsApi, localPath, 'APP_EVIDENCE_INVALID'));
+        if (parsed && parsed.runId === expectedRunId) {
+          return { ok: true, result, proof: parsed, localPath };
+        }
+        lastFailure = createFailure('APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence did not match the expected runId.', 'app-proof');
+      } catch (error) {
+        lastFailure = createFailure(error?.code ?? 'APP_EVIDENCE_INVALID', error?.message ?? 'Unable to parse app evidence.', 'app-proof');
+      }
+    }
+    await waitImpl(250);
+  }
+  return { ok: false, invalid: lastFailure };
+}
+
+function copyArtifact(target, source) {
+  target.path = source?.identity ?? source?.path ?? null;
+  target.sha256 = source?.sha256 ?? null;
+  target.sizeBytes = source?.sizeBytes ?? null;
+}
+
+function normalizeInspectionCheck(id, passed, passDetail, failDetail) {
+  return {
+    id,
+    result: passed ? 'pass' : 'fail',
+    detail: passed ? passDetail : failDetail
+  };
+}
+
+function correlateProbe({ protocol, proof, appProbe, originObservation, expectedListenerAddress }) {
+  const target = proof.probes[protocol === 'HTTP_CONNECT' ? 'http' : 'socks'];
+  if (!appProbe) {
+    target.status = 'fail';
+    target.error = { code: 'APP_PROBE_MISSING', stage: protocol, detail: `App evidence did not include the ${protocol} probe.` };
+    return createFailure('APP_PROBE_MISSING', `App evidence did not include the ${protocol} probe.`, protocol);
+  }
+
+  Object.assign(target, {
+    status: appProbe.status,
+    probeRunId: appProbe.probeRunId ?? null,
+    requestId: appProbe.requestId ?? null,
+    originRequestId: appProbe.originRequestId ?? null,
+    appProbeId: appProbe.appProbeId ?? null,
+    coreEventId: appProbe.coreEventId ?? null,
+    originEventRunId: appProbe.originEventRunId ?? null,
+    appEventRunId: appProbe.appEventRunId ?? null,
+    coreEventRunId: appProbe.coreEventRunId ?? null,
+    originId: appProbe.originId ?? null,
+    appProcessId: proof.appEvidence.appProcessId,
+    coreConnectionId: appProbe.coreConnectionId ?? null,
+    clientSourcePort: appProbe.clientSourcePort ?? null,
+    destination: appProbe.destination ?? null,
+    upstreamInboundType: appProbe.upstreamInboundType ?? null,
+    listenerAddress: appProbe.listenerAddress ?? null,
+    tlsPeerSha256: appProbe.tlsPeerSha256 ?? null,
+    httpStatus: appProbe.httpStatus ?? null,
+    responseBytes: appProbe.responseBytes ?? null,
+    responseSha256: appProbe.responseSha256 ?? null,
+    startedAt: appProbe.startedAt ?? null,
+    completedAt: appProbe.completedAt ?? null,
+    error: appProbe.error ?? null
+  });
+
+  if (!originObservation) {
+    return createFailure('ORIGIN_OBSERVATION_MISSING', `Origin did not observe the ${protocol} probe.`, protocol);
+  }
+  if (
+    appProbe.originEventRunId !== proof.runId ||
+    appProbe.appEventRunId !== proof.runId ||
+    appProbe.coreEventRunId !== proof.runId ||
+    originObservation.originEventRunId !== proof.runId
+  ) {
+    return createFailure('PROBE_RUN_ID_MISMATCH', `${protocol} run correlation did not match proof.runId.`, protocol);
+  }
+  if (appProbe.requestId !== originObservation.requestId || appProbe.originRequestId !== originObservation.originRequestId) {
+    return createFailure('PROBE_REQUEST_MISMATCH', `${protocol} request correlation did not match origin observations.`, protocol);
+  }
+  if (appProbe.originId !== proof.origin.originId) {
+    return createFailure('PROBE_ORIGIN_ID_MISMATCH', `${protocol} originId did not match the origin process.`, protocol);
+  }
+  if (appProbe.listenerAddress !== expectedListenerAddress) {
+    return createFailure('PROBE_LISTENER_MISMATCH', `${protocol} listener address did not match the app evidence listener.`, protocol);
+  }
+  if (appProbe.responseSha256 !== originObservation.responseSha256 || appProbe.responseBytes !== originObservation.responseBytes || appProbe.httpStatus !== originObservation.httpStatus) {
+    return createFailure('PROBE_RESPONSE_MISMATCH', `${protocol} response fields did not match the origin observations.`, protocol);
+  }
+  if (appProbe.status !== 'pass' || appProbe.error !== null || appProbe.httpStatus !== 200 || !Number.isInteger(appProbe.clientSourcePort) || !isNonEmptyString(appProbe.destination) || !isNonEmptyString(appProbe.upstreamInboundType)) {
+    return createFailure('PROBE_CONTRACT_INVALID', `${protocol} probe did not satisfy the Phase 2 success contract.`, protocol);
+  }
+  return null;
+}
+
+function finalizeResult(proof) {
+  if (canPass(proof)) {
+    proof.result = 'pass';
+    return proof;
+  }
+  proof.result = proof.failures.some((entry) => !PHYSICAL_INCOMPLETE_CODES.has(entry.code)) ? 'fail' : 'incomplete';
+  return proof;
 }
 
 export async function runPhase2DeviceProof({
-  hapPath = null,
-  manifestPath = DEFAULT_MANIFEST_PATH,
+  buildManifestPath = DEFAULT_BUILD_MANIFEST_PATH,
+  fixturePath = null,
   outputPath = DEFAULT_OUTPUT_PATH,
   repoRoot = REPO_ROOT,
   fsApi = fs,
+  buildPhase1NativeImpl = buildPhase1Native,
   inspectHapImpl = inspectHap,
+  toolchainInspectorImpl = inspectToolchain,
+  execImpl = execCommand,
+  startOriginImpl = startOriginProcess,
+  pullPhase2AppEvidenceImpl = pullPhase2AppEvidence,
   randomUUID = () => crypto.randomUUID(),
-  now = () => new Date()
+  now = () => new Date(),
+  waitImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 } = {}) {
   const startedAt = now();
   const replacements = createRedactionReplacements({ repoRoot, env: process.env });
-  const proof = createBaseProof({
-    repoRoot,
-    outputPath,
-    runId: randomUUID(),
-    startedAt
-  });
+  const proof = createBaseProof({ repoRoot, outputPath, runId: randomUUID(), startedAt });
+  let originHandle = null;
+  let target = null;
+  let hdcCommand = null;
+  let installed = false;
 
-  proof.toolchain = await readToolchainVersions(fsApi, path.join(repoRoot, 'harmony'));
-  proof.fixtures.matchConfig = await hashOptionalRepoFile(fsApi, repoRoot, path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase2-match-direct.yaml'));
-  proof.fixtures.originBody = await hashOptionalRepoFile(fsApi, repoRoot, path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'origin-body.txt'));
-  proof.origin.responseSha256 = proof.fixtures.originBody.sha256;
+  const finish = async () => {
+    proof.timestamps.runnerFinishedAt = isoTimestamp(now());
+    const sanitized = sanitizeForPersistence(finalizeResult(proof), replacements);
+    const validation = validatePhase2Proof(sanitized);
+    if (!validation.valid) {
+      sanitized.result = 'fail';
+      sanitized.failures.push(createFailure('PHASE2_PROOF_INVALID', validation.errors.join('; '), 'proof'));
+    }
+    await writeProof(sanitized, outputPath, fsApi, repoRoot);
+    return sanitized;
+  };
 
-  if (!hapPath) {
-    pushFailure(proof, 'INPUT_HAP_MISSING', 'A signed self-test HAP was not supplied.', 'input');
-  } else {
+  try {
+    const effectiveFixturePath = fixturePath ?? defaultFixturePathForRepo(repoRoot);
+    const effectiveOriginBodyPath = defaultOriginBodyPathForRepo(repoRoot);
+    proof.toolchain = await readToolchainVersions(fsApi, path.join(repoRoot, 'harmony'));
+    const [fixtureDigest, originBodyDigest] = await Promise.all([
+      hashRepoFile(fsApi, repoRoot, effectiveFixturePath, '--fixture'),
+      hashRepoFile(fsApi, repoRoot, effectiveOriginBodyPath, '--origin-body')
+    ]);
+    proof.fixtures.matchConfig = {
+      path: fixtureDigest.path,
+      sha256: fixtureDigest.sha256,
+      sizeBytes: fixtureDigest.sizeBytes
+    };
+    proof.fixtures.originBody = {
+      path: originBodyDigest.path,
+      sha256: originBodyDigest.sha256,
+      sizeBytes: originBodyDigest.sizeBytes
+    };
+    proof.origin.responseSha256 = originBodyDigest.sha256;
+
+    let builtManifest;
     try {
-      const resolvedHapPath = await resolveExistingRepoScopedPath(fsApi, repoRoot, hapPath, '--hap');
-      const digest = await hashFile(fsApi, resolvedHapPath);
-      proof.hap = {
-        path: normalizePathForReport(repoRoot, resolvedHapPath),
-        sha256: digest.sha256,
-        sizeBytes: digest.sizeBytes
-      };
-      if (/-unsigned\.hap$/iu.test(path.basename(resolvedHapPath))) {
-        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned HAPs cannot enter the Phase 2 proof lane.', 'input');
-        pushFailure(proof, 'SIGNING_REQUIRED', 'A valid developer-signed debug HAP is required.', 'signing');
-      } else {
-        try {
-          const inspection = await inspectHapImpl({
-            hapPath: resolvedHapPath,
-            manifestPath,
-            repoRoot,
-            fsApi
-          });
-          proof.packaged.core = inspection.packaged?.core
-            ? {
-              path: inspection.packaged.core.identity ?? HAP_CORE_ENTRY,
-              sha256: inspection.packaged.core.sha256,
-              sizeBytes: inspection.packaged.core.sizeBytes
-            }
-            : proof.packaged.core;
-          proof.packaged.addon = inspection.packaged?.addon
-            ? {
-              path: inspection.packaged.addon.identity ?? HAP_ADDON_ENTRY,
-              sha256: inspection.packaged.addon.sha256,
-              sizeBytes: inspection.packaged.addon.sizeBytes
-            }
-            : proof.packaged.addon;
-          proof.stubDetection.stubDetected = inspection.stubDetected;
-          proof.stubDetection.checks = [
-            {
-              id: 'manifestInspection',
-              result: inspection.result === 'pass' ? 'pass' : 'fail',
-              detail: inspection.result === 'pass' ? 'Packaged HAP matched the fresh build manifest.' : 'Packaged HAP failed fresh-manifest inspection.'
-            },
-            {
-              id: 'nativeLibraryInspection',
-              result: inspection.packaged?.core?.elf?.result === 'pass' ? 'pass' : 'fail',
-              detail: inspection.packaged?.core?.elf?.result === 'pass'
-                ? 'Packaged core satisfies the real-core-only ELF contract.'
-                : 'Packaged core failed the real-core-only ELF contract.'
-            }
-          ];
-          proof.core.version = inspection.provenance?.observed?.version ?? null;
-          for (const failure of inspection.failures ?? []) {
-            pushFailure(proof, failure.code, failure.detail, failure.stage);
-          }
-        } catch (error) {
-          proof.stubDetection.stubDetected = null;
-          pushFailure(proof, error?.code ?? 'HAP_INSPECTION_FAILED', sanitizeText(error?.message ?? 'Failed to inspect the supplied HAP.', replacements), 'archive');
-        }
-      }
+      builtManifest = await buildPhase1NativeImpl({
+        outputPath: buildManifestPath,
+        phase2SelfTestEnabled: true
+      });
     } catch (error) {
-      pushFailure(proof, error?.code ?? 'INPUT_HAP_INVALID', sanitizeText(error?.message ?? 'Unable to access the supplied HAP.', replacements), 'input');
+      pushFailure(proof, 'INPUT_HAP_MISSING', sanitizeText(error?.message ?? 'The self-test build lane did not produce a signed HAP.', replacements), 'build');
+      return await finish();
+    }
+    const manifest = builtManifest ?? await readJson(fsApi, buildManifestPath, 'BUILD_MANIFEST_INVALID');
+    if (manifest?.phase2SelfTest?.enabled !== true) {
+      pushFailure(proof, 'PHASE2_SELF_TEST_REQUIRED', 'Phase 2 requires a fresh self-test build lane.', 'build');
+      return await finish();
+    }
+    if (manifest?.signing?.result !== 'pass') {
+      pushFailure(proof, 'SIGNING_REQUIRED', 'A developer-signed self-test HAP is required.', 'signing');
+      return await finish();
+    }
+    if (manifest?.nativeBuildResult !== 'pass') {
+      pushFailure(proof, 'BUILD_MANIFEST_NOT_PASSING', 'The fresh self-test build manifest did not finish with nativeBuildResult pass.', 'build');
+      return await finish();
+    }
+    if (manifest?.result !== 'pass') {
+      pushFailure(proof, 'BUILD_MANIFEST_NOT_PASSING', 'The fresh self-test build manifest did not finish with result pass.', 'build');
+      return await finish();
+    }
+
+    const hapIdentity = manifest?.artifacts?.hap?.identity;
+    if (!isNonEmptyString(hapIdentity)) {
+      pushFailure(proof, 'INPUT_HAP_MISSING', 'The self-test build manifest did not expose a signed HAP identity.', 'build');
+      return await finish();
+    }
+    const resolvedHapPath = await resolveExistingRepoScopedPath(fsApi, repoRoot, path.join(repoRoot, hapIdentity), '--hap');
+    const hapDigest = await hashFile(fsApi, resolvedHapPath);
+    proof.hap = {
+      path: normalizePathForReport(repoRoot, resolvedHapPath),
+      sha256: hapDigest.sha256,
+      sizeBytes: hapDigest.sizeBytes
+    };
+    if (/-unsigned\.hap$/iu.test(path.basename(resolvedHapPath))) {
+      pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned HAPs cannot enter the Phase 2 proof lane.', 'input');
+      pushFailure(proof, 'SIGNING_REQUIRED', 'A valid developer-signed debug HAP is required.', 'signing');
+      return await finish();
+    }
+
+    const inspection = await inspectHapImpl({
+      hapPath: resolvedHapPath,
+      manifest,
+      manifestPath: buildManifestPath,
+      repoRoot,
+      fsApi
+    });
+    copyArtifact(proof.packaged.rawCore, inspection.packaged?.rawCore);
+    copyArtifact(proof.packaged.prePackageCore, inspection.packaged?.prePackageCore);
+    copyArtifact(proof.packaged.prePackageAddon, inspection.packaged?.prePackageAddon);
+    copyArtifact(proof.packaged.core, inspection.packaged?.core);
+    copyArtifact(proof.packaged.addon, inspection.packaged?.addon);
+    proof.core.provenance.expected = inspection.provenance?.expected ?? proof.core.provenance.expected;
+    proof.core.provenance.observed = inspection.provenance?.observed ?? proof.core.provenance.observed;
+    proof.core.provenance.verified = inspection.provenance?.verified ?? 'fail';
+    proof.stubDetection.stubDetected = inspection.stubDetected;
+    proof.stubDetection.checks = [
+      normalizeInspectionCheck('manifestInspection', inspection.result === 'pass', 'Packaged HAP matched the fresh build manifest.', 'Packaged HAP failed fresh-manifest inspection.'),
+      normalizeInspectionCheck('nativeLibraryInspection', inspection.packaged?.core?.elf?.result === 'pass', 'Packaged core satisfied the real-core-only ELF contract.', 'Packaged core failed the real-core-only ELF contract.')
+    ];
+    proof.core.version = inspection.provenance?.observed?.version ?? null;
+    for (const failure of inspection.failures ?? []) {
+      pushFailure(proof, failure.code, failure.detail, failure.stage ?? 'archive');
+    }
+    if (inspection.result !== 'pass') {
+      return await finish();
+    }
+
+    try {
+      originHandle = await startOriginImpl({
+        repoRoot,
+        originBodyPath: originBodyDigest.absolutePath
+      });
+    } catch (error) {
+      pushFailure(proof, error?.code ?? 'ORIGIN_START_FAILED', sanitizeText(error?.message ?? 'Unable to start the HTTPS origin.', replacements), 'origin');
+      return await finish();
+    }
+
+    proof.origin.originRunId = originHandle.originRunId ?? proof.runId;
+    proof.origin.originId = originHandle.originId ?? null;
+    proof.origin.originUrl = originHandle.originUrl ?? null;
+    proof.origin.bindAddress = originHandle.address ?? null;
+    proof.origin.tlsCertSha256 = originHandle.tlsCertSha256 ?? null;
+    proof.origin.responseSha256 = originHandle.bodySha256 ?? proof.origin.responseSha256;
+    proof.origin.requestObservations = originHandle.requestObservations ?? [];
+
+    hdcCommand = await resolveHdcCommand(toolchainInspectorImpl, repoRoot);
+    const help = await verifyHdcHelp(execImpl, hdcCommand, repoRoot);
+    if (!help.ok) {
+      pushFailure(proof, help.failure.code, help.failure.detail, help.failure.stage);
+      return await finish();
+    }
+
+    const targetResult = await execImpl(hdcCommand, ['list', 'targets'], { cwd: repoRoot });
+    const targetAnalysis = analyzeTargetDiscovery(targetResult);
+    if (targetAnalysis.kind === 'missing') {
+      pushFailure(proof, 'DEVICE_TARGET_MISSING', 'No HarmonyOS device target is available for Phase 2.', 'target');
+      return await finish();
+    }
+    if (targetAnalysis.kind === 'ambiguous') {
+      pushFailure(proof, 'DEVICE_TARGET_AMBIGUOUS', 'Phase 2 requires exactly one selected HarmonyOS device target.', 'target');
+      return await finish();
+    }
+    target = targetAnalysis.targets[0];
+    proof.device.identityMasked = createMaskedDeviceIdentity(target);
+
+    const facts = {
+      buildVersion: await readDeviceFact({ execImpl, hdcCommand, target, candidates: ['const.product.software.version'], cwd: repoRoot }),
+      apiVersion: await readDeviceFact({ execImpl, hdcCommand, target, candidates: ['const.ohos.apiversion', 'const.product.apiversion'], cwd: repoRoot }),
+      abi: await readDeviceFact({ execImpl, hdcCommand, target, candidates: ['const.product.cpu.abilist'], cwd: repoRoot }),
+      model: await readDeviceFact({ execImpl, hdcCommand, target, candidates: ['const.product.model'], cwd: repoRoot }),
+      product: await readDeviceFact({ execImpl, hdcCommand, target, candidates: ['const.product.name', 'const.product.device'], cwd: repoRoot })
+    };
+    proof.device.buildVersion = facts.buildVersion.value;
+    proof.device.apiVersion = facts.apiVersion.value;
+    proof.device.abi = facts.abi.value;
+    proof.device.model = facts.model.value;
+    proof.device.product = facts.product.value;
+    const classification = classifyTarget(proof.device);
+    if (classification.kind !== 'physical') {
+      pushFailure(proof, classification.code, classification.detail, 'target');
+      return await finish();
+    }
+    proof.device.targetKind = 'physical';
+
+    const installResult = await execImpl(hdcCommand, buildTargetedHdcArgs(target, ['install', '-r', resolvedHapPath]), { cwd: repoRoot });
+    if (installResult?.timedOut || installResult?.error || installResult?.exitCode !== 0) {
+      pushFailure(proof, 'HDC_INSTALL_FAILED', 'hdc install did not complete successfully.', 'install');
+      return await finish();
+    }
+    installed = true;
+
+    const launchResult = await execImpl(hdcCommand, buildLaunchArgs(target, proof.runId, proof.timestamps.runnerStartedAt, originHandle), { cwd: repoRoot });
+    if (launchResult?.timedOut || launchResult?.error || launchResult?.exitCode !== 0) {
+      pushFailure(proof, 'HDC_LAUNCH_FAILED', 'The self-test ability did not launch successfully.', 'launch');
+      return await finish();
+    }
+    proof.timestamps.appStartedAt = isoTimestamp(now());
+
+    const localEvidencePath = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-pull', `${proof.runId}.json`);
+    const pulled = await pullPhase2AppEvidenceImpl({
+      fsApi,
+      execImpl,
+      hdcCommand,
+      target,
+      localPath: localEvidencePath,
+      cwd: repoRoot,
+      expectedRunId: proof.runId,
+      waitImpl
+    });
+    const pulledOk = pulled?.ok === true || (pulled && pulled.proof && pulled.localPath);
+    if (!pulledOk) {
+      const failure = pulled?.invalid ?? createFailure('APP_EVIDENCE_MISSING', 'The app did not produce a usable Phase 2 evidence file.', 'app-proof');
+      pushFailure(proof, failure.code, failure.detail, failure.stage);
+      return await finish();
+    }
+
+    const evidenceDigest = await hashFile(fsApi, pulled.localPath);
+    const appProof = normalizeAppEvidenceProof(pulled.proof);
+    proof.timestamps.proofAt = isoTimestamp(now());
+    proof.appEvidence = {
+      path: normalizePathForReport(repoRoot, pulled.localPath),
+      sha256: evidenceDigest.sha256,
+      sizeBytes: evidenceDigest.sizeBytes,
+      runId: appProof.runId ?? null,
+      appProcessId: appProof.appProcessId ?? null,
+      stopResult: appProof.stopResult ?? null,
+      fixturePath: appProof.fixturePath ?? null,
+      fixtureSha256: appProof.fixtureSha256 ?? null,
+      coreVersion: appProof.coreVersion ?? null,
+      httpListenerAddress: appProof.httpListenerAddress ?? null,
+      socksListenerAddress: appProof.socksListenerAddress ?? null
+    };
+    proof.core.version = appProof.coreVersion ?? proof.core.version;
+    proof.core.httpListenerAddress = appProof.httpListenerAddress ?? null;
+    proof.core.socksListenerAddress = appProof.socksListenerAddress ?? null;
+    proof.stop.result = appProof.stopResult ?? 'fail';
+
+    if (proof.appEvidence.runId !== proof.runId) {
+      pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence runId did not match the runner runId.', 'app-proof');
+      return await finish();
+    }
+
+    const observations = originObservationMap(proof.origin);
+    for (const protocol of ['HTTP_CONNECT', 'SOCKS5']) {
+      const protocolKey = protocol === 'HTTP_CONNECT' ? 'http' : 'socks';
+      const probeFailure = correlateProbe({
+        protocol,
+        proof,
+        appProbe: appProof.probes?.[protocolKey],
+        originObservation: observations.get(protocol),
+        expectedListenerAddress: protocol === 'HTTP_CONNECT' ? proof.core.httpListenerAddress : proof.core.socksListenerAddress
+      });
+      if (probeFailure) {
+        pushFailure(proof, probeFailure.code, probeFailure.detail, probeFailure.stage);
+      }
+    }
+  } catch (error) {
+    pushFailure(proof, error?.code ?? 'UNEXPECTED_ERROR', sanitizeText(error?.message ?? String(error), replacements), 'runner');
+  } finally {
+    if (originHandle?.stop) {
+      try {
+        await originHandle.stop();
+      } catch (error) {
+        pushFailure(proof, 'ORIGIN_STOP_FAILED', sanitizeText(error?.message ?? 'Failed to stop the HTTPS origin.', replacements), 'cleanup');
+      }
+    }
+    if (installed && hdcCommand && target) {
+      try {
+        const stopResult = await execImpl(hdcCommand, buildTargetedHdcArgs(target, ['shell', 'aa', 'force-stop', BUNDLE_NAME]), { cwd: repoRoot });
+        proof.stop.forceStopResult = (!stopResult?.timedOut && !stopResult?.error && stopResult?.exitCode === 0) ? 'pass' : 'fail';
+      } catch {
+        proof.stop.forceStopResult = 'fail';
+      }
     }
   }
 
-  pushFailure(proof, 'PHYSICAL_DEVICE_REQUIRED', 'Only a physical HarmonyOS 6 device can complete Phase 2.', 'target');
-  proof.timestamps.runnerFinishedAt = isoTimestamp(now());
-  proof.result = resultFromFailures(proof);
-
-  const sanitized = sanitizeForPersistence(proof, replacements);
-  const validation = validatePhase2Proof(sanitized);
-  if (!validation.valid) {
-    sanitized.result = 'fail';
-    sanitized.failures.push(createFailure('PHASE2_PROOF_INVALID', validation.errors.join('; '), 'proof'));
-  }
-  await writeProof(sanitized, outputPath, fsApi, repoRoot);
-  return sanitized;
+  return await finish();
 }
 
 export async function runCli({
@@ -510,29 +1211,40 @@ export async function runCli({
   fsApi = fs,
   randomUUID = () => crypto.randomUUID(),
   now = () => new Date(),
-  inspectHapImpl = inspectHap
+  buildPhase1NativeImpl = buildPhase1Native,
+  inspectHapImpl = inspectHap,
+  toolchainInspectorImpl = inspectToolchain,
+  execImpl = execCommand,
+  startOriginImpl = startOriginProcess,
+  pullPhase2AppEvidenceImpl = pullPhase2AppEvidence
 } = {}) {
-  let parsed = {
-    hapPath: null,
-    manifestPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json'),
-    outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json')
-  };
-
+  let parsed;
   try {
-    parsed = parseCliArguments(argv, repoRoot);
+    parsed = parseCliArgumentsPartial(argv, repoRoot);
+    parseCliArguments(argv, repoRoot);
   } catch (error) {
+    const partial = error?.partial ?? {
+      buildManifestPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-build-manifest.json'),
+      fixturePath: path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase2-match-direct.yaml'),
+      outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase2-device-proof.json')
+    };
     const proof = await runPhase2DeviceProof({
-      ...parsed,
+      ...partial,
       repoRoot,
       fsApi,
       randomUUID,
       now,
-      inspectHapImpl
+      buildPhase1NativeImpl,
+      inspectHapImpl,
+      toolchainInspectorImpl,
+      execImpl,
+      startOriginImpl,
+      pullPhase2AppEvidenceImpl
     });
     proof.failures.push(createFailure(error?.code ?? 'ARGUMENT_INVALID', error?.message ?? 'Invalid CLI arguments.', 'cli'));
-    proof.result = resultFromFailures(proof);
-    await writeProof(proof, parsed.outputPath, fsApi, repoRoot);
-    return proof.result === 'fail' ? 1 : 0;
+    proof.result = proof.failures.some((entry) => !PHYSICAL_INCOMPLETE_CODES.has(entry.code)) ? 'fail' : 'incomplete';
+    await writeProof(proof, partial.outputPath, fsApi, repoRoot);
+    return 1;
   }
 
   const proof = await runPhase2DeviceProof({
@@ -541,9 +1253,14 @@ export async function runCli({
     fsApi,
     randomUUID,
     now,
-    inspectHapImpl
+    buildPhase1NativeImpl,
+    inspectHapImpl,
+    toolchainInspectorImpl,
+    execImpl,
+    startOriginImpl,
+    pullPhase2AppEvidenceImpl
   });
-  return proof.result === 'fail' ? 1 : 0;
+  return proof.result === 'pass' ? 0 : 1;
 }
 
 if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

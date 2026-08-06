@@ -61,6 +61,11 @@ interface Phase2ProbeTimestamps {
   proofAt: string;
 }
 
+interface ProcessInfo {
+  pid: number;
+  processName: string;
+}
+
 interface Phase2SelfTestProof {
   schemaVersion: '1.0.0';
   phase: 2;
@@ -342,6 +347,7 @@ struct CoreDebugPage {
     const failures: Phase2ProbeFailure[] = [];
     const probeService = getSelfTestCoreService();
     const selfTestBuildEnabled: boolean = typeof probeService.probeHttpsForSelfTest === 'function';
+    const appProcessId: number | null = await this.readAppProcessId();
     let httpAddress: string = '';
     let socksAddress: string = '';
     let stopResult: string = 'not-run';
@@ -360,7 +366,7 @@ struct CoreDebugPage {
         coreVersion: this.coreVersion,
         selfTestBuildEnabled,
         buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
-        appProcessId: null,
+        appProcessId,
         fixtureConfigPath: configPath,
         fixtureOriginUrl: context.probeOriginUrl,
         fixtureExpectedBodySha256: context.probeExpectedBodySha256,
@@ -440,6 +446,13 @@ struct CoreDebugPage {
         });
       }
     }
+    if (appProcessId === null) {
+      failures.push({
+        code: 'APP_PROCESS_ID_UNAVAILABLE',
+        detail: 'getProcessInfo() did not return a usable app process ID for the self-test lane.',
+        stage: 'phase2'
+      });
+    }
 
     const phase2Timestamps: Phase2ProbeTimestamps = {
       startedAt,
@@ -455,7 +468,7 @@ struct CoreDebugPage {
       coreVersion: this.coreVersion,
       selfTestBuildEnabled,
       buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
-      appProcessId: null,
+      appProcessId,
       fixtureConfigPath: configPath,
       fixtureOriginUrl: context.probeOriginUrl,
       fixtureExpectedBodySha256: context.probeExpectedBodySha256,
@@ -466,6 +479,21 @@ struct CoreDebugPage {
       failures
     };
     this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
+  }
+
+  private async readAppProcessId(): Promise<number | null> {
+    try {
+      const hostContext: Object | undefined = this.getUIContext().getHostContext();
+      const maybeProcessInfo: (() => Promise<ProcessInfo>) | undefined =
+        (hostContext as { getProcessInfo?: () => Promise<ProcessInfo> }).getProcessInfo;
+      if (typeof maybeProcessInfo !== 'function') {
+        return null;
+      }
+      const processInfo: ProcessInfo = await maybeProcessInfo.call(hostContext);
+      return Number.isInteger(processInfo.pid) && processInfo.pid > 0 ? processInfo.pid : null;
+    } catch (error) {
+      return null;
+    }
   }
 
   private writeProof(proof: Phase1SelfTestProof, filesDir: string): void {

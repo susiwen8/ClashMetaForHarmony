@@ -24,6 +24,7 @@
     "stubDetection",
     "appEvidence",
     "probes",
+    "stop",
     "failures"
   ],
   "properties": {
@@ -76,8 +77,11 @@
     "packaged": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["core", "addon"],
+      "required": ["rawCore", "prePackageCore", "prePackageAddon", "core", "addon"],
       "properties": {
+        "rawCore": { "$ref": "#/$defs/digestArtifact" },
+        "prePackageCore": { "$ref": "#/$defs/digestArtifact" },
+        "prePackageAddon": { "$ref": "#/$defs/digestArtifact" },
         "core": { "$ref": "#/$defs/digestArtifact" },
         "addon": { "$ref": "#/$defs/digestArtifact" }
       }
@@ -94,23 +98,38 @@
     "origin": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["originId", "originUrl", "bindAddress", "tlsCertSha256", "responseSha256"],
+      "required": ["originRunId", "originId", "originUrl", "bindAddress", "tlsCertSha256", "responseSha256", "requestObservations"],
       "properties": {
+        "originRunId": { "type": ["string", "null"] },
         "originId": { "type": ["string", "null"] },
         "originUrl": { "type": ["string", "null"] },
         "bindAddress": { "type": ["string", "null"] },
         "tlsCertSha256": { "type": ["string", "null"] },
-        "responseSha256": { "type": ["string", "null"] }
+        "responseSha256": { "type": ["string", "null"] },
+        "requestObservations": {
+          "type": "array",
+          "items": { "$ref": "#/$defs/originObservation" }
+        }
       }
     },
     "core": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version", "httpListenerAddress", "socksListenerAddress"],
+      "required": ["version", "httpListenerAddress", "socksListenerAddress", "provenance"],
       "properties": {
         "version": { "type": ["string", "null"] },
         "httpListenerAddress": { "type": ["string", "null"] },
-        "socksListenerAddress": { "type": ["string", "null"] }
+        "socksListenerAddress": { "type": ["string", "null"] },
+        "provenance": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["expected", "observed", "verified"],
+          "properties": {
+            "expected": { "$ref": "#/$defs/provenanceRecord" },
+            "observed": { "$ref": "#/$defs/provenanceRecord" },
+            "verified": { "enum": ["pass", "fail", "not-run"] }
+          }
+        }
       }
     },
     "stubDetection": {
@@ -128,14 +147,28 @@
     "appEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["path", "sha256", "sizeBytes", "runId", "appProcessId", "stopResult"],
+      "required": ["path", "sha256", "sizeBytes", "runId", "appProcessId", "stopResult", "fixturePath", "fixtureSha256", "coreVersion", "httpListenerAddress", "socksListenerAddress"],
       "properties": {
         "path": { "type": ["string", "null"] },
         "sha256": { "type": ["string", "null"] },
         "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
         "runId": { "type": ["string", "null"] },
         "appProcessId": { "type": ["integer", "null"], "minimum": 1 },
-        "stopResult": { "type": ["string", "null"] }
+        "stopResult": { "type": ["string", "null"] },
+        "fixturePath": { "type": ["string", "null"] },
+        "fixtureSha256": { "type": ["string", "null"] },
+        "coreVersion": { "type": ["string", "null"] },
+        "httpListenerAddress": { "type": ["string", "null"] },
+        "socksListenerAddress": { "type": ["string", "null"] }
+      }
+    },
+    "stop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "forceStopResult"],
+      "properties": {
+        "result": { "enum": ["pass", "fail", "incomplete", "not-run"] },
+        "forceStopResult": { "enum": ["pass", "fail", "incomplete", "not-run"] }
       }
     },
     "probes": {
@@ -205,6 +238,9 @@
         "originRequestId",
         "appProbeId",
         "coreEventId",
+        "originEventRunId",
+        "appEventRunId",
+        "coreEventRunId",
         "originId",
         "appProcessId",
         "coreConnectionId",
@@ -229,6 +265,9 @@
         "originRequestId": { "type": ["string", "null"] },
         "appProbeId": { "type": ["string", "null"] },
         "coreEventId": { "type": ["string", "null"] },
+        "originEventRunId": { "type": ["string", "null"] },
+        "appEventRunId": { "type": ["string", "null"] },
+        "coreEventRunId": { "type": ["string", "null"] },
         "originId": { "type": ["string", "null"] },
         "appProcessId": { "type": ["integer", "null"], "minimum": 1 },
         "coreConnectionId": { "type": ["string", "null"] },
@@ -244,6 +283,65 @@
         "completedAt": { "type": ["string", "null"], "format": "date-time" },
         "error": { "$ref": "#/$defs/structuredError" }
       }
+    },
+    "originObservation": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["protocol", "requestId", "originRequestId", "originEventRunId", "httpStatus", "responseBytes", "responseSha256", "observedAt"],
+      "properties": {
+        "protocol": { "enum": ["HTTP_CONNECT", "SOCKS5"] },
+        "requestId": { "type": ["string", "null"] },
+        "originRequestId": { "type": ["string", "null"] },
+        "originEventRunId": { "type": ["string", "null"] },
+        "httpStatus": { "type": ["integer", "null"], "minimum": 100, "maximum": 599 },
+        "responseBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "responseSha256": { "type": ["string", "null"] },
+        "observedAt": { "type": ["string", "null"], "format": "date-time" }
+      }
+    },
+    "provenanceRecord": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version", "commit", "buildInfo", "buildId"],
+      "properties": {
+        "version": { "type": ["string", "null"] },
+        "commit": { "type": ["string", "null"] },
+        "buildInfo": { "type": ["string", "null"] },
+        "buildId": { "type": ["string", "null"] }
+      }
     }
-  }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "result": { "const": "pass" } },
+        "required": ["result"]
+      },
+      "then": {
+        "properties": {
+          "device": {
+            "properties": {
+              "targetKind": { "const": "physical" },
+              "identityMasked": { "type": "string" },
+              "model": { "type": "string" },
+              "product": { "type": "string" },
+              "buildVersion": { "type": "string" },
+              "apiVersion": { "type": "string" },
+              "abi": { "type": "string" }
+            }
+          },
+          "stubDetection": {
+            "properties": {
+              "stubDetected": { "const": false }
+            }
+          },
+          "stop": {
+            "properties": {
+              "result": { "const": "pass" }
+            }
+          }
+        }
+      }
+    }
+  ]
 }
