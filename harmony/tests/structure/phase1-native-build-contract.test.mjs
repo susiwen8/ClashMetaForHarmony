@@ -3620,6 +3620,224 @@ test('buildPhase1Native rejects repo-internal non-canonical hap paths before has
   }
 });
 
+test('buildPhase1Native restores a live-verifiable pre-package core after buildHap removes the cmake output copy in both lanes', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest, verifyPhase1NativeManifest } = await import(provenanceModulePath);
+  const { HAP_NATIVE_ENTRIES: entries } = await import(buildModulePath);
+
+  for (const variant of [
+    { label: 'default', phase2SelfTestEnabled: false },
+    { label: 'phase2-self-test', phase2SelfTestEnabled: true }
+  ]) {
+    await withTempDir(`phase1-native-restore-precore-${variant.label}-`, async (tempRoot) => {
+      const fakeRepoRoot = path.join(tempRoot, 'repo');
+      const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+      const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+      const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+      const prePackageCorePath = path.join(
+        fakeHarmonyRoot,
+        'entry',
+        'build',
+        'default',
+        'intermediates',
+        'cmake',
+        'default',
+        'obj',
+        'arm64-v8a',
+        'libcmfa_mihomo.so'
+      );
+      const preAddonPath = path.join(
+        fakeHarmonyRoot,
+        'entry',
+        'build',
+        'default',
+        'intermediates',
+        'cmake',
+        'default',
+        'obj',
+        'arm64-v8a',
+        'libentry.so'
+      );
+      const hapPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-unsigned.hap');
+      const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+      const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+      const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+      const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+
+      await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+      await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+      await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+      await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+      await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+      const manifest = await buildPhase1Native({
+        harmonyRoot: fakeHarmonyRoot,
+        repoRoot: fakeRepoRoot,
+        outputPath,
+        phase2SelfTestEnabled: variant.phase2SelfTestEnabled,
+        inspectToolchainImpl: async () => ({
+          report: {
+            schemaVersion: '1.0.0',
+            result: 'pass',
+            target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+            installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            failures: []
+          },
+          resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+        }),
+        inspectTaskTreeImpl: async () => ({
+          rootTask: ':entry:compileNative',
+          hasBuildNativeWithCmake: true,
+          hasPackageHap: false,
+          exitCode: 0,
+          stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+          stderr: ''
+        }),
+        buildMihomoOhosImpl: async () => {
+          await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+          await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+          return {
+            result: 'pass',
+            components: {
+              mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+            },
+            failures: []
+          };
+        },
+        runCommandImpl: async ({ command, args, env }) => {
+          const joined = [command, ...args].join(' ');
+          if (joined.includes('compileNative')) {
+            assert.equal(env.CMFA_ENABLE_PHASE2_SELFTEST, variant.phase2SelfTestEnabled ? '1' : undefined, `${variant.label} compileNative lane must set CMFA_ENABLE_PHASE2_SELFTEST correctly`);
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (joined.includes('--build')) {
+            assert.equal(env.CMFA_ENABLE_PHASE2_SELFTEST, variant.phase2SelfTestEnabled ? '1' : undefined, `${variant.label} addon build lane must set CMFA_ENABLE_PHASE2_SELFTEST correctly`);
+            await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+            await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (joined.includes('list targets')) {
+            return { command, args, exitCode: 0, stdout: 'SERIAL123\n', stderr: '' };
+          }
+          throw new Error(`unexpected command: ${joined}`);
+        },
+        buildHapImpl: async ({ env, phase2SelfTestEnabled }) => {
+          assert.equal(env.CMFA_ENABLE_PHASE2_SELFTEST, variant.phase2SelfTestEnabled ? '1' : undefined, `${variant.label} buildHap lane must set CMFA_ENABLE_PHASE2_SELFTEST correctly`);
+          assert.equal(phase2SelfTestEnabled, variant.phase2SelfTestEnabled, `${variant.label} buildHap lane must preserve phase2SelfTestEnabled intent`);
+          await fs.rm(path.dirname(prePackageCorePath), { recursive: true, force: true });
+          await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+          await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+          await fs.mkdir(path.dirname(hapPath), { recursive: true });
+          await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
+          return {
+            result: 'incomplete',
+            phase2SelfTest: createPhase2SelfTestEvidence(variant.phase2SelfTestEnabled),
+            hap: {
+              path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
+              sha256: sha256('hap-bytes'),
+              sizeBytes: Buffer.byteLength('hap-bytes')
+            },
+            failures: [{ code: 'SIGNING_REQUIRED', detail: 'unsigned', stage: 'signing' }],
+            commands: [
+              {
+                stage: 'module',
+                command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
+                exitCode: 0,
+                stdout: '',
+                stderr: ''
+              }
+            ]
+          };
+        },
+        inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+        inspectHapNativeEntriesImpl: async () => ({
+          entryCount: 2,
+          occurrences: { core: 1, addon: 1 },
+          artifacts: {
+            core: createArtifact(entries.core, 'core-bytes', createElfReport('mihomoCore')),
+            addon: createArtifact(entries.addon, 'addon-bytes', createElfReport('nodeAddon'))
+          },
+          failures: []
+        })
+      });
+
+      const persisted = JSON.parse(await fs.readFile(outputPath, 'utf8'));
+      const manifestValidation = validatePhase1NativeManifest(manifest);
+      const persistedValidation = validatePhase1NativeManifest(persisted);
+
+      assert.equal(manifest.nativeBuildResult, 'pass', `${variant.label} lane should keep nativeBuildResult=pass`);
+      assert.equal(manifest.phase2SelfTest.enabled, variant.phase2SelfTestEnabled);
+      assert.equal(persisted.phase2SelfTest.enabled, variant.phase2SelfTestEnabled);
+      assert.equal(manifestValidation.valid, true, `${variant.label}: ${manifestValidation.errors.join('\n')}`);
+      assert.equal(persistedValidation.valid, true, `${variant.label}: ${persistedValidation.errors.join('\n')}`);
+      assert.equal(await fs.readFile(prePackageCorePath, 'utf8'), 'core-bytes');
+      assert.equal(
+        manifest.artifacts.prePackageCore.identity,
+        'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so'
+      );
+      assert.equal(
+        persisted.artifacts.prePackageCore.identity,
+        'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so'
+      );
+      assert.deepEqual(
+        {
+          sha256: manifest.artifacts.prePackageCore.sha256,
+          sizeBytes: manifest.artifacts.prePackageCore.sizeBytes,
+          elf: manifest.artifacts.prePackageCore.elf
+        },
+        {
+          sha256: manifest.artifacts.rawCore.sha256,
+          sizeBytes: manifest.artifacts.rawCore.sizeBytes,
+          elf: manifest.artifacts.rawCore.elf
+        }
+      );
+      assert.deepEqual(
+        {
+          sha256: persisted.artifacts.prePackageCore.sha256,
+          sizeBytes: persisted.artifacts.prePackageCore.sizeBytes,
+          elf: persisted.artifacts.prePackageCore.elf
+        },
+        {
+          sha256: persisted.artifacts.rawCore.sha256,
+          sizeBytes: persisted.artifacts.rawCore.sizeBytes,
+          elf: persisted.artifacts.rawCore.elf
+        }
+      );
+      assert.deepEqual(
+        {
+          sha256: persisted.artifacts.prePackageCore.sha256,
+          sizeBytes: persisted.artifacts.prePackageCore.sizeBytes,
+          elf: persisted.artifacts.prePackageCore.elf
+        },
+        {
+          sha256: persisted.artifacts.hapCore.sha256,
+          sizeBytes: persisted.artifacts.hapCore.sizeBytes,
+          elf: persisted.artifacts.hapCore.elf
+        }
+      );
+
+      const liveVerification = await verifyPhase1NativeManifest(persisted, {
+        repoRoot: fakeRepoRoot,
+        inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+        inspectHapNativeEntriesImpl: async () => ({
+          entryCount: 2,
+          occurrences: { core: 1, addon: 1 },
+          artifacts: {
+            core: createArtifact(entries.core, 'core-bytes', createElfReport('mihomoCore')),
+            addon: createArtifact(entries.addon, 'addon-bytes', createElfReport('nodeAddon'))
+          },
+          failures: []
+        })
+      });
+
+      assert.equal(liveVerification.valid, true, `${variant.label}: ${liveVerification.errors.join('\n')}`);
+    });
+  }
+});
+
 test('buildPhase1Native rejects missing or invalid resolved hdc paths without PATH fallback and keeps the fail manifest strict-valid', async () => {
   const { buildPhase1Native } = await import(buildModulePath);
   const { validatePhase1NativeManifest, verifyPhase1NativeManifest } = await import(provenanceModulePath);

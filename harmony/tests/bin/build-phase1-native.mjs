@@ -286,6 +286,75 @@ async function hashArtifact({ absolutePath, identity, hashFileImpl = hashFile, e
   };
 }
 
+async function ensureDurablePrePackageCore({
+  manifest,
+  repoRoot,
+  rawCorePath,
+  prePackageCorePath,
+  inspectNativeLibraryImpl,
+  fsApi
+}) {
+  if (!manifest.artifacts.rawCore || !manifest.artifacts.prePackageCore) {
+    return;
+  }
+
+  let restoreRequired = false;
+  try {
+    const liveDigest = await hashFile(prePackageCorePath);
+    restoreRequired =
+      liveDigest.sha256 !== manifest.artifacts.rawCore.sha256 ||
+      liveDigest.sizeBytes !== manifest.artifacts.rawCore.sizeBytes;
+  } catch {
+    restoreRequired = true;
+  }
+
+  if (!restoreRequired) {
+    return;
+  }
+
+  try {
+    await fsApi.mkdir(path.dirname(prePackageCorePath), { recursive: true });
+    await fsApi.copyFile(rawCorePath, prePackageCorePath);
+  } catch (error) {
+    pushFailure(
+      manifest,
+      createFailure(
+        'PRE_PACKAGE_CORE_RESTORE_FAILED',
+        error?.message ?? 'Failed to restore the durable pre-package core artifact.',
+        'restore-pre-package-core'
+      )
+    );
+    return;
+  }
+
+  const refreshedDigest = await hashArtifact({
+    absolutePath: prePackageCorePath,
+    identity: normalizePathForReport(repoRoot, prePackageCorePath)
+  });
+  const refreshedElf = await inspectElfWithContract({
+    manifest,
+    artifactKey: 'prePackageCore',
+    libPath: prePackageCorePath,
+    component: 'mihomoCore',
+    inspectNativeLibraryImpl
+  });
+  if (refreshedElf) {
+    manifest.artifacts.prePackageCore = {
+      ...refreshedDigest,
+      elf: refreshedElf
+    };
+  }
+
+  if (
+    manifest.artifacts.rawCore &&
+    manifest.artifacts.prePackageCore &&
+    (manifest.artifacts.rawCore.sha256 !== manifest.artifacts.prePackageCore.sha256 ||
+      manifest.artifacts.rawCore.sizeBytes !== manifest.artifacts.prePackageCore.sizeBytes)
+  ) {
+    pushFailure(manifest, createFailure('PRE_PACKAGE_CORE_MISMATCH', 'Pre-package core must byte-match the raw core artifact.', 'restore-pre-package-core'));
+  }
+}
+
 function classifyNativeFailureCode(code) {
   return code === 'SIGNING_REQUIRED' || code === 'DEVICE_TARGET_MISSING' || code === 'DEVICE_TARGET_AMBIGUOUS';
 }
@@ -1212,6 +1281,15 @@ export async function buildPhase1Native(options = {}) {
         normalizedBuildReport.stdout,
         normalizedBuildReport.stderr
       );
+
+      await ensureDurablePrePackageCore({
+        manifest,
+        repoRoot,
+        rawCorePath,
+        prePackageCorePath,
+        inspectNativeLibraryImpl: options.inspectNativeLibraryImpl ?? inspectNativeLibrary,
+        fsApi
+      });
 
       let selectedHapPath = null;
       let selectedHapPathRejected = false;
