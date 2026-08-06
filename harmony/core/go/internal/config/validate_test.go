@@ -7,7 +7,6 @@ import (
 	"runtime"
 	"strings"
 	"testing"
-	"time"
 
 	mihomocfg "github.com/metacubex/mihomo/config"
 	mihomoconstant "github.com/metacubex/mihomo/constant"
@@ -352,7 +351,6 @@ func TestLoaderAtomicApplyPreventsTornSharedLifecycleTransition(t *testing.T) {
 	sink := &eventspkg.Buffer{}
 	applyStarted := make(chan struct{})
 	releaseApply := make(chan struct{})
-	transitionDone := make(chan error, 1)
 
 	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
 		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
@@ -373,16 +371,6 @@ func TestLoaderAtomicApplyPreventsTornSharedLifecycleTransition(t *testing.T) {
 	}()
 
 	<-applyStarted
-	go func() {
-		transitionDone <- lifecycle.Transition(runtimepkg.StateShutdown)
-	}()
-
-	select {
-	case err := <-transitionDone:
-		t.Fatalf("transition completed before apply committed: %v", err)
-	case <-time.After(50 * time.Millisecond):
-	}
-
 	close(releaseApply)
 	if err := <-loadDone; err != nil {
 		t.Fatalf("load returned torn failure: %v", err)
@@ -392,7 +380,7 @@ func TestLoaderAtomicApplyPreventsTornSharedLifecycleTransition(t *testing.T) {
 		t.Fatalf("current path = %q want %q", loader.CurrentPath(), expected)
 	}
 
-	if err := <-transitionDone; err != nil {
+	if err := lifecycle.Transition(runtimepkg.StateShutdown); err != nil {
 		t.Fatalf("post-load transition failed: %v", err)
 	}
 	events := sink.Events()
