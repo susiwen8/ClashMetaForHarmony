@@ -81,3 +81,13 @@ Before any device command runs, the proof runner validates a matching Phase 0 pa
 - Missing local signing or unsigned `*-unsigned.hap` output surfaces as `incomplete` evidence with `SIGNING_REQUIRED`; that is not HAP-ready for device install.
 - Missing device or `hdc list targets` output containing `Connect server failed` must stay `incomplete`, even if `hdc` exits `0`.
 - The proof only becomes `"result": "pass"` when the HAP hash is known, install succeeds, launch succeeds, and the exact device build version is recorded.
+
+## Development without a physical phone
+
+As decided on August 6, 2026, Phase 2 implementation may continue while no
+HarmonyOS 6 physical phone is available. Host tests, cross-builds, ELF/HAP
+inspection, static checks, and Simulator runs are provisional development
+evidence only. Phase 1 and Phase 2 remain `incomplete`; publication, VPN/TUN,
+real network takeover, traffic claims, and final completion require rerunning
+the deferred device proofs on a physical HarmonyOS 6 phone against the exact
+packaged build.

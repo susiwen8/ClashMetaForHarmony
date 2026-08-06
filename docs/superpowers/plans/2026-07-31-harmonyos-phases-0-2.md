@@ -30,6 +30,23 @@
 5. Phase 2 cannot pass unless the HAP inspection proves arm64, the real-core symbols exist, the stub sentinel is absent, and both HTTP and SOCKS HTTPS probes pass.
 6. A missing device, signing identity, SDK, or proof input produces a versioned `incomplete` proof artifact rather than a false success.
 
+### Device-deferred development decision (2026-08-06)
+
+The project currently has no HarmonyOS 6 physical test device. This defers the
+device acceptance gates; it does not weaken or replace them:
+
+- Phase 2 implementation may continue using host tests, cross-builds, ELF/HAP
+  inspection, static checks, and Simulator runs as provisional development
+  evidence.
+- Phase 1 and Phase 2 proof artifacts remain `incomplete` until their required
+  checks pass on a HarmonyOS 6 physical phone. Simulator evidence must never be
+  promoted to `pass` or described as final phase completion.
+- Publication, VPN/TUN work, real network takeover, traffic claims, and any
+  final completion claim remain blocked on physical-device verification.
+- When a physical device becomes available, rerun every deferred Phase 1 and
+  Phase 2 device proof against the exact packaged build before advancing the
+  release gate.
+
 ## Explicit Non-Goals for This Plan
 
 - Production navigation, profile library, RDB, Preferences, providers UI, node selection UI, scheduled updates, production log history, VPN/TUN, socket protection, and app allow/block lists.
@@ -466,9 +483,12 @@ harmony/
   build proof at `harmony/artifacts/go-ohos-build-proof.json` and diagnose
   before Tasks 6–8. Do not introduce a stub fallback. Tasks 6–7 may build the
   adapter only after this compile gate. Task 8 is the sole versioned
-  direct-link device invocation gate, and no Phase 2 task may begin until its
-  fresh device proof passes. It must preserve Task 7's direct link from
-  `libentry.so` to `libcmfa_mihomo.so`; `dlopen`/`dlsym` are forbidden.
+  direct-link device invocation gate. Under the device-deferred development
+  decision above, Phase 2 implementation may begin while this proof remains
+  `incomplete`, but no phase, traffic, or release gate may be marked passed
+  until a fresh physical-device proof passes. Task 8 must preserve Task 7's
+  direct link from `libentry.so` to `libcmfa_mihomo.so`; `dlopen`/`dlsym` are
+  forbidden.
 
 - [ ] **Step 8: Commit the testable build lane**
 
@@ -693,6 +713,10 @@ harmony/
   ```
 
   Expected: `result: "pass"` on a HarmonyOS 6 arm64 phone. A host-only or emulator run is insufficient.
+
+  When no physical phone is available, preserve a fresh `incomplete` artifact
+  and continue only under the device-deferred development decision. Host and
+  Simulator checks are provisional evidence, not a substitute for this gate.
 
 - [ ] **Step 6: Commit Phase 1**
 

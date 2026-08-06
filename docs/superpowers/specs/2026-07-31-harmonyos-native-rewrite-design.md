@@ -137,6 +137,15 @@ Documentation alone does not prove production behavior on a retail HarmonyOS
 - Trusted/blocked application routing behaves as configured.
 - File grants remain usable for the intended lifetime.
 
+Because no HarmonyOS 6 physical device is currently available, implementation
+after Phase 1 may proceed with host tests, cross-build inspection, HAP static
+inspection, and Simulator runs. This is a development-only exception: all
+affected phase proofs remain `incomplete`, Simulator results are provisional,
+and publication, VPN/TUN, real network takeover, traffic claims, and final
+completion still require the physical-device gates above. Once a device is
+available, all deferred Phase 1 and Phase 2 proofs must be rerun against the
+exact packaged build.
+
 ### 6.3 Toolchain prerequisite
 
 The development machine now has DevEco Studio 6.1.0.860 installed with the
