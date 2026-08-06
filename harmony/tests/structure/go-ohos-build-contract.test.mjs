@@ -18,6 +18,7 @@ const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const CORE_EXPORTS = [
   BUILD_INFO_EXPORT,
   RAW_VERSION_EXPORT,
+  'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
   'cmfa_mihomo_stop_v1',

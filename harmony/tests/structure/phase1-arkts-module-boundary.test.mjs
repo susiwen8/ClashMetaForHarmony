@@ -112,14 +112,21 @@ test('CoreNativeAdapter normalizes both synchronous native throws and Promise re
 });
 
 test('CoreDebugPage observes new Want contexts and runs each self-test runId at most once', async () => {
-  const [composition, page] = await Promise.all([
+  const [composition, page, ability] = await Promise.all([
     readText('entry/src/main/ets/bootstrap/CoreComposition.ets'),
-    readText('entry/src/main/ets/pages/CoreDebugPage.ets')
+    readText('entry/src/main/ets/pages/CoreDebugPage.ets'),
+    readText('entry/src/main/ets/entryability/EntryAbility.ets')
   ]);
 
   assert.match(composition, /subscribePhase1LaunchContext/u);
   assert.match(composition, /unsubscribePhase1LaunchContext/u);
   assert.match(composition, /phase1LaunchListener\?\.\(context\)/u);
+  assert.match(composition, /probeOriginUrl/u);
+  assert.match(composition, /probeCaPem/u);
+  assert.match(composition, /probeExpectedBodySha256/u);
+  assert.match(ability, /cmfa\.phase2\.originUrl/u);
+  assert.match(ability, /cmfa\.phase2\.caPem/u);
+  assert.match(ability, /cmfa\.phase2\.expectedBodySha256/u);
   assert.match(page, /subscribePhase1LaunchContext/u);
   assert.match(page, /unsubscribePhase1LaunchContext/u);
   assert.match(page, /selfTestInFlight/u);
@@ -127,4 +134,10 @@ test('CoreDebugPage observes new Want contexts and runs each self-test runId at 
   assert.match(page, /activeRunId === context\.runId/u);
   assert.match(page, /runAutomaticSelfTest\(context: Phase1LaunchContext\)/u);
   assert.match(page, /writeProof\(proof, context\.filesDir\)/u);
+  assert.match(page, /runPhase2ProbeSelfTest\(context: Phase1LaunchContext\)/u);
+  assert.match(page, /phase2-device-proof\.json/u);
+  assert.match(page, /phase2-match-direct\.yaml/u);
+  assert.match(page, /this\.coreService\.probeHttps/u);
+  assert.match(page, /this\.coreService\.startLocal/u);
+  assert.match(page, /this\.coreService\.stopRuntime/u);
 });

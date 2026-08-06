@@ -26,6 +26,8 @@ extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_lo
 char *g_raw_version = nullptr;
 cmfa_runtime_snapshot g_runtime_snapshot{};
 bool g_preserve_error_on_stop = false;
+cmfa_probe_result g_probe_result{};
+cmfa_status g_probe_status = CMFA_OK;
 struct cmfa_mihomo_runtime_log_record_v1 {
   uint32_t struct_size;
   cmfa_log_level level;
@@ -51,6 +53,11 @@ void reset_runtime_snapshot_storage() {
   g_runtime_snapshot.struct_size = sizeof(g_runtime_snapshot);
   g_runtime_snapshot.state = CMFA_RUNTIME_STOPPED;
   g_runtime_logs.clear();
+  g_probe_result = {};
+  g_probe_result.struct_size = sizeof(g_probe_result);
+  g_probe_result.tracker.struct_size = sizeof(g_probe_result.tracker);
+  g_probe_result.error.struct_size = sizeof(g_probe_result.error);
+  g_probe_status = CMFA_OK;
 }
 
 class TestFailure : public std::runtime_error {
@@ -462,6 +469,58 @@ void test_backend_start_local_direct_null_options_preserves_snapshot() {
                    "backend direct start_local must preserve caller snapshot path");
 }
 
+void test_probe_https_returns_structured_owned_result() {
+  reset_contract();
+  HostCapture capture;
+  initialize_backend(&capture);
+
+  std::memset(&g_probe_result, 0, sizeof(g_probe_result));
+  g_probe_result.struct_size = sizeof(g_probe_result);
+  g_probe_result.protocol = CMFA_PROBE_PROTOCOL_HTTP_CONNECT;
+  g_probe_result.ok = 1;
+  g_probe_result.http_status = 200;
+  g_probe_result.body_bytes = 23;
+  g_probe_result.tracker.struct_size = sizeof(g_probe_result.tracker);
+  g_probe_result.error.struct_size = sizeof(g_probe_result.error);
+  std::snprintf(g_probe_result.probe_run_id, sizeof(g_probe_result.probe_run_id), "%s", "probe-run");
+  std::snprintf(g_probe_result.request_id_echo, sizeof(g_probe_result.request_id_echo), "%s", "probe-run");
+  std::snprintf(g_probe_result.origin_id, sizeof(g_probe_result.origin_id), "%s", "origin-1");
+  std::snprintf(g_probe_result.response_sha256, sizeof(g_probe_result.response_sha256), "%s",
+                "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa");
+  std::snprintf(g_probe_result.tls_peer_sha256, sizeof(g_probe_result.tls_peer_sha256), "%s",
+                "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+  std::snprintf(g_probe_result.started_at, sizeof(g_probe_result.started_at), "%s", "2026-08-06T06:00:00Z");
+  std::snprintf(g_probe_result.completed_at, sizeof(g_probe_result.completed_at), "%s", "2026-08-06T06:00:01Z");
+  std::snprintf(g_probe_result.client_local_address, sizeof(g_probe_result.client_local_address), "%s", "127.0.0.1:50001");
+  std::snprintf(g_probe_result.client_remote_address, sizeof(g_probe_result.client_remote_address), "%s", "127.0.0.1:7890");
+  std::snprintf(g_probe_result.tracker.connection_id, sizeof(g_probe_result.tracker.connection_id), "%s", "tracker-1");
+  std::snprintf(g_probe_result.tracker.source_address, sizeof(g_probe_result.tracker.source_address), "%s", "127.0.0.1:50001");
+  std::snprintf(g_probe_result.tracker.destination_address, sizeof(g_probe_result.tracker.destination_address), "%s", "127.0.0.1:9443");
+  std::snprintf(g_probe_result.tracker.inbound_type, sizeof(g_probe_result.tracker.inbound_type), "%s", "HTTPS");
+  std::snprintf(g_probe_result.tracker.opened_at, sizeof(g_probe_result.tracker.opened_at), "%s", "2026-08-06T06:00:00Z");
+  g_probe_status = CMFA_OK;
+
+  cmfa_probe_request request{};
+  request.struct_size = sizeof(request);
+  request.probe_run_id = "probe-run";
+  request.protocol = CMFA_PROBE_PROTOCOL_HTTP_CONNECT;
+  request.listener_address = "127.0.0.1:7890";
+  request.origin_url = "https://127.0.0.1:9443/";
+  request.ca_pem = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n";
+  request.expected_body_sha256 = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+
+  cmfa_probe_result *result = nullptr;
+  ErrorBox error;
+  expect_eq(cmfa_probe_https(&request, &result, &error.error), CMFA_OK, "probe should succeed");
+  expect(result != nullptr, "probe should return an owned result");
+  expect_eq(result->protocol, CMFA_PROBE_PROTOCOL_HTTP_CONNECT, "protocol should match");
+  expect_eq(result->ok, static_cast<uint8_t>(1), "probe result should be ok");
+  expect_eq(result->http_status, 200, "HTTP status should match");
+  expect_string_eq(std::string(result->tracker.inbound_type), "HTTPS", "tracker inbound type");
+  expect_string_eq(std::string(result->origin_id), "origin-1", "origin id");
+  cmfa_probe_result_free(result);
+}
+
 void test_shutdown_and_repeated_unregister_are_safe() {
   reset_contract();
   HostCapture first_capture;
@@ -531,6 +590,17 @@ extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snaps
   return CMFA_OK;
 }
 
+extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *request,
+                                                  cmfa_probe_result *result,
+                                                  cmfa_error *) {
+  if (request == nullptr || result == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+  *result = g_probe_result;
+  result->protocol = request->protocol;
+  return g_probe_status;
+}
+
 extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
                                                                    cmfa_runtime_snapshot *snapshot,
                                                                    cmfa_error *error);
@@ -568,6 +638,7 @@ int main() {
        test_stop_preserves_error_snapshot_event_and_redacted_failure_log},
       {"backend start_local direct null options preserves snapshot",
        test_backend_start_local_direct_null_options_preserves_snapshot},
+      {"probe https returns structured owned result", test_probe_https_returns_structured_owned_result},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
   };
 

@@ -26,6 +26,9 @@ extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
                                                   cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_stop_v1(cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snapshot, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *request,
+                                                  cmfa_probe_result *result,
+                                                  cmfa_error *error);
 
 namespace {
 
@@ -237,6 +240,18 @@ cmfa_status runtime_state(void *, cmfa_runtime_snapshot *snapshot, cmfa_error *e
   return cmfa_mihomo_runtime_state_v1(snapshot, error);
 }
 
+cmfa_status probe_https(void *, const cmfa_probe_request *request, cmfa_probe_result *result, cmfa_error *error) {
+  if (request == nullptr || result == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probe request and result must not be null");
+  }
+  std::memset(result, 0, sizeof(*result));
+  result->struct_size = sizeof(cmfa_probe_result);
+  result->protocol = request->protocol;
+  result->tracker.struct_size = sizeof(cmfa_probe_tracker_record);
+  result->error.struct_size = sizeof(cmfa_probe_error);
+  return cmfa_mihomo_probe_https_v1(request, result, error);
+}
+
 cmfa_status shutdown(void *, cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_backend_state.mutex);
   g_backend_state.host = {};
@@ -256,6 +271,7 @@ cmfa_backend_api make_backend_api() {
   api.start_local = start_local;
   api.stop = stop;
   api.runtime_state = runtime_state;
+  api.probe_https = probe_https;
   api.shutdown = shutdown;
   return api;
 }

@@ -482,6 +482,24 @@ struct FakeBackend {
     return CMFA_OK;
   }
 
+  static cmfa_status probe_https(void *,
+                                 const cmfa_probe_request *request,
+                                 cmfa_probe_result *result,
+                                 cmfa_error *) {
+    if (request == nullptr || result == nullptr) {
+      return CMFA_INVALID_ARGUMENT;
+    }
+    std::memset(result, 0, sizeof(*result));
+    result->struct_size = sizeof(cmfa_probe_result);
+    result->protocol = request->protocol;
+    result->tracker.struct_size = sizeof(cmfa_probe_tracker_record);
+    result->error.struct_size = sizeof(cmfa_probe_error);
+    std::snprintf(result->error.code, sizeof(result->error.code), "%s", "UNIMPLEMENTED");
+    std::snprintf(result->error.stage, sizeof(result->error.stage), "%s", "backend");
+    std::snprintf(result->error.detail, sizeof(result->error.detail), "%s", "fake backend probe not implemented");
+    return CMFA_CORE_UNAVAILABLE;
+  }
+
   static cmfa_status shutdown(void *context, cmfa_error *) {
     auto *self = static_cast<FakeBackend *>(context);
     std::unique_lock<std::mutex> lock(self->mutex);
@@ -511,6 +529,7 @@ struct FakeBackend {
     api.start_local = &FakeBackend::start_local;
     api.stop = &FakeBackend::stop;
     api.runtime_state = &FakeBackend::runtime_state;
+    api.probe_https = &FakeBackend::probe_https;
     api.shutdown = &FakeBackend::shutdown;
     return api;
   }
@@ -719,6 +738,41 @@ void test_null_pointer_and_invalid_argument_validation() {
   std::string too_long(CMFA_MAX_PATH_BYTES, 'b');
   expect_eq(cmfa_validate_config(too_long.c_str(), &error.error), CMFA_OUT_OF_RANGE,
             "validate_config should reject overlong paths");
+}
+
+void test_probe_https_backendless_and_invalid_request_return_owned_result() {
+  reset_contract();
+
+  HostCapture capture;
+  auto callbacks = make_host_callbacks(&capture);
+  ErrorBox error;
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed without backend");
+
+  cmfa_probe_result *invalid_result = nullptr;
+  expect_eq(cmfa_probe_https(nullptr, &invalid_result, &error.error), CMFA_INVALID_ARGUMENT,
+            "probe should reject null request");
+  expect(invalid_result != nullptr, "invalid request should still yield an owned result");
+  expect_string_eq(std::string(invalid_result->error.code), "INVALID_ARGUMENT", "invalid request error code");
+  expect_string_eq(std::string(invalid_result->error.stage), "request", "invalid request error stage");
+  cmfa_probe_result_free(invalid_result);
+
+  cmfa_probe_request request{};
+  request.struct_size = sizeof(request);
+  request.probe_run_id = "probe-run";
+  request.protocol = CMFA_PROBE_PROTOCOL_HTTP_CONNECT;
+  request.listener_address = "127.0.0.1:7890";
+  request.origin_url = "https://127.0.0.1:9443/";
+  request.ca_pem = "-----BEGIN CERTIFICATE-----\nabc\n-----END CERTIFICATE-----\n";
+  request.expected_body_sha256 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef";
+
+  cmfa_probe_result *backendless_result = nullptr;
+  expect_eq(cmfa_probe_https(&request, &backendless_result, &error.error), CMFA_CORE_UNAVAILABLE,
+            "probe should surface missing backend");
+  expect(backendless_result != nullptr, "backendless probe should still return an owned result");
+  expect_eq(backendless_result->protocol, CMFA_PROBE_PROTOCOL_HTTP_CONNECT, "protocol should be preserved");
+  expect_string_eq(std::string(backendless_result->error.code), "CORE_UNAVAILABLE", "backendless error code");
+  expect_string_eq(std::string(backendless_result->error.stage), "backend", "backendless error stage");
+  cmfa_probe_result_free(backendless_result);
 }
 
 void test_invalid_utf8_and_error_truncation() {
@@ -1673,6 +1727,8 @@ int main() {
       {"initialize_duplicate_and_backendless_contract_behaviors",
        test_initialize_duplicate_and_backendless_contract_behaviors},
       {"null_pointer_and_invalid_argument_validation", test_null_pointer_and_invalid_argument_validation},
+      {"probe_https_backendless_and_invalid_request_return_owned_result",
+       test_probe_https_backendless_and_invalid_request_return_owned_result},
       {"invalid_utf8_and_error_truncation", test_invalid_utf8_and_error_truncation},
       {"non_terminated_paths_fail_without_overread", test_non_terminated_paths_fail_without_overread},
       {"host_callback_copy_and_event_unsubscribe", test_host_callback_copy_and_event_unsubscribe},

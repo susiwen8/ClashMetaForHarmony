@@ -10,6 +10,9 @@ const SELF_TEST_KEY = 'cmfa.phase1.selfTest';
 const RUN_ID_KEY = 'cmfa.phase1.runId';
 const RUNNER_STARTED_AT_KEY = 'cmfa.phase1.runnerStartedAt';
 const FILES_DIR_KEY = 'cmfa.phase1.filesDir';
+const PROBE_ORIGIN_URL_KEY = 'cmfa.phase2.originUrl';
+const PROBE_CA_PEM_KEY = 'cmfa.phase2.caPem';
+const PROBE_EXPECTED_BODY_SHA256_KEY = 'cmfa.phase2.expectedBodySha256';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -60,7 +63,10 @@ export default class EntryAbility extends UIAbility {
       selfTest: selfTestValue === 'true',
       runId: `${parameters[RUN_ID_KEY] ?? ''}`,
       runnerStartedAt: `${parameters[RUNNER_STARTED_AT_KEY] ?? ''}`,
-      filesDir: this.context.filesDir
+      filesDir: this.context.filesDir,
+      probeOriginUrl: `${parameters[PROBE_ORIGIN_URL_KEY] ?? ''}`,
+      probeCaPem: `${parameters[PROBE_CA_PEM_KEY] ?? ''}`,
+      probeExpectedBodySha256: `${parameters[PROBE_EXPECTED_BODY_SHA256_KEY] ?? ''}`
     };
     setPhase1LaunchContext(launchContext);
   }

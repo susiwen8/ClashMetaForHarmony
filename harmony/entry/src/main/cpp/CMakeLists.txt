@@ -42,7 +42,7 @@ add_library(entry SHARED
 set_source_files_properties(
   "${ABI_SOURCE}"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/cmfa_mihomo_backend.cpp"
-  PROPERTIES COMPILE_DEFINITIONS "CMFA_INTERNAL_BACKEND_API=1"
+  PROPERTIES COMPILE_DEFINITIONS "CMFA_INTERNAL_BACKEND_API=1;CMFA_TEST_BUILD_ABI=1"
 )
 
 target_include_directories(entry PRIVATE
@@ -55,6 +55,10 @@ target_compile_options(entry PRIVATE
   -Wextra
   -Werror
   -fvisibility=hidden
+)
+
+target_compile_definitions(entry PRIVATE
+  CMFA_TEST_BUILD_ABI=1
 )
 
 if(CMAKE_SYSTEM_NAME STREQUAL "OHOS" AND CMAKE_CXX_COMPILER_ID STREQUAL "Clang")

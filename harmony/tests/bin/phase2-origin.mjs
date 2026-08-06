@@ -157,8 +157,6 @@ async function main() {
       keyPath: path.relative(repoRoot, certificate.keyPath),
     },
   };
-  process.stdout.write(`${JSON.stringify(payload)}\n`);
-
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) {
@@ -176,6 +174,7 @@ async function main() {
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
+  process.stdout.write(`${JSON.stringify(payload)}\n`);
 }
 
 main().catch((error) => {

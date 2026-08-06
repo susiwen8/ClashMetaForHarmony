@@ -14,6 +14,7 @@ const SIGNING_TOKEN_PATTERN = /(^|[\s"'(=\[])([^\s"'<>]*\.(?:p12|cer|p7b|pem|pfx
 const CORE_EXPORTS = [
   'cmfa_mihomo_core_build_info_json_cstr_v1',
   'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
   'cmfa_mihomo_stop_v1',

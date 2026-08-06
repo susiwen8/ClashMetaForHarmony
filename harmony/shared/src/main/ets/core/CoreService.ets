@@ -1,10 +1,11 @@
-import type { CoreEvent, LocalOptions, RuntimeSnapshot } from './CoreModels';
+import type { CoreEvent, LocalOptions, ProbeRequest, ProbeResult, RuntimeSnapshot } from './CoreModels';
 
 export interface CoreService {
   hello(): string;
   coreVersion(): Promise<string>;
   validateConfiguration(path: string): Promise<void>;
   loadConfiguration(path: string): Promise<void>;
+  probeHttps(request: ProbeRequest): Promise<ProbeResult>;
   startLocal(options: LocalOptions): Promise<RuntimeSnapshot>;
   stopRuntime(): Promise<RuntimeSnapshot>;
   runtimeSnapshot(): RuntimeSnapshot;

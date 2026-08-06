@@ -30,6 +30,10 @@ function formatUsage() {
   return USAGE_LINES.join('\n');
 }
 
+function stripTestBuildAbiSections(body) {
+  return body.replace(/#if defined\(CMFA_TEST_BUILD_ABI\)[\s\S]*?#endif/gmu, '');
+}
+
 class ArgumentError extends Error {
   constructor(message = formatUsage()) {
     super(message);
@@ -132,6 +136,9 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
       coreHeader.includes('cmfa_internal_register_backend')) {
     throw new Error('Public cmfa_core.h exposes backend seam symbols by default.');
   }
+  if (!/#if defined\(CMFA_TEST_BUILD_ABI\)[\s\S]*cmfa_probe_https[\s\S]*cmfa_probe_result_free[\s\S]*#endif/gmu.test(coreHeader)) {
+    throw new Error('Test-build probe ABI must stay behind CMFA_TEST_BUILD_ABI guard.');
+  }
   if (hostHeader.includes('lifetime_token')) {
     throw new Error('Public host ABI still exposes lifetime_token.');
   }
@@ -139,7 +146,8 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
     throw new Error('cmfa_runtime_snapshot.active_config_path is not an inline fixed-size array.');
   }
 
-  const publicFunctions = [...coreHeader.matchAll(/^cmfa_status\s+(cmfa_[a-z0-9_]+)\s*\(/gmu)].map((entry) => entry[1]);
+  const publicFunctions = [...stripTestBuildAbiSections(coreHeader).matchAll(/^cmfa_status\s+(cmfa_[a-z0-9_]+)\s*\(/gmu)]
+      .map((entry) => entry[1]);
   if (publicFunctions.length !== 8) {
     throw new Error(`Expected exactly 8 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
   }
@@ -247,14 +255,14 @@ async function verifyProductionBuildHidesTestHook(tempDir) {
 const CASES = new Map([
   ['contract', {
     sources: [CONTRACT_SOURCE, CONTRACT_TEST_SOURCE],
-    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_CONTRACT_TESTING=1'],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_CONTRACT_TESTING=1', 'CMFA_TEST_BUILD_ABI=1'],
     prefix: 'cmfa-contract-test-',
     beforeCompile: verifyContractPreflight,
     outputName: 'cmfa_contract_test',
   }],
   ['mihomo-backend', {
     sources: [CONTRACT_SOURCE, MIHOMO_BACKEND_SOURCE, MIHOMO_BACKEND_TEST_SOURCE],
-    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_BACKEND_TESTING=1'],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_BACKEND_TESTING=1', 'CMFA_TEST_BUILD_ABI=1'],
     prefix: 'cmfa-mihomo-backend-test-',
     includeDirs: [ENTRY_INCLUDE_DIR],
     outputName: 'cmfa_mihomo_backend_test',

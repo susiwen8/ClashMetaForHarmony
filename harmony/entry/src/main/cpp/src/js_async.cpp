@@ -101,6 +101,8 @@ bool build_async_result_value(napi_env env, const AsyncResult &result, napi_valu
     case AsyncOp::VALIDATE_CONFIGURATION:
     case AsyncOp::LOAD_CONFIGURATION:
       return napi_get_undefined(env, value) == napi_ok;
+    case AsyncOp::PROBE_HTTPS:
+      return owned_probe_result_to_js(env, result.probe_result, value, &error);
     case AsyncOp::START_LOCAL:
     case AsyncOp::STOP_RUNTIME:
       return owned_snapshot_to_js(env, result.snapshot, value, &error);
@@ -154,6 +156,34 @@ AsyncResult run_async_operation(const AsyncInput &input, const std::atomic<bool>
       const cmfa_status status = cmfa_load_config(input.path.c_str(), &error);
       if (status != CMFA_OK) {
         result.error = make_core_error(status, async_operation_name(input.op));
+        return result;
+      }
+      result.ok = true;
+      return result;
+    }
+    case AsyncOp::PROBE_HTTPS: {
+      cmfa_probe_request request{};
+      request.struct_size = sizeof(request);
+      request.probe_run_id = input.probe_request.probe_run_id.c_str();
+      request.protocol = input.probe_request.protocol == "SOCKS5" ? CMFA_PROBE_PROTOCOL_SOCKS5
+                                                                  : CMFA_PROBE_PROTOCOL_HTTP_CONNECT;
+      request.listener_address = input.probe_request.listener_address.c_str();
+      request.origin_url = input.probe_request.origin_url.c_str();
+      request.ca_pem = input.probe_request.ca_pem.c_str();
+      request.expected_body_sha256 = input.probe_request.expected_body_sha256.c_str();
+
+      cmfa_probe_result *probe_result = nullptr;
+      const cmfa_status status = cmfa_probe_https(&request, &probe_result, &error);
+      if (probe_result == nullptr) {
+        result.error = make_core_error(status == CMFA_OK ? CMFA_BACKEND_ERROR : status, async_operation_name(input.op));
+        return result;
+      }
+      CoreErrorData probe_copy_error;
+      const bool converted =
+          probe_result_to_owned(*probe_result, &result.probe_result, &probe_copy_error);
+      cmfa_probe_result_free(probe_result);
+      if (!converted) {
+        result.error = probe_copy_error;
         return result;
       }
       result.ok = true;
@@ -527,6 +557,35 @@ napi_value start_local(napi_env env, napi_callback_info info) {
     return start_async_operation(env, decoded);
   } catch (...) {
     throw_napi_failure(env, "startLocal", napi_generic_failure);
+    return nullptr;
+  }
+}
+
+napi_value probe_https(napi_env env, napi_callback_info info) {
+  try {
+    size_t argc = 1;
+    napi_value argv[1] = {nullptr};
+    void *data = nullptr;
+    const napi_status status = napi_get_cb_info(env, info, &argc, argv, nullptr, &data);
+    if (status != napi_ok) {
+      throw_napi_failure(env, "probeHttps", status);
+      return nullptr;
+    }
+    if (argc != 1) {
+      throw_core_error(env, make_core_error(CMFA_INVALID_ARGUMENT, "probeHttps"));
+      return nullptr;
+    }
+    DecodedAsyncCall decoded;
+    decoded.addon = static_cast<AddonState *>(data);
+    decoded.input.op = AsyncOp::PROBE_HTTPS;
+    CoreErrorData error;
+    if (!decode_probe_request(env, argv[0], &decoded.input.probe_request, &error)) {
+      throw_core_error(env, error);
+      return nullptr;
+    }
+    return start_async_operation(env, decoded);
+  } catch (...) {
+    throw_napi_failure(env, "probeHttps", napi_generic_failure);
     return nullptr;
   }
 }

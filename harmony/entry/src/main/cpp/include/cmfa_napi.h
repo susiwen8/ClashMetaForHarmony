@@ -42,6 +42,47 @@ struct OwnedLocalOptions {
   uint32_t mixed_port = 0;
 };
 
+struct OwnedProbeRequest {
+  std::string probe_run_id;
+  std::string protocol;
+  std::string listener_address;
+  std::string origin_url;
+  std::string ca_pem;
+  std::string expected_body_sha256;
+};
+
+struct OwnedProbeTrackerRecord {
+  std::string connection_id;
+  std::string source_address;
+  std::string destination_address;
+  std::string inbound_type;
+  std::string opened_at;
+};
+
+struct OwnedProbeError {
+  std::string code;
+  std::string stage;
+  std::string detail;
+};
+
+struct OwnedProbeResult {
+  bool ok = false;
+  std::string protocol;
+  int32_t http_status = 0;
+  int64_t body_bytes = 0;
+  std::string probe_run_id;
+  std::string request_id_echo;
+  std::string origin_id;
+  std::string response_sha256;
+  std::string tls_peer_sha256;
+  std::string started_at;
+  std::string completed_at;
+  std::string client_local_address;
+  std::string client_remote_address;
+  OwnedProbeTrackerRecord tracker;
+  OwnedProbeError error;
+};
+
 struct OwnedRuntimeSnapshot {
   std::string state;
   std::string active_config_path;
@@ -67,6 +108,7 @@ enum class AsyncOp {
   CORE_VERSION,
   VALIDATE_CONFIGURATION,
   LOAD_CONFIGURATION,
+  PROBE_HTTPS,
   START_LOCAL,
   STOP_RUNTIME,
 };
@@ -75,12 +117,14 @@ struct AsyncInput {
   AsyncOp op = AsyncOp::CORE_VERSION;
   std::string path;
   OwnedLocalOptions local_options;
+  OwnedProbeRequest probe_request;
 };
 
 struct AsyncResult {
   bool ok = false;
   AsyncOp op = AsyncOp::CORE_VERSION;
   std::string string_value;
+  OwnedProbeResult probe_result;
   OwnedRuntimeSnapshot snapshot;
   CoreErrorData error;
 };
@@ -170,7 +214,10 @@ bool decode_utf8_string(napi_env env,
                         size_t max_bytes);
 bool decode_path_argument(napi_env env, napi_value value, std::string *out, CoreErrorData *error, const char *operation);
 bool decode_local_options(napi_env env, napi_value value, OwnedLocalOptions *out, CoreErrorData *error);
+bool decode_probe_request(napi_env env, napi_value value, OwnedProbeRequest *out, CoreErrorData *error);
 bool decode_subscription_id(napi_env env, napi_value value, uint32_t *out, CoreErrorData *error, const char *operation);
+bool probe_result_to_owned(const cmfa_probe_result &result, OwnedProbeResult *out, CoreErrorData *error);
+bool owned_probe_result_to_js(napi_env env, const OwnedProbeResult &result, napi_value *value, CoreErrorData *error);
 bool snapshot_to_owned(const cmfa_runtime_snapshot &snapshot, OwnedRuntimeSnapshot *out, CoreErrorData *error, const char *operation);
 bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, napi_value *result, CoreErrorData *error);
 bool owned_event_to_js(napi_env env, const OwnedCoreEvent &event, napi_value *result, CoreErrorData *error);
@@ -180,6 +227,7 @@ OwnedCoreEvent copy_log_event(const cmfa_log_message &message);
 napi_value core_version(napi_env env, napi_callback_info info);
 napi_value validate_configuration(napi_env env, napi_callback_info info);
 napi_value load_configuration(napi_env env, napi_callback_info info);
+napi_value probe_https(napi_env env, napi_callback_info info);
 napi_value start_local(napi_env env, napi_callback_info info);
 napi_value stop_runtime(napi_env env, napi_callback_info info);
 napi_value subscribe(napi_env env, napi_callback_info info);

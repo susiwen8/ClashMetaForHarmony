@@ -3,6 +3,7 @@
 
 #include <condition_variable>
 #include <cstddef>
+#include <cstdlib>
 #include <cstring>
 #include <mutex>
 
@@ -288,6 +289,161 @@ void reset_snapshot_locked() {
   zero_text_buffer(g_contract.snapshot.last_error);
 }
 
+void zero_probe_text(char *buffer, size_t capacity) {
+  if (buffer == nullptr || capacity == 0) {
+    return;
+  }
+  std::memset(buffer, 0, capacity);
+}
+
+void copy_probe_text(char *destination, size_t capacity, const char *source, size_t length) {
+  if (destination == nullptr || capacity == 0) {
+    return;
+  }
+  const size_t writable = capacity - 1;
+  const size_t copy_length = length < writable ? length : writable;
+  zero_probe_text(destination, capacity);
+  if (source != nullptr && copy_length > 0) {
+    std::memcpy(destination, source, copy_length);
+  }
+  destination[copy_length] = '\0';
+}
+
+void initialize_probe_error(cmfa_probe_error *error) {
+  if (error == nullptr) {
+    return;
+  }
+  error->struct_size = sizeof(cmfa_probe_error);
+  zero_probe_text(error->code, sizeof(error->code));
+  zero_probe_text(error->stage, sizeof(error->stage));
+  zero_probe_text(error->detail, sizeof(error->detail));
+}
+
+void initialize_probe_tracker(cmfa_probe_tracker_record *tracker) {
+  if (tracker == nullptr) {
+    return;
+  }
+  tracker->struct_size = sizeof(cmfa_probe_tracker_record);
+  zero_probe_text(tracker->connection_id, sizeof(tracker->connection_id));
+  zero_probe_text(tracker->source_address, sizeof(tracker->source_address));
+  zero_probe_text(tracker->destination_address, sizeof(tracker->destination_address));
+  zero_probe_text(tracker->inbound_type, sizeof(tracker->inbound_type));
+  zero_probe_text(tracker->opened_at, sizeof(tracker->opened_at));
+}
+
+void initialize_probe_result(cmfa_probe_result *result) {
+  if (result == nullptr) {
+    return;
+  }
+  std::memset(result, 0, sizeof(cmfa_probe_result));
+  result->struct_size = sizeof(cmfa_probe_result);
+  result->protocol = CMFA_PROBE_PROTOCOL_UNSPECIFIED;
+  initialize_probe_tracker(&result->tracker);
+  initialize_probe_error(&result->error);
+}
+
+void write_probe_result_error(cmfa_probe_result *result, const char *code, const char *stage, const char *detail) {
+  if (result == nullptr) {
+    return;
+  }
+  const size_t code_length = code != nullptr ? std::strlen(code) : 0;
+  const size_t stage_length = stage != nullptr ? std::strlen(stage) : 0;
+  const size_t detail_length = detail != nullptr ? std::strlen(detail) : 0;
+  copy_probe_text(result->error.code, sizeof(result->error.code), code, code_length);
+  copy_probe_text(result->error.stage, sizeof(result->error.stage), stage, stage_length);
+  copy_probe_text(result->error.detail, sizeof(result->error.detail), detail, detail_length);
+}
+
+cmfa_status validate_utf8_argument(const char *text,
+                                   size_t max_length,
+                                   const char *null_message,
+                                   const char *empty_message,
+                                   const char *unterminated_message,
+                                   const char *invalid_utf8_message,
+                                   bool allow_empty,
+                                   cmfa_error *error) {
+  size_t length = 0;
+  if (text == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, null_message);
+  }
+  if (!bounded_c_string_length(text, max_length, &length)) {
+    return fail(error, CMFA_OUT_OF_RANGE, unterminated_message);
+  }
+  if (length == 0 && !allow_empty) {
+    return fail(error, CMFA_INVALID_ARGUMENT, empty_message);
+  }
+  if (!is_valid_utf8_span(text, length)) {
+    return fail(error, CMFA_INVALID_UTF8, invalid_utf8_message);
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_probe_request(const cmfa_probe_request *request, cmfa_error *error) {
+  if (request == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probe request must not be null");
+  }
+  if (!has_required_size(request->struct_size, sizeof(cmfa_probe_request))) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probe request struct_size is too small");
+  }
+  if (request->protocol != CMFA_PROBE_PROTOCOL_HTTP_CONNECT && request->protocol != CMFA_PROBE_PROTOCOL_SOCKS5) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probe request protocol is invalid");
+  }
+  cmfa_status status = validate_utf8_argument(request->probe_run_id,
+                                              CMFA_MAX_PROBE_ID_BYTES,
+                                              "probe_run_id must not be null",
+                                              "probe_run_id must not be empty",
+                                              "probe_run_id exceeds CMFA_MAX_PROBE_ID_BYTES",
+                                              "probe_run_id must be valid UTF-8",
+                                              false,
+                                              error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status = validate_utf8_argument(request->listener_address,
+                                  CMFA_MAX_PATH_BYTES,
+                                  "listener_address must not be null",
+                                  "listener_address must not be empty",
+                                  "listener_address exceeds CMFA_MAX_PATH_BYTES",
+                                  "listener_address must be valid UTF-8",
+                                  false,
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status = validate_utf8_argument(request->origin_url,
+                                  CMFA_MAX_PATH_BYTES,
+                                  "origin_url must not be null",
+                                  "origin_url must not be empty",
+                                  "origin_url exceeds CMFA_MAX_PATH_BYTES",
+                                  "origin_url must be valid UTF-8",
+                                  false,
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status = validate_utf8_argument(request->ca_pem,
+                                  CMFA_MAX_PROBE_PEM_BYTES,
+                                  "ca_pem must not be null",
+                                  "ca_pem must not be empty",
+                                  "ca_pem exceeds CMFA_MAX_PROBE_PEM_BYTES",
+                                  "ca_pem must be valid UTF-8",
+                                  false,
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status = validate_utf8_argument(request->expected_body_sha256,
+                                  CMFA_MAX_PROBE_DIGEST_BYTES,
+                                  "expected_body_sha256 must not be null",
+                                  "expected_body_sha256 must not be empty",
+                                  "expected_body_sha256 exceeds CMFA_MAX_PROBE_DIGEST_BYTES",
+                                  "expected_body_sha256 must be valid UTF-8",
+                                  false,
+                                  error);
+  return status;
+}
+
 cmfa_status validate_snapshot_output(cmfa_runtime_snapshot *snapshot, cmfa_error *error) {
   if (snapshot == nullptr) {
     return fail(error, CMFA_INVALID_ARGUMENT, "snapshot must not be null");
@@ -314,7 +470,7 @@ cmfa_status validate_backend_api_complete(const cmfa_backend_api *backend, cmfa_
   }
   if (backend->attach_host == nullptr || backend->core_version == nullptr || backend->validate_config == nullptr ||
       backend->load_config == nullptr || backend->start_local == nullptr || backend->stop == nullptr ||
-      backend->runtime_state == nullptr || backend->shutdown == nullptr) {
+      backend->runtime_state == nullptr || backend->probe_https == nullptr || backend->shutdown == nullptr) {
     return fail(error, CMFA_INVALID_ARGUMENT, "backend lifecycle hooks must all be present");
   }
   clear_error(error);
@@ -940,6 +1096,65 @@ extern "C" cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_
   }
   clear_error(error);
   return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_probe_https(const cmfa_probe_request *request,
+                                        cmfa_probe_result **result,
+                                        cmfa_error *error) {
+  if (result == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probe result output must not be null");
+  }
+  *result = nullptr;
+
+  cmfa_probe_result *allocated = static_cast<cmfa_probe_result *>(std::malloc(sizeof(cmfa_probe_result)));
+  if (allocated == nullptr) {
+    return fail(error, CMFA_BACKEND_ERROR, "failed to allocate probe result");
+  }
+  initialize_probe_result(allocated);
+  *result = allocated;
+
+  const cmfa_status request_status = validate_probe_request(request, error);
+  if (request_status != CMFA_OK) {
+    write_probe_result_error(allocated, "INVALID_ARGUMENT", "request", error != nullptr && error->message != nullptr
+                                                                      ? error->message
+                                                                      : "probe request validation failed");
+    return request_status;
+  }
+  allocated->protocol = request->protocol;
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    write_probe_result_error(allocated,
+                             borrow_status == CMFA_CORE_UNAVAILABLE ? "CORE_UNAVAILABLE" : "INVALID_STATE",
+                             "backend",
+                             error != nullptr && error->message != nullptr ? error->message : "probe backend unavailable");
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.probe_https(backend_copy.context, request, allocated, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+
+  if (status != CMFA_OK) {
+    if (allocated->error.code[0] == '\0') {
+      write_probe_result_error(allocated,
+                               status == CMFA_BUSY   ? "BUSY"
+                               : status == CMFA_OUT_OF_RANGE ? "OUT_OF_RANGE"
+                                                             : "BACKEND_ERROR",
+                               "backend",
+                               error != nullptr && error->message != nullptr ? error->message : "probe backend failed");
+    }
+    return finalize_backend_error(error, status, "backend probe_https failed");
+  }
+
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" void cmfa_probe_result_free(cmfa_probe_result *result) {
+  std::free(result);
 }
 
 extern "C" cmfa_status cmfa_shutdown(cmfa_error *error) {

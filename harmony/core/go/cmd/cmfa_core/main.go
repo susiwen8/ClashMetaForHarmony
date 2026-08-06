@@ -32,20 +32,91 @@ static char *cmfa_snapshot_last_error(cmfa_runtime_snapshot *snapshot) {
 static char *cmfa_runtime_log_message(cmfa_mihomo_runtime_log_record_v1 *record) {
 	return record->message;
 }
+
+static char *cmfa_probe_result_probe_run_id(cmfa_probe_result *result) {
+	return result->probe_run_id;
+}
+
+static char *cmfa_probe_result_request_id_echo(cmfa_probe_result *result) {
+	return result->request_id_echo;
+}
+
+static char *cmfa_probe_result_origin_id(cmfa_probe_result *result) {
+	return result->origin_id;
+}
+
+static char *cmfa_probe_result_response_sha256(cmfa_probe_result *result) {
+	return result->response_sha256;
+}
+
+static char *cmfa_probe_result_tls_peer_sha256(cmfa_probe_result *result) {
+	return result->tls_peer_sha256;
+}
+
+static char *cmfa_probe_result_started_at(cmfa_probe_result *result) {
+	return result->started_at;
+}
+
+static char *cmfa_probe_result_completed_at(cmfa_probe_result *result) {
+	return result->completed_at;
+}
+
+static char *cmfa_probe_result_client_local_address(cmfa_probe_result *result) {
+	return result->client_local_address;
+}
+
+static char *cmfa_probe_result_client_remote_address(cmfa_probe_result *result) {
+	return result->client_remote_address;
+}
+
+static char *cmfa_probe_tracker_connection_id(cmfa_probe_result *result) {
+	return result->tracker.connection_id;
+}
+
+static char *cmfa_probe_tracker_source_address(cmfa_probe_result *result) {
+	return result->tracker.source_address;
+}
+
+static char *cmfa_probe_tracker_destination_address(cmfa_probe_result *result) {
+	return result->tracker.destination_address;
+}
+
+static char *cmfa_probe_tracker_inbound_type(cmfa_probe_result *result) {
+	return result->tracker.inbound_type;
+}
+
+static char *cmfa_probe_tracker_opened_at(cmfa_probe_result *result) {
+	return result->tracker.opened_at;
+}
+
+static char *cmfa_probe_error_code(cmfa_probe_result *result) {
+	return result->error.code;
+}
+
+static char *cmfa_probe_error_stage(cmfa_probe_result *result) {
+	return result->error.stage;
+}
+
+static char *cmfa_probe_error_detail(cmfa_probe_result *result) {
+	return result->error.detail;
+}
 */
 import "C"
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"os"
 	"path/filepath"
 	"strconv"
 	"sync"
+	"time"
 	"unicode/utf8"
 	"unsafe"
 
 	configpkg "github.com/clashmetaforandroid/harmony/core/go/internal/config"
+	probepkg "github.com/clashmetaforandroid/harmony/core/go/internal/probe"
 	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 	"github.com/clashmetaforandroid/harmony/core/go/internal/version"
 )
@@ -198,6 +269,84 @@ func writeSnapshot(snapshot *C.cmfa_runtime_snapshot, source runtimepkg.Snapshot
 	snapshot.mixed_port = 0
 }
 
+func writeProbeText(target *C.char, capacity int, value string) {
+	copyCStringBuffer(target, C.size_t(capacity), value)
+}
+
+func writeProbeError(result *C.cmfa_probe_result, code, stage, detail string) {
+	if result == nil {
+		return
+	}
+	result.error.struct_size = C.uint32_t(C.sizeof_cmfa_probe_error)
+	writeProbeText(C.cmfa_probe_error_code(result), int(C.CMFA_MAX_PROBE_KIND_BYTES), code)
+	writeProbeText(C.cmfa_probe_error_stage(result), int(C.CMFA_MAX_PROBE_KIND_BYTES), stage)
+	writeProbeText(C.cmfa_probe_error_detail(result), int(C.CMFA_MAX_PROBE_ERROR_BYTES), detail)
+}
+
+func clearProbeError(result *C.cmfa_probe_result) {
+	writeProbeError(result, "", "", "")
+}
+
+func initializeProbeResult(result *C.cmfa_probe_result) {
+	if result == nil {
+		return
+	}
+	*result = C.cmfa_probe_result{}
+	result.struct_size = C.uint32_t(C.sizeof_cmfa_probe_result)
+	result.protocol = C.CMFA_PROBE_PROTOCOL_UNSPECIFIED
+	result.tracker.struct_size = C.uint32_t(C.sizeof_cmfa_probe_tracker_record)
+	result.error.struct_size = C.uint32_t(C.sizeof_cmfa_probe_error)
+}
+
+func probeProtocolFromC(protocol C.cmfa_probe_protocol) (probepkg.Protocol, C.cmfa_status, string) {
+	switch protocol {
+	case C.CMFA_PROBE_PROTOCOL_HTTP_CONNECT:
+		return probepkg.ProtocolHTTPConnect, C.CMFA_OK, ""
+	case C.CMFA_PROBE_PROTOCOL_SOCKS5:
+		return probepkg.ProtocolSOCKS5, C.CMFA_OK, ""
+	default:
+		return "", C.CMFA_INVALID_ARGUMENT, "probe protocol is invalid"
+	}
+}
+
+func formatProbeTime(value time.Time) string {
+	if value.IsZero() {
+		return ""
+	}
+	return value.UTC().Format(time.RFC3339Nano)
+}
+
+func writeProbeResult(result *C.cmfa_probe_result, protocol C.cmfa_probe_protocol, source probepkg.HTTPSResult, probeErr *probepkg.Error) {
+	if result == nil {
+		return
+	}
+	initializeProbeResult(result)
+	result.ok = 0
+	result.protocol = protocol
+	result.http_status = C.int32_t(source.HTTPStatus)
+	result.body_bytes = C.uint64_t(source.BodyBytes)
+	writeProbeText(C.cmfa_probe_result_probe_run_id(result), int(C.CMFA_MAX_PROBE_ID_BYTES), source.ProbeRunID)
+	writeProbeText(C.cmfa_probe_result_request_id_echo(result), int(C.CMFA_MAX_PROBE_ID_BYTES), source.RequestIDEcho)
+	writeProbeText(C.cmfa_probe_result_origin_id(result), int(C.CMFA_MAX_PROBE_ID_BYTES), source.OriginID)
+	writeProbeText(C.cmfa_probe_result_response_sha256(result), int(C.CMFA_MAX_PROBE_DIGEST_BYTES), source.ResponseSHA256)
+	writeProbeText(C.cmfa_probe_result_tls_peer_sha256(result), int(C.CMFA_MAX_PROBE_DIGEST_BYTES), source.TLSPeerSHA256)
+	writeProbeText(C.cmfa_probe_result_started_at(result), int(C.CMFA_MAX_PROBE_TIMESTAMP_BYTES), formatProbeTime(source.StartedAt))
+	writeProbeText(C.cmfa_probe_result_completed_at(result), int(C.CMFA_MAX_PROBE_TIMESTAMP_BYTES), formatProbeTime(source.CompletedAt))
+	writeProbeText(C.cmfa_probe_result_client_local_address(result), int(C.CMFA_MAX_PROBE_ENDPOINT_BYTES), source.ClientLocalAddress)
+	writeProbeText(C.cmfa_probe_result_client_remote_address(result), int(C.CMFA_MAX_PROBE_ENDPOINT_BYTES), source.ClientRemoteAddress)
+	writeProbeText(C.cmfa_probe_tracker_connection_id(result), int(C.CMFA_MAX_PROBE_ID_BYTES), source.Tracker.ConnectionID)
+	writeProbeText(C.cmfa_probe_tracker_source_address(result), int(C.CMFA_MAX_PROBE_ENDPOINT_BYTES), source.Tracker.SourceAddress)
+	writeProbeText(C.cmfa_probe_tracker_destination_address(result), int(C.CMFA_MAX_PROBE_ENDPOINT_BYTES), source.Tracker.DestinationAddress)
+	writeProbeText(C.cmfa_probe_tracker_inbound_type(result), int(C.CMFA_MAX_PROBE_KIND_BYTES), source.Tracker.InboundType)
+	writeProbeText(C.cmfa_probe_tracker_opened_at(result), int(C.CMFA_MAX_PROBE_TIMESTAMP_BYTES), formatProbeTime(source.Tracker.OpenedAt))
+	if probeErr == nil {
+		result.ok = 1
+		clearProbeError(result)
+		return
+	}
+	writeProbeError(result, probeErr.Code, probeErr.Stage, probeErr.Detail)
+}
+
 type runtimeLogEnvelope struct {
 	Category string            `json:"category"`
 	Message  string            `json:"message"`
@@ -224,6 +373,13 @@ func failureMessage(snapshot runtimepkg.Snapshot, err error) string {
 		return err.Error()
 	}
 	return "runtime operation failed"
+}
+
+func probeStatus(err error) C.cmfa_status {
+	if err == nil {
+		return C.CMFA_OK
+	}
+	return C.CMFA_BACKEND_ERROR
 }
 
 //export cmfa_mihomo_core_version_cstr_v1
@@ -313,4 +469,52 @@ func cmfa_mihomo_take_runtime_log_v1(record *C.cmfa_mihomo_runtime_log_record_v1
 	copyCStringBuffer(C.cmfa_runtime_log_message(record), C.size_t(len(record.message)), encodeRuntimeLogMessage(log))
 	return 1
 }
+
+//export cmfa_mihomo_probe_https_v1
+func cmfa_mihomo_probe_https_v1(request *C.cmfa_probe_request,
+	result *C.cmfa_probe_result,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	if request == nil || result == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "probe request and result must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+	initializeProbeResult(result)
+	result.protocol = request.protocol
+
+	protocol, status, message := probeProtocolFromC(request.protocol)
+	if status != C.CMFA_OK {
+		writeProbeError(result, "INVALID_ARGUMENT", "request", message)
+		setError(errorOut, status, message)
+		return status
+	}
+
+	probeResult, err := probepkg.HTTPS(
+		context.Background(),
+		probepkg.HTTPSRequest{
+			ProbeRunID:         C.GoString(request.probe_run_id),
+			Protocol:           protocol,
+			ListenerAddress:    C.GoString(request.listener_address),
+			OriginURL:          C.GoString(request.origin_url),
+			CAPEM:              []byte(C.GoString(request.ca_pem)),
+			ExpectedBodySHA256: C.GoString(request.expected_body_sha256),
+		},
+	)
+	var probeErr *probepkg.Error
+	if err != nil && errors.As(err, &probeErr) {
+		writeProbeResult(result, request.protocol, probeResult, probeErr)
+		setError(errorOut, probeStatus(err), probeErr.Detail)
+		return probeStatus(err)
+	}
+	if err != nil {
+		writeProbeError(result, "BACKEND_ERROR", "probe", err.Error())
+		setError(errorOut, C.CMFA_BACKEND_ERROR, err.Error())
+		return C.CMFA_BACKEND_ERROR
+	}
+
+	writeProbeResult(result, request.protocol, probeResult, nil)
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
 func main() {}

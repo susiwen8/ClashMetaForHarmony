@@ -6,6 +6,9 @@ export interface Phase1LaunchContext {
   runId: string;
   runnerStartedAt: string;
   filesDir: string;
+  probeOriginUrl: string;
+  probeCaPem: string;
+  probeExpectedBodySha256: string;
 }
 
 export type Phase1LaunchListener = (context: Phase1LaunchContext) => void;
@@ -21,7 +24,10 @@ const phase1DefaultContext: Phase1LaunchContext = {
   selfTest: false,
   runId: '',
   runnerStartedAt: '',
-  filesDir: ''
+  filesDir: '',
+  probeOriginUrl: '',
+  probeCaPem: '',
+  probeExpectedBodySha256: ''
 };
 const sharedCoreService: CoreService = new CoreNativeAdapter();
 let phase1LaunchListener: Phase1LaunchListener | undefined = undefined;
@@ -61,6 +67,9 @@ export function getPhase1LaunchContext(): Phase1LaunchContext {
     selfTest: raw.selfTest === true,
     runId: raw.runId,
     runnerStartedAt: raw.runnerStartedAt,
-    filesDir: raw.filesDir
+    filesDir: raw.filesDir,
+    probeOriginUrl: raw.probeOriginUrl ?? '',
+    probeCaPem: raw.probeCaPem ?? '',
+    probeExpectedBodySha256: raw.probeExpectedBodySha256 ?? ''
   };
 }

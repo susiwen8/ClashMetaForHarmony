@@ -189,6 +189,9 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 		return result, err
 	}
 	result.Tracker = trackerRecord
+	result.RequestIDEcho = response.Header.Get("X-CMFA-Request-ID")
+	result.OriginID = response.Header.Get("X-CMFA-Origin-ID")
+	result.HTTPStatus = response.StatusCode
 
 	bodyReader := io.LimitReader(response.Body, maxResponseBodyBytes+1)
 	bodyHasher := sha256.New()
@@ -200,9 +203,6 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 		return result, &Error{Code: "RESPONSE_BODY_TOO_LARGE", Stage: "response", Detail: fmt.Sprintf("response exceeded %d bytes", maxResponseBodyBytes)}
 	}
 
-	result.RequestIDEcho = response.Header.Get("X-CMFA-Request-ID")
-	result.OriginID = response.Header.Get("X-CMFA-Origin-ID")
-	result.HTTPStatus = response.StatusCode
 	result.BodyBytes = bodyBytes
 	result.ResponseSHA256 = hex.EncodeToString(bodyHasher.Sum(nil))
 	result.CompletedAt = time.Now().UTC()

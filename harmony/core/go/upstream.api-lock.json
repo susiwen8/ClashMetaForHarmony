@@ -191,6 +191,111 @@
       "packageAudit": []
     },
     {
+      "importPath": "github.com/metacubex/mihomo/tunnel/statistic",
+      "packageDir": "tunnel/statistic",
+      "symbol": "Tracker.ID",
+      "docRef": "github.com/metacubex/mihomo/tunnel/statistic.Tracker.ID",
+      "file": "tracker.go",
+      "signature": "package statistic // import \"github.com/metacubex/mihomo/tunnel/statistic\"\n\ntype Tracker interface {\n\tID() string\n}",
+      "signatureDigest": "ae40917222aab578eece61836f7cc4007b73c509bc3637fcdf9b560f9cef3888",
+      "constructorInputs": [],
+      "ownership": "borrowed tracker handle exposes a stable connection identifier while the tracked flow remains registered",
+      "requiredCloseOrder": [
+        "Consume tracker ID before closing tracked connections",
+        "DefaultManager.Range(Tracker.Close)",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/tunnel/statistic",
+      "packageDir": "tunnel/statistic",
+      "symbol": "Tracker.Info",
+      "docRef": "github.com/metacubex/mihomo/tunnel/statistic.Tracker.Info",
+      "file": "tracker.go",
+      "signature": "package statistic // import \"github.com/metacubex/mihomo/tunnel/statistic\"\n\ntype Tracker interface {\n\tInfo() *TrackerInfo\n}",
+      "signatureDigest": "3d21053bbaa70c1506bb6bbf240960d91c549c7beadce7f693640c6964035c34",
+      "constructorInputs": [],
+      "ownership": "borrowed live tracker metadata; callers must snapshot fields before the tracker is closed or leaves the manager",
+      "requiredCloseOrder": [
+        "Snapshot tracker info before closing tracked connections",
+        "DefaultManager.Range(Tracker.Close)",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/tunnel/statistic",
+      "packageDir": "tunnel/statistic",
+      "symbol": "TrackerInfo",
+      "docRef": "github.com/metacubex/mihomo/tunnel/statistic.TrackerInfo",
+      "file": "tracker.go",
+      "signature": "package statistic // import \"github.com/metacubex/mihomo/tunnel/statistic\"\n\ntype TrackerInfo struct {\n\tUUID          uuid.UUID    `json:\"id\"`\n\tMetadata      *C.Metadata  `json:\"metadata\"`\n\tUploadTotal   atomic.Int64 `json:\"upload\"`\n\tDownloadTotal atomic.Int64 `json:\"download\"`\n\tStart         time.Time    `json:\"start\"`\n\tChain         C.Chain      `json:\"chains\"`\n\tProviderChain C.Chain      `json:\"providerChains\"`\n\tRule          string       `json:\"rule\"`\n\tRulePayload   string       `json:\"rulePayload\"`\n}",
+      "signatureDigest": "c958a1f45b48d8c4fcc5ced6108df3b1aa5fab3ab29de0bdd2cc82627128a708",
+      "constructorInputs": [],
+      "ownership": "tracker-owned struct containing live metadata, counters, timestamps, and rule context",
+      "requiredCloseOrder": [
+        "Snapshot TrackerInfo fields before closing tracked connections",
+        "DefaultManager.Range(Tracker.Close)",
+        "executor.Shutdown"
+      ],
+      "packageAudit": []
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/constant",
+      "packageDir": "constant",
+      "symbol": "Metadata.RemoteAddress",
+      "docRef": "github.com/metacubex/mihomo/constant.Metadata.RemoteAddress",
+      "file": "metadata.go",
+      "signature": "package constant // import \"github.com/metacubex/mihomo/constant\"\n\nfunc (m *Metadata) RemoteAddress() string {\n\treturn net.JoinHostPort(m.String(), strconv.FormatUint(uint64(m.DstPort), 10))\n}",
+      "signatureDigest": "1e194c1ef0575518fb24f6de72510e9812b95d64abdedea5bc33271676c75822",
+      "constructorInputs": [],
+      "ownership": "borrowed metadata method deriving the outbound destination address from the tracked connection fields",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "filesystemAssumption",
+          "file": "path.go"
+        }
+      ]
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/constant",
+      "packageDir": "constant",
+      "symbol": "Metadata.SourceAddress",
+      "docRef": "github.com/metacubex/mihomo/constant.Metadata.SourceAddress",
+      "file": "metadata.go",
+      "signature": "package constant // import \"github.com/metacubex/mihomo/constant\"\n\nfunc (m *Metadata) SourceAddress() string {\n\treturn net.JoinHostPort(m.SrcIP.String(), strconv.FormatUint(uint64(m.SrcPort), 10))\n}",
+      "signatureDigest": "87b7c142c0beb9b67c6117f9fd8b130604b4b5167a89b6df92aac2505f9b9a29",
+      "constructorInputs": [],
+      "ownership": "borrowed metadata method deriving the client source address from the tracked connection fields",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "filesystemAssumption",
+          "file": "path.go"
+        }
+      ]
+    },
+    {
+      "importPath": "github.com/metacubex/mihomo/constant",
+      "packageDir": "constant",
+      "symbol": "Type.String",
+      "docRef": "github.com/metacubex/mihomo/constant.Type.String",
+      "file": "metadata.go",
+      "signature": "package constant // import \"github.com/metacubex/mihomo/constant\"\n\nfunc (t Type) String() string {\n\tswitch t {\n\tcase HTTP:\n\t\treturn \"HTTP\"\n\tcase HTTPS:\n\t\treturn \"HTTPS\"\n\tcase SOCKS4:\n\t\treturn \"Socks4\"\n\tcase SOCKS5:\n\t\treturn \"Socks5\"\n\tcase SHADOWSOCKS:\n\t\treturn \"ShadowSocks\"\n\tcase SNELL:\n\t\treturn \"Snell\"\n\tcase VMESS:\n\t\treturn \"Vmess\"\n\tcase VLESS:\n\t\treturn \"Vless\"\n\tcase REDIR:\n\t\treturn \"Redir\"\n\tcase TPROXY:\n\t\treturn \"TProxy\"\n\tcase TROJAN:\n\t\treturn \"Trojan\"\n\tcase TUNNEL:\n\t\treturn \"Tunnel\"\n\tcase TUN:\n\t\treturn \"Tun\"\n\tcase TUIC:\n\t\treturn \"Tuic\"\n\tcase HYSTERIA2:\n\t\treturn \"Hysteria2\"\n\tcase ANYTLS:\n\t\treturn \"AnyTLS\"\n\tcase MIERU:\n\t\treturn \"Mieru\"\n\tcase SUDOKU:\n\t\treturn \"Sudoku\"\n\tcase TRUSTTUNNEL:\n\t\treturn \"TrustTunnel\"\n\tcase SHADOWQUIC:\n\t\treturn \"ShadowQuic\"\n\tcase INNER:\n\t\treturn \"Inner\"\n\tdefault:\n\t\treturn \"Unknown\"\n\t}\n}",
+      "signatureDigest": "358f33596f17cc2b7712660fce52403d01d04e0dec487d965125c98b1268a63d",
+      "constructorInputs": [],
+      "ownership": "pure stringification of inbound type enums used for tracker correlation and evidence output",
+      "requiredCloseOrder": [],
+      "packageAudit": [
+        {
+          "type": "filesystemAssumption",
+          "file": "path.go"
+        }
+      ]
+    },
+    {
       "importPath": "github.com/metacubex/mihomo/hub/executor",
       "packageDir": "hub/executor",
       "symbol": "Shutdown",

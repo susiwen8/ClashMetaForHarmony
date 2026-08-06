@@ -38,6 +38,7 @@ const typedValueExports = [
   'coreVersion',
   'validateConfiguration',
   'loadConfiguration',
+  'probeHttps',
   'startLocal',
   'stopRuntime',
   'runtimeSnapshot',
@@ -48,6 +49,11 @@ const typedTypeExports = [
   'RuntimeState',
   'LogLevel',
   'LocalOptions',
+  'ProbeProtocol',
+  'ProbeRequest',
+  'ProbeTrackerRecord',
+  'ProbeErrorResult',
+  'ProbeResult',
   'RuntimeSnapshot',
   'CoreEvent',
   'CoreErrorContext',
@@ -240,7 +246,7 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   const valueExports = parseExportNames(dtsBody, /^export declare function (\w+)\s*\(/gmu);
   const typeExports = parseExportNames(dtsBody, /^export (?:type|interface) (\w+)\b/gmu);
   const classExports = parseExportNames(dtsBody, /^export declare class (\w+)\b/gmu);
-  assert.deepEqual(valueExports, [...typedValueExports].sort(), 'typed facade must expose exactly the documented nine value exports');
+  assert.deepEqual(valueExports, [...typedValueExports].sort(), 'typed facade must expose exactly the documented ten value exports');
   assert.deepEqual(typeExports, [...typedTypeExports].sort(), 'typed facade must expose exactly the documented type exports');
   assert.deepEqual(classExports, [], 'typed facade must not add extra runtime class exports');
   assert.match(dtsBody, /type RuntimeState = 'STOPPED' \| 'STARTING' \| 'RUNNING' \| 'STOPPING' \| 'ERROR';/u);
@@ -287,7 +293,7 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(jsErrorsBody, /"CMFA_BACKEND_ERROR"/u);
   assert.match(jsErrorsBody, /"NAPI_FAILURE"/u);
   assert.doesNotMatch(jsErrorsBody, /make_napi_failure\s*\(\s*const char \*operation\s*\)/u, 'napi failures must capture real napi_status in context');
-  assert.equal(countMatches(jsAsyncBody, /\bnapi_get_cb_info\b/gu), 5, 'each async entry should decode callback info exactly once');
+  assert.equal(countMatches(jsAsyncBody, /\bnapi_get_cb_info\b/gu), 6, 'each async entry should decode callback info exactly once');
   assert.doesNotMatch(jsAsyncBody, /create_async_operation[\s\S]*napi_get_cb_info/u, 'shared async launcher must not re-read callback info');
   assert.match(jsAsyncBody, /\bstruct\s+AsyncCompletionPayload\b[\s\S]*std::shared_ptr<AsyncPromiseJob>/u, 'async completion payload should keep shared job ownership to TSFN finalizer');
   assert.match(jsAsyncBody, /\bauto \*payload = new \(std::nothrow\) AsyncCompletionPayload/u, 'payload must be preallocated before worker thread starts');

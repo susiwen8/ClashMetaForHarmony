@@ -10,6 +10,9 @@ import {
 import type { Phase1LaunchContext } from '../bootstrap/CoreComposition';
 import type { CoreError, CoreErrorContext } from '@cmfa/shared';
 import type {
+  ProbeProtocol,
+  ProbeRequest,
+  ProbeResult,
   Phase1Check,
   Phase1CheckId,
   Phase1Timestamps,
@@ -19,7 +22,43 @@ import type {
 } from '@cmfa/shared';
 
 const PROOF_FILE_NAME: string = 'phase1-device-proof.json';
+const PHASE2_PROOF_FILE_NAME: string = 'phase2-device-proof.json';
+const PHASE2_CONFIG_FILE_NAME: string = 'phase2-match-direct.yaml';
+const PHASE2_CONFIG_SOURCE: string = 'mode: rule\nmixed-port: 0\nrules:\n  - MATCH,DIRECT\n';
 const INVALID_SELF_TEST_PATH: string = '';
+const PHASE2_MIXED_PORT: number = 17890;
+
+interface Phase2ProbeFailure {
+  code: string;
+  detail: string;
+  stage: string;
+}
+
+interface Phase2ProbeEntry {
+  protocol: ProbeProtocol;
+  result: 'pass' | 'fail';
+  detail: string;
+  probe: ProbeResult;
+}
+
+interface Phase2ProbeTimestamps {
+  startedAt: string;
+  proofAt: string;
+}
+
+interface Phase2SelfTestProof {
+  schemaVersion: '1.0.0';
+  phase: 2;
+  result: 'pass' | 'fail' | 'incomplete';
+  runId: string;
+  timestamps: Phase2ProbeTimestamps;
+  bridgeVersion: string;
+  coreVersion: string;
+  httpAddress: string;
+  socksAddress: string;
+  probes: Phase2ProbeEntry[];
+  failures: Phase2ProbeFailure[];
+}
 
 function wait(milliseconds: number): Promise<void> {
   return new Promise<void>((resolve: () => void) => {
@@ -255,20 +294,109 @@ struct CoreDebugPage {
 
     try {
       this.writeProof(proof, context.filesDir);
+      if (context.probeOriginUrl.length > 0 && context.probeCaPem.length > 0 &&
+        context.probeExpectedBodySha256.length > 0) {
+        await this.runPhase2ProbeSelfTest(context);
+      }
       this.proofStatus = allPassed ? 'pass' : 'fail';
     } catch (error) {
       this.proofStatus = 'write-failed';
     }
   }
 
+  private async runPhase2ProbeSelfTest(context: Phase1LaunchContext): Promise<void> {
+    const startedAt: string = new Date().toISOString();
+    const configPath: string = `${context.filesDir}/${PHASE2_CONFIG_FILE_NAME}`;
+    const probes: Phase2ProbeEntry[] = [];
+    const failures: Phase2ProbeFailure[] = [];
+    let httpAddress: string = '';
+    let socksAddress: string = '';
+
+    try {
+      this.writeTextFile(configPath, PHASE2_CONFIG_SOURCE);
+      const snapshot = await this.coreService.startLocal({
+        configPath,
+        mixedPort: PHASE2_MIXED_PORT
+      });
+      httpAddress = snapshot.httpAddress;
+      socksAddress = snapshot.socksAddress;
+
+      for (const protocol of ['HTTP_CONNECT', 'SOCKS5'] as ProbeProtocol[]) {
+        const listenerAddress: string = protocol === 'HTTP_CONNECT' ? httpAddress : socksAddress;
+        const request: ProbeRequest = {
+          probeRunId: `${context.runId}-${protocol.toLowerCase()}`,
+          protocol,
+          listenerAddress,
+          originUrl: context.probeOriginUrl,
+          caPem: context.probeCaPem,
+          expectedBodySha256: context.probeExpectedBodySha256
+        };
+        const probe = await this.coreService.probeHttps(request);
+        const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
+        probes.push({
+          protocol,
+          result: passed ? 'pass' : 'fail',
+          detail: passed ? probe.tracker.connectionId : `${probe.error.code}:${probe.error.detail}`,
+          probe
+        });
+        if (!passed) {
+          failures.push({
+            code: probe.error.code.length > 0 ? probe.error.code : 'PHASE2_PROBE_FAILED',
+            detail: probe.error.detail.length > 0 ? probe.error.detail : `Probe ${protocol} did not pass.`,
+            stage: protocol
+          });
+        }
+      }
+    } catch (error) {
+      failures.push({
+        code: 'PHASE2_PROBE_FATAL',
+        detail: (error as Error).message ?? 'unknown phase2 probe error',
+        stage: 'phase2'
+      });
+    } finally {
+      try {
+        await this.coreService.stopRuntime();
+      } catch (error) {
+        failures.push({
+          code: 'PHASE2_STOP_FAILED',
+          detail: (error as Error).message ?? 'failed to stop local proxy after phase2 probe',
+          stage: 'cleanup'
+        });
+      }
+    }
+
+    const phase2Timestamps: Phase2ProbeTimestamps = {
+      startedAt,
+      proofAt: new Date().toISOString()
+    };
+    const phase2Proof: Phase2SelfTestProof = {
+      schemaVersion: '1.0.0',
+      phase: 2,
+      result: failures.length === 0 && probes.length === 2 ? 'pass' : 'fail',
+      runId: context.runId,
+      timestamps: phase2Timestamps,
+      bridgeVersion: this.bridgeVersion,
+      coreVersion: this.coreVersion,
+      httpAddress,
+      socksAddress,
+      probes,
+      failures
+    };
+    this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);
+  }
+
   private writeProof(proof: Phase1SelfTestProof, filesDir: string): void {
     const filePath: string = `${filesDir}/${PROOF_FILE_NAME}`;
+    this.writeTextFile(filePath, `${JSON.stringify(proof)}\n`);
+  }
+
+  private writeTextFile(filePath: string, content: string): void {
     const file: fileIo.File = fileIo.openSync(
       filePath,
       fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.CREATE | fileIo.OpenMode.TRUNC
     );
     try {
-      fileIo.writeSync(file.fd, `${JSON.stringify(proof)}\n`);
+      fileIo.writeSync(file.fd, content);
     } finally {
       fileIo.closeSync(file.fd);
     }

@@ -46,7 +46,7 @@ func AwaitRealTracker(ctx context.Context, observation FlowObservation) (Tracker
 func inboundTypeForProtocol(protocol Protocol) (string, error) {
 	switch protocol {
 	case ProtocolHTTPConnect:
-		return mihomoconstant.HTTP.String(), nil
+		return mihomoconstant.HTTPS.String(), nil
 	case ProtocolSOCKS5:
 		return mihomoconstant.SOCKS5.String(), nil
 	default:

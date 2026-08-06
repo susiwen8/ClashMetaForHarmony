@@ -56,6 +56,10 @@ typedef struct cmfa_backend_api {
                              cmfa_error *error);
   cmfa_status (*stop)(void *context, cmfa_error *error);
   cmfa_status (*runtime_state)(void *context, cmfa_runtime_snapshot *snapshot, cmfa_error *error);
+  cmfa_status (*probe_https)(void *context,
+                             const cmfa_probe_request *request,
+                             cmfa_probe_result *result,
+                             cmfa_error *error);
   cmfa_status (*shutdown)(void *context, cmfa_error *error);
 } cmfa_backend_api;
 

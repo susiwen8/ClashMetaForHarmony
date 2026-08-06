@@ -2,6 +2,7 @@ import {
   coreVersion as nativeCoreVersion,
   hello as nativeHello,
   loadConfiguration as nativeLoadConfiguration,
+  probeHttps as nativeProbeHttps,
   runtimeSnapshot as nativeRuntimeSnapshot,
   startLocal as nativeStartLocal,
   stopRuntime as nativeStopRuntime,
@@ -11,7 +12,7 @@ import {
 } from 'libentry.so';
 
 import { normalizeCoreError } from '@cmfa/shared';
-import type { CoreError, CoreEvent, CoreService, LocalOptions, RuntimeSnapshot } from '@cmfa/shared';
+import type { CoreError, CoreEvent, CoreService, LocalOptions, ProbeRequest, ProbeResult, RuntimeSnapshot } from '@cmfa/shared';
 
 export const CORE_BRIDGE_VERSION: string = '1.0.0';
 
@@ -34,6 +35,10 @@ export class CoreNativeAdapter implements CoreService {
 
   loadConfiguration(configPath: string): Promise<void> {
     return this.wrapAsync<void>('loadConfiguration', (): Promise<void> => nativeLoadConfiguration(configPath));
+  }
+
+  probeHttps(request: ProbeRequest): Promise<ProbeResult> {
+    return this.wrapAsync<ProbeResult>('probeHttps', (): Promise<ProbeResult> => nativeProbeHttps(request));
   }
 
   startLocal(options: LocalOptions): Promise<RuntimeSnapshot> {

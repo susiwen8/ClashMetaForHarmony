@@ -164,9 +164,6 @@ func TestHTTPSProbeReturnsStructuredErrors(t *testing.T) {
 }
 
 func TestHTTPSProbeThroughRealMihomoListenersIncludesTracker(t *testing.T) {
-	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-	defer cancel()
-
 	origin := startOriginProcess(t)
 	defer origin.stop(t)
 
@@ -183,7 +180,7 @@ func TestHTTPSProbeThroughRealMihomoListenersIncludesTracker(t *testing.T) {
 			name:                "http_connect",
 			protocol:            ProtocolHTTPConnect,
 			listenerAddress:     proxy.Snapshot().HTTPAddress,
-			expectedInboundType: "HTTP",
+			expectedInboundType: "HTTPS",
 		},
 		{
 			name:                "socks5",
@@ -193,6 +190,9 @@ func TestHTTPSProbeThroughRealMihomoListenersIncludesTracker(t *testing.T) {
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+
 			result, err := HTTPS(ctx, HTTPSRequest{
 				ProbeRunID:          fmt.Sprintf("mihomo-%s", testCase.name),
 				Protocol:            testCase.protocol,
