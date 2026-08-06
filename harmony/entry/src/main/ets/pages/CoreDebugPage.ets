@@ -53,10 +53,19 @@ interface Phase2ProbeEntry {
   originEventRunId: string | null;
   appEventRunId: string | null;
   coreEventRunId: string | null;
+  originId: string | null;
   coreConnectionId: string | null;
   clientSourcePort: number | null;
   destination: string | null;
   upstreamInboundType: string | null;
+  listenerAddress: string | null;
+  tlsPeerSha256: string | null;
+  httpStatus: number | null;
+  responseBytes: number | null;
+  responseSha256: string | null;
+  startedAt: string | null;
+  completedAt: string | null;
+  error: Phase2ProbeFailure | null;
 }
 
 interface Phase2ProbeTimestamps {
@@ -435,10 +444,23 @@ struct CoreDebugPage {
           originEventRunId: context.probeOriginRunId.length > 0 ? context.probeOriginRunId : context.runId,
           appEventRunId: context.runId,
           coreEventRunId: context.runId,
+          originId: probe.originId,
           coreConnectionId: probe.tracker.connectionId,
           clientSourcePort: parseSourcePort(probe.clientLocalAddress),
           destination: probe.tracker.destinationAddress,
-          upstreamInboundType: probe.tracker.inboundType
+          upstreamInboundType: probe.tracker.inboundType,
+          listenerAddress,
+          tlsPeerSha256: probe.tlsPeerSha256,
+          httpStatus: probe.httpStatus,
+          responseBytes: probe.bodyBytes,
+          responseSha256: probe.responseSha256,
+          startedAt: probe.startedAt,
+          completedAt: probe.completedAt,
+          error: probe.error.code.length > 0 ? {
+            code: probe.error.code,
+            detail: probe.error.detail,
+            stage: probe.error.stage
+          } : null
         };
         if (protocol === 'HTTP_CONNECT') {
           httpProbe = probeEntry;

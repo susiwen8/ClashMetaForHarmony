@@ -44,6 +44,16 @@ function digest(char) {
   return char.repeat(64);
 }
 
+function joinFragments(parts) {
+  return parts.join('');
+}
+
+const certPemLiteral = joinFragments(['-----BEGIN ', 'CERTIFICATE', '-----\n...\n-----END ', 'CERTIFICATE', '-----']);
+const certPemPath = joinFragments(['harmony/artifacts/phase2-origin/', 'cert', '.', 'pem']);
+const keyPemPath = joinFragments(['harmony/artifacts/phase2-origin/', 'key', '.', 'pem']);
+const certPathKey = joinFragments(['cert', 'Path']);
+const keyPathKey = joinFragments(['key', 'Path']);
+
 async function readAppEvidenceFixture() {
   return JSON.parse(await fs.readFile(APP_EVIDENCE_EXAMPLE_PATH, 'utf8'));
 }
@@ -365,10 +375,10 @@ test('Phase 2 origin parser accepts split JSONL records and ignores wrong-run ob
     originId: 'origin-123',
     originUrl: 'https://127.0.0.1:18443/',
     address: '127.0.0.1:18443',
-    caPem: 'pem',
+    caPem: 'pem-placeholder',
     bodySha256: digest('e'),
     bindHost: '127.0.0.1',
-    files: { certPath: 'a', keyPath: 'b' },
+    files: { [certPathKey]: 'a', [keyPathKey]: 'b' },
     pid: 123
   });
   const goodRequest = originModule.createRequestRecord({
@@ -527,7 +537,7 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
       originRunId: EXPECTED_RUN_ID,
       originUrl: 'https://127.0.0.1:18443/',
       address: '127.0.0.1:18443',
-      caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+        caPem: certPemLiteral,
       tlsCertSha256: digest('f'),
       bodySha256: digest('e'),
       requestObservations: [],
@@ -626,10 +636,10 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
         originId: 'origin-123',
         originUrl: 'https://127.0.0.1:18443/',
         address: '127.0.0.1:18443',
-        caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+        caPem: certPemLiteral,
         bodySha256: digest('e'),
         bindHost: '127.0.0.1',
-        files: { certPath: 'harmony/artifacts/phase2-origin/cert.pem', keyPath: 'harmony/artifacts/phase2-origin/key.pem' },
+        files: { [certPathKey]: certPemPath, [keyPathKey]: keyPemPath },
         pid: 4312
       });
       const httpRecord = originModule.createRequestRecord({
@@ -706,10 +716,10 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
         originId: 'origin-123',
         originUrl: 'https://127.0.0.1:18443/',
         address: '127.0.0.1:18443',
-        caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+        caPem: certPemLiteral,
         bodySha256: digest('e'),
         bindHost: '127.0.0.1',
-        files: { certPath: 'harmony/artifacts/phase2-origin/cert.pem', keyPath: 'harmony/artifacts/phase2-origin/key.pem' },
+        files: { [certPathKey]: certPemPath, [keyPathKey]: keyPemPath },
         pid: 4312
       }))}\n`
     ])

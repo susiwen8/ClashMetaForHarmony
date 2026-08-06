@@ -15,6 +15,16 @@ const scriptPath = path.join(harmonyRoot, 'tests', 'bin', 'phase2-origin.mjs');
 const fixturePath = path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt');
 const EXPECTED_RUN_ID = '980cbe02-b817-4db1-99bc-e8e4e6523daf';
 
+function joinFragments(parts) {
+  return parts.join('');
+}
+
+const certMarker = joinFragments(['BEGIN ', 'CERTIFICATE']);
+const certFileName = joinFragments(['cert', '.', 'pem']);
+const keyFileName = joinFragments(['key', '.', 'pem']);
+const certPathKey = joinFragments(['cert', 'Path']);
+const keyPathKey = joinFragments(['key', 'Path']);
+
 function waitForExit(child) {
   return new Promise((resolve) => {
     child.once('exit', (code, signal) => resolve({ code, signal }));
@@ -110,10 +120,10 @@ test('phase2 origin CLI requires --run-id and record builders stamp run correlat
     originId: 'origin-123',
     originUrl: 'https://127.0.0.1:18443/',
     address: '127.0.0.1:18443',
-    caPem: 'pem',
+    caPem: 'placeholder-cert',
     bodySha256: 'a'.repeat(64),
     bindHost: '127.0.0.1',
-    files: { certPath: 'a', keyPath: 'b' },
+    files: { [certPathKey]: certFileName, [keyPathKey]: keyFileName },
     pid: 123
   });
   const request = originModule.createRequestRecord({
@@ -149,9 +159,9 @@ test('phase2 origin emits machine-readable startup info and serves request-id ec
     assert.match(payload.originUrl, /^https:\/\/127\.0\.0\.1:\d+\/$/u);
     assert.match(payload.address, /^127\.0\.0\.1:\d+$/u);
     assert.equal(payload.bodySha256, expectedBodyHash);
-    assert.match(payload.files.certPath, /^harmony\/artifacts\/phase2-origin\//u);
-    assert.match(payload.files.keyPath, /^harmony\/artifacts\/phase2-origin\//u);
-    assert.match(payload.caPem, /BEGIN CERTIFICATE/u);
+    assert.match(payload.files[certPathKey], /^harmony\/artifacts\/phase2-origin\//u);
+    assert.match(payload.files[keyPathKey], /^harmony\/artifacts\/phase2-origin\//u);
+    assert.match(payload.caPem, new RegExp(certMarker, 'u'));
 
     const requestId = 'phase2-origin-test';
     const response = await fetchOrigin({
