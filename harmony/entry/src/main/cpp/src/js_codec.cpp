@@ -38,6 +38,7 @@ napi_status set_named_uint32(napi_env env, napi_value object, const char *name, 
   return napi_set_named_property(env, object, name, js_value);
 }
 
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
 napi_status set_named_int32(napi_env env, napi_value object, const char *name, int32_t value) {
   napi_value js_value = nullptr;
   napi_status status = napi_create_int32(env, value, &js_value);
@@ -64,6 +65,7 @@ napi_status set_named_bool(napi_env env, napi_value object, const char *name, bo
   }
   return napi_set_named_property(env, object, name, js_value);
 }
+#endif
 
 bool get_named_property(napi_env env, napi_value object, const char *name, napi_value *result, CoreErrorData *error) {
   napi_status status = napi_get_named_property(env, object, name, result);
@@ -160,8 +162,13 @@ const char *async_operation_name(AsyncOp op) {
       return "validateConfiguration";
     case AsyncOp::LOAD_CONFIGURATION:
       return "loadConfiguration";
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
     case AsyncOp::PROBE_HTTPS:
       return "probeHttps";
+#else
+    case AsyncOp::PROBE_HTTPS:
+      return "selfTestProbe";
+#endif
     case AsyncOp::START_LOCAL:
       return "startLocal";
     case AsyncOp::STOP_RUNTIME:
@@ -255,6 +262,7 @@ bool decode_local_options(napi_env env, napi_value value, OwnedLocalOptions *out
   return true;
 }
 
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
 bool decode_probe_request(napi_env env, napi_value value, OwnedProbeRequest *out, CoreErrorData *error) {
   napi_valuetype type = napi_undefined;
   napi_status status = napi_typeof(env, value, &type);
@@ -312,6 +320,7 @@ bool decode_probe_request(napi_env env, napi_value value, OwnedProbeRequest *out
   }
   return true;
 }
+#endif
 
 bool decode_subscription_id(napi_env env, napi_value value, uint32_t *out, CoreErrorData *error, const char *operation) {
   if (!decode_uint32_value(env, value, out, error, operation)) {
@@ -324,6 +333,7 @@ bool decode_subscription_id(napi_env env, napi_value value, uint32_t *out, CoreE
   return true;
 }
 
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
 bool probe_result_to_owned(const cmfa_probe_result &result, OwnedProbeResult *out, CoreErrorData *error) {
   if (out == nullptr) {
     *error = make_core_error(CMFA_INVALID_ARGUMENT, "probeHttps");
@@ -362,6 +372,7 @@ bool probe_result_to_owned(const cmfa_probe_result &result, OwnedProbeResult *ou
   out->error.detail = result.error.detail;
   return true;
 }
+#endif
 
 bool snapshot_to_owned(const cmfa_runtime_snapshot &snapshot,
                        OwnedRuntimeSnapshot *out,
@@ -444,6 +455,7 @@ bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, na
   return true;
 }
 
+#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
 bool owned_probe_result_to_js(napi_env env, const OwnedProbeResult &result, napi_value *value, CoreErrorData *error) {
   napi_value object = nullptr;
   napi_status status = napi_create_object(env, &object);
@@ -505,6 +517,7 @@ bool owned_probe_result_to_js(napi_env env, const OwnedProbeResult &result, napi
   *value = object;
   return true;
 }
+#endif
 
 bool owned_event_to_js(napi_env env, const OwnedCoreEvent &event, napi_value *result, CoreErrorData *error) {
   napi_value object = nullptr;

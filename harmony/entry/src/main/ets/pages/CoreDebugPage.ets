@@ -401,14 +401,14 @@ struct CoreDebugPage {
     } finally {
       try {
         await this.coreService.stopRuntime();
-      } catch (error) {
-        failures.push({
-          code: 'PHASE2_STOP_FAILED',
-          detail: (error as Error).message ?? 'failed to stop local proxy after phase2 probe',
-          stage: 'cleanup'
-        });
+        } catch (error) {
+          failures.push({
+            code: 'PHASE2_STOP_FAILED',
+            detail: (error as Error).message ?? 'failed to stop local runtime after phase2 probe',
+            stage: 'cleanup'
+          });
+        }
       }
-    }
 
     const phase2Timestamps: Phase2ProbeTimestamps = {
       startedAt,

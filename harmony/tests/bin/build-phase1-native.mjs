@@ -36,6 +36,7 @@ const COMPILE_NATIVE_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '
 const TASK_TREE_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', 'buildMode=debug', 'taskTree'];
 const SAFE_CLEAN_PATHS = [
   ['artifacts', 'libcmfa_mihomo.so'],
+  ['entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so'],
   ['entry', '.cxx', 'default', 'default', 'debug', 'arm64-v8a'],
   ['entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a'],
   ['entry', 'build', 'default', 'outputs', 'default']
@@ -105,6 +106,28 @@ function createBuildStep(result = 'not-run', command = null, exitCode = null, st
   return { result, command, exitCode, stdout, stderr };
 }
 
+function createPhase2SelfTestEvidence(enabled) {
+  return {
+    enabled: Boolean(enabled),
+    activation: enabled ? 'explicit' : 'default',
+    purpose: enabled ? 'test-only' : 'production',
+    releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
+function createPhase2SelfTestEnv(env, enabled) {
+  const nextEnv = { ...env };
+  delete nextEnv.CMFA_ENABLE_PHASE2_SELFTEST;
+  delete nextEnv.CMFA_TEST_BUILD_ABI;
+
+  if (enabled) {
+    nextEnv.CMFA_ENABLE_PHASE2_SELFTEST = '1';
+    nextEnv.CMFA_TEST_BUILD_ABI = '1';
+  }
+
+  return nextEnv;
+}
+
 function createBaseManifest({ repoRoot, outputPath, startedAt, runId }) {
   return {
     schemaVersion: PHASE1_NATIVE_SCHEMA_VERSION,
@@ -120,6 +143,7 @@ function createBaseManifest({ repoRoot, outputPath, startedAt, runId }) {
       path: normalizePathForReport(repoRoot, path.join(HARMONY_ROOT, 'toolchain.lock.json')),
       sha256: null
     },
+    phase2SelfTest: createPhase2SelfTestEvidence(false),
     builds: {
       core: createBuildStep(),
       addonConfigure: createBuildStep(),
@@ -585,6 +609,31 @@ function validateBuildHapReport(report) {
     errors.push('result must be pass, fail, or incomplete');
   }
 
+  const phase2SelfTest = report?.phase2SelfTest;
+  const requiresStrictPhase2SelfTest = Object.hasOwn(report ?? {}, 'schemaVersion') ||
+    Object.hasOwn(report ?? {}, 'phase') ||
+    Object.hasOwn(report ?? {}, 'toolchain') ||
+    Object.hasOwn(report ?? {}, 'wrapper');
+  const hasPhase2Shape = phase2SelfTest &&
+    typeof phase2SelfTest === 'object' &&
+    !Array.isArray(phase2SelfTest) &&
+    typeof phase2SelfTest.enabled === 'boolean' &&
+    ['default', 'explicit'].includes(phase2SelfTest.activation) &&
+    ['production', 'test-only'].includes(phase2SelfTest.purpose) &&
+    ['releasable', 'not-releasable'].includes(phase2SelfTest.releaseStatus);
+  if (requiresStrictPhase2SelfTest && !hasPhase2Shape) {
+    errors.push('phase2SelfTest must be a strict self-test evidence object');
+  } else if (hasPhase2Shape) {
+    const expected = createPhase2SelfTestEvidence(phase2SelfTest.enabled);
+    if (
+      phase2SelfTest.activation !== expected.activation ||
+      phase2SelfTest.purpose !== expected.purpose ||
+      phase2SelfTest.releaseStatus !== expected.releaseStatus
+    ) {
+      errors.push('phase2SelfTest must use canonical production/self-test combinations');
+    }
+  }
+
   const hapPath = typeof report?.hap?.path === 'string' && report.hap.path.length > 0
     ? report.hap.path
     : null;
@@ -636,6 +685,7 @@ function validateBuildHapReport(report) {
     errors,
     result: hasValidResult ? result : null,
     hapPath,
+    phase2SelfTest: hasPhase2Shape ? createPhase2SelfTestEvidence(phase2SelfTest.enabled) : createPhase2SelfTestEvidence(false),
     failures: Array.isArray(normalizedFailures) ? normalizedFailures : [],
     command: safeCommand,
     exitCode: safeExitCode,
@@ -890,7 +940,7 @@ export async function buildPhase1Native(options = {}) {
   const manifest = createBaseManifest({ repoRoot, outputPath, startedAt, runId });
   const runCommandImpl = resolveRunCommandImpl(options.runCommandImpl);
   const replacements = createRedactionReplacements({ repoRoot, env });
-  const phase2SelfTestEnv = options.phase2SelfTestEnabled ? { ...env, CMFA_ENABLE_PHASE2_SELFTEST: '1' } : env;
+  const phase2SelfTestEnv = createPhase2SelfTestEnv(env, options.phase2SelfTestEnabled);
   const toolchainLockPath = path.join(harmonyRoot, 'toolchain.lock.json');
   const rawCorePath = path.join(harmonyRoot, RAW_CORE_RELATIVE_PATH);
   const prePackageDirectory = path.join(harmonyRoot, PRE_PACKAGE_DIRECTORY);
@@ -898,6 +948,8 @@ export async function buildPhase1Native(options = {}) {
   const prePackageAddonPath = path.join(prePackageDirectory, PRE_PACKAGE_ADDON_NAME);
   let persisted = null;
   let serialToMask = new Map();
+
+  manifest.phase2SelfTest = createPhase2SelfTestEvidence(options.phase2SelfTestEnabled);
 
   try {
     emit(options, 'clean');
@@ -1131,8 +1183,19 @@ export async function buildPhase1Native(options = {}) {
           )
         );
       } else {
+        if (normalizedBuildReport.phase2SelfTest.enabled !== Boolean(options.phase2SelfTestEnabled)) {
+          pushFailure(
+            manifest,
+            createFailure(
+              'PACKAGE_HAP_REPORT_INVALID',
+              `buildHap reported phase2SelfTest.enabled=${normalizedBuildReport.phase2SelfTest.enabled} but the requested lane was ${Boolean(options.phase2SelfTestEnabled)}.`,
+              'package-hap'
+            )
+          );
+        }
         updateSigningState(manifest, buildReport);
         mergeBuildHapFailures(manifest, buildReport);
+        manifest.phase2SelfTest = normalizedBuildReport.phase2SelfTest;
       }
 
       const hapCommandFailed = Number.isInteger(normalizedBuildReport.exitCode) && normalizedBuildReport.exitCode !== 0;
@@ -1324,6 +1387,7 @@ export async function buildPhase1Native(options = {}) {
 export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
   let outputPath = DEFAULT_OUTPUT_PATH;
   let validatePath = null;
+  let phase2SelfTestEnabled = false;
   const seen = new Set();
 
   for (let index = 0; index < argv.length; index += 1) {
@@ -1334,6 +1398,9 @@ export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_
       }
       if (seen.has('--out')) {
         throw Object.assign(new Error('--validate cannot be combined with --out.'), { code: 'ARGUMENT_INVALID' });
+      }
+      if (phase2SelfTestEnabled) {
+        throw Object.assign(new Error('--validate cannot be combined with --phase2-self-test.'), { code: 'ARGUMENT_INVALID' });
       }
       const next = argv[index + 1];
       if (!next) {
@@ -1372,12 +1439,24 @@ export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_
       continue;
     }
 
+    if (arg === '--phase2-self-test') {
+      if (validatePath) {
+        throw Object.assign(new Error('--phase2-self-test cannot be combined with --validate.'), { code: 'ARGUMENT_INVALID' });
+      }
+      if (phase2SelfTestEnabled) {
+        throw Object.assign(new Error('--phase2-self-test may only be provided once.'), { code: 'ARGUMENT_INVALID' });
+      }
+      phase2SelfTestEnabled = true;
+      continue;
+    }
+
     throw Object.assign(new Error(`Unknown argument: ${arg}`), { code: 'ARGUMENT_INVALID' });
   }
 
   return {
     outputPath,
-    validatePath
+    validatePath,
+    phase2SelfTestEnabled
   };
 }
 
@@ -1410,7 +1489,8 @@ export async function runCli({
   }
 
   const manifest = await buildPhase1NativeImpl({
-    outputPath: parsed.outputPath
+    outputPath: parsed.outputPath,
+    phase2SelfTestEnabled: parsed.phase2SelfTestEnabled
   });
   stdout.write(`${JSON.stringify(manifest, null, 2)}\n`);
   if (manifest.result === 'pass') {

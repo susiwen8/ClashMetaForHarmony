@@ -21,7 +21,11 @@ set(CMFA_ENABLE_PHASE2_SELFTEST OFF CACHE BOOL "Enable phase2 self-test probe su
 if(DEFINED ENV{CMFA_ENABLE_PHASE2_SELFTEST})
   if("$ENV{CMFA_ENABLE_PHASE2_SELFTEST}" STREQUAL "1")
     set(CMFA_ENABLE_PHASE2_SELFTEST ON CACHE BOOL "Enable phase2 self-test probe surfaces" FORCE)
+  else()
+    set(CMFA_ENABLE_PHASE2_SELFTEST OFF CACHE BOOL "Enable phase2 self-test probe surfaces" FORCE)
   endif()
+else()
+  set(CMFA_ENABLE_PHASE2_SELFTEST OFF CACHE BOOL "Enable phase2 self-test probe surfaces" FORCE)
 endif()
 
 if(NOT EXISTS "${CORE_LIBRARY_PATH}")

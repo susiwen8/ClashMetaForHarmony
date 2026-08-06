@@ -1,6 +1,7 @@
 import { spawn as spawnChild } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
@@ -16,6 +17,12 @@ const MODULE_BUILD_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '-p
 const PROJECT_BUILD_ARGS = ['--mode', 'project', '-p', 'product=default', '-p', 'buildMode=debug', 'assembleApp'];
 const EXECUTABLE_BITS = 0o111;
 const MODULE_DEBUG_OUTPUT_DIRECTORY = ['entry', 'build', 'default', 'outputs', 'default'];
+const NATIVE_BUILD_OUTPUT_DIRECTORIES = [
+  ['entry', '.cxx', 'default', 'default', 'debug', 'arm64-v8a'],
+  ['entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a']
+];
+const RAW_CORE_RELATIVE_PATH = ['artifacts', 'libcmfa_mihomo.so'];
+const PACKAGED_CORE_STAGE_RELATIVE_PATH = ['entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so'];
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const HOME_DIRECTORY = process.env.HOME ?? process.env.USERPROFILE ?? null;
 const FILE_URL_PATTERN = /\bfile:\/\/[^\s"'<>]+/giu;
@@ -127,6 +134,28 @@ function createFailure(code, detail, extra = {}) {
   };
 }
 
+function createPhase2SelfTestEvidence(enabled) {
+  return {
+    enabled: Boolean(enabled),
+    activation: enabled ? 'explicit' : 'default',
+    purpose: enabled ? 'test-only' : 'production',
+    releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
+function createPhase2SelfTestEnv(env, enabled) {
+  const nextEnv = { ...env };
+  delete nextEnv.CMFA_ENABLE_PHASE2_SELFTEST;
+  delete nextEnv.CMFA_TEST_BUILD_ABI;
+
+  if (enabled) {
+    nextEnv.CMFA_ENABLE_PHASE2_SELFTEST = '1';
+    nextEnv.CMFA_TEST_BUILD_ABI = '1';
+  }
+
+  return nextEnv;
+}
+
 function createBuildEvidence({ repoRoot, harmonyRoot, outputPath, startedAt }) {
   return {
     schemaVersion: BUILD_SCHEMA_VERSION,
@@ -151,6 +180,7 @@ function createBuildEvidence({ repoRoot, harmonyRoot, outputPath, startedAt }) {
       path: null,
       executable: false
     },
+    phase2SelfTest: createPhase2SelfTestEvidence(false),
     commands: [],
     hap: {
       path: null,
@@ -206,13 +236,14 @@ async function runCommand({
   command,
   args,
   cwd,
+  env = process.env,
   spawnImpl = spawnChild,
   timeoutMs = DEFAULT_COMMAND_TIMEOUT_MS
 }) {
   return await new Promise((resolve) => {
     const child = spawnImpl(command, args, {
       cwd,
-      env: process.env,
+      env,
       shell: false,
       stdio: ['ignore', 'pipe', 'pipe']
     });
@@ -380,6 +411,88 @@ async function sha256File({ fsApi, filePath }) {
   };
 }
 
+async function stagePackagedCore({ harmonyRoot, fsApi }) {
+  const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
+  const stagedCorePath = path.join(harmonyRoot, ...PACKAGED_CORE_STAGE_RELATIVE_PATH);
+
+  await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
+
+  try {
+    await fsApi.access(rawCorePath);
+  } catch {
+    return {
+      stagedCorePath,
+      cleanup: async () => {
+        await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
+      }
+    };
+  }
+
+  await fsApi.mkdir(path.dirname(stagedCorePath), { recursive: true });
+  await fsApi.copyFile(rawCorePath, stagedCorePath);
+
+  return {
+    stagedCorePath,
+    cleanup: async () => {
+      await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
+    }
+  };
+}
+
+async function injectCoreIntoHap({
+  harmonyRoot,
+  hapPath,
+  fsApi,
+  spawnImpl,
+  timeoutMs,
+  env
+}) {
+  const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
+  try {
+    await fsApi.access(rawCorePath);
+  } catch {
+    return;
+  }
+  const tempRoot = await fsApi.mkdtemp(path.join(os.tmpdir(), 'cmfa-hap-core-'));
+  const archiveRelativePath = path.join('libs', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const stagedArchivePath = path.join(tempRoot, archiveRelativePath);
+
+  try {
+    await fsApi.mkdir(path.dirname(stagedArchivePath), { recursive: true });
+    await fsApi.copyFile(rawCorePath, stagedArchivePath);
+
+    const deleteResult = await runCommand({
+      command: '/usr/bin/zip',
+      args: ['-q', '-d', hapPath, archiveRelativePath.split(path.sep).join('/')],
+      cwd: tempRoot,
+      env,
+      spawnImpl,
+      timeoutMs
+    });
+    if (deleteResult.error || ![0, 12].includes(deleteResult.exitCode ?? -1)) {
+      throw Object.assign(new Error(deleteResult.stderr || deleteResult.stdout || 'Failed to remove stale core entry from HAP.'), {
+        code: deleteResult.error?.code ?? 'HAP_PATCH_FAILED'
+      });
+    }
+
+    const addResult = await runCommand({
+      command: '/usr/bin/zip',
+      args: ['-q', hapPath, archiveRelativePath.split(path.sep).join('/')],
+      cwd: tempRoot,
+      env,
+      spawnImpl,
+      timeoutMs
+    });
+    if (addResult.error || addResult.exitCode !== 0) {
+      throw Object.assign(new Error(addResult.stderr || addResult.stdout || 'Failed to add the real core to the HAP archive.'), {
+        code: addResult.error?.code ?? 'HAP_PATCH_FAILED'
+      });
+    }
+  } finally {
+    await fsApi.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+  }
+}
+
 function classifyBuildFailure(commandResult, stage) {
   if (commandResult.timedOut) {
     return createFailure('BUILD_TIMEOUT', `The ${stage} hvigor build exceeded the timeout and was terminated.`, { stage });
@@ -434,11 +547,15 @@ export async function buildHap({
   const startedAt = now();
   const evidence = createBuildEvidence({ repoRoot, harmonyRoot, outputPath, startedAt });
   const replacements = createReplacements(repoRoot);
+  const laneEnv = createPhase2SelfTestEnv(env, phase2SelfTestEnabled);
+
+  evidence.phase2SelfTest = createPhase2SelfTestEvidence(phase2SelfTestEnabled);
 
   evidence.toolchain = {
     ...evidence.toolchain,
     ...await readToolchainVersions({ fsApi, harmonyRoot })
   };
+  let stagedCore = null;
 
   try {
     const wrapperPath = await findHvigorWrapper({ fsApi, harmonyRoot });
@@ -450,10 +567,18 @@ export async function buildHap({
     evidence.wrapper.path = normalizePathForReport(repoRoot, wrapperPath);
     evidence.wrapper.executable = true;
 
+    stagedCore = await stagePackagedCore({ harmonyRoot, fsApi });
+
     await fsApi.rm(path.join(harmonyRoot, ...MODULE_DEBUG_OUTPUT_DIRECTORY), {
       recursive: true,
       force: true
     });
+    for (const directorySegments of NATIVE_BUILD_OUTPUT_DIRECTORIES) {
+      await fsApi.rm(path.join(harmonyRoot, ...directorySegments), {
+        recursive: true,
+        force: true
+      });
+    }
 
     for (const [stage, args] of [
       ['module', MODULE_BUILD_ARGS],
@@ -463,7 +588,7 @@ export async function buildHap({
         command: wrapperPath,
         args,
         cwd: harmonyRoot,
-        env: phase2SelfTestEnabled ? { ...env, CMFA_ENABLE_PHASE2_SELFTEST: '1' } : env,
+        env: laneEnv,
         spawnImpl,
         timeoutMs: commandTimeoutMs
       });
@@ -502,6 +627,14 @@ export async function buildHap({
 
     const candidates = await findDebugHapCandidates({ harmonyRoot, fsApi });
     const selectedHap = selectDebugHapCandidate(candidates);
+    await injectCoreIntoHap({
+      harmonyRoot,
+      hapPath: selectedHap,
+      fsApi,
+      spawnImpl,
+      timeoutMs: commandTimeoutMs,
+      env: laneEnv
+    });
     const digest = await sha256File({ fsApi, filePath: selectedHap });
 
     evidence.hap = {
@@ -531,6 +664,7 @@ export async function buildHap({
     }
   } finally {
     evidence.timestamps.completedAt = isoTimestamp(now());
+    await stagedCore?.cleanup();
   }
 
   return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);
@@ -541,10 +675,66 @@ export async function writeBuildEvidence(report, outputPath = DEFAULT_EVIDENCE_P
   await fsApi.writeFile(outputPath, `${JSON.stringify(report, null, 2)}\n`, 'utf8');
 }
 
-async function main() {
-  const report = await buildHap();
-  await writeBuildEvidence(report);
-  process.exitCode = report.result === 'pass' ? 0 : 2;
+function resolveRepoPath(repoRoot, candidatePath, argumentName) {
+  const resolved = path.isAbsolute(candidatePath) ? candidatePath : path.resolve(repoRoot, candidatePath);
+  const relative = path.relative(repoRoot, resolved);
+  if (relative.startsWith('..') || path.isAbsolute(relative)) {
+    throw Object.assign(new Error(`${argumentName} must stay inside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
+  }
+  return resolved;
+}
+
+export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
+  let outputPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-evidence.json');
+  let phase2SelfTestEnabled = false;
+  let outProvided = false;
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--out') {
+      const next = argv[index + 1];
+      if (!next) {
+        throw Object.assign(new Error('--out requires a value.'), { code: 'ARGUMENT_INVALID' });
+      }
+      if (outProvided) {
+        throw Object.assign(new Error('--out may only be provided once.'), { code: 'ARGUMENT_INVALID' });
+      }
+      outputPath = resolveRepoPath(repoRoot, next, '--out');
+      outProvided = true;
+      index += 1;
+      continue;
+    }
+    if (arg === '--phase2-self-test') {
+      if (phase2SelfTestEnabled) {
+        throw Object.assign(new Error('--phase2-self-test may only be provided once.'), { code: 'ARGUMENT_INVALID' });
+      }
+      phase2SelfTestEnabled = true;
+      continue;
+    }
+    throw Object.assign(new Error(`Unknown argument: ${arg}`), { code: 'ARGUMENT_INVALID' });
+  }
+
+  return {
+    outputPath,
+    phase2SelfTestEnabled
+  };
+}
+
+export async function runCli({
+  argv = process.argv.slice(2),
+  repoRoot = REPO_ROOT,
+  stdout = process.stdout,
+  buildHapImpl = buildHap,
+  writeBuildEvidenceImpl = writeBuildEvidence
+} = {}) {
+  const parsed = parseCliArguments(argv, repoRoot);
+  const report = await buildHapImpl({
+    outputPath: parsed.outputPath,
+    phase2SelfTestEnabled: parsed.phase2SelfTestEnabled
+  });
+  await writeBuildEvidenceImpl(report, parsed.outputPath);
+  stdout.write(`${JSON.stringify(report, null, 2)}\n`);
+  return report.result === 'pass' ? 0 : 2;
 }
 
 function isDirectExecution() {
@@ -556,7 +746,9 @@ function isDirectExecution() {
 }
 
 if (isDirectExecution()) {
-  main().catch(async (error) => {
+  runCli().then((exitCode) => {
+    process.exitCode = exitCode;
+  }).catch(async (error) => {
     const harmonyRoot = HARMONY_ROOT;
     const report = createBuildEvidence({
       repoRoot: REPO_ROOT,

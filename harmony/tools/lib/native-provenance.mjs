@@ -32,6 +32,7 @@ const ALLOWED_TOP_LEVEL_KEYS = Object.freeze([
   'nativeBuildResult',
   'timestamps',
   'toolchainLock',
+  'phase2SelfTest',
   'builds',
   'artifacts',
   'archive',
@@ -54,6 +55,7 @@ const ALLOWED_ELF_KEYS = Object.freeze([
 const ALLOWED_TOOLCHAIN_LOCK_KEYS = Object.freeze(['path', 'sha256']);
 const ALLOWED_ARCHIVE_KEYS = Object.freeze(['entryCount', 'occurrences']);
 const ALLOWED_OCCURRENCES_KEYS = Object.freeze(['core', 'addon']);
+const ALLOWED_PHASE2_SELF_TEST_KEYS = Object.freeze(['enabled', 'activation', 'purpose', 'releaseStatus']);
 const ALLOWED_SIGNING_KEYS = Object.freeze(['result']);
 const ALLOWED_DEVICE_KEYS = Object.freeze(['result', 'targetCount', 'identityMasked', 'proofResult']);
 const ALLOWED_FAILURE_KEYS = Object.freeze(['code', 'detail', 'stage']);
@@ -591,6 +593,32 @@ function validateToolchainLock(manifest, errors) {
   }
 }
 
+function validatePhase2SelfTest(manifest, errors) {
+  if (!validateExactKeys(manifest.phase2SelfTest, ALLOWED_PHASE2_SELF_TEST_KEYS, ALLOWED_PHASE2_SELF_TEST_KEYS, 'phase2SelfTest', errors)) {
+    return;
+  }
+
+  const { enabled, activation, purpose, releaseStatus } = manifest.phase2SelfTest;
+  if (typeof enabled !== 'boolean') {
+    pushError(errors, 'phase2SelfTest.enabled must be a boolean.');
+    return;
+  }
+
+  const expected = enabled
+    ? { activation: 'explicit', purpose: 'test-only', releaseStatus: 'not-releasable' }
+    : { activation: 'default', purpose: 'production', releaseStatus: 'releasable' };
+
+  if (activation !== expected.activation) {
+    pushError(errors, `phase2SelfTest.activation must be ${expected.activation} when enabled is ${enabled}.`);
+  }
+  if (purpose !== expected.purpose) {
+    pushError(errors, `phase2SelfTest.purpose must be ${expected.purpose} when enabled is ${enabled}.`);
+  }
+  if (releaseStatus !== expected.releaseStatus) {
+    pushError(errors, `phase2SelfTest.releaseStatus must be ${expected.releaseStatus} when enabled is ${enabled}.`);
+  }
+}
+
 export async function hashFile(filePath, {
   createReadStreamImpl = fs.createReadStream
 } = {}) {
@@ -1015,6 +1043,7 @@ export function validatePhase1NativeManifest(manifest) {
   }
 
   validateToolchainLock(manifest, errors);
+  validatePhase2SelfTest(manifest, errors);
 
   if (!validateExactKeys(manifest.builds, ['core', 'addonConfigure', 'addon', 'hap'], ['core', 'addonConfigure', 'addon', 'hap'], 'builds', errors)) {
     return { valid: false, errors };

@@ -97,6 +97,7 @@ function createPassingBuildEvidenceObject({ harmonyRoot, hapPath, sha256 }) {
       path: 'harmony/hvigorw',
       executable: true
     },
+    phase2SelfTest: createPhase2SelfTestEvidence(false),
     commands: [],
     hap: {
       path: path.relative(path.resolve(harmonyRoot, '..'), hapPath).split(path.sep).join('/'),
@@ -107,6 +108,15 @@ function createPassingBuildEvidenceObject({ harmonyRoot, hapPath, sha256 }) {
   };
 }
 
+function createPhase2SelfTestEvidence(enabled) {
+  return {
+    enabled,
+    activation: enabled ? 'explicit' : 'default',
+    purpose: enabled ? 'test-only' : 'production',
+    releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
 async function writePassingBuildEvidence({ harmonyRoot, hapPath, sha256, outputPath }) {
   await fs.mkdir(path.dirname(outputPath), { recursive: true });
   await fs.writeFile(outputPath, `${JSON.stringify(createPassingBuildEvidenceObject({ harmonyRoot, hapPath, sha256 }), null, 2)}\n`, 'utf8');
@@ -114,7 +124,7 @@ async function writePassingBuildEvidence({ harmonyRoot, hapPath, sha256, outputP
 
 test('phase0 proof contract exports deterministic helpers and a validating incomplete example', async () => {
   const originalExitCode = process.exitCode;
-  const [{ buildHap, findDebugHapCandidates }, runnerModule, schemaRaw, exampleRaw] = await Promise.all([
+  const [{ buildHap, findDebugHapCandidates, parseCliArguments: buildParseCliArguments, runCli: buildRunCli }, runnerModule, schemaRaw, exampleRaw] = await Promise.all([
     import(buildModulePath),
     import(runnerModulePath),
     fs.readFile(schemaPath, 'utf8'),
@@ -136,6 +146,8 @@ test('phase0 proof contract exports deterministic helpers and a validating incom
 
   assert.equal(typeof buildHap, 'function');
   assert.equal(typeof findDebugHapCandidates, 'function');
+  assert.equal(typeof buildParseCliArguments, 'function');
+  assert.equal(typeof buildRunCli, 'function');
   assert.equal(typeof parseCliArguments, 'function');
   assert.equal(typeof runCli, 'function');
   assert.match(DEFAULT_OUTPUT_PATH, /\/harmony\/artifacts\/phase0-device-proof\.json$/u);
@@ -162,6 +174,73 @@ test('phase0 proof contract exports deterministic helpers and a validating incom
   assert.equal(example.device.serial, undefined);
   assert.ok(example.failures.some((entry) => entry.code === 'DEVICE_TARGET_MISSING'));
   assert.ok(example.failures.some((entry) => entry.code === 'SIGNING_REQUIRED'));
+});
+
+test('phase0 build helper CLI requires explicit self-test flags and forwards strict evidence options', async () => {
+  const { parseCliArguments, runCli } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-cli-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const customOut = path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-custom.json');
+  const hapPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+
+  assert.deepEqual(parseCliArguments([], repoRoot), {
+    outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-evidence.json'),
+    phase2SelfTestEnabled: false
+  });
+  assert.deepEqual(parseCliArguments(['--phase2-self-test'], repoRoot), {
+    outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase0-build-evidence.json'),
+    phase2SelfTestEnabled: true
+  });
+  assert.deepEqual(parseCliArguments(['--out', 'harmony/artifacts/custom.json', '--phase2-self-test'], repoRoot), {
+    outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'custom.json'),
+    phase2SelfTestEnabled: true
+  });
+
+  for (const argv of [
+    ['--out'],
+    ['--out', 'one.json', '--out', 'two.json'],
+    ['--phase2-self-test', '--phase2-self-test'],
+    ['--unknown']
+  ]) {
+    assert.throws(
+      () => parseCliArguments(argv, repoRoot),
+      (error) => ['ARGUMENT_INVALID', 'PATH_OUTSIDE_REPO'].includes(error?.code),
+      `expected ${argv.join(' ')} to fail`
+    );
+  }
+
+  let observedOptions = null;
+  let observedWrite = null;
+  try {
+    const exitCode = await runCli({
+      argv: ['--out', 'harmony/artifacts/phase0-build-custom.json', '--phase2-self-test'],
+      repoRoot,
+      buildHapImpl: async (options) => {
+        observedOptions = options;
+        return {
+          ...createPassingBuildEvidenceObject({
+            harmonyRoot: path.join(repoRoot, 'harmony'),
+            hapPath,
+            sha256: 'a'.repeat(64)
+          }),
+          outputPath: 'harmony/artifacts/phase0-build-custom.json',
+          phase2SelfTest: createPhase2SelfTestEvidence(true)
+        };
+      },
+      writeBuildEvidenceImpl: async (report, outputPath) => {
+        observedWrite = { report, outputPath };
+      },
+      stdout: { write() {} }
+    });
+
+    assert.equal(exitCode, 0);
+    assert.equal(observedOptions.outputPath, customOut);
+    assert.equal(observedOptions.phase2SelfTestEnabled, true);
+    assert.equal(observedWrite.outputPath, customOut);
+    assert.deepEqual(observedWrite.report.phase2SelfTest, createPhase2SelfTestEvidence(true));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('phase0 proof schema declares only known top-level fields', async () => {
@@ -527,6 +606,116 @@ test('phase0 build helper rejects stale signed hap artifacts when this build pro
     await fs.access(preservedNeighborPath);
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper stages the raw core into src/main/libs for packaging and removes the staging copy afterwards', async () => {
+  const { buildHap } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-stage-core-'));
+  const harmonyRoot = path.join(tempRoot, 'harmony');
+  const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+  const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  const stagedCorePath = path.join(harmonyRoot, 'entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const hapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  let spawnCalls = 0;
+
+  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+  await fs.chmod(wrapperPath, 0o755);
+  await fs.writeFile(rawCorePath, 'raw-core-bytes', 'utf8');
+  await writeToolchainLock(harmonyRoot);
+
+  try {
+    const report = await buildHap({
+      harmonyRoot,
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      spawnImpl(command, args) {
+        spawnCalls += 1;
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+
+        queueMicrotask(async () => {
+          const stagedBytes = await fs.readFile(stagedCorePath, 'utf8');
+          assert.equal(stagedBytes, 'raw-core-bytes');
+          if (spawnCalls === 1) {
+            await fs.mkdir(path.dirname(hapPath), { recursive: true });
+            await fs.writeFile(hapPath, 'signed-hap', 'utf8');
+          }
+          child.stdout.emit('data', Buffer.from('BUILD SUCCESSFUL\n'));
+          child.emit('close', 0, null);
+        });
+
+        return child;
+      }
+    });
+
+    assert.equal(report.result, 'pass');
+    assert.equal(spawnCalls, 4);
+    await assert.rejects(fs.access(stagedCorePath));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper stamps strict self-test evidence and clears stale lane env by default', async () => {
+  const { buildHap } = await import(buildModulePath);
+
+  for (const variant of [
+    { label: 'production', enabled: false, expected: createPhase2SelfTestEvidence(false) },
+    { label: 'self-test', enabled: true, expected: createPhase2SelfTestEvidence(true) }
+  ]) {
+    const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), `phase0-build-lane-${variant.label}-`));
+    const harmonyRoot = path.join(tempRoot, 'harmony');
+    const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+    const hapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+    const observedEnvs = [];
+
+    await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+    await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+    await fs.chmod(wrapperPath, 0o755);
+    await writeToolchainLock(harmonyRoot);
+
+    try {
+      const report = await buildHap({
+        harmonyRoot,
+        outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+        env: {
+          ...process.env,
+          CMFA_ENABLE_PHASE2_SELFTEST: '1',
+          CMFA_TEST_BUILD_ABI: '1'
+        },
+        phase2SelfTestEnabled: variant.enabled,
+        spawnImpl(command, args, options) {
+          observedEnvs.push(options.env);
+          const child = new EventEmitter();
+          child.stdout = new EventEmitter();
+          child.stderr = new EventEmitter();
+
+          queueMicrotask(async () => {
+            if (args.includes('assembleHap')) {
+              await fs.mkdir(path.dirname(hapPath), { recursive: true });
+              await fs.writeFile(hapPath, 'signed-hap', 'utf8');
+            }
+            child.stdout.emit('data', Buffer.from('BUILD SUCCESSFUL\n'));
+            child.emit('close', 0, null);
+          });
+
+          return child;
+        }
+      });
+
+      assert.equal(report.result, 'pass');
+      assert.deepEqual(report.phase2SelfTest, variant.expected);
+      assert.equal(observedEnvs.length, 2);
+      for (const observedEnv of observedEnvs) {
+        assert.equal(observedEnv.CMFA_ENABLE_PHASE2_SELFTEST, variant.enabled ? '1' : undefined, `${variant.label} lane must control CMFA_ENABLE_PHASE2_SELFTEST explicitly`);
+        assert.equal(observedEnv.CMFA_TEST_BUILD_ABI, variant.enabled ? '1' : undefined, `${variant.label} lane must control CMFA_TEST_BUILD_ABI explicitly`);
+      }
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true });
+    }
   }
 });
 

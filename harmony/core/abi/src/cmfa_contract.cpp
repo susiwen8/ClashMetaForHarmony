@@ -289,6 +289,7 @@ void reset_snapshot_locked() {
   zero_text_buffer(g_contract.snapshot.last_error);
 }
 
+#if defined(CMFA_TEST_BUILD_ABI)
 void zero_probe_text(char *buffer, size_t capacity) {
   if (buffer == nullptr || capacity == 0) {
     return;
@@ -443,6 +444,7 @@ cmfa_status validate_probe_request(const cmfa_probe_request *request, cmfa_error
                                   error);
   return status;
 }
+#endif
 
 cmfa_status validate_snapshot_output(cmfa_runtime_snapshot *snapshot, cmfa_error *error) {
   if (snapshot == nullptr) {
@@ -1098,6 +1100,7 @@ extern "C" cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_
   return CMFA_OK;
 }
 
+#if defined(CMFA_TEST_BUILD_ABI)
 extern "C" cmfa_status cmfa_probe_https(const cmfa_probe_request *request,
                                         cmfa_probe_result **result,
                                         cmfa_error *error) {
@@ -1156,6 +1159,7 @@ extern "C" cmfa_status cmfa_probe_https(const cmfa_probe_request *request,
 extern "C" void cmfa_probe_result_free(cmfa_probe_result *result) {
   std::free(result);
 }
+#endif
 
 extern "C" cmfa_status cmfa_shutdown(cmfa_error *error) {
   if (g_host_callback_depth > 0 || g_backend_call_depth > 0) {

@@ -571,7 +571,8 @@ napi_value start_local(napi_env env, napi_callback_info info) {
 
 napi_value probe_https(napi_env env, napi_callback_info info) {
 #if !defined(CMFA_ENABLE_PHASE2_SELFTEST)
-  throw_core_error(env, make_core_error(CMFA_CORE_UNAVAILABLE, "probeHttps"));
+  (void)info;
+  throw_core_error(env, make_core_error(CMFA_CORE_UNAVAILABLE, "selfTestProbe"));
   return nullptr;
 #else
   try {

@@ -116,6 +116,15 @@ function createBuildStep(result = 'not-run', command = null, exitCode = null, st
   return { result, command, exitCode, stdout, stderr };
 }
 
+function createPhase2SelfTestEvidence(enabled = false) {
+  return {
+    enabled,
+    activation: enabled ? 'explicit' : 'default',
+    purpose: enabled ? 'test-only' : 'production',
+    releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
 function createElfReport(component, overrides = {}) {
   const coreExports = [
     'cmfa_mihomo_core_build_info_json_cstr_v1',
@@ -178,6 +187,7 @@ function createStrictManifest(overrides = {}) {
       path: 'harmony/toolchain.lock.json',
       sha256: sha256(JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE))
     },
+    phase2SelfTest: createPhase2SelfTestEvidence(false),
     builds: {
       core: createBuildStep('pass', ['node', 'harmony/tools/build-mihomo-ohos.mjs'], 0),
       addonConfigure: createBuildStep('pass', ['harmony/hvigorw', '--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', 'buildMode=debug', 'compileNative'], 0),
@@ -228,6 +238,7 @@ function createEarlyFailureManifest(overrides = {}) {
       path: 'harmony/toolchain.lock.json',
       sha256: null
     },
+    phase2SelfTest: createPhase2SelfTestEvidence(false),
     builds: {
       core: createBuildStep(),
       addonConfigure: createBuildStep(),
@@ -380,11 +391,18 @@ test('phase1 CLI requires explicit --validate <manifest> and rejects forbidden c
 
   assert.deepEqual(parseCliArguments([], repoRoot), {
     outputPath: defaultManifestPath,
-    validatePath: null
+    validatePath: null,
+    phase2SelfTestEnabled: false
+  });
+  assert.deepEqual(parseCliArguments(['--phase2-self-test'], repoRoot), {
+    outputPath: defaultManifestPath,
+    validatePath: null,
+    phase2SelfTestEnabled: true
   });
   assert.deepEqual(parseCliArguments(['--validate', 'harmony/artifacts/phase1-native-provenance.json'], repoRoot), {
     outputPath: defaultManifestPath,
-    validatePath: path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json')
+    validatePath: path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json'),
+    phase2SelfTestEnabled: false
   });
 
   for (const argv of [
@@ -392,8 +410,10 @@ test('phase1 CLI requires explicit --validate <manifest> and rejects forbidden c
     ['--validate', 'harmony/artifacts/a.json', '--validate', 'harmony/artifacts/b.json'],
     ['--validate', '../outside.json'],
     ['--validate', 'harmony/artifacts/a.json', '--out', 'harmony/artifacts/b.json'],
+    ['--validate', 'harmony/artifacts/a.json', '--phase2-self-test'],
     ['--out'],
     ['--out', 'one.json', '--out', 'two.json'],
+    ['--phase2-self-test', '--phase2-self-test'],
     ['--unknown']
   ]) {
     assert.throws(
@@ -2192,6 +2212,328 @@ test('phase1 CLI rejects mixed --out and --validate in either order', async () =
       `expected ${argv.join(' ')} to fail`
     );
   }
+});
+
+test('phase1 manifest validator requires strict phase2 self-test evidence and rejects impossible combinations', async () => {
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  const missing = createStrictManifest();
+  delete missing.phase2SelfTest;
+  const missingValidation = validatePhase1NativeManifest(missing);
+  assert.equal(missingValidation.valid, false);
+  assert.match(missingValidation.errors.join('\n'), /phase2SelfTest/u);
+
+  const inconsistent = validatePhase1NativeManifest(createStrictManifest({
+    phase2SelfTest: {
+      enabled: true,
+      activation: 'default',
+      purpose: 'production',
+      releaseStatus: 'releasable'
+    }
+  }));
+  assert.equal(inconsistent.valid, false);
+  assert.match(inconsistent.errors.join('\n'), /phase2SelfTest/u);
+});
+
+test('buildPhase1Native stamps strict self-test provenance, forwards explicit lane intent, and clears stale self-test env by default', async () => {
+  const { buildPhase1Native, HAP_NATIVE_ENTRIES } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  for (const variant of [
+    { label: 'production', enabled: false, expected: createPhase2SelfTestEvidence(false) },
+    { label: 'self-test', enabled: true, expected: createPhase2SelfTestEvidence(true) }
+  ]) {
+    await withTempDir(`phase1-native-self-test-${variant.label}-`, async (tempRoot) => {
+      const fakeRepoRoot = path.join(tempRoot, 'repo');
+      const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+      const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+      const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+      const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+      const hapPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-unsigned.hap');
+      const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+      const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+      const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+      const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+      const observedEnvs = [];
+      let observedBuildHapOptions = null;
+
+      await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+      await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+      await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+      await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+      await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+      const manifest = await buildPhase1Native({
+        harmonyRoot: fakeHarmonyRoot,
+        repoRoot: fakeRepoRoot,
+        outputPath,
+        env: {
+          ...process.env,
+          CMFA_ENABLE_PHASE2_SELFTEST: '1',
+          CMFA_TEST_BUILD_ABI: '1'
+        },
+        phase2SelfTestEnabled: variant.enabled,
+        inspectToolchainImpl: async () => ({
+          report: {
+            schemaVersion: '1.0.0',
+            result: 'pass',
+            target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+            installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            failures: []
+          },
+          resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+        }),
+        inspectTaskTreeImpl: async () => ({
+          rootTask: ':entry:compileNative',
+          hasBuildNativeWithCmake: true,
+          hasPackageHap: false,
+          exitCode: 0,
+          stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+          stderr: ''
+        }),
+        buildMihomoOhosImpl: async (options) => {
+          observedEnvs.push({ stage: 'build-core', env: options.env });
+          await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+          await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+          return {
+            result: 'pass',
+            components: {
+              mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+            },
+            failures: []
+          };
+        },
+        runCommandImpl: async ({ command, args, env }) => {
+          if (args.includes('compileNative')) {
+            observedEnvs.push({ stage: 'prepare-addon', env });
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (args.includes('--build')) {
+            observedEnvs.push({ stage: 'build-addon', env });
+            await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+            await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (args.join(' ') === 'list targets') {
+            return { command, args, exitCode: 0, stdout: 'SERIAL123\n', stderr: '' };
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+        buildHapImpl: async (options) => {
+          observedBuildHapOptions = options;
+          await fs.mkdir(path.dirname(hapPath), { recursive: true });
+          await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
+          return {
+            schemaVersion: '1.0.0',
+            phase: 0,
+            result: 'incomplete',
+            harmonyRoot: 'harmony',
+            outputPath: 'harmony/artifacts/phase0-build-evidence.json',
+            timestamps: {
+              startedAt: isoAt(0),
+              completedAt: isoAt(1)
+            },
+            toolchain: {
+              nodeVersion: process.version.replace(/^v/u, ''),
+              devecoVersion: '6.1.0.860',
+              sdkVersion: '6.1.0.105',
+              ndkVersion: '6.1.0.105',
+              hvigorVersion: '6.23.7',
+              ohpmVersion: '6.1.1.830',
+              hdcVersion: '6.1.0.105'
+            },
+            wrapper: {
+              path: 'harmony/hvigorw',
+              executable: true
+            },
+            phase2SelfTest: variant.expected,
+            commands: [
+              {
+                stage: 'module',
+                command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
+                exitCode: 0,
+                stdout: '',
+                stderr: ''
+              }
+            ],
+            hap: {
+              path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
+              sha256: sha256('hap-bytes'),
+              sizeBytes: Buffer.byteLength('hap-bytes')
+            },
+            failures: [
+              {
+                code: 'SIGNING_REQUIRED',
+                detail: 'unsigned',
+                stage: 'signing'
+              }
+            ]
+          };
+        },
+        inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+        inspectHapNativeEntriesImpl: async () => ({
+          entryCount: 2,
+          occurrences: { core: 1, addon: 1 },
+          artifacts: {
+            core: createArtifact(HAP_NATIVE_ENTRIES.core, 'core-bytes', createElfReport('mihomoCore')),
+            addon: createArtifact(HAP_NATIVE_ENTRIES.addon, 'addon-bytes', createElfReport('nodeAddon'))
+          },
+          failures: []
+        })
+      });
+
+      assert.deepEqual(manifest.phase2SelfTest, variant.expected);
+      assert.equal(observedBuildHapOptions.phase2SelfTestEnabled, variant.enabled);
+      assert.deepEqual(observedBuildHapOptions.env.CMFA_ENABLE_PHASE2_SELFTEST, variant.enabled ? '1' : undefined);
+      assert.deepEqual(observedBuildHapOptions.env.CMFA_TEST_BUILD_ABI, variant.enabled ? '1' : undefined);
+      for (const observed of observedEnvs) {
+        assert.equal(observed.env.CMFA_ENABLE_PHASE2_SELFTEST, variant.enabled ? '1' : undefined, `${variant.label} lane must control CMFA_ENABLE_PHASE2_SELFTEST explicitly during ${observed.stage}`);
+        assert.equal(observed.env.CMFA_TEST_BUILD_ABI, variant.enabled ? '1' : undefined, `${variant.label} lane must control CMFA_TEST_BUILD_ABI explicitly during ${observed.stage}`);
+      }
+      assert.equal(validatePhase1NativeManifest(manifest).valid, true);
+    });
+  }
+});
+
+test('buildPhase1Native rejects buildHap reports that omit strict phase2 self-test evidence', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  await withTempDir('phase1-native-buildhap-phase2-invalid-', async (tempRoot) => {
+    const fakeRepoRoot = path.join(tempRoot, 'repo');
+    const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+    const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+    const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+    const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+    const hapPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-unsigned.hap');
+    const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+    const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+    const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+    const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+    let archiveCalled = false;
+    let deviceDiscoveryCalled = false;
+
+    await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+    await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+    await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+    await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+    await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+    const manifest = await buildPhase1Native({
+      harmonyRoot: fakeHarmonyRoot,
+      repoRoot: fakeRepoRoot,
+      outputPath,
+      inspectToolchainImpl: async () => ({
+        report: {
+          schemaVersion: '1.0.0',
+          result: 'pass',
+          target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+          installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          failures: []
+        },
+        resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+      }),
+      inspectTaskTreeImpl: async () => ({
+        rootTask: ':entry:compileNative',
+        hasBuildNativeWithCmake: true,
+        hasPackageHap: false,
+        exitCode: 0,
+        stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+        stderr: ''
+      }),
+      buildMihomoOhosImpl: async () => {
+        await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+        await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+        return {
+          result: 'pass',
+          components: {
+            mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+          },
+          failures: []
+        };
+      },
+      runCommandImpl: async ({ command, args }) => {
+        if (args.includes('compileNative')) {
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.includes('--build')) {
+          await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+          await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.join(' ') === 'list targets') {
+          deviceDiscoveryCalled = true;
+          return { command, args, exitCode: 0, stdout: 'SERIAL123\n', stderr: '' };
+        }
+        throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+      },
+      buildHapImpl: async () => {
+        await fs.mkdir(path.dirname(hapPath), { recursive: true });
+        await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
+        return {
+          schemaVersion: '1.0.0',
+          phase: 0,
+          result: 'incomplete',
+          harmonyRoot: 'harmony',
+          outputPath: 'harmony/artifacts/phase0-build-evidence.json',
+          timestamps: {
+            startedAt: isoAt(0),
+            completedAt: isoAt(1)
+          },
+          toolchain: {
+            nodeVersion: process.version.replace(/^v/u, ''),
+            devecoVersion: '6.1.0.860',
+            sdkVersion: '6.1.0.105',
+            ndkVersion: '6.1.0.105',
+            hvigorVersion: '6.23.7',
+            ohpmVersion: '6.1.1.830',
+            hdcVersion: '6.1.0.105'
+          },
+          wrapper: {
+            path: 'harmony/hvigorw',
+            executable: true
+          },
+          commands: [
+            {
+              stage: 'module',
+              command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
+              exitCode: 0,
+              stdout: '',
+              stderr: ''
+            }
+          ],
+          hap: {
+            path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
+            sha256: sha256('hap-bytes'),
+            sizeBytes: Buffer.byteLength('hap-bytes')
+          },
+          failures: [
+            {
+              code: 'SIGNING_REQUIRED',
+              detail: 'unsigned',
+              stage: 'signing'
+            }
+          ]
+        };
+      },
+      inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+      inspectHapNativeEntriesImpl: async () => {
+        archiveCalled = true;
+        throw new Error('archive should not run when buildHap report is malformed');
+      }
+    });
+
+    assert.equal(archiveCalled, false);
+    assert.equal(deviceDiscoveryCalled, false);
+    assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_REPORT_INVALID' && entry.stage === 'package-hap'));
+    assert.equal(validatePhase1NativeManifest(manifest).valid, true);
+  });
 });
 
 test('inspectHapNativeEntries keeps extracted files present through inspect, emits real ordered events, and removes the run temp dir on inspect failure', async () => {
