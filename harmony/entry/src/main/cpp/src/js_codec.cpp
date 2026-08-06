@@ -252,9 +252,27 @@ bool snapshot_to_owned(const cmfa_runtime_snapshot &snapshot,
     *error = make_core_error(CMFA_BACKEND_ERROR, operation);
     return false;
   }
+  const size_t http_length = strnlen(snapshot.http_address, CMFA_MAX_PATH_BYTES);
+  if (http_length >= CMFA_MAX_PATH_BYTES) {
+    *error = make_core_error(CMFA_BACKEND_ERROR, operation);
+    return false;
+  }
+  const size_t socks_length = strnlen(snapshot.socks_address, CMFA_MAX_PATH_BYTES);
+  if (socks_length >= CMFA_MAX_PATH_BYTES) {
+    *error = make_core_error(CMFA_BACKEND_ERROR, operation);
+    return false;
+  }
+  const size_t last_error_length = strnlen(snapshot.last_error, CMFA_MAX_PATH_BYTES);
+  if (last_error_length >= CMFA_MAX_PATH_BYTES) {
+    *error = make_core_error(CMFA_BACKEND_ERROR, operation);
+    return false;
+  }
 
   out->state = state_name;
   out->active_config_path.assign(snapshot.active_config_path, path_length);
+  out->http_address.assign(snapshot.http_address, http_length);
+  out->socks_address.assign(snapshot.socks_address, socks_length);
+  out->last_error.assign(snapshot.last_error, last_error_length);
   out->mixed_port = snapshot.mixed_port;
   return true;
 }
@@ -272,6 +290,21 @@ bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, na
     return false;
   }
   status = set_named_string(env, object, "activeConfigPath", snapshot.active_config_path);
+  if (status != napi_ok) {
+    *error = make_napi_failure("runtimeSnapshot", status);
+    return false;
+  }
+  status = set_named_string(env, object, "httpAddress", snapshot.http_address);
+  if (status != napi_ok) {
+    *error = make_napi_failure("runtimeSnapshot", status);
+    return false;
+  }
+  status = set_named_string(env, object, "socksAddress", snapshot.socks_address);
+  if (status != napi_ok) {
+    *error = make_napi_failure("runtimeSnapshot", status);
+    return false;
+  }
+  status = set_named_string(env, object, "lastError", snapshot.last_error);
   if (status != napi_ok) {
     *error = make_napi_failure("runtimeSnapshot", status);
     return false;

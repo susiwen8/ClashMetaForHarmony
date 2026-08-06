@@ -117,6 +117,13 @@ function createBuildStep(result = 'not-run', command = null, exitCode = null, st
 }
 
 function createElfReport(component, overrides = {}) {
+  const coreExports = [
+    'cmfa_mihomo_core_build_info_json_cstr_v1',
+    'cmfa_mihomo_core_version_cstr_v1',
+    'cmfa_mihomo_runtime_state_v1',
+    'cmfa_mihomo_start_local_v1',
+    'cmfa_mihomo_stop_v1'
+  ];
   const defaults = component === 'nodeAddon'
     ? {
       result: 'pass',
@@ -134,8 +141,8 @@ function createElfReport(component, overrides = {}) {
       architecture: 'AArch64',
       neededLibraries: ['libc.so'],
       allowedNeededLibraries: ['libc.so'],
-      exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
-      requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+      exportedSymbols: coreExports,
+      requiredExports: coreExports,
       failures: []
     };
 
@@ -1155,7 +1162,7 @@ test('verifyPhase1NativeManifest rejects persisted ELF reports that do not match
       ],
       artifacts: {
         rawCore: createArtifact('harmony/artifacts/libcmfa_mihomo.so', 'core-bytes', createElfReport('mihomoCore', {
-          exportedSymbols: ['_init', 'cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
+          exportedSymbols: [...createElfReport('mihomoCore').exportedSymbols, '_persisted_only_symbol']
         })),
         prePackageCore: null,
         prePackageAddon: null,

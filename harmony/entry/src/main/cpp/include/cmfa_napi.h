@@ -45,6 +45,9 @@ struct OwnedLocalOptions {
 struct OwnedRuntimeSnapshot {
   std::string state;
   std::string active_config_path;
+  std::string http_address;
+  std::string socks_address;
+  std::string last_error;
   uint32_t mixed_port = 0;
 };
 

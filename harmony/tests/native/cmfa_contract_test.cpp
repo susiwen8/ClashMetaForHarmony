@@ -305,16 +305,34 @@ struct FakeBackend {
     snapshot.state = CMFA_RUNTIME_STOPPED;
     snapshot.mixed_port = 0;
     set_snapshot_path_locked("");
+    set_snapshot_http_locked("");
+    set_snapshot_socks_locked("");
+    set_snapshot_last_error_locked("");
+  }
+
+  void write_snapshot_text_locked(char *buffer, size_t capacity, const std::string &value) {
+    std::memset(buffer, 0, capacity);
+    const size_t copy_length = value.size() < (capacity - 1) ? value.size() : (capacity - 1);
+    if (copy_length > 0) {
+      std::memcpy(buffer, value.data(), copy_length);
+    }
+    buffer[copy_length] = '\0';
   }
 
   void set_snapshot_path_locked(const std::string &path) {
-    std::memset(snapshot.active_config_path, 0, sizeof(snapshot.active_config_path));
-    const size_t copy_length = path.size() < (sizeof(snapshot.active_config_path) - 1) ? path.size()
-                                                                                         : (sizeof(snapshot.active_config_path) - 1);
-    if (copy_length > 0) {
-      std::memcpy(snapshot.active_config_path, path.data(), copy_length);
-    }
-    snapshot.active_config_path[copy_length] = '\0';
+    write_snapshot_text_locked(snapshot.active_config_path, sizeof(snapshot.active_config_path), path);
+  }
+
+  void set_snapshot_http_locked(const std::string &address) {
+    write_snapshot_text_locked(snapshot.http_address, sizeof(snapshot.http_address), address);
+  }
+
+  void set_snapshot_socks_locked(const std::string &address) {
+    write_snapshot_text_locked(snapshot.socks_address, sizeof(snapshot.socks_address), address);
+  }
+
+  void set_snapshot_last_error_locked(const std::string &message) {
+    write_snapshot_text_locked(snapshot.last_error, sizeof(snapshot.last_error), message);
   }
 
   void set_runtime_snapshot(cmfa_runtime_state_value state, const std::string &path, uint32_t mixed_port) {
@@ -322,6 +340,14 @@ struct FakeBackend {
     snapshot.state = state;
     snapshot.mixed_port = mixed_port;
     set_snapshot_path_locked(path);
+    if (state == CMFA_RUNTIME_RUNNING) {
+      set_snapshot_http_locked("127.0.0.1:7890");
+      set_snapshot_socks_locked("127.0.0.1:19090");
+      set_snapshot_last_error_locked("");
+    } else {
+      set_snapshot_http_locked("");
+      set_snapshot_socks_locked("");
+    }
   }
 
   static cmfa_status attach_host(void *context, const cmfa_backend_host *host, cmfa_error *) {
@@ -393,11 +419,16 @@ struct FakeBackend {
       self->snapshot.state = CMFA_RUNTIME_STARTING;
       self->snapshot.mixed_port = options->mixed_port;
       self->set_snapshot_path_locked(options->config_path);
+      self->set_snapshot_http_locked("");
+      self->set_snapshot_socks_locked("");
+      self->set_snapshot_last_error_locked("");
       self->entered_cv.notify_all();
       while (self->block_start && !self->allow_start_exit) {
         self->release_cv.wait(lock);
       }
       self->snapshot.state = CMFA_RUNTIME_RUNNING;
+      self->set_snapshot_http_locked("127.0.0.1:7890");
+      self->set_snapshot_socks_locked("127.0.0.1:19090");
       *snapshot = self->snapshot;
     }
 
@@ -419,6 +450,9 @@ struct FakeBackend {
     self->snapshot.state = CMFA_RUNTIME_STOPPED;
     self->snapshot.mixed_port = 0;
     self->set_snapshot_path_locked("");
+    self->set_snapshot_http_locked("");
+    self->set_snapshot_socks_locked("");
+    self->set_snapshot_last_error_locked("");
     self->stop_cv.notify_all();
     return CMFA_OK;
   }
@@ -438,6 +472,9 @@ struct FakeBackend {
     self->snapshot.state = CMFA_RUNTIME_STOPPED;
     self->snapshot.mixed_port = 0;
     self->set_snapshot_path_locked("");
+    self->set_snapshot_http_locked("");
+    self->set_snapshot_socks_locked("");
+    self->set_snapshot_last_error_locked("");
     self->shutdown_cv.notify_all();
     while (self->block_shutdown && !self->allow_shutdown_exit) {
       self->shutdown_cv.wait(lock);

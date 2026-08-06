@@ -19,10 +19,17 @@ const PROBE_COMPONENT_CONFIG = {
   packagePath: '.',
   targetName: 'HarmonyOS 6/API 20/arm64'
 };
+const CORE_PRIVATE_EXPORTS = [
+  'cmfa_mihomo_core_build_info_json_cstr_v1',
+  'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_stop_v1'
+];
 const CORE_COMPONENT_CONFIG = {
   component: 'mihomoCore',
   artifactFileName: 'libcmfa_mihomo.so',
-  expectedExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+  expectedExports: CORE_PRIVATE_EXPORTS,
   modulePath: 'core/go',
   packagePath: './cmd/cmfa_core',
   targetName: 'HarmonyOS 6/API 20/arm64'

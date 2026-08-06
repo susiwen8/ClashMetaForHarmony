@@ -11,7 +11,13 @@ import { inspectNativeLibrary } from '../../tests/bin/inspect-native-lib.mjs';
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const SIGNING_TOKEN_PATTERN = /(^|[\s"'(=\[])([^\s"'<>]*\.(?:p12|cer|p7b|pem|pfx))(?=$|[\s"'<>)}\]])/giu;
-const CORE_EXPORTS = ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'];
+const CORE_EXPORTS = [
+  'cmfa_mihomo_core_build_info_json_cstr_v1',
+  'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_stop_v1'
+];
 const NODE_ADDON_ALLOWED_NEEDED = ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const CORE_ALLOWED_NEEDED = ['libc.so'];
 const TOOLCHAIN_LOCK_IDENTITY = 'harmony/toolchain.lock.json';

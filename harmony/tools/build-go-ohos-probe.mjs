@@ -16,6 +16,13 @@ const GO_BUILD_TIMEOUT_MS = 10 * 60 * 1000;
 const HOST_CLANG_PATTERN = /(^|\/)clang(\+\+)?$/u;
 const ANDROID_PATTERN = /android|ndk/iu;
 const TARGET_NAME = 'HarmonyOS 6/API 20/arm64';
+const CORE_PRIVATE_EXPORTS = [
+  'cmfa_mihomo_core_build_info_json_cstr_v1',
+  'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_stop_v1'
+];
 
 const COMPONENT_CONFIG = {
   probe: {
@@ -29,7 +36,7 @@ const COMPONENT_CONFIG = {
   mihomoCore: {
     component: 'mihomoCore',
     artifactFileName: 'libcmfa_mihomo.so',
-    expectedExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
+    expectedExports: CORE_PRIVATE_EXPORTS,
     modulePath: 'core/go',
     packagePath: './cmd/cmfa_core',
     targetName: TARGET_NAME

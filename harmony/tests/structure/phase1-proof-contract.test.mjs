@@ -16,6 +16,13 @@ const DIGEST_A = 'a'.repeat(64);
 const DIGEST_B = 'b'.repeat(64);
 const DIGEST_C = 'c'.repeat(64);
 const DIGEST_D = 'd'.repeat(64);
+const CORE_EXPORTS = [
+  'cmfa_mihomo_core_build_info_json_cstr_v1',
+  'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_stop_v1'
+];
 const REQUIRED_CHECKS = [
   'nativeHello',
   'coreVersion',
@@ -71,7 +78,7 @@ function createPassProof() {
         sizeBytes: 768,
         elfMachine: 'AArch64',
         exportListSha256: DIGEST_B,
-        requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
+        requiredExports: CORE_EXPORTS
       }
     },
     device: {
@@ -311,8 +318,8 @@ test('Phase 1 runner records a simulator target as incomplete rather than a devi
           elf: {
             result: 'pass',
             architecture: 'AArch64',
-            exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
-            requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
+            exportedSymbols: CORE_EXPORTS,
+            requiredExports: CORE_EXPORTS
           }
         }
       }
@@ -422,8 +429,8 @@ test('Phase 1 runner preserves a valid failing app proof as the final device fai
           elf: {
             result: 'pass',
             architecture: 'AArch64',
-            exportedSymbols: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1'],
-            requiredExports: ['cmfa_mihomo_core_build_info_json_cstr_v1', 'cmfa_mihomo_core_version_cstr_v1']
+            exportedSymbols: CORE_EXPORTS,
+            requiredExports: CORE_EXPORTS
           }
         }
       }

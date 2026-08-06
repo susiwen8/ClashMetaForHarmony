@@ -6,11 +6,20 @@
 
 #include "cmfa_host.h"
 
+#include <array>
 #include <cstddef>
+#include <cstdio>
 #include <cstring>
 #include <mutex>
+#include <string>
 
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void);
+extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
+                                                  uint32_t mixed_port,
+                                                  cmfa_runtime_snapshot *snapshot,
+                                                  cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_stop_v1(cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snapshot, cmfa_error *error);
 
 namespace {
 
@@ -60,7 +69,36 @@ void reset_runtime_snapshot(cmfa_runtime_snapshot *snapshot) {
   snapshot->struct_size = sizeof(cmfa_runtime_snapshot);
   snapshot->state = CMFA_RUNTIME_STOPPED;
   snapshot->active_config_path[0] = '\0';
+  snapshot->http_address[0] = '\0';
+  snapshot->socks_address[0] = '\0';
+  snapshot->last_error[0] = '\0';
   snapshot->mixed_port = 0;
+}
+
+bool host_ready_locked() {
+  return g_backend_state.attached && g_backend_state.host.host_emit_event != nullptr;
+}
+
+void emit_runtime_event_locked(cmfa_runtime_state_value state, const char *message) {
+  if (!host_ready_locked()) {
+    return;
+  }
+
+  cmfa_runtime_event event{};
+  event.struct_size = sizeof(event);
+  event.state = state;
+  event.message = message;
+  (void)g_backend_state.host.host_emit_event(g_backend_state.host.context, &event, nullptr);
+}
+
+std::string snapshot_message(const cmfa_runtime_snapshot &snapshot, const char *fallback) {
+  if (snapshot.last_error[0] != '\0') {
+    return snapshot.last_error;
+  }
+  if (snapshot.http_address[0] != '\0' || snapshot.socks_address[0] != '\0') {
+    return std::string("http=") + snapshot.http_address + " socks=" + snapshot.socks_address;
+  }
+  return fallback != nullptr ? std::string(fallback) : std::string{};
 }
 
 cmfa_status attach_host(void *, const cmfa_backend_host *host, cmfa_error *error) {
@@ -109,22 +147,59 @@ cmfa_status load_config(void *, const char *, cmfa_error *error) {
 }
 
 cmfa_status start_local(void *,
-                        const cmfa_local_options *,
+                        const cmfa_local_options *options,
                         cmfa_runtime_snapshot *snapshot,
                         cmfa_error *error) {
   reset_runtime_snapshot(snapshot);
-  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support start_local");
+  if (options == nullptr || snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "options and snapshot must not be null");
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    emit_runtime_event_locked(CMFA_RUNTIME_STARTING, "starting local proxy");
+  }
+
+  const cmfa_status status =
+      cmfa_mihomo_start_local_v1(options->config_path, options->mixed_port, snapshot, error);
+  const std::string message = snapshot_message(*snapshot, status == CMFA_OK ? "local proxy running" : "start failed");
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    emit_runtime_event_locked(status == CMFA_OK ? snapshot->state : CMFA_RUNTIME_ERROR, message.c_str());
+  }
+  return status;
 }
 
 cmfa_status stop(void *, cmfa_error *error) {
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    emit_runtime_event_locked(CMFA_RUNTIME_STOPPING, "stopping local proxy");
+  }
+  const cmfa_status status = cmfa_mihomo_stop_v1(error);
+  if (status != CMFA_OK) {
+    cmfa_runtime_snapshot snapshot{};
+    reset_runtime_snapshot(&snapshot);
+    (void)cmfa_mihomo_runtime_state_v1(&snapshot, nullptr);
+    const std::string message = snapshot_message(snapshot, "stop failed");
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    emit_runtime_event_locked(CMFA_RUNTIME_ERROR, message.c_str());
+    return status;
+  }
+
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    emit_runtime_event_locked(CMFA_RUNTIME_STOPPED, "local proxy stopped");
+  }
   clear_error(error);
   return CMFA_OK;
 }
 
 cmfa_status runtime_state(void *, cmfa_runtime_snapshot *snapshot, cmfa_error *error) {
+  if (snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "snapshot must not be null");
+  }
   reset_runtime_snapshot(snapshot);
-  clear_error(error);
-  return CMFA_OK;
+  return cmfa_mihomo_runtime_state_v1(snapshot, error);
 }
 
 cmfa_status shutdown(void *, cmfa_error *error) {

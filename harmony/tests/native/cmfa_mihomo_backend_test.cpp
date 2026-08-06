@@ -20,6 +20,22 @@
 namespace {
 
 char *g_raw_version = nullptr;
+cmfa_runtime_snapshot g_runtime_snapshot{};
+
+void set_snapshot_text(char *buffer, const std::string &value) {
+  std::memset(buffer, 0, CMFA_MAX_PATH_BYTES);
+  const size_t copy_length = value.size() < (CMFA_MAX_PATH_BYTES - 1) ? value.size() : (CMFA_MAX_PATH_BYTES - 1);
+  if (copy_length > 0) {
+    std::memcpy(buffer, value.data(), copy_length);
+  }
+  buffer[copy_length] = '\0';
+}
+
+void reset_runtime_snapshot_storage() {
+  g_runtime_snapshot = {};
+  g_runtime_snapshot.struct_size = sizeof(g_runtime_snapshot);
+  g_runtime_snapshot.state = CMFA_RUNTIME_STOPPED;
+}
 
 class TestFailure : public std::runtime_error {
 public:
@@ -103,6 +119,7 @@ void reset_contract() {
   (void)cmfa_shutdown(&error.error);
   (void)cmfa::unregister_mihomo_backend(&error.error);
   g_raw_version = nullptr;
+  reset_runtime_snapshot_storage();
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -312,7 +329,7 @@ void test_255_byte_raw_rejects_too_small_output_buffer() {
   reset_contract();
 }
 
-void test_unavailable_backend_operations_and_runtime_snapshot() {
+void test_start_stop_and_runtime_snapshot() {
   reset_contract();
   HostCapture capture;
   initialize_backend(&capture);
@@ -335,25 +352,28 @@ void test_unavailable_backend_operations_and_runtime_snapshot() {
   options.struct_size = sizeof(options);
   options.config_path = "config.yaml";
   options.mixed_port = 7890;
-  expect_status_message(cmfa_start_local(&options, &start_snapshot, &error.error),
-                        CMFA_CORE_UNAVAILABLE,
-                        error,
-                        "mihomo backend does not support start_local",
-                        "start_local should stay unavailable");
-  expect_eq(start_snapshot.state, CMFA_RUNTIME_STOPPED, "failed start should leave snapshot stopped");
-  expect_string_eq(std::string(start_snapshot.active_config_path), "", "failed start should clear snapshot path");
-  expect_eq(start_snapshot.mixed_port, static_cast<uint32_t>(0), "failed start should clear snapshot port");
-  expect_eq(capture.event_count, static_cast<uint32_t>(0), "start_local should not emit runtime events");
+  const cmfa_status start_status = cmfa_start_local(&options, &start_snapshot, &error.error);
+  expect_eq(start_status, CMFA_OK, "start_local should succeed");
+  expect_eq(start_snapshot.state, CMFA_RUNTIME_RUNNING, "start snapshot should be running");
+  expect_string_eq(std::string(start_snapshot.active_config_path), "config.yaml", "start snapshot path");
+  expect_string_eq(std::string(start_snapshot.http_address), "127.0.0.1:7890", "start snapshot HTTP address");
+  expect_string_eq(std::string(start_snapshot.socks_address), "127.0.0.1:19090", "start snapshot SOCKS address");
+  expect_eq(capture.event_count, static_cast<uint32_t>(2), "start_local should emit STARTING and RUNNING");
+  expect_eq(capture.states[0], CMFA_RUNTIME_STARTING, "first event should be STARTING");
+  expect_eq(capture.states[1], CMFA_RUNTIME_RUNNING, "second event should be RUNNING");
 
   cmfa_runtime_snapshot snapshot{};
   snapshot.struct_size = sizeof(snapshot);
   const cmfa_status runtime_status = cmfa_runtime_state(&snapshot, &error.error);
   expect_eq(runtime_status, CMFA_OK, "runtime_state should succeed");
-  expect_eq(snapshot.state, CMFA_RUNTIME_STOPPED, "runtime_state should report stopped");
-  expect_string_eq(std::string(snapshot.active_config_path), "", "runtime_state path should be empty");
-  expect_eq(snapshot.mixed_port, static_cast<uint32_t>(0), "runtime_state port should be zero");
+  expect_eq(snapshot.state, CMFA_RUNTIME_RUNNING, "runtime_state should report running");
+  expect_string_eq(std::string(snapshot.http_address), "127.0.0.1:7890", "runtime_state HTTP address");
+  expect_string_eq(std::string(snapshot.socks_address), "127.0.0.1:19090", "runtime_state SOCKS address");
 
-  expect_eq(cmfa_stop(&error.error), CMFA_OK, "stop without runtime should be idempotent");
+  expect_eq(cmfa_stop(&error.error), CMFA_OK, "stop should succeed");
+  expect_eq(capture.event_count, static_cast<uint32_t>(4), "stop should emit STOPPING and STOPPED");
+  expect_eq(capture.states[2], CMFA_RUNTIME_STOPPING, "third event should be STOPPING");
+  expect_eq(capture.states[3], CMFA_RUNTIME_STOPPED, "fourth event should be STOPPED");
   reset_contract();
 }
 
@@ -380,6 +400,37 @@ void test_shutdown_and_repeated_unregister_are_safe() {
 
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void) { return g_raw_version; }
 
+extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
+                                                  uint32_t mixed_port,
+                                                  cmfa_runtime_snapshot *snapshot,
+                                                  cmfa_error *) {
+  if (config_path == nullptr || snapshot == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+
+  reset_runtime_snapshot_storage();
+  g_runtime_snapshot.state = CMFA_RUNTIME_RUNNING;
+  g_runtime_snapshot.mixed_port = mixed_port;
+  set_snapshot_text(g_runtime_snapshot.active_config_path, config_path);
+  set_snapshot_text(g_runtime_snapshot.http_address, "127.0.0.1:" + std::to_string(mixed_port));
+  set_snapshot_text(g_runtime_snapshot.socks_address, "127.0.0.1:19090");
+  *snapshot = g_runtime_snapshot;
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_mihomo_stop_v1(cmfa_error *) {
+  reset_runtime_snapshot_storage();
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snapshot, cmfa_error *) {
+  if (snapshot == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+  *snapshot = g_runtime_snapshot;
+  return CMFA_OK;
+}
+
 int main() {
   const std::vector<std::pair<const char *, std::function<void()>>> tests = {
       {"register initialize core_version success", test_register_initialize_and_core_version_success},
@@ -390,7 +441,7 @@ int main() {
       {"guard-page raw version", test_non_terminated_256_byte_raw_fails_without_overread},
       {"regular malformed 256-byte raw version", test_non_terminated_256_byte_raw_in_regular_memory_is_malformed},
       {"255-byte raw version", test_255_byte_raw_rejects_too_small_output_buffer},
-      {"unavailable operations and runtime snapshot", test_unavailable_backend_operations_and_runtime_snapshot},
+      {"start stop and runtime snapshot", test_start_stop_and_runtime_snapshot},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
   };
 

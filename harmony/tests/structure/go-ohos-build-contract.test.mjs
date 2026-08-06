@@ -15,7 +15,13 @@ const coreMainPath = new URL('../../core/go/cmd/cmfa_core/main.go', import.meta.
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
-const CORE_EXPORTS = [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT];
+const CORE_EXPORTS = [
+  BUILD_INFO_EXPORT,
+  RAW_VERSION_EXPORT,
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_stop_v1'
+];
 
 function joinFragments(parts) {
   return parts.join('');

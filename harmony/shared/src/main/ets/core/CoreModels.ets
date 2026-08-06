@@ -9,6 +9,9 @@ export interface LocalOptions {
 export interface RuntimeSnapshot {
   state: RuntimeState;
   activeConfigPath: string;
+  httpAddress: string;
+  socksAddress: string;
+  lastError: string;
   mixedPort: number;
 }
 

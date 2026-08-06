@@ -56,6 +56,9 @@ typedef struct cmfa_runtime_snapshot {
   uint32_t struct_size;
   cmfa_runtime_state_value state;
   char active_config_path[CMFA_MAX_PATH_BYTES];
+  char http_address[CMFA_MAX_PATH_BYTES];
+  char socks_address[CMFA_MAX_PATH_BYTES];
+  char last_error[CMFA_MAX_PATH_BYTES];
   uint32_t mixed_port;
 } cmfa_runtime_snapshot;
 
