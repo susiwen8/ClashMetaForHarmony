@@ -1,5 +1,6 @@
 import crypto from 'node:crypto';
 import { spawn as spawnChild } from 'node:child_process';
+import { constants as fsConstants } from 'node:fs';
 import fs from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -110,25 +111,18 @@ async function resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath) {
   if (!isWithinRepo(realRepoRoot, realParent) || realParent === realRepoRoot) {
     throw Object.assign(new Error('--out resolves outside the repository through a symlink.'), { code: 'PATH_OUTSIDE_REPO' });
   }
-  try {
-    const stats = await fsApi.lstat(resolved);
-    if (stats.isSymbolicLink()) {
-      throw Object.assign(new Error('--out must not be a symlink.'), { code: 'PATH_OUTSIDE_REPO' });
-    }
-  } catch (error) {
-    if (error?.code !== 'ENOENT') {
-      throw error;
-    }
-  }
   return path.join(realParent, path.basename(resolved));
 }
 
-async function hashFile(fsApi, filePath) {
-  const buffer = await fsApi.readFile(filePath);
+function hashBuffer(buffer) {
   return {
     sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
     sizeBytes: buffer.byteLength
   };
+}
+
+async function hashFile(fsApi, filePath) {
+  return hashBuffer(await fsApi.readFile(filePath));
 }
 
 async function hashRepoFile(fsApi, repoRoot, filePath, option) {
@@ -601,9 +595,37 @@ export function validatePhase2Proof(proof) {
 
 async function writeProof(proof, outputPath, fsApi = fs, repoRoot = REPO_ROOT) {
   const safeOutputPath = await resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath);
-  const tempPath = `${safeOutputPath}.${process.pid}.tmp`;
-  await fsApi.writeFile(tempPath, `${JSON.stringify(proof, null, 2)}\n`, 'utf8');
-  await fsApi.rename(tempPath, safeOutputPath);
+  const realParent = path.dirname(safeOutputPath);
+  const realRepoRoot = await fsApi.realpath(repoRoot);
+  const serializedProof = `${JSON.stringify(proof, null, 2)}\n`;
+  let tempDirectory = null;
+  let tempHandle = null;
+  let tempDirectoryTrusted = false;
+  try {
+    tempDirectory = await fsApi.mkdtemp(path.join(realParent, '.cmfa-phase2-proof-'));
+    const [tempDirectoryRealPath, tempDirectoryStats] = await Promise.all([
+      fsApi.realpath(tempDirectory),
+      fsApi.lstat(tempDirectory)
+    ]);
+    if (tempDirectoryStats.isSymbolicLink() || !isWithinRepo(realRepoRoot, tempDirectoryRealPath) || !isWithinRepo(realParent, tempDirectoryRealPath)) {
+      throw Object.assign(new Error('proof temp directory escaped the repository root.'), { code: 'PATH_OUTSIDE_REPO' });
+    }
+    tempDirectoryTrusted = true;
+    const tempPath = path.join(tempDirectory, 'proof.json');
+    tempHandle = await fsApi.open(tempPath, 'wx', 0o600);
+    await tempHandle.writeFile(serializedProof, 'utf8');
+    await tempHandle.sync();
+    await tempHandle.close();
+    tempHandle = null;
+    await fsApi.rename(tempPath, safeOutputPath);
+  } finally {
+    if (tempHandle) {
+      await tempHandle.close().catch(() => {});
+    }
+    if (tempDirectory && tempDirectoryTrusted) {
+      await fsApi.rm(tempDirectory, { recursive: true, force: true }).catch(() => {});
+    }
+  }
 }
 
 export async function writeArgumentErrorProof({
@@ -1098,12 +1120,10 @@ export async function pullPhase2AppEvidence({
   for (let attempt = 0; attempt < 20; attempt += 1) {
     const result = await execImpl(hdcCommand, buildPullArgs(target, safeLocalPath), { cwd });
     if (!result?.error && result?.exitCode === 0 && !result?.timedOut) {
+      let fileHandle = null;
       try {
-        const fileStats = await fsApi.lstat(safeLocalPath);
-        if (fileStats.isSymbolicLink()) {
-          throw Object.assign(new Error('Pulled app evidence must not be a symlink.'), { code: 'APP_EVIDENCE_PATH_SYMLINK' });
-        }
-        const regularStats = await fsApi.stat(safeLocalPath);
+        fileHandle = await fsApi.open(safeLocalPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW);
+        const regularStats = await fileHandle.stat();
         if (!regularStats.isFile()) {
           throw Object.assign(new Error('Pulled app evidence must be a regular file.'), { code: 'APP_EVIDENCE_NOT_REGULAR' });
         }
@@ -1113,15 +1133,37 @@ export async function pullPhase2AppEvidence({
         if (regularStats.size > MAX_PHASE2_APP_EVIDENCE_BYTES) {
           throw Object.assign(new Error(`Pulled app evidence exceeds ${MAX_PHASE2_APP_EVIDENCE_BYTES} bytes.`), { code: 'APP_EVIDENCE_SIZE_INVALID' });
         }
-        const validation = parsePhase2AppEvidence(await readJson(fsApi, safeLocalPath, 'APP_EVIDENCE_INVALID'), { expectedRunId });
+        const buffer = await fileHandle.readFile();
+        if (buffer.byteLength !== regularStats.size || buffer.byteLength > MAX_PHASE2_APP_EVIDENCE_BYTES) {
+          throw Object.assign(new Error('Pulled app evidence changed while it was being read.'), { code: 'APP_EVIDENCE_SIZE_INVALID' });
+        }
+        let parsedEvidence = null;
+        try {
+          parsedEvidence = JSON.parse(buffer.toString('utf8'));
+        } catch (error) {
+          throw Object.assign(new Error(error?.message ?? 'Unable to parse app evidence JSON.'), { code: 'APP_EVIDENCE_INVALID' });
+        }
+        const validation = parsePhase2AppEvidence(parsedEvidence, { expectedRunId });
         if (validation.valid) {
-          return { ok: true, result, proof: validation.normalized, localPath: safeLocalPath };
+          const evidenceDigest = hashBuffer(buffer);
+          return {
+            ok: true,
+            result,
+            proof: validation.normalized,
+            localPath: safeLocalPath,
+            sha256: evidenceDigest.sha256,
+            sizeBytes: evidenceDigest.sizeBytes
+          };
         }
         lastFailure = createFailure('APP_EVIDENCE_INVALID', validation.errors.join('; '), 'app-proof');
         return { ok: false, result, invalid: lastFailure };
       } catch (error) {
         lastFailure = createFailure(error?.code ?? 'APP_EVIDENCE_INVALID', error?.message ?? 'Unable to parse app evidence.', 'app-proof');
         return { ok: false, result, invalid: lastFailure };
+      } finally {
+        if (fileHandle) {
+          await fileHandle.close().catch(() => {});
+        }
       }
     }
     await waitImpl(250);
@@ -1438,7 +1480,6 @@ export async function runPhase2DeviceProof({
       return await finish();
     }
 
-    const evidenceDigest = await hashFile(fsApi, pulled.localPath);
     const appValidation = parsePhase2AppEvidence(pulled.proof, {
       expectedRunId: proof.runId,
       expectedFixturePath: proof.fixtures.matchConfig.path,
@@ -1452,8 +1493,8 @@ export async function runPhase2DeviceProof({
     proof.timestamps.proofAt = isoTimestamp(now());
     proof.appEvidence = {
       path: normalizePathForReport(repoRoot, pulled.localPath),
-      sha256: evidenceDigest.sha256,
-      sizeBytes: evidenceDigest.sizeBytes,
+      sha256: pulled.sha256 ?? null,
+      sizeBytes: pulled.sizeBytes ?? null,
       runId: appProof.runId ?? null,
       originRunId: appProof.originRunId ?? null,
       appProcessId: appProof.appProcessId ?? null,

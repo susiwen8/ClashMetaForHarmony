@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
@@ -407,6 +408,58 @@ test('Phase 2 CLI parse errors write minimal proofs and never invoke build/devic
   }
 });
 
+test('Phase 2 proof writer ignores attacker temp/final symlinks and leaves no temp residue', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const nodeFsApi = await import('node:fs/promises').then((module) => module.default);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-proof-writer-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const outputPath = path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json');
+  const tempPath = `${outputPath}.${process.pid}.tmp`;
+  const outsideTarget = path.join(tempRoot, 'outside-target.json');
+  const outsideLinkTarget = path.join(tempRoot, 'outside-link-target.json');
+
+  await fs.mkdir(path.dirname(outputPath), { recursive: true });
+  await fs.mkdir(path.join(harmonyRoot, 'tests', 'fixtures'), { recursive: true });
+  await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({ installed: { hdcVersion: '6.1.0.105' } }), 'utf8');
+  await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'fixture-body', 'utf8');
+  await fs.writeFile(outsideTarget, 'sentinel-temp', 'utf8');
+  await fs.writeFile(outsideLinkTarget, 'sentinel-output', 'utf8');
+
+  await fs.symlink(outsideTarget, tempPath);
+  const tempAttackProof = await runner.writeArgumentErrorProof({
+    outputPath,
+    repoRoot,
+    fsApi: nodeFsApi,
+    randomUUID: () => EXPECTED_RUN_ID,
+    now: () => new Date('2026-08-06T02:00:00.000Z'),
+    detail: 'temp symlink race'
+  });
+
+  assert.equal(await fs.readFile(outsideTarget, 'utf8'), 'sentinel-temp');
+  assert.equal(runner.validatePhase2Proof(tempAttackProof).valid, true);
+  assert.equal(runner.validatePhase2Proof(JSON.parse(await fs.readFile(outputPath, 'utf8'))).valid, true);
+  assert.equal((await fs.lstat(outputPath)).isFile(), true);
+  assert.ok(!(await fs.readdir(path.dirname(outputPath))).some((entry) => entry.startsWith('.cmfa-phase2-proof-')));
+
+  await fs.rm(outputPath, { force: true });
+  await fs.symlink(outsideLinkTarget, outputPath);
+  const finalLinkProof = await runner.writeArgumentErrorProof({
+    outputPath,
+    repoRoot,
+    fsApi: nodeFsApi,
+    randomUUID: () => EXPECTED_RUN_ID,
+    now: () => new Date('2026-08-06T02:00:01.000Z'),
+    detail: 'final symlink race'
+  });
+
+  assert.equal(await fs.readFile(outsideLinkTarget, 'utf8'), 'sentinel-output');
+  assert.equal(runner.validatePhase2Proof(finalLinkProof).valid, true);
+  assert.equal(runner.validatePhase2Proof(JSON.parse(await fs.readFile(outputPath, 'utf8'))).valid, true);
+  assert.equal((await fs.lstat(outputPath)).isFile(), true);
+  assert.ok(!(await fs.readdir(path.dirname(outputPath))).some((entry) => entry.startsWith('.cmfa-phase2-proof-')));
+});
+
 test('Phase 2 pass validator rejects fabricated partial passes and accepts fully correlated proofs only', () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
   const passProof = createValidPassProof();
@@ -688,6 +741,101 @@ test('Phase 2 pull helper auto-creates a run-scoped parent, rejects oversize and
   assert.equal(escapedExecCount, 0);
   assert.equal(symlinkPull.ok, false);
   assert.match(symlinkPull.invalid.detail, /symlink|repository/u);
+});
+
+test('Phase 2 pull helper reads app evidence from a single opened inode even if the path is swapped after stat', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const nodeFsApi = await import('node:fs/promises').then((module) => module.default);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-pull-fd-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const harmonyRoot = path.join(repoRoot, 'harmony');
+  const runDir = path.join(harmonyRoot, 'artifacts', 'phase2-pull', EXPECTED_RUN_ID);
+  const localPath = path.join(runDir, 'phase2-device-proof.json');
+  const originalPath = path.join(runDir, 'phase2-device-proof.original.json');
+  const attackerPath = path.join(runDir, 'phase2-device-proof.attacker.json');
+  const goodEvidence = await readAppEvidenceFixture();
+  const attackerEvidence = {
+    ...goodEvidence,
+    runId: '5582eb4a-df59-48cb-a3d8-d6e79c7eaebd'
+  };
+  const expectedBuffer = Buffer.from(`${JSON.stringify(goodEvidence)}\n`, 'utf8');
+  let openPath = null;
+  let swapStage = null;
+
+  await fs.mkdir(harmonyRoot, { recursive: true });
+
+  async function swapPulledPath(stage) {
+    if (swapStage !== null) {
+      return;
+    }
+    swapStage = stage;
+    await nodeFsApi.rename(localPath, originalPath);
+    await nodeFsApi.rename(attackerPath, localPath);
+  }
+
+  const fsApi = new Proxy(nodeFsApi, {
+    get(target, property, receiver) {
+      if (property === 'stat') {
+        return async (filePath, ...args) => {
+          const stats = await target.stat(filePath, ...args);
+          if (filePath === localPath) {
+            await swapPulledPath('path');
+          }
+          return stats;
+        };
+      }
+      if (property === 'open') {
+        return async (filePath, ...args) => {
+          openPath = filePath;
+          const handle = await target.open(filePath, ...args);
+          return new Proxy(handle, {
+            get(innerTarget, innerProperty, innerReceiver) {
+              if (innerProperty === 'stat') {
+                return async (...statArgs) => {
+                  const stats = await innerTarget.stat(...statArgs);
+                  await swapPulledPath('handle');
+                  return stats;
+                };
+              }
+              if (innerProperty === 'readFile') {
+                return async (...readArgs) => {
+                  await swapPulledPath('handle');
+                  return innerTarget.readFile(...readArgs);
+                };
+              }
+              return Reflect.get(innerTarget, innerProperty, innerReceiver);
+            }
+          });
+        };
+      }
+      return Reflect.get(target, property, receiver);
+    }
+  });
+
+  const pullResult = await runner.pullPhase2AppEvidence({
+    fsApi,
+    execImpl: async () => {
+      await fs.mkdir(runDir, { recursive: true });
+      await fs.writeFile(localPath, `${JSON.stringify(goodEvidence)}\n`, 'utf8');
+      await fs.writeFile(attackerPath, `${JSON.stringify(attackerEvidence)}\n`, 'utf8');
+      return { command: '/sdk/hdc', args: [], exitCode: 0, stdout: 'FileTransfer finish', stderr: '' };
+    },
+    hdcCommand: '/sdk/hdc',
+    target: 'device',
+    localPath,
+    cwd: repoRoot,
+    expectedRunId: EXPECTED_RUN_ID,
+    waitImpl: async () => {}
+  });
+
+  assert.equal(pullResult.ok, true, pullResult.invalid?.detail);
+  assert.equal(openPath, await fs.realpath(localPath));
+  assert.equal(swapStage, 'handle');
+  assert.equal(pullResult.proof.runId, EXPECTED_RUN_ID);
+  assert.equal(pullResult.proof.originRunId, EXPECTED_RUN_ID);
+  assert.equal(pullResult.sha256, crypto.createHash('sha256').update(expectedBuffer).digest('hex'));
+  assert.equal(pullResult.sizeBytes, expectedBuffer.byteLength);
+  assert.equal(JSON.parse(await fs.readFile(localPath, 'utf8')).runId, attackerEvidence.runId);
 });
 
 test('Phase 2 runner executes the exact build-origin-device-app trace and rejects stale mismatched app evidence', async () => {
