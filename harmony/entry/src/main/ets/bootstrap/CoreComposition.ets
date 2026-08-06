@@ -6,9 +6,12 @@ export interface Phase1LaunchContext {
   runId: string;
   runnerStartedAt: string;
   filesDir: string;
+  probeOriginRunId: string;
   probeOriginUrl: string;
   probeCaPem: string;
   probeExpectedBodySha256: string;
+  probeFixturePath: string;
+  probeFixtureSha256: string;
 }
 
 export type Phase1LaunchListener = (context: Phase1LaunchContext) => void;
@@ -70,9 +73,12 @@ const phase1DefaultContext: Phase1LaunchContext = {
   runId: '',
   runnerStartedAt: '',
   filesDir: '',
+  probeOriginRunId: '',
   probeOriginUrl: '',
   probeCaPem: '',
-  probeExpectedBodySha256: ''
+  probeExpectedBodySha256: '',
+  probeFixturePath: '',
+  probeFixtureSha256: ''
 };
 const sharedCoreService: CoreService = createCoreService();
 let phase1LaunchListener: Phase1LaunchListener | undefined = undefined;
@@ -117,8 +123,11 @@ export function getPhase1LaunchContext(): Phase1LaunchContext {
     runId: raw.runId,
     runnerStartedAt: raw.runnerStartedAt,
     filesDir: raw.filesDir,
+    probeOriginRunId: raw.probeOriginRunId ?? '',
     probeOriginUrl: raw.probeOriginUrl ?? '',
     probeCaPem: raw.probeCaPem ?? '',
-    probeExpectedBodySha256: raw.probeExpectedBodySha256 ?? ''
+    probeExpectedBodySha256: raw.probeExpectedBodySha256 ?? '',
+    probeFixturePath: raw.probeFixturePath ?? '',
+    probeFixtureSha256: raw.probeFixtureSha256 ?? ''
   };
 }

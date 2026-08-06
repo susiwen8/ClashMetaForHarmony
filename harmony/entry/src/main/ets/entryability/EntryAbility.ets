@@ -10,9 +10,12 @@ const SELF_TEST_KEY = 'cmfa.phase1.selfTest';
 const RUN_ID_KEY = 'cmfa.phase1.runId';
 const RUNNER_STARTED_AT_KEY = 'cmfa.phase1.runnerStartedAt';
 const FILES_DIR_KEY = 'cmfa.phase1.filesDir';
+const PROBE_ORIGIN_RUN_ID_KEY = 'cmfa.phase2.originRunId';
 const PROBE_ORIGIN_URL_KEY = 'cmfa.phase2.originUrl';
 const PROBE_CA_PEM_KEY = 'cmfa.phase2.caPem';
 const PROBE_EXPECTED_BODY_SHA256_KEY = 'cmfa.phase2.expectedBodySha256';
+const PROBE_FIXTURE_PATH_KEY = 'cmfa.phase2.fixturePath';
+const PROBE_FIXTURE_SHA256_KEY = 'cmfa.phase2.fixtureSha256';
 
 export default class EntryAbility extends UIAbility {
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
@@ -64,9 +67,12 @@ export default class EntryAbility extends UIAbility {
       runId: `${parameters[RUN_ID_KEY] ?? ''}`,
       runnerStartedAt: `${parameters[RUNNER_STARTED_AT_KEY] ?? ''}`,
       filesDir: this.context.filesDir,
+      probeOriginRunId: `${parameters[PROBE_ORIGIN_RUN_ID_KEY] ?? ''}`,
       probeOriginUrl: `${parameters[PROBE_ORIGIN_URL_KEY] ?? ''}`,
       probeCaPem: `${parameters[PROBE_CA_PEM_KEY] ?? ''}`,
-      probeExpectedBodySha256: `${parameters[PROBE_EXPECTED_BODY_SHA256_KEY] ?? ''}`
+      probeExpectedBodySha256: `${parameters[PROBE_EXPECTED_BODY_SHA256_KEY] ?? ''}`,
+      probeFixturePath: `${parameters[PROBE_FIXTURE_PATH_KEY] ?? ''}`,
+      probeFixtureSha256: `${parameters[PROBE_FIXTURE_SHA256_KEY] ?? ''}`
     };
     setPhase1LaunchContext(launchContext);
   }

@@ -77,13 +77,20 @@ interface Phase2SelfTestProof {
   selfTestBuildEnabled: boolean;
   buildFlag: string;
   appProcessId: number | null;
-  fixtureConfigPath: string;
+  originRunId: string;
+  fixturePath: string;
+  fixtureSha256: string;
   fixtureOriginUrl: string;
   fixtureExpectedBodySha256: string;
-  httpAddress: string;
-  socksAddress: string;
-  probes: Phase2ProbeEntry[];
-  stopResult: string;
+  httpListenerAddress: string;
+  socksListenerAddress: string;
+  probes: {
+    http: Phase2ProbeEntry | null;
+    socks: Phase2ProbeEntry | null;
+  };
+  stop: {
+    result: string;
+  };
   failures: Phase2ProbeFailure[];
 }
 
@@ -343,7 +350,8 @@ struct CoreDebugPage {
   private async runPhase2ProbeSelfTest(context: Phase1LaunchContext): Promise<void> {
     const startedAt: string = new Date().toISOString();
     const configPath: string = `${context.filesDir}/${PHASE2_CONFIG_FILE_NAME}`;
-    const probes: Phase2ProbeEntry[] = [];
+    let httpProbe: Phase2ProbeEntry | null = null;
+    let socksProbe: Phase2ProbeEntry | null = null;
     const failures: Phase2ProbeFailure[] = [];
     const probeService = getSelfTestCoreService();
     const selfTestBuildEnabled: boolean = typeof probeService.probeHttpsForSelfTest === 'function';
@@ -367,13 +375,20 @@ struct CoreDebugPage {
         selfTestBuildEnabled,
         buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
         appProcessId,
-        fixtureConfigPath: configPath,
+        originRunId: context.probeOriginRunId.length > 0 ? context.probeOriginRunId : context.runId,
+        fixturePath: context.probeFixturePath,
+        fixtureSha256: context.probeFixtureSha256,
         fixtureOriginUrl: context.probeOriginUrl,
         fixtureExpectedBodySha256: context.probeExpectedBodySha256,
-        httpAddress,
-        socksAddress,
-        probes,
-        stopResult,
+        httpListenerAddress: httpAddress,
+        socksListenerAddress: socksAddress,
+        probes: {
+          http: httpProbe,
+          socks: socksProbe
+        },
+        stop: {
+          result: stopResult
+        },
         failures: [{
           code: 'PHASE2_SELFTEST_DISABLED',
           detail: `${PHASE2_SELF_TEST_BUILD_FLAG} is disabled in the default lane.`,
@@ -405,7 +420,7 @@ struct CoreDebugPage {
         };
         const probe: Phase2ProbeResult = await probeService.probeHttpsForSelfTest(request);
         const passed: boolean = probe.ok && probe.httpStatus === 200 && probe.error.code.length === 0;
-        probes.push({
+        const probeEntry: Phase2ProbeEntry = {
           protocol,
           result: passed ? 'pass' : 'fail',
           detail: passed ? probe.tracker.connectionId : `${probe.error.code}:${probe.error.detail}`,
@@ -418,7 +433,12 @@ struct CoreDebugPage {
           clientSourcePort: parseSourcePort(probe.clientLocalAddress),
           destination: probe.tracker.destinationAddress,
           upstreamInboundType: probe.tracker.inboundType
-        });
+        };
+        if (protocol === 'HTTP_CONNECT') {
+          httpProbe = probeEntry;
+        } else {
+          socksProbe = probeEntry;
+        }
         if (!passed) {
           failures.push({
             code: probe.error.code.length > 0 ? probe.error.code : 'PHASE2_PROBE_FAILED',
@@ -469,13 +489,20 @@ struct CoreDebugPage {
       selfTestBuildEnabled,
       buildFlag: PHASE2_SELF_TEST_BUILD_FLAG,
       appProcessId,
-      fixtureConfigPath: configPath,
+      originRunId: context.probeOriginRunId.length > 0 ? context.probeOriginRunId : context.runId,
+      fixturePath: context.probeFixturePath,
+      fixtureSha256: context.probeFixtureSha256,
       fixtureOriginUrl: context.probeOriginUrl,
       fixtureExpectedBodySha256: context.probeExpectedBodySha256,
-      httpAddress,
-      socksAddress,
-      probes,
-      stopResult,
+      httpListenerAddress: httpAddress,
+      socksListenerAddress: socksAddress,
+      probes: {
+        http: httpProbe,
+        socks: socksProbe
+      },
+      stop: {
+        result: stopResult
+      },
       failures
     };
     this.writeTextFile(`${context.filesDir}/${PHASE2_PROOF_FILE_NAME}`, `${JSON.stringify(phase2Proof)}\n`);

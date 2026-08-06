@@ -7,11 +7,13 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { spawn } from 'node:child_process';
+import { pathToFileURL } from 'node:url';
 
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const repoRoot = path.resolve(harmonyRoot, '..');
 const scriptPath = path.join(harmonyRoot, 'tests', 'bin', 'phase2-origin.mjs');
 const fixturePath = path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt');
+const EXPECTED_RUN_ID = '980cbe02-b817-4db1-99bc-e8e4e6523daf';
 
 function waitForExit(child) {
   return new Promise((resolve) => {
@@ -99,10 +101,40 @@ function openHeldOriginRequest({ originUrl, caPem, requestId }) {
   });
 }
 
+test('phase2 origin CLI requires --run-id and record builders stamp run correlation', async () => {
+  const originModule = await import(pathToFileURL(scriptPath).href);
+  assert.throws(() => originModule.parseArgs(['--bind', '127.0.0.1:0', '--body-file', fixturePath]), /run-id/u);
+
+  const started = originModule.createStartedRecord({
+    runId: EXPECTED_RUN_ID,
+    originId: 'origin-123',
+    originUrl: 'https://127.0.0.1:18443/',
+    address: '127.0.0.1:18443',
+    caPem: 'pem',
+    bodySha256: 'a'.repeat(64),
+    bindHost: '127.0.0.1',
+    files: { certPath: 'a', keyPath: 'b' },
+    pid: 123
+  });
+  const request = originModule.createRequestRecord({
+    runId: EXPECTED_RUN_ID,
+    originId: 'origin-123',
+    requestId: 'req-http',
+    method: 'CONNECT',
+    pathName: '/',
+    receivedAt: '2026-08-06T02:00:04.000Z'
+  });
+  assert.equal(started.type, 'started');
+  assert.equal(started.runId, EXPECTED_RUN_ID);
+  assert.equal(request.type, 'request');
+  assert.equal(request.originRunId, EXPECTED_RUN_ID);
+  assert.equal(request.originRequestId, 'req-http');
+});
+
 test('phase2 origin emits machine-readable startup info and serves request-id echo over HTTPS', async () => {
   const expectedBody = await fs.readFile(fixturePath, 'utf8');
   const expectedBodyHash = crypto.createHash('sha256').update(expectedBody).digest('hex');
-  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath], {
+  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath, '--run-id', EXPECTED_RUN_ID], {
     cwd: repoRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -111,6 +143,8 @@ test('phase2 origin emits machine-readable startup info and serves request-id ec
     const { line } = await readHandshake(child);
     const payload = JSON.parse(line);
 
+    assert.equal(payload.type, 'started');
+    assert.equal(payload.runId, EXPECTED_RUN_ID);
     assert.match(payload.originId, /^[0-9a-f-]{36}$/u);
     assert.match(payload.originUrl, /^https:\/\/127\.0\.0\.1:\d+\/$/u);
     assert.match(payload.address, /^127\.0\.0\.1:\d+$/u);
@@ -138,7 +172,7 @@ test('phase2 origin emits machine-readable startup info and serves request-id ec
 
 test('phase2 origin hold-open protocol waits for request EOF before sending the fixed body', async () => {
   const expectedBody = await fs.readFile(fixturePath, 'utf8');
-  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath], {
+  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath, '--run-id', EXPECTED_RUN_ID], {
     cwd: repoRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -170,7 +204,7 @@ test('phase2 origin hold-open protocol waits for request EOF before sending the 
 });
 
 test('phase2 origin exits promptly on SIGTERM after startup', async () => {
-  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath], {
+  const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', fixturePath, '--run-id', EXPECTED_RUN_ID], {
     cwd: repoRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
   });
@@ -188,7 +222,7 @@ test('phase2 origin rejects a body fixture path outside the repository', async (
   await fs.writeFile(outsideFile, 'outside', 'utf8');
 
   try {
-    const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', outsideFile], {
+    const child = spawn('node', [scriptPath, '--bind', '127.0.0.1:0', '--body-file', outsideFile, '--run-id', EXPECTED_RUN_ID], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -207,7 +241,7 @@ test('phase2 origin rejects a body fixture path outside the repository', async (
 
 test('phase2 origin rejects wildcard and unbracketed IPv6 bind forms', async () => {
   for (const bind of ['0.0.0.0:0', '::1:0']) {
-    const child = spawn('node', [scriptPath, '--bind', bind, '--body-file', fixturePath], {
+    const child = spawn('node', [scriptPath, '--bind', bind, '--body-file', fixturePath, '--run-id', EXPECTED_RUN_ID], {
       cwd: repoRoot,
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -236,7 +270,7 @@ test('phase2 origin accepts bracketed IPv6 loopback and returns a bracketed HTTP
     t.skip(`IPv6 loopback unavailable: ${availability.message}`);
   }
 
-  const child = spawn('node', [scriptPath, '--bind', '[::1]:0', '--body-file', fixturePath], {
+  const child = spawn('node', [scriptPath, '--bind', '[::1]:0', '--body-file', fixturePath, '--run-id', EXPECTED_RUN_ID], {
     cwd: repoRoot,
     stdio: ['ignore', 'pipe', 'pipe'],
   });

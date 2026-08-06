@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -10,6 +11,7 @@ const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const RUNNER_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'run-phase2-device-proof.mjs');
 const INSPECT_HAP_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'inspect-hap.mjs');
 const INSPECT_NATIVE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'inspect-native-lib.mjs');
+const ORIGIN_MODULE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'phase2-origin.mjs');
 const SCHEMA_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-device-proof.schema.json');
 const EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase2-device-proof.example.json');
 const DEBUG_PAGE_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'CoreDebugPage.ets');
@@ -347,6 +349,127 @@ test('Phase 2 pass validator rejects fabricated partial passes and accepts fully
   }
 });
 
+test('Phase 2 origin parser accepts split JSONL records and ignores wrong-run observations', async () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const originModule = await import(pathToFileURL(ORIGIN_MODULE_PATH).href);
+  const parser = runner.createOriginStdoutParser(EXPECTED_RUN_ID);
+  const startedRecord = originModule.createStartedRecord({
+    runId: EXPECTED_RUN_ID,
+    originId: 'origin-123',
+    originUrl: 'https://127.0.0.1:18443/',
+    address: '127.0.0.1:18443',
+    caPem: 'pem',
+    bodySha256: digest('e'),
+    bindHost: '127.0.0.1',
+    files: { certPath: 'a', keyPath: 'b' },
+    pid: 123
+  });
+  const goodRequest = originModule.createRequestRecord({
+    runId: EXPECTED_RUN_ID,
+    originId: 'origin-123',
+    requestId: 'req-http',
+    protocol: 'HTTP_CONNECT',
+    method: 'CONNECT',
+    pathName: '/',
+    receivedAt: '2026-08-06T02:00:04.000Z',
+    responseBytes: 26,
+    responseSha256: digest('e')
+  });
+  const wrongRequest = originModule.createRequestRecord({
+    runId: '5582eb4a-df59-48cb-a3d8-d6e79c7eaebd',
+    originId: 'origin-123',
+    requestId: 'req-wrong',
+    protocol: 'HTTP_CONNECT',
+    method: 'CONNECT',
+    pathName: '/',
+    receivedAt: '2026-08-06T02:00:04.100Z',
+    responseBytes: 26,
+    responseSha256: digest('e')
+  });
+  const startedLine = JSON.stringify(startedRecord);
+  parser.push(startedLine.slice(0, 20));
+  parser.push(`${startedLine.slice(20)}\n${JSON.stringify(goodRequest)}\n${JSON.stringify(wrongRequest)}\n`);
+  const snapshot = parser.snapshot();
+  assert.equal(snapshot.started.length, 1);
+  assert.equal(snapshot.requests.length, 1);
+  assert.equal(snapshot.requests[0].requestId, 'req-http');
+  assert.ok(snapshot.invalid.some((entry) => /runId mismatch/u.test(entry.error)));
+});
+
+test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays', () => {
+  assert.ok(runner, 'Phase 2 runner module must exist');
+  const canonical = {
+    runId: EXPECTED_RUN_ID,
+    appProcessId: 4312,
+    fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
+    fixtureSha256: digest('d'),
+    coreVersion: CORE_VERSION,
+    httpListenerAddress: '127.0.0.1:19090',
+    socksListenerAddress: '127.0.0.1:19091',
+    stop: { result: 'pass' },
+    probes: {
+      http: {
+        protocol: 'HTTP_CONNECT',
+        status: 'pass',
+        probeRunId: 'probe-http',
+        requestId: 'req-http',
+        originRequestId: 'req-http',
+        appProbeId: 'app-http',
+        coreEventId: 'core-http',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        coreConnectionId: 'conn-http',
+        clientSourcePort: 39111,
+        destination: 'example.com:443',
+        upstreamInboundType: 'HTTP_CONNECT',
+        listenerAddress: '127.0.0.1:19090',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:03.500Z',
+        completedAt: '2026-08-06T02:00:04.000Z',
+        error: null
+      },
+      socks: {
+        protocol: 'SOCKS5',
+        status: 'pass',
+        probeRunId: 'probe-socks',
+        requestId: 'req-socks',
+        originRequestId: 'req-socks',
+        appProbeId: 'app-socks',
+        coreEventId: 'core-socks',
+        originEventRunId: EXPECTED_RUN_ID,
+        appEventRunId: EXPECTED_RUN_ID,
+        coreEventRunId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        coreConnectionId: 'conn-socks',
+        clientSourcePort: 39112,
+        destination: 'example.com:443',
+        upstreamInboundType: 'SOCKS5',
+        listenerAddress: '127.0.0.1:19091',
+        tlsPeerSha256: digest('f'),
+        httpStatus: 200,
+        responseBytes: 26,
+        responseSha256: digest('e'),
+        startedAt: '2026-08-06T02:00:04.200Z',
+        completedAt: '2026-08-06T02:00:05.000Z',
+        error: null
+      }
+    }
+  };
+  assert.equal(runner.parsePhase2AppEvidence(canonical, { expectedRunId: EXPECTED_RUN_ID }).valid, true);
+  const legacy = {
+    ...canonical,
+    probes: [{ protocol: 'HTTP_CONNECT' }, { protocol: 'SOCKS5' }]
+  };
+  const legacyValidation = runner.parsePhase2AppEvidence(legacy, { expectedRunId: EXPECTED_RUN_ID });
+  assert.equal(legacyValidation.valid, false);
+  assert.match(legacyValidation.errors.join('\n'), /probes must be an object|probes\.http/u);
+});
+
 test('Phase 2 runner executes the exact build-origin-device-app trace and rejects stale mismatched app evidence', async () => {
   assert.ok(runner, 'Phase 2 runner module must exist');
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-physical-lane-'));
@@ -355,7 +478,7 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
   const buildManifestPath = path.join(harmonyRoot, 'artifacts', 'phase2-build-manifest.json');
   const outputPath = path.join(harmonyRoot, 'artifacts', 'phase2-device-proof.json');
   const fixturePath = path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml');
-  const appEvidencePath = path.join(harmonyRoot, 'artifacts', 'pull', 'phase2-device-proof.app.json');
+  const appEvidencePath = path.join(harmonyRoot, 'artifacts', 'phase2-pull', `${EXPECTED_RUN_ID}.json`);
   const signedHapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
   const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
   const prePackageCorePath = path.join(harmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
@@ -388,12 +511,15 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
     phase: 2,
     runId: EXPECTED_RUN_ID,
     appProcessId: 4312,
+    originRunId: EXPECTED_RUN_ID,
     fixturePath: 'harmony/tests/fixtures/phase2-match-direct.yaml',
     fixtureSha256: digest('d'),
     coreVersion: CORE_VERSION,
     httpListenerAddress: '127.0.0.1:19090',
     socksListenerAddress: '127.0.0.1:19091',
-    stopResult: 'pass',
+    stop: {
+      result: 'pass'
+    },
     probes: {
       http: {
         protocol: 'HTTP_CONNECT',
@@ -503,6 +629,32 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
 
   const staleProof = structuredClone(appEvidence);
   staleProof.runId = '0d65110a-c6d2-42e0-b06d-0f694064cd50';
+  const originModule = await import(pathToFileURL(ORIGIN_MODULE_PATH).href);
+  const createOriginHandle = (records) => {
+    const parser = runner.createOriginStdoutParser(EXPECTED_RUN_ID);
+    for (const chunk of records) {
+      parser.push(chunk);
+    }
+    return {
+      originId: 'origin-123',
+      originRunId: EXPECTED_RUN_ID,
+      originUrl: 'https://127.0.0.1:18443/',
+      address: '127.0.0.1:18443',
+      caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+      tlsCertSha256: digest('f'),
+      bodySha256: digest('e'),
+      requestObservations: [],
+      async waitForRequestObservations(expectedCount) {
+        return parser.snapshot().requests.slice(0, expectedCount);
+      },
+      getInvalidRecords() {
+        return parser.snapshot().invalid;
+      },
+      async stop() {
+        this.requestObservations = parser.snapshot().requests;
+      }
+    };
+  };
 
   const execImpl = async (_command, args) => {
     events.push(args.join(' '));
@@ -582,47 +734,43 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
     execImpl,
     startOriginImpl: async () => {
       events.push('startOrigin');
-      return {
+      const startedRecord = originModule.createStartedRecord({
+        runId: EXPECTED_RUN_ID,
         originId: 'origin-123',
-        originRunId: EXPECTED_RUN_ID,
         originUrl: 'https://127.0.0.1:18443/',
         address: '127.0.0.1:18443',
         caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
-        tlsCertSha256: digest('f'),
         bodySha256: digest('e'),
-        requestObservations: [
-          {
-            protocol: 'HTTP_CONNECT',
-            requestId: 'req-http',
-            originRequestId: 'req-http',
-            originEventRunId: EXPECTED_RUN_ID,
-            httpStatus: 200,
-            responseBytes: 26,
-            responseSha256: digest('e'),
-            observedAt: '2026-08-06T02:00:04.000Z'
-          },
-          {
-            protocol: 'SOCKS5',
-            requestId: 'req-socks',
-            originRequestId: 'req-socks',
-            originEventRunId: EXPECTED_RUN_ID,
-            httpStatus: 200,
-            responseBytes: 26,
-            responseSha256: digest('e'),
-            observedAt: '2026-08-06T02:00:05.000Z'
-          }
-        ],
-        stop: async () => {
-          events.push('stopOrigin');
-        }
-      };
-    },
-    pullPhase2AppEvidenceImpl: async () => {
-      events.push('pullAppEvidence');
-      return {
-        localPath: appEvidencePath,
-        proof: appEvidence
-      };
+        bindHost: '127.0.0.1',
+        files: { certPath: 'harmony/artifacts/phase2-origin/cert.pem', keyPath: 'harmony/artifacts/phase2-origin/key.pem' },
+        pid: 4312
+      });
+      const httpRecord = originModule.createRequestRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        requestId: 'req-http',
+        protocol: 'HTTP_CONNECT',
+        method: 'CONNECT',
+        pathName: '/',
+        receivedAt: '2026-08-06T02:00:04.000Z',
+        responseBytes: 26,
+        responseSha256: digest('e')
+      });
+      const socksRecord = originModule.createRequestRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        requestId: 'req-socks',
+        protocol: 'SOCKS5',
+        method: 'CONNECT',
+        pathName: '/',
+        receivedAt: '2026-08-06T02:00:05.000Z',
+        responseBytes: 26,
+        responseSha256: digest('e')
+      });
+      return createOriginHandle([
+        `${JSON.stringify(startedRecord).slice(0, 30)}`,
+        `${JSON.stringify(startedRecord).slice(30)}\n${JSON.stringify(httpRecord)}\n${JSON.stringify(socksRecord)}\n`
+      ]);
     }
   });
 
@@ -630,12 +778,12 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
   assert.deepEqual(events.slice(0, 6), ['buildPhase1Native', 'inspectHap', 'startOrigin', 'help', 'list targets', '-t device-serial-1 shell param get const.product.software.version']);
   assert.ok(events.some((entry) => entry.includes('install -r')));
   assert.ok(events.some((entry) => entry.includes('shell aa start')));
-  assert.ok(events.includes('pullAppEvidence'));
   assert.ok(events.some((entry) => entry.includes('shell aa force-stop')));
   assert.equal(proof.appEvidence.appProcessId, 4312);
   assert.equal(proof.probes.http.appEventRunId, EXPECTED_RUN_ID);
   assert.equal(proof.probes.socks.coreEventRunId, EXPECTED_RUN_ID);
 
+  await fs.writeFile(appEvidencePath, `${JSON.stringify(staleProof)}\n`, 'utf8');
   const failingProof = await runner.runPhase2DeviceProof({
     repoRoot,
     buildManifestPath,
@@ -665,21 +813,19 @@ test('Phase 2 runner executes the exact build-origin-device-app trace and reject
       resolved: { paths: { hdc: '/sdk/hdc' } }
     }),
     execImpl,
-    startOriginImpl: async () => ({
-      originId: 'origin-123',
-      originRunId: EXPECTED_RUN_ID,
-      originUrl: 'https://127.0.0.1:18443/',
-      address: '127.0.0.1:18443',
-      caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
-      tlsCertSha256: digest('f'),
-      bodySha256: digest('e'),
-      requestObservations: [],
-      stop: async () => {}
-    }),
-    pullPhase2AppEvidenceImpl: async () => ({
-      localPath: appEvidencePath,
-      proof: staleProof
-    })
+    startOriginImpl: async () => createOriginHandle([
+      `${JSON.stringify(originModule.createStartedRecord({
+        runId: EXPECTED_RUN_ID,
+        originId: 'origin-123',
+        originUrl: 'https://127.0.0.1:18443/',
+        address: '127.0.0.1:18443',
+        caPem: '-----BEGIN CERTIFICATE-----\n...\n-----END CERTIFICATE-----',
+        bodySha256: digest('e'),
+        bindHost: '127.0.0.1',
+        files: { certPath: 'harmony/artifacts/phase2-origin/cert.pem', keyPath: 'harmony/artifacts/phase2-origin/key.pem' },
+        pid: 4312
+      }))}\n`
+    ])
   });
   assert.equal(failingProof.result, 'fail');
   assert.ok(failingProof.failures.some((entry) => /RUN_ID|APP_EVIDENCE/i.test(entry.code)));
@@ -872,4 +1018,6 @@ test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 eviden
   assert.match(debugPageSource, /result: 'incomplete'/u);
   assert.match(debugPageSource, /getProcessInfo/u);
   assert.match(debugPageSource, /ProcessInfo/u);
+  assert.match(debugPageSource, /probes:\s*\{\s*http:\s*httpProbe,\s*socks:\s*socksProbe/u);
+  assert.doesNotMatch(debugPageSource, /probes:\s*Phase2ProbeEntry\[\]/u);
 });

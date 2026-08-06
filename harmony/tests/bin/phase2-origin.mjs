@@ -6,18 +6,20 @@ import https from 'node:https';
 import net from 'node:net';
 import path from 'node:path';
 import { spawnSync } from 'node:child_process';
+import { fileURLToPath } from 'node:url';
 
 const repoRoot = path.resolve(new URL('../../..', import.meta.url).pathname);
 const artifactsRoot = path.join(repoRoot, 'harmony', 'artifacts', 'phase2-origin');
 const holdOpenHeaderName = 'X-CMFA-Hold-Open';
 const holdOpenHeaderValue = 'tracker';
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 
 function joinFragments(parts) {
   return parts.join('');
 }
 
-function parseArgs(argv) {
-  const args = { bind: '127.0.0.1:0', bodyFile: '' };
+export function parseArgs(argv) {
+  const args = { bind: '127.0.0.1:0', bodyFile: '', runId: '' };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--bind') {
@@ -30,6 +32,11 @@ function parseArgs(argv) {
       index += 1;
       continue;
     }
+    if (arg === '--run-id') {
+      args.runId = argv[index + 1] ?? '';
+      index += 1;
+      continue;
+    }
     throw new Error(`unknown argument: ${arg}`);
   }
   if (!args.bind.includes(':')) {
@@ -37,6 +44,9 @@ function parseArgs(argv) {
   }
   if (args.bodyFile.length === 0) {
     throw new Error('--body-file is required');
+  }
+  if (!UUID_PATTERN.test(args.runId)) {
+    throw new Error('--run-id must be a UUID');
   }
   return args;
 }
@@ -169,6 +179,66 @@ ${buildSanConfig(host)}
   return { keyPem, certPem, keyPath, [certPathKey]: leafCertificateFile };
 }
 
+export function createStartedRecord({
+  runId,
+  originId,
+  originUrl,
+  address,
+  caPem,
+  bodySha256,
+  bindHost,
+  files,
+  pid
+}) {
+  return {
+    type: 'started',
+    runId,
+    originRunId: runId,
+    originId,
+    originUrl,
+    address,
+    caPem,
+    bodySha256,
+    pid,
+    bindHost,
+    files
+  };
+}
+
+export function createRequestRecord({
+  runId,
+  originId,
+  requestId,
+  protocol = null,
+  method,
+  pathName,
+  receivedAt,
+  httpStatus = 200,
+  responseBytes = null,
+  responseSha256 = null
+}) {
+  return {
+    type: 'request',
+    runId,
+    originRunId: runId,
+    originId,
+    protocol,
+    requestId,
+    originRequestId: requestId,
+    method,
+    path: pathName,
+    receivedAt,
+    originEventRunId: runId,
+    httpStatus,
+    responseBytes,
+    responseSha256
+  };
+}
+
+function writeJsonLine(value) {
+  process.stdout.write(`${JSON.stringify(value)}\n`);
+}
+
 async function main() {
   const args = parseArgs(process.argv.slice(2));
   const { host, port: rawPort } = parseBindAddress(args.bind);
@@ -184,6 +254,7 @@ async function main() {
     cert: tlsMaterial.certPem,
   }, (request, response) => {
     const requestId = String(request.headers['x-cmfa-request-id'] ?? '');
+    const receivedAt = new Date().toISOString();
     const releaseOnRequestEnd = String(request.headers[holdOpenHeaderName.toLowerCase()] ?? '') === holdOpenHeaderValue;
     response.writeHead(200, {
       'content-type': 'text/plain; charset=utf-8',
@@ -191,10 +262,24 @@ async function main() {
       'x-cmfa-request-id': requestId,
       'x-cmfa-origin-id': originId,
     });
+    const emitRequestRecord = () => {
+      writeJsonLine(createRequestRecord({
+        runId: args.runId,
+        originId,
+        requestId,
+        method: request.method ?? 'GET',
+        pathName: request.url ?? '/',
+        receivedAt,
+        httpStatus: 200,
+        responseBytes: Buffer.byteLength(body),
+        responseSha256: bodySha256
+      }));
+    };
     if (releaseOnRequestEnd) {
       response.flushHeaders();
       request.on('end', () => {
         response.end(body);
+        emitRequestRecord();
       });
       request.on('aborted', () => {
         response.destroy();
@@ -203,6 +288,7 @@ async function main() {
       return;
     }
     response.end(body);
+    emitRequestRecord();
   });
 
   server.on('error', (error) => {
@@ -218,7 +304,8 @@ async function main() {
   const address = server.address();
   const originHost = normalizeOriginHost(address);
 
-  const payload = {
+  const payload = createStartedRecord({
+    runId: args.runId,
     originId,
     originUrl: `https://${originHost}:${address.port}/`,
     address: `${originHost}:${address.port}`,
@@ -230,7 +317,7 @@ async function main() {
       [joinFragments(['cert', 'Path'])]: path.relative(repoRoot, tlsMaterial.certPath),
       [joinFragments(['key', 'Path'])]: path.relative(repoRoot, tlsMaterial.keyPath),
     },
-  };
+  });
   let shuttingDown = false;
   const shutdown = () => {
     if (shuttingDown) {
@@ -248,10 +335,17 @@ async function main() {
   };
   process.once('SIGINT', shutdown);
   process.once('SIGTERM', shutdown);
-  process.stdout.write(`${JSON.stringify(payload)}\n`);
+  writeJsonLine(payload);
 }
 
-main().catch((error) => {
-  process.stderr.write(`${error.stack ?? error.message}\n`);
-  process.exit(1);
-});
+if (
+  process.argv[1] &&
+  path.resolve(process.argv[1]) === fileURLToPath(import.meta.url) &&
+  process.argv.includes('--body-file') &&
+  process.argv.includes('--run-id')
+) {
+  main().catch((error) => {
+    process.stderr.write(`${error.stack ?? error.message}\n`);
+    process.exit(1);
+  });
+}

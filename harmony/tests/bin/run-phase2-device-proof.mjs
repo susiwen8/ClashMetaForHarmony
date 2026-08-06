@@ -339,8 +339,8 @@ function deviceLooksPhysical(device) {
 function originObservationMap(origin) {
   const map = new Map();
   for (const entry of origin?.requestObservations ?? []) {
-    if (isNonEmptyString(entry?.protocol)) {
-      map.set(entry.protocol, entry);
+    if (isNonEmptyString(entry?.requestId)) {
+      map.set(entry.requestId, entry);
     }
   }
   return map;
@@ -397,7 +397,7 @@ function canPass(proof) {
   for (const protocol of ['http', 'socks']) {
     const probe = proof.probes?.[protocol];
     const expectedProtocol = protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5';
-    const observation = observations.get(expectedProtocol);
+    const observation = observations.get(probe.requestId);
     if (!probe || probe.protocol !== expectedProtocol || probe.status !== 'pass') {
       return false;
     }
@@ -559,7 +559,7 @@ export function validatePhase2Proof(proof) {
       for (const protocol of ['http', 'socks']) {
         const probe = proof?.probes?.[protocol];
         const expectedProtocol = protocol === 'http' ? 'HTTP_CONNECT' : 'SOCKS5';
-        const observation = observations.get(expectedProtocol);
+      const observation = observations.get(probe.requestId);
         if (!probe || probe.status !== 'pass') {
           errors.push(`pass requires probes.${protocol}.status pass.`);
           continue;
@@ -733,9 +733,12 @@ function buildLaunchArgs(target, runId, runnerStartedAt, originPayload) {
     'cmfa.phase1.selfTest': true,
     'cmfa.phase1.runId': runId,
     'cmfa.phase1.runnerStartedAt': runnerStartedAt,
+    'cmfa.phase2.originRunId': originPayload.originRunId ?? runId,
     'cmfa.phase2.originUrl': originPayload.originUrl,
     'cmfa.phase2.caPem': originPayload.caPem,
-    'cmfa.phase2.expectedBodySha256': originPayload.bodySha256
+    'cmfa.phase2.expectedBodySha256': originPayload.bodySha256,
+    'cmfa.phase2.fixturePath': originPayload.fixturePath ?? '',
+    'cmfa.phase2.fixtureSha256': originPayload.fixtureSha256 ?? ''
   };
   return buildTargetedHdcArgs(target, [
     'shell', 'aa', 'start',
@@ -753,59 +756,213 @@ function buildPullArgs(target, localPath) {
   ]);
 }
 
-async function startOriginProcess({ repoRoot, originBodyPath, spawnImpl = spawnChild }) {
-  const child = spawnImpl('node', [ORIGIN_SCRIPT_PATH, '--bind', '127.0.0.1:0', '--body-file', originBodyPath], {
+export function createOriginStdoutParser(expectedRunId) {
+  let buffer = '';
+  const started = [];
+  const requests = [];
+  const invalid = [];
+
+  function handleRecord(rawLine) {
+    let record;
+    try {
+      record = JSON.parse(rawLine);
+    } catch (error) {
+      invalid.push({ line: rawLine, error: error?.message ?? 'invalid json' });
+      return;
+    }
+    if (record?.runId !== expectedRunId || record?.originRunId !== expectedRunId) {
+      invalid.push({ line: rawLine, error: 'runId mismatch' });
+      return;
+    }
+    if (record?.type === 'started') {
+      started.push(record);
+      return;
+    }
+    if (record?.type === 'request') {
+      requests.push(record);
+      return;
+    }
+    invalid.push({ line: rawLine, error: 'unsupported record type' });
+  }
+
+  return {
+    push(chunk) {
+      buffer += String(chunk ?? '');
+      while (true) {
+        const newlineIndex = buffer.indexOf('\n');
+        if (newlineIndex < 0) {
+          break;
+        }
+        const line = buffer.slice(0, newlineIndex).trim();
+        buffer = buffer.slice(newlineIndex + 1);
+        if (line.length === 0) {
+          continue;
+        }
+        handleRecord(line);
+      }
+    },
+    snapshot() {
+      return {
+        started: [...started],
+        requests: [...requests],
+        invalid: [...invalid]
+      };
+    }
+  };
+}
+
+export async function startOriginProcess({ repoRoot, originBodyPath, runId, spawnImpl = spawnChild, now = () => Date.now() }) {
+  const child = spawnImpl('node', [ORIGIN_SCRIPT_PATH, '--bind', '127.0.0.1:0', '--body-file', originBodyPath, '--run-id', runId], {
     cwd: repoRoot,
     env: process.env,
     stdio: ['ignore', 'pipe', 'pipe']
   });
   let stderr = '';
-  let stdout = '';
+  const parser = createOriginStdoutParser(runId);
+  let exited = false;
+  let exitPayload = { code: null, signal: null };
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk) => {
     stderr += chunk;
   });
-  const payload = await new Promise((resolve, reject) => {
-    child.stdout?.on('data', (chunk) => {
-      stdout += chunk;
-      const newlineIndex = stdout.indexOf('\n');
-      if (newlineIndex >= 0) {
-        try {
-          resolve(JSON.parse(stdout.slice(0, newlineIndex)));
-        } catch (error) {
-          reject(error);
-        }
-      }
-    });
-    child.once('error', reject);
-    child.once('exit', () => {
-      reject(Object.assign(new Error(stderr || stdout || 'phase2-origin exited before startup'), { code: /EPERM/u.test(stderr) ? 'ORIGIN_BIND_BLOCKED' : 'ORIGIN_START_FAILED' }));
-    });
+  child.once('exit', (code, signal) => {
+    exited = true;
+    exitPayload = { code, signal };
   });
+  const payload = await new Promise((resolve, reject) => {
+    let settled = false;
+    const onData = (chunk) => {
+      parser.push(chunk);
+      const startedRecord = parser.snapshot().started.at(0);
+      if (startedRecord && !settled) {
+        settled = true;
+        child.stdout?.off?.('data', onData);
+        child.off?.('error', onError);
+        child.off?.('exit', onExitBeforeStart);
+        resolve(startedRecord);
+      }
+    };
+    const onError = (error) => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.stdout?.off?.('data', onData);
+      child.off?.('exit', onExitBeforeStart);
+      reject(error);
+    };
+    const onExitBeforeStart = () => {
+      if (settled) {
+        return;
+      }
+      settled = true;
+      child.stdout?.off?.('data', onData);
+      child.off?.('error', onError);
+      reject(Object.assign(new Error(stderr || 'phase2-origin exited before startup'), { code: /EPERM/u.test(stderr) ? 'ORIGIN_BIND_BLOCKED' : 'ORIGIN_START_FAILED' }));
+    };
+    child.stdout?.on('data', onData);
+    child.once('error', onError);
+    child.once('exit', onExitBeforeStart);
+  });
+
+  async function waitForRequestObservations(expectedCount, timeoutMs = 5_000) {
+    const deadline = now() + timeoutMs;
+    while (now() < deadline) {
+      const snapshot = parser.snapshot();
+      if (snapshot.requests.length >= expectedCount) {
+        return snapshot.requests.slice(0, expectedCount);
+      }
+      if (exited) {
+        return snapshot.requests;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
+    return parser.snapshot().requests;
+  }
 
   return {
     ...payload,
-    originRunId: payload.runId ?? null,
+    originRunId: payload.originRunId ?? runId,
     tlsCertSha256: crypto.createHash('sha256').update(String(payload.caPem ?? '')).digest('hex'),
-    requestObservations: payload.requestObservations ?? [],
-    stop: async () => {
+    requestObservations: [],
+    waitForRequestObservations,
+    getInvalidRecords() {
+      return parser.snapshot().invalid;
+    },
+    async stop() {
+      if (exited) {
+        this.requestObservations = parser.snapshot().requests;
+        return;
+      }
+      child.kill('SIGTERM');
       await new Promise((resolve) => {
         child.once('exit', () => resolve());
-        child.kill('SIGTERM');
       });
+      this.requestObservations = parser.snapshot().requests;
     }
   };
 }
 
-function normalizeAppEvidenceProof(raw) {
-  if (!raw || typeof raw !== 'object') {
-    return null;
+export function parsePhase2AppEvidence(raw, options = {}) {
+  const errors = [];
+  const expectedRunId = options.expectedRunId ?? null;
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
+    errors.push('app evidence must be an object.');
+    return { valid: false, errors, normalized: null };
   }
-  if (raw.probes && raw.coreVersion) {
-    return raw;
+  if (raw.runId !== expectedRunId) {
+    errors.push('app evidence runId mismatch.');
   }
-  return null;
+  if (!Number.isInteger(raw.appProcessId) || raw.appProcessId < 1) {
+    errors.push('app evidence appProcessId must be a positive integer.');
+  }
+  for (const key of ['fixturePath', 'fixtureSha256', 'coreVersion', 'httpListenerAddress', 'socksListenerAddress']) {
+    if (!isNonEmptyString(raw[key])) {
+      errors.push(`app evidence ${key} must be non-empty.`);
+    }
+  }
+  if (!raw.stop || raw.stop.result !== 'pass') {
+    errors.push('app evidence stop.result must be pass.');
+  }
+  if (!raw.probes || typeof raw.probes !== 'object' || Array.isArray(raw.probes)) {
+    errors.push('app evidence probes must be an object with http and socks entries.');
+  } else {
+    for (const [key, expectedProtocol] of [['http', 'HTTP_CONNECT'], ['socks', 'SOCKS5']]) {
+      const probe = raw.probes[key];
+      if (!probe || typeof probe !== 'object' || Array.isArray(probe)) {
+        errors.push(`app evidence probes.${key} must be an object.`);
+        continue;
+      }
+      for (const requiredKey of ['probeRunId', 'requestId', 'originRequestId', 'appProbeId', 'coreEventId', 'originEventRunId', 'appEventRunId', 'coreEventRunId', 'originId', 'coreConnectionId', 'destination', 'upstreamInboundType', 'listenerAddress', 'tlsPeerSha256', 'responseSha256', 'startedAt', 'completedAt']) {
+        if (!isNonEmptyString(probe[requiredKey])) {
+          errors.push(`app evidence probes.${key}.${requiredKey} must be non-empty.`);
+        }
+      }
+      if (probe.protocol !== expectedProtocol) {
+        errors.push(`app evidence probes.${key}.protocol mismatch.`);
+      }
+      if (!PROBE_RESULTS.has(probe.status)) {
+        errors.push(`app evidence probes.${key}.status must be pass/fail/incomplete/not-run.`);
+      }
+      if (probe.originEventRunId !== expectedRunId || probe.appEventRunId !== expectedRunId || probe.coreEventRunId !== expectedRunId) {
+        errors.push(`app evidence probes.${key} run correlation mismatch.`);
+      }
+      if (!Number.isInteger(probe.clientSourcePort) || probe.clientSourcePort < 1) {
+        errors.push(`app evidence probes.${key}.clientSourcePort must be a positive integer.`);
+      }
+      if (probe.httpStatus !== 200) {
+        errors.push(`app evidence probes.${key}.httpStatus must be 200.`);
+      }
+      if (!Number.isInteger(probe.responseBytes) || probe.responseBytes < 1) {
+        errors.push(`app evidence probes.${key}.responseBytes must be positive.`);
+      }
+      if (probe.error !== null) {
+        errors.push(`app evidence probes.${key}.error must be null.`);
+      }
+    }
+  }
+  return { valid: errors.length === 0, errors, normalized: errors.length === 0 ? raw : null };
 }
 
 async function pullPhase2AppEvidence({
@@ -823,11 +980,11 @@ async function pullPhase2AppEvidence({
     const result = await execImpl(hdcCommand, buildPullArgs(target, localPath), { cwd });
     if (!result?.error && result?.exitCode === 0 && !result?.timedOut) {
       try {
-        const parsed = normalizeAppEvidenceProof(await readJson(fsApi, localPath, 'APP_EVIDENCE_INVALID'));
-        if (parsed && parsed.runId === expectedRunId) {
-          return { ok: true, result, proof: parsed, localPath };
+        const validation = parsePhase2AppEvidence(await readJson(fsApi, localPath, 'APP_EVIDENCE_INVALID'), { expectedRunId });
+        if (validation.valid) {
+          return { ok: true, result, proof: validation.normalized, localPath };
         }
-        lastFailure = createFailure('APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence did not match the expected runId.', 'app-proof');
+        lastFailure = createFailure('APP_EVIDENCE_INVALID', validation.errors.join('; '), 'app-proof');
       } catch (error) {
         lastFailure = createFailure(error?.code ?? 'APP_EVIDENCE_INVALID', error?.message ?? 'Unable to parse app evidence.', 'app-proof');
       }
@@ -1070,6 +1227,8 @@ export async function runPhase2DeviceProof({
     proof.origin.tlsCertSha256 = originHandle.tlsCertSha256 ?? null;
     proof.origin.responseSha256 = originHandle.bodySha256 ?? proof.origin.responseSha256;
     proof.origin.requestObservations = originHandle.requestObservations ?? [];
+    originHandle.fixturePath = proof.fixtures.matchConfig.path;
+    originHandle.fixtureSha256 = proof.fixtures.matchConfig.sha256;
 
     hdcCommand = await resolveHdcCommand(toolchainInspectorImpl, repoRoot);
     const help = await verifyHdcHelp(execImpl, hdcCommand, repoRoot);
@@ -1135,7 +1294,7 @@ export async function runPhase2DeviceProof({
       expectedRunId: proof.runId,
       waitImpl
     });
-    const pulledOk = pulled?.ok === true || (pulled && pulled.proof && pulled.localPath);
+  const pulledOk = pulled?.ok === true || (pulled && pulled.proof && pulled.localPath);
     if (!pulledOk) {
       const failure = pulled?.invalid ?? createFailure('APP_EVIDENCE_MISSING', 'The app did not produce a usable Phase 2 evidence file.', 'app-proof');
       pushFailure(proof, failure.code, failure.detail, failure.stage);
@@ -1143,7 +1302,12 @@ export async function runPhase2DeviceProof({
     }
 
     const evidenceDigest = await hashFile(fsApi, pulled.localPath);
-    const appProof = normalizeAppEvidenceProof(pulled.proof);
+    const appValidation = parsePhase2AppEvidence(pulled.proof, { expectedRunId: proof.runId });
+    if (!appValidation.valid) {
+      pushFailure(proof, 'APP_EVIDENCE_INVALID', appValidation.errors.join('; '), 'app-proof');
+      return await finish();
+    }
+    const appProof = appValidation.normalized;
     proof.timestamps.proofAt = isoTimestamp(now());
     proof.appEvidence = {
       path: normalizePathForReport(repoRoot, pulled.localPath),
@@ -1151,7 +1315,7 @@ export async function runPhase2DeviceProof({
       sizeBytes: evidenceDigest.sizeBytes,
       runId: appProof.runId ?? null,
       appProcessId: appProof.appProcessId ?? null,
-      stopResult: appProof.stopResult ?? null,
+      stopResult: appProof.stop?.result ?? null,
       fixturePath: appProof.fixturePath ?? null,
       fixtureSha256: appProof.fixtureSha256 ?? null,
       coreVersion: appProof.coreVersion ?? null,
@@ -1161,11 +1325,19 @@ export async function runPhase2DeviceProof({
     proof.core.version = appProof.coreVersion ?? proof.core.version;
     proof.core.httpListenerAddress = appProof.httpListenerAddress ?? null;
     proof.core.socksListenerAddress = appProof.socksListenerAddress ?? null;
-    proof.stop.result = appProof.stopResult ?? 'fail';
+    proof.stop.result = appProof.stop?.result ?? 'fail';
 
     if (proof.appEvidence.runId !== proof.runId) {
       pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'Pulled app evidence runId did not match the runner runId.', 'app-proof');
       return await finish();
+    }
+
+    if (typeof originHandle?.waitForRequestObservations === 'function') {
+      proof.origin.requestObservations = await originHandle.waitForRequestObservations(2);
+      if (proof.origin.requestObservations.length !== 2) {
+        pushFailure(proof, 'ORIGIN_OBSERVATION_MISSING', 'Origin did not emit the exact two request observations required for Phase 2.', 'origin');
+        return await finish();
+      }
     }
 
     const observations = originObservationMap(proof.origin);
@@ -1175,7 +1347,7 @@ export async function runPhase2DeviceProof({
         protocol,
         proof,
         appProbe: appProof.probes?.[protocolKey],
-        originObservation: observations.get(protocol),
+        originObservation: observations.get(appProof.probes?.[protocolKey]?.requestId),
         expectedListenerAddress: protocol === 'HTTP_CONNECT' ? proof.core.httpListenerAddress : proof.core.socksListenerAddress
       });
       if (probeFailure) {
@@ -1188,6 +1360,12 @@ export async function runPhase2DeviceProof({
     if (originHandle?.stop) {
       try {
         await originHandle.stop();
+        if (Array.isArray(originHandle.requestObservations) && originHandle.requestObservations.length > 0) {
+          proof.origin.requestObservations = originHandle.requestObservations;
+        }
+        if (typeof originHandle.getInvalidRecords === 'function' && originHandle.getInvalidRecords().length > 0) {
+          pushFailure(proof, 'ORIGIN_RECORD_INVALID', 'Origin emitted invalid or mismatched JSONL records.', 'origin');
+        }
       } catch (error) {
         pushFailure(proof, 'ORIGIN_STOP_FAILED', sanitizeText(error?.message ?? 'Failed to stop the HTTPS origin.', replacements), 'cleanup');
       }
