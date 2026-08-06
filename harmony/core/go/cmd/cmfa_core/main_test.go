@@ -2,8 +2,10 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"testing"
 
+	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 	"github.com/clashmetaforandroid/harmony/core/go/internal/version"
 )
 
@@ -26,5 +28,14 @@ func TestBuildInfoPrivateExportIncludesPinnedFields(t *testing.T) {
 	}
 	if info.BuildID != expected.BuildID {
 		t.Fatalf("buildID mismatch: got %q want %q", info.BuildID, expected.BuildID)
+	}
+}
+
+func TestFailureMessagePrefersSnapshotLastError(t *testing.T) {
+	snapshot := runtimepkg.Snapshot{LastError: "redacted snapshot error"}
+	err := errors.New("raw backend error")
+
+	if got := failureMessage(snapshot, err); got != "redacted snapshot error" {
+		t.Fatalf("failureMessage = %q want snapshot last error", got)
 	}
 }

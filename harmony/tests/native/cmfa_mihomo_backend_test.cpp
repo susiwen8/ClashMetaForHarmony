@@ -19,6 +19,10 @@
 
 namespace {
 
+extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
+                                                                   cmfa_runtime_snapshot *snapshot,
+                                                                   cmfa_error *error);
+
 char *g_raw_version = nullptr;
 cmfa_runtime_snapshot g_runtime_snapshot{};
 bool g_preserve_error_on_stop = false;
@@ -440,6 +444,24 @@ void test_stop_preserves_error_snapshot_event_and_redacted_failure_log() {
   expect(capture.log_messages.back().find("hunter2") == std::string::npos, "failure log should redact password");
 }
 
+void test_backend_start_local_direct_null_options_preserves_snapshot() {
+  reset_contract();
+
+  cmfa_runtime_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  snapshot.state = CMFA_RUNTIME_ERROR;
+  std::memcpy(snapshot.active_config_path, "sentinel", 9);
+  snapshot.mixed_port = 9999;
+  ErrorBox error;
+
+  expect_eq(cmfa_mihomo_backend_test_start_local_direct(nullptr, &snapshot, &error.error),
+            CMFA_INVALID_ARGUMENT,
+            "direct backend start_local should reject null options");
+  expect_eq(snapshot.state, CMFA_RUNTIME_ERROR, "backend direct start_local must not clobber caller snapshot");
+  expect_string_eq(std::string(snapshot.active_config_path), "sentinel",
+                   "backend direct start_local must preserve caller snapshot path");
+}
+
 void test_shutdown_and_repeated_unregister_are_safe() {
   reset_contract();
   HostCapture first_capture;
@@ -509,6 +531,10 @@ extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snaps
   return CMFA_OK;
 }
 
+extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
+                                                                   cmfa_runtime_snapshot *snapshot,
+                                                                   cmfa_error *error);
+
 extern "C" int cmfa_mihomo_take_runtime_log_v1(cmfa_mihomo_runtime_log_record_v1 *record) {
   if (record == nullptr || g_runtime_logs.empty()) {
     return 0;
@@ -540,6 +566,8 @@ int main() {
       {"start stop and runtime snapshot", test_start_stop_and_runtime_snapshot},
       {"stop preserves error snapshot event and redacted failure log",
        test_stop_preserves_error_snapshot_event_and_redacted_failure_log},
+      {"backend start_local direct null options preserves snapshot",
+       test_backend_start_local_direct_null_options_preserves_snapshot},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
   };
 

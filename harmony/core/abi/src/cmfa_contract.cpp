@@ -746,6 +746,12 @@ extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
   cmfa_backend_api backend_copy{};
   bool should_call_backend = false;
   cmfa_runtime_snapshot backend_snapshot{};
+  auto finalize_stop_without_snapshot_mutation = [&] {
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    g_contract.callbacks_enabled = false;
+    g_contract.lifecycle_transition_in_progress = false;
+    g_contract.cv.notify_all();
+  };
 
   {
     std::unique_lock<std::mutex> lock(g_contract.mutex);
@@ -791,15 +797,18 @@ extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
     const cmfa_status snapshot_status = backend_copy.runtime_state(backend_copy.context, &backend_snapshot, error);
     g_backend_call_depth -= 1;
     if (snapshot_status != CMFA_OK) {
+      finalize_stop_without_snapshot_mutation();
       return finalize_backend_error(error, snapshot_status, "backend runtime_state after stop failed");
     }
     if (!is_valid_runtime_state(backend_snapshot.state)) {
+      finalize_stop_without_snapshot_mutation();
       return finalize_backend_error(error, CMFA_BACKEND_ERROR, "backend returned an invalid runtime state after stop");
     }
     const cmfa_status path_status =
         validate_snapshot_path_buffer(backend_snapshot.active_config_path, error,
                                       backend_snapshot.state == CMFA_RUNTIME_STOPPED);
     if (path_status != CMFA_OK) {
+      finalize_stop_without_snapshot_mutation();
       return path_status;
     }
     const bool require_addresses = backend_snapshot.state == CMFA_RUNTIME_RUNNING;
@@ -810,6 +819,7 @@ extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
                                                                   "snapshot HTTP address must not be empty",
                                                                   "snapshot HTTP address must be valid UTF-8");
     if (http_status != CMFA_OK) {
+      finalize_stop_without_snapshot_mutation();
       return http_status;
     }
     const cmfa_status socks_status = validate_snapshot_text_buffer(backend_snapshot.socks_address,
@@ -819,6 +829,7 @@ extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
                                                                    "snapshot SOCKS address must not be empty",
                                                                    "snapshot SOCKS address must be valid UTF-8");
     if (socks_status != CMFA_OK) {
+      finalize_stop_without_snapshot_mutation();
       return socks_status;
     }
     const cmfa_status last_error_status = validate_snapshot_text_buffer(backend_snapshot.last_error,
@@ -828,6 +839,7 @@ extern "C" cmfa_status cmfa_stop(cmfa_error *error) {
                                                                         "snapshot last_error must not be empty",
                                                                         "snapshot last_error must be valid UTF-8");
     if (last_error_status != CMFA_OK) {
+      finalize_stop_without_snapshot_mutation();
       return last_error_status;
     }
   }

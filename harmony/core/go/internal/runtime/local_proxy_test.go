@@ -51,6 +51,7 @@ type fakeListener struct {
 	mu      sync.Mutex
 	address string
 	closed  bool
+	closeErr error
 }
 
 func (l *fakeListener) Address() string {
@@ -61,7 +62,7 @@ func (l *fakeListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.closed = true
-	return nil
+	return l.closeErr
 }
 
 func (l *fakeListener) Closed() bool {
@@ -441,6 +442,67 @@ func TestLocalProxyProducesBoundedRedactedStructuredLogs(t *testing.T) {
 	}
 	if strings.Contains(last.Message, "secret") || strings.Contains(last.Message, "abc123") || strings.Contains(last.Message, "hunter2") {
 		t.Fatalf("failure log leaked secrets: %#v", last)
+	}
+}
+
+func TestLocalProxyPartialBindFailureReportsCleanupFailureAndConsistentSnapshot(t *testing.T) {
+	httpFactory := newFakeFactory(41001)
+	socksFactory := newFakeFactory(42001)
+	socksFactory.failFor = "127.0.0.1:43011"
+	proxy := newTestProxy(t, &recordingSink{}, func(deps *LocalProxyDeps) {
+		deps.HTTPFactory = func(addr string) (ListenerHandle, error) {
+			listener, err := httpFactory.newListener(addr)
+			if err != nil {
+				return nil, err
+			}
+			listener.(*fakeListener).closeErr = errors.New("password=hunter2 cleanup denied")
+			return listener, nil
+		}
+		deps.SOCKSFactory = socksFactory.newListener
+	})
+
+	snapshot, err := proxy.Start(StartOptions{
+		ConfigPath:         "/tmp/profiles/password=letmein.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:43011",
+	})
+	if err == nil {
+		t.Fatal("Start unexpectedly succeeded")
+	}
+	if snapshot.LastError != err.Error() {
+		t.Fatalf("snapshot.LastError = %q want err %q", snapshot.LastError, err.Error())
+	}
+	if !strings.Contains(snapshot.LastError, "cleanup HTTP listener failed") {
+		t.Fatalf("snapshot.LastError = %q", snapshot.LastError)
+	}
+	if strings.Contains(snapshot.LastError, "hunter2") {
+		t.Fatalf("snapshot.LastError leaked secret: %q", snapshot.LastError)
+	}
+}
+
+func TestLocalProxyStopFailureMatchesSnapshotLastError(t *testing.T) {
+	proxy := newTestProxy(t, &recordingSink{}, func(deps *LocalProxyDeps) {
+		deps.Shutdown = func() error {
+			return errors.New("stop failed for https://alice:secret@example.invalid?token=abc123")
+		}
+	})
+	if _, err := proxy.Start(StartOptions{
+		ConfigPath:         "phase2-match-direct.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:0",
+	}); err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+
+	snapshot, err := proxy.Stop()
+	if err == nil {
+		t.Fatal("Stop unexpectedly succeeded")
+	}
+	if snapshot.LastError != err.Error() {
+		t.Fatalf("snapshot.LastError = %q want err %q", snapshot.LastError, err.Error())
+	}
+	if strings.Contains(snapshot.LastError, "secret") || strings.Contains(snapshot.LastError, "abc123") {
+		t.Fatalf("snapshot.LastError leaked secret: %q", snapshot.LastError)
 	}
 }
 

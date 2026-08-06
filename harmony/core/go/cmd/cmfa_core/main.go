@@ -216,6 +216,16 @@ func encodeRuntimeLogMessage(log runtimepkg.RuntimeLog) string {
 	return string(payload)
 }
 
+func failureMessage(snapshot runtimepkg.Snapshot, err error) string {
+	if snapshot.LastError != "" {
+		return snapshot.LastError
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "runtime operation failed"
+}
+
 //export cmfa_mihomo_core_version_cstr_v1
 func cmfa_mihomo_core_version_cstr_v1() *C.char {
 	coreVersionOnce.Do(func() {
@@ -253,7 +263,7 @@ func cmfa_mihomo_start_local_v1(configPath *C.char,
 	writeSnapshot(snapshot, result)
 	status := runtimeStatus(err)
 	if err != nil {
-		setError(errorOut, status, err.Error())
+		setError(errorOut, status, failureMessage(result, err))
 		return status
 	}
 	clearError(errorOut)
@@ -262,10 +272,10 @@ func cmfa_mihomo_start_local_v1(configPath *C.char,
 
 //export cmfa_mihomo_stop_v1
 func cmfa_mihomo_stop_v1(errorOut *C.cmfa_error) C.cmfa_status {
-	_, err := localProxy.Stop()
+	result, err := localProxy.Stop()
 	status := runtimeStatus(err)
 	if err != nil {
-		setError(errorOut, status, err.Error())
+		setError(errorOut, status, failureMessage(result, err))
 		return status
 	}
 	clearError(errorOut)

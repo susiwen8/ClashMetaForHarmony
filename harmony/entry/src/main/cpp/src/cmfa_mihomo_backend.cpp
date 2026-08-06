@@ -184,10 +184,10 @@ cmfa_status start_local(void *,
                         const cmfa_local_options *options,
                         cmfa_runtime_snapshot *snapshot,
                         cmfa_error *error) {
-  reset_runtime_snapshot(snapshot);
   if (options == nullptr || snapshot == nullptr) {
     return fail(error, CMFA_INVALID_ARGUMENT, "options and snapshot must not be null");
   }
+  reset_runtime_snapshot(snapshot);
 
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
@@ -261,6 +261,14 @@ cmfa_backend_api make_backend_api() {
 }
 
 } // namespace
+
+#if defined(CMFA_BACKEND_TESTING)
+extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
+                                                                   cmfa_runtime_snapshot *snapshot,
+                                                                   cmfa_error *error) {
+  return start_local(nullptr, options, snapshot, error);
+}
+#endif
 
 namespace cmfa {
 

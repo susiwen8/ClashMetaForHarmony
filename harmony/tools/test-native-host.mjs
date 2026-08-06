@@ -254,7 +254,7 @@ const CASES = new Map([
   }],
   ['mihomo-backend', {
     sources: [CONTRACT_SOURCE, MIHOMO_BACKEND_SOURCE, MIHOMO_BACKEND_TEST_SOURCE],
-    defines: ['CMFA_INTERNAL_BACKEND_API=1'],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_BACKEND_TESTING=1'],
     prefix: 'cmfa-mihomo-backend-test-',
     includeDirs: [ENTRY_INCLUDE_DIR],
     outputName: 'cmfa_mihomo_backend_test',

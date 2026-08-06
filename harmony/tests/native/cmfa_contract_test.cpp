@@ -294,6 +294,8 @@ struct FakeBackend {
   bool omit_terminating_nul_in_version = false;
   bool emit_backend_error_without_nul = false;
   bool preserve_error_on_stop = false;
+  bool fail_runtime_state_after_stop = false;
+  bool invalid_runtime_state_after_stop = false;
   uint32_t start_calls = 0;
   uint32_t stop_calls = 0;
   uint32_t shutdown_calls = 0;
@@ -468,6 +470,14 @@ struct FakeBackend {
   static cmfa_status runtime_state(void *context, cmfa_runtime_snapshot *snapshot, cmfa_error *) {
     auto *self = static_cast<FakeBackend *>(context);
     std::lock_guard<std::mutex> lock(self->mutex);
+    if (self->stop_called && self->fail_runtime_state_after_stop) {
+      return CMFA_BACKEND_ERROR;
+    }
+    if (self->stop_called && self->invalid_runtime_state_after_stop) {
+      *snapshot = self->snapshot;
+      snapshot->state = static_cast<cmfa_runtime_state_value>(99);
+      return CMFA_OK;
+    }
     *snapshot = self->snapshot;
     return CMFA_OK;
   }
@@ -1596,6 +1606,64 @@ void test_stop_preserves_backend_error_snapshot_and_diagnostic() {
   reset_contract();
 }
 
+void test_stop_post_runtime_state_failure_clears_transition() {
+  reset_contract();
+
+  HostCapture capture;
+  auto callbacks = make_host_callbacks(&capture);
+  ErrorBox error;
+  FakeBackend backend;
+  auto api = backend.api();
+  expect_eq(cmfa_internal_register_backend(&api, &error.error), CMFA_OK, "backend registration should succeed");
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+  cmfa_local_options options{};
+  options.struct_size = sizeof(options);
+  options.config_path = "alpha.yaml";
+  options.mixed_port = 7890;
+  cmfa_runtime_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  expect_eq(cmfa_start_local(&options, &snapshot, &error.error), CMFA_OK, "start should succeed");
+
+  backend.fail_runtime_state_after_stop = true;
+  expect_eq(cmfa_stop(&error.error), CMFA_BACKEND_ERROR, "stop should surface post-stop runtime_state failure");
+
+  backend.fail_runtime_state_after_stop = false;
+  expect_eq(cmfa_runtime_state(&snapshot, &error.error), CMFA_OK, "runtime_state should not remain blocked after stop failure");
+  expect_eq(cmfa_shutdown(&error.error), CMFA_OK, "shutdown should not remain blocked after stop failure");
+
+  reset_contract();
+}
+
+void test_stop_post_runtime_state_validation_failure_clears_transition() {
+  reset_contract();
+
+  HostCapture capture;
+  auto callbacks = make_host_callbacks(&capture);
+  ErrorBox error;
+  FakeBackend backend;
+  auto api = backend.api();
+  expect_eq(cmfa_internal_register_backend(&api, &error.error), CMFA_OK, "backend registration should succeed");
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+  cmfa_local_options options{};
+  options.struct_size = sizeof(options);
+  options.config_path = "alpha.yaml";
+  options.mixed_port = 7890;
+  cmfa_runtime_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  expect_eq(cmfa_start_local(&options, &snapshot, &error.error), CMFA_OK, "start should succeed");
+
+  backend.invalid_runtime_state_after_stop = true;
+  expect_eq(cmfa_stop(&error.error), CMFA_BACKEND_ERROR, "stop should surface invalid post-stop snapshot");
+
+  backend.invalid_runtime_state_after_stop = false;
+  expect_eq(cmfa_runtime_state(&snapshot, &error.error), CMFA_OK, "runtime_state should not remain blocked after invalid stop snapshot");
+  expect_eq(cmfa_shutdown(&error.error), CMFA_OK, "shutdown should not remain blocked after invalid stop snapshot");
+
+  reset_contract();
+}
+
 } // namespace
 
 int main() {
@@ -1636,6 +1704,10 @@ int main() {
       {"snapshot_path_is_caller_owned_and_stable", test_snapshot_path_is_caller_owned_and_stable},
       {"stop_preserves_backend_error_snapshot_and_diagnostic",
        test_stop_preserves_backend_error_snapshot_and_diagnostic},
+      {"stop_post_runtime_state_failure_clears_transition",
+       test_stop_post_runtime_state_failure_clears_transition},
+      {"stop_post_runtime_state_validation_failure_clears_transition",
+       test_stop_post_runtime_state_validation_failure_clears_transition},
   };
 
   size_t failed = 0;

@@ -53,6 +53,14 @@ type LocalProxy struct {
 	socksListener ListenerHandle
 }
 
+type runtimeFailure struct {
+	message string
+}
+
+func (e runtimeFailure) Error() string {
+	return e.message
+}
+
 func NewLocalProxy() *LocalProxy {
 	return NewLocalProxyWithDeps(LocalProxyDeps{})
 }
@@ -123,7 +131,7 @@ func (p *LocalProxy) Snapshot() Snapshot {
 
 func (p *LocalProxy) Start(options StartOptions) (Snapshot, error) {
 	if err := p.validateStartOptions(options); err != nil {
-		return p.failStart(options.ConfigPath, err), err
+		return p.commitStartFailure(options.ConfigPath, err)
 	}
 
 	startingEvent := RuntimeEvent{
@@ -149,18 +157,21 @@ func (p *LocalProxy) Start(options StartOptions) (Snapshot, error) {
 	})
 
 	if err := p.deps.Prepare(options.ConfigPath); err != nil {
-		return p.failStart(options.ConfigPath, err), err
+		return p.commitStartFailure(options.ConfigPath, err)
 	}
 
 	httpListener, err := p.deps.HTTPFactory(options.HTTPListenAddress)
 	if err != nil {
-		return p.failStart(options.ConfigPath, fmt.Errorf("bind HTTP listener %s: %w", options.HTTPListenAddress, err)), err
+		return p.commitStartFailure(options.ConfigPath, fmt.Errorf("bind HTTP listener %s: %w", options.HTTPListenAddress, err))
 	}
 
 	socksListener, err := p.deps.SOCKSFactory(options.SOCKSListenAddress)
 	if err != nil {
-		_ = httpListener.Close()
-		return p.failStart(options.ConfigPath, fmt.Errorf("bind SOCKS listener %s: %w", options.SOCKSListenAddress, err)), err
+		bindErr := fmt.Errorf("bind SOCKS listener %s: %w", options.SOCKSListenAddress, err)
+		if closeErr := httpListener.Close(); closeErr != nil {
+			bindErr = fmt.Errorf("%w; cleanup HTTP listener failed: %v", bindErr, closeErr)
+		}
+		return p.commitStartFailure(options.ConfigPath, bindErr)
 	}
 
 	snapshot := Snapshot{
@@ -223,16 +234,16 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 	p.publishLog(LogLevelInfo, "runtime.stopping", "stopping local proxy", nil)
 
 	if err := closeListener(httpListener); err != nil {
-		return p.failStop(err), err
+		return p.commitStopFailure(err)
 	}
 	if err := closeListener(socksListener); err != nil {
-		return p.failStop(err), err
+		return p.commitStopFailure(err)
 	}
 	if err := p.deps.CloseConnections(); err != nil {
-		return p.failStop(fmt.Errorf("close tracked connections: %w", err)), err
+		return p.commitStopFailure(fmt.Errorf("close tracked connections: %w", err))
 	}
 	if err := p.deps.Shutdown(); err != nil {
-		return p.failStop(fmt.Errorf("executor shutdown: %w", err)), err
+		return p.commitStopFailure(fmt.Errorf("executor shutdown: %w", err))
 	}
 
 	snapshot := Snapshot{State: RuntimeStopped}
@@ -267,10 +278,11 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 }
 
 func (p *LocalProxy) failStart(configPath string, err error) Snapshot {
+	diagnostic := truncateUTF8(redactSecrets(err.Error(), configPath), p.deps.MaxMessageBytes)
 	snapshot := Snapshot{
 		State:            RuntimeError,
 		ActiveConfigPath: truncateUTF8(configPath, p.deps.MaxSnapshotBytes),
-		LastError:        truncateUTF8(err.Error(), p.deps.MaxMessageBytes),
+		LastError:        diagnostic,
 	}
 
 	p.mu.Lock()
@@ -293,9 +305,10 @@ func (p *LocalProxy) failStart(configPath string, err error) Snapshot {
 }
 
 func (p *LocalProxy) failStop(err error) Snapshot {
+	diagnostic := truncateUTF8(redactSecrets(err.Error(), ""), p.deps.MaxMessageBytes)
 	snapshot := Snapshot{
 		State:     RuntimeError,
-		LastError: truncateUTF8(err.Error(), p.deps.MaxMessageBytes),
+		LastError: diagnostic,
 	}
 	p.mu.Lock()
 	p.state = RuntimeError
@@ -308,6 +321,16 @@ func (p *LocalProxy) failStop(err error) Snapshot {
 	})
 	p.publishLog(LogLevelError, "runtime.stop.failed", snapshot.LastError, nil)
 	return snapshot
+}
+
+func (p *LocalProxy) commitStartFailure(configPath string, err error) (Snapshot, error) {
+	snapshot := p.failStart(configPath, err)
+	return snapshot, runtimeFailure{message: snapshot.LastError}
+}
+
+func (p *LocalProxy) commitStopFailure(err error) (Snapshot, error) {
+	snapshot := p.failStop(err)
+	return snapshot, runtimeFailure{message: snapshot.LastError}
 }
 
 func (p *LocalProxy) publish(event RuntimeEvent) {
