@@ -16,6 +16,7 @@ const dtsPath = path.join(typesRoot, 'Index.d.ts');
 const typesPackagePath = path.join(typesRoot, 'oh-package.json5');
 const backendSourceName = 'cmfa_mihomo_backend.cpp';
 const rawVersionSymbol = 'cmfa_mihomo_core_version_cstr_v1';
+const rawProbeCancelSymbol = 'cmfa_mihomo_probe_cancel_v1';
 const mainGuardSnippet =
   'process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)';
 const expectedUsage = [
@@ -182,6 +183,15 @@ test('Task 7 keeps the raw Go declaration inside the hidden adapter only', async
     `Expected CMFA_INTERNAL_BACKEND_API only in ${backendSourceName}, found ${internalMacroHits.join(', ')}`
   );
 
+  const rawProbeCancelHits = fileBodies
+    .filter(({ body }) => body.includes(rawProbeCancelSymbol))
+    .map(({ filePath }) => path.basename(filePath));
+  assert.deepEqual(
+    rawProbeCancelHits,
+    [backendSourceName],
+    `Expected raw probe cancel symbol to appear only in ${backendSourceName}, found ${rawProbeCancelHits.join(', ')}`
+  );
+
   for (const { filePath, body } of fileBodies) {
     assert.doesNotMatch(body, /\bdlopen\b/u, `${path.basename(filePath)} must not use dlopen`);
     assert.doesNotMatch(body, /\bdlsym\b/u, `${path.basename(filePath)} must not use dlsym`);
@@ -298,6 +308,10 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(jsAsyncBody, /\bauto \*payload = new \(std::nothrow\) AsyncCompletionPayload/u, 'payload must be preallocated before worker thread starts');
   assert.doesNotMatch(jsAsyncBody, /async_worker_main[\s\S]*new \(std::nothrow\) AsyncCompletionPayload/u, 'worker must not allocate completion payload');
   assert.match(jsAsyncBody, /\bcatch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*reject_deferred_with_napi_failure/u, 'async setup exceptions should sanitize through JS boundary');
+  assert.match(jsAsyncBody, /\bcmfa::cancel_mihomo_probe\s*\(\s*async_handle->probe_run_id\.c_str\(\)/u,
+    'async cleanup should forward probe cancellation through the hidden backend wrapper');
+  assert.match(jsAsyncBody, /\basync_handle->probe_run_id\s*=\s*decoded\.input\.probe_request\.probe_run_id\s*;/u,
+    'async probe jobs must retain the probeRunID for runtime cancellation');
   assert.match(jsEventsBody, /try_add_delivery[\s\S]*try_add_reference/u, 'events should register delivery before reference rollback-sensitive step');
   assert.match(jsEventsBody, /if\s*\(!addon->owner\.try_add_reference[\s\S]*owner\.release_delivery\(delivery,\s*true\)/u, 'reference registration failure must release owner-held delivery through owner API');
   assert.doesNotMatch(jsEventsBody, /if\s*\(!addon->owner\.try_add_reference[\s\S]*napi_release_threadsafe_function/u, 'reference registration failure must not manually release owner-held TSFN');

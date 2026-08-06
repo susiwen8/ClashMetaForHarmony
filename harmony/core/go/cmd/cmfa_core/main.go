@@ -122,14 +122,15 @@ import (
 )
 
 var (
-	coreVersionOnce sync.Once
-	coreVersionCStr *C.char
-	buildInfoOnce   sync.Once
-	buildInfoCStr   *C.char
-	runtimeLogs     = runtimepkg.NewLogBuffer(32)
-	localProxy      = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
-		Prepare:            loadConfigForLocalProxy,
-		Logs:               runtimeLogs,
+	coreVersionOnce     sync.Once
+	coreVersionCStr     *C.char
+	buildInfoOnce       sync.Once
+	buildInfoCStr       *C.char
+	probeDefaultTimeout = probepkg.DefaultTimeout
+	runtimeLogs         = runtimepkg.NewLogBuffer(32)
+	localProxy          = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
+		Prepare:             loadConfigForLocalProxy,
+		Logs:                runtimeLogs,
 		MaxLogContextFields: 4,
 		MaxLogFieldBytes:    256,
 	})
@@ -489,8 +490,11 @@ func cmfa_mihomo_probe_https_v1(request *C.cmfa_probe_request,
 		return status
 	}
 
+	ctx, cancel := context.WithTimeout(context.Background(), probeDefaultTimeout)
+	defer cancel()
+
 	probeResult, err := probepkg.HTTPS(
-		context.Background(),
+		ctx,
 		probepkg.HTTPSRequest{
 			ProbeRunID:         C.GoString(request.probe_run_id),
 			Protocol:           protocol,
@@ -515,6 +519,23 @@ func cmfa_mihomo_probe_https_v1(request *C.cmfa_probe_request,
 	writeProbeResult(result, request.protocol, probeResult, nil)
 	clearError(errorOut)
 	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_probe_cancel_v1
+func cmfa_mihomo_probe_cancel_v1(probeRunID *C.char, errorOut *C.cmfa_error) C.cmfa_status {
+	if probeRunID == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "probeRunID must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	switch probepkg.CancelProbeRun(C.GoString(probeRunID)) {
+	case probepkg.CancelRunInvalid:
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "probeRunID must not be empty")
+		return C.CMFA_INVALID_ARGUMENT
+	default:
+		clearError(errorOut)
+		return C.CMFA_OK
+	}
 }
 
 func main() {}

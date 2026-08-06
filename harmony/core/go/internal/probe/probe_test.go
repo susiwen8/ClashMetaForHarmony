@@ -34,10 +34,10 @@ type originProcess struct {
 }
 
 type originInfo struct {
-	OriginID string `json:"originId"`
-	OriginURL string `json:"originUrl"`
-	Address string `json:"address"`
-	CAPEM string `json:"caPem"`
+	OriginID   string `json:"originId"`
+	OriginURL  string `json:"originUrl"`
+	Address    string `json:"address"`
+	CAPEM      string `json:"caPem"`
 	BodySHA256 string `json:"bodySha256"`
 }
 
@@ -75,11 +75,11 @@ func TestHTTPSProbeThroughHTTPConnectAndSOCKS5(t *testing.T) {
 		t.Run(testCase.name, func(t *testing.T) {
 			runID := fmt.Sprintf("task11-%s", testCase.name)
 			result, err := HTTPS(ctx, HTTPSRequest{
-				ProbeRunID:        runID,
-				Protocol:          testCase.protocol,
-				ListenerAddress:   testCase.listener,
-				OriginURL:         origin.info.OriginURL,
-				CAPEM:             []byte(origin.info.CAPEM),
+				ProbeRunID:         runID,
+				Protocol:           testCase.protocol,
+				ListenerAddress:    testCase.listener,
+				OriginURL:          origin.info.OriginURL,
+				CAPEM:              []byte(origin.info.CAPEM),
 				ExpectedBodySHA256: origin.bodyHash,
 				AwaitTracker: func(context.Context, FlowObservation) (TrackerRecord, error) {
 					return TrackerRecord{}, nil
@@ -137,11 +137,11 @@ func TestHTTPSProbeReturnsStructuredErrors(t *testing.T) {
 	defer httpProxy.Close()
 
 	_, err := HTTPS(ctx, HTTPSRequest{
-		ProbeRunID:        "task11-hash-mismatch",
-		Protocol:          ProtocolHTTPConnect,
-		ListenerAddress:   httpProxy.Addr().String(),
-		OriginURL:         origin.info.OriginURL,
-		CAPEM:             []byte(origin.info.CAPEM),
+		ProbeRunID:         "task11-hash-mismatch",
+		Protocol:           ProtocolHTTPConnect,
+		ListenerAddress:    httpProxy.Addr().String(),
+		OriginURL:          origin.info.OriginURL,
+		CAPEM:              []byte(origin.info.CAPEM),
 		ExpectedBodySHA256: strings.Repeat("0", 64),
 		AwaitTracker: func(context.Context, FlowObservation) (TrackerRecord, error) {
 			return TrackerRecord{}, nil
@@ -160,6 +160,229 @@ func TestHTTPSProbeReturnsStructuredErrors(t *testing.T) {
 	}
 	if probeErr.Detail == "" {
 		t.Fatal("probe error detail must be populated")
+	}
+}
+
+func TestHTTPSProbeTimesOutWhenProxyDoesNotReply(t *testing.T) {
+	listener := startBlackholeListener(t)
+	defer listener.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	done := make(chan error, 1)
+	go func() {
+		_, err := HTTPS(ctx, HTTPSRequest{
+			ProbeRunID:         "task11-blackhole-proxy",
+			Protocol:           ProtocolHTTPConnect,
+			ListenerAddress:    listener.Addr().String(),
+			OriginURL:          "https://127.0.0.1:9443/",
+			CAPEM:              []byte(testCAPEM),
+			ExpectedBodySHA256: strings.Repeat("a", 64),
+			Timeout:            150 * time.Millisecond,
+		})
+		done <- err
+	}()
+
+	select {
+	case err := <-done:
+		var probeErr *Error
+		if !errors.As(err, &probeErr) {
+			t.Fatalf("HTTPS(...) error = %T, want *Error", err)
+		}
+		if probeErr.Code != "PROBE_TIMEOUT" {
+			t.Fatalf("probe error code = %q, want PROBE_TIMEOUT", probeErr.Code)
+		}
+		if probeErr.Stage != "dial" {
+			t.Fatalf("probe error stage = %q, want dial", probeErr.Stage)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("HTTPS(...) did not return within the bounded timeout")
+	}
+}
+
+func TestHTTPSProbeMapsTrackerContextCancellationToStructuredError(t *testing.T) {
+	origin := startOriginProcess(t)
+	defer origin.stop(t)
+
+	httpProxy := startHTTPConnectProxy(t)
+	defer httpProxy.Close()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+
+	_, err := HTTPS(ctx, HTTPSRequest{
+		ProbeRunID:         "task11-tracker-timeout",
+		Protocol:           ProtocolHTTPConnect,
+		ListenerAddress:    httpProxy.Addr().String(),
+		OriginURL:          origin.info.OriginURL,
+		CAPEM:              []byte(origin.info.CAPEM),
+		ExpectedBodySHA256: origin.bodyHash,
+		Timeout:            150 * time.Millisecond,
+		AwaitTracker: func(ctx context.Context, _ FlowObservation) (TrackerRecord, error) {
+			<-ctx.Done()
+			return TrackerRecord{}, ctx.Err()
+		},
+	})
+
+	var probeErr *Error
+	if !errors.As(err, &probeErr) {
+		t.Fatalf("HTTPS(...) error = %T, want *Error", err)
+	}
+	if probeErr.Code != "TRACKER_TIMEOUT" {
+		t.Fatalf("probe error code = %q, want TRACKER_TIMEOUT", probeErr.Code)
+	}
+	if probeErr.Stage != "tracker" {
+		t.Fatalf("probe error stage = %q, want tracker", probeErr.Stage)
+	}
+}
+
+func TestHTTPSProbeRunningCancelInterruptsTrackerWait(t *testing.T) {
+	origin := startOriginProcess(t)
+	defer origin.stop(t)
+
+	httpProxy := startHTTPConnectProxy(t)
+	defer httpProxy.Close()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := HTTPS(context.Background(), HTTPSRequest{
+			ProbeRunID:         "task11-running-cancel",
+			Protocol:           ProtocolHTTPConnect,
+			ListenerAddress:    httpProxy.Addr().String(),
+			OriginURL:          origin.info.OriginURL,
+			CAPEM:              []byte(origin.info.CAPEM),
+			ExpectedBodySHA256: origin.bodyHash,
+			Timeout:            2 * time.Second,
+			AwaitTracker: func(ctx context.Context, _ FlowObservation) (TrackerRecord, error) {
+				close(started)
+				<-ctx.Done()
+				return TrackerRecord{}, ctx.Err()
+			},
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("probe never reached tracker wait before cancellation")
+	}
+
+	if status := CancelProbeRun("task11-running-cancel"); status == CancelRunInvalid {
+		t.Fatal("CancelProbeRun should accept a live probe run id")
+	}
+
+	select {
+	case err := <-done:
+		var probeErr *Error
+		if !errors.As(err, &probeErr) {
+			t.Fatalf("HTTPS(...) error = %T, want *Error", err)
+		}
+		if probeErr.Code != "PROBE_CANCELLED" {
+			t.Fatalf("probe error code = %q, want PROBE_CANCELLED", probeErr.Code)
+		}
+		if probeErr.Stage != "tracker" {
+			t.Fatalf("probe error stage = %q, want tracker", probeErr.Stage)
+		}
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("running probe cancellation did not unblock tracker wait")
+	}
+}
+
+func TestHTTPSProbeStartBeforeCancelReturnsStructuredError(t *testing.T) {
+	listener := startBlackholeListener(t)
+	defer listener.Close()
+
+	if status := CancelProbeRun("task11-pre-cancel"); status == CancelRunInvalid {
+		t.Fatal("CancelProbeRun should accept a non-empty pending probeRunID")
+	}
+
+	_, err := HTTPS(context.Background(), HTTPSRequest{
+		ProbeRunID:         "task11-pre-cancel",
+		Protocol:           ProtocolHTTPConnect,
+		ListenerAddress:    listener.Addr().String(),
+		OriginURL:          "https://127.0.0.1:9443/",
+		CAPEM:              []byte(testCAPEM),
+		ExpectedBodySHA256: strings.Repeat("a", 64),
+		Timeout:            2 * time.Second,
+	})
+
+	var probeErr *Error
+	if !errors.As(err, &probeErr) {
+		t.Fatalf("HTTPS(...) error = %T, want *Error", err)
+	}
+	if probeErr.Code != "PROBE_CANCELLED" {
+		t.Fatalf("probe error code = %q, want PROBE_CANCELLED", probeErr.Code)
+	}
+	if probeErr.Stage != "dial" {
+		t.Fatalf("probe error stage = %q, want dial", probeErr.Stage)
+	}
+}
+
+func TestHTTPSProbeRejectsDuplicateRunID(t *testing.T) {
+	origin := startOriginProcess(t)
+	defer origin.stop(t)
+
+	httpProxy := startHTTPConnectProxy(t)
+	defer httpProxy.Close()
+
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		_, err := HTTPS(context.Background(), HTTPSRequest{
+			ProbeRunID:         "task11-duplicate",
+			Protocol:           ProtocolHTTPConnect,
+			ListenerAddress:    httpProxy.Addr().String(),
+			OriginURL:          origin.info.OriginURL,
+			CAPEM:              []byte(origin.info.CAPEM),
+			ExpectedBodySHA256: origin.bodyHash,
+			Timeout:            2 * time.Second,
+			AwaitTracker: func(ctx context.Context, _ FlowObservation) (TrackerRecord, error) {
+				close(started)
+				<-ctx.Done()
+				return TrackerRecord{}, ctx.Err()
+			},
+		})
+		done <- err
+	}()
+
+	select {
+	case <-started:
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("first probe never reached tracker wait")
+	}
+
+	_, err := HTTPS(context.Background(), HTTPSRequest{
+		ProbeRunID:         "task11-duplicate",
+		Protocol:           ProtocolHTTPConnect,
+		ListenerAddress:    httpProxy.Addr().String(),
+		OriginURL:          origin.info.OriginURL,
+		CAPEM:              []byte(origin.info.CAPEM),
+		ExpectedBodySHA256: origin.bodyHash,
+		Timeout:            2 * time.Second,
+		AwaitTracker: func(context.Context, FlowObservation) (TrackerRecord, error) {
+			return TrackerRecord{}, nil
+		},
+	})
+
+	var probeErr *Error
+	if !errors.As(err, &probeErr) {
+		t.Fatalf("duplicate HTTPS(...) error = %T, want *Error", err)
+	}
+	if probeErr.Code != "PROBE_RUN_ID_IN_USE" {
+		t.Fatalf("duplicate probe error code = %q, want PROBE_RUN_ID_IN_USE", probeErr.Code)
+	}
+	if probeErr.Stage != "request" {
+		t.Fatalf("duplicate probe error stage = %q, want request", probeErr.Stage)
+	}
+
+	_ = CancelProbeRun("task11-duplicate")
+	select {
+	case <-done:
+	case <-time.After(750 * time.Millisecond):
+		t.Fatal("cleanup cancel did not release the first duplicate probe")
 	}
 }
 
@@ -194,12 +417,12 @@ func TestHTTPSProbeThroughRealMihomoListenersIncludesTracker(t *testing.T) {
 			defer cancel()
 
 			result, err := HTTPS(ctx, HTTPSRequest{
-				ProbeRunID:          fmt.Sprintf("mihomo-%s", testCase.name),
-				Protocol:            testCase.protocol,
-				ListenerAddress:     testCase.listenerAddress,
-				OriginURL:           origin.info.OriginURL,
-				CAPEM:               []byte(origin.info.CAPEM),
-				ExpectedBodySHA256:  origin.bodyHash,
+				ProbeRunID:         fmt.Sprintf("mihomo-%s", testCase.name),
+				Protocol:           testCase.protocol,
+				ListenerAddress:    testCase.listenerAddress,
+				OriginURL:          origin.info.OriginURL,
+				CAPEM:              []byte(origin.info.CAPEM),
+				ExpectedBodySHA256: origin.bodyHash,
 			})
 			if err != nil {
 				t.Fatalf("HTTPS(...) through mihomo returned error: %v", err)
@@ -346,6 +569,30 @@ func startSOCKS5Proxy(t *testing.T) net.Listener {
 				return
 			}
 			go handleSOCKS5ProxyConn(conn)
+		}
+	}()
+	return listener
+}
+
+const testCAPEM = "-----BEGIN CERTIFICATE-----\nMIIBszCCAVmgAwIBAgIUeXx4fQjD2H6wY2R1Qx3BIfA+1wkwCgYIKoZIzj0EAwIw\nEjEQMA4GA1UEAwwHY21mYS10ZXN0MB4XDTI2MDgwNjA2MDAwMFoXDTM2MDgwMzA2\nMDAwMFowEjEQMA4GA1UEAwwHY21mYS10ZXN0MFkwEwYHKoZIzj0CAQYIKoZIzj0D\nAQcDQgAEdZ0YAK8xjM1S+4oeYhTjU4G9f8O7Pp3yG7v3TQh9M0Aq3Qx6xjHq4RSt\nGepE8bJ1xLQ7fFx7nDk2Tq6d6d3E2aNTMFEwHQYDVR0OBBYEFM8tWvTWh6r4r6Vf\nwAqCv1L0M3gXMB8GA1UdIwQYMBaAFM8tWvTWh6r4r6VfwAqCv1L0M3gXMA8GA1Ud\nEwEB/wQFMAMBAf8wCgYIKoZIzj0EAwIDSQAwRgIhAKu+rdUQ1Ew1D9+GZGm4l4mQ\nu3Y9cBLlH+F6Vw+Z0y4EAiEAu6W5i2NlXIBlz2N2V0s0+2B3Jm3P5gXwhXl6aWcS\nBHI=\n-----END CERTIFICATE-----\n"
+
+func startBlackholeListener(t *testing.T) net.Listener {
+	t.Helper()
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen blackhole proxy: %v", err)
+	}
+	go func() {
+		for {
+			conn, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func(client net.Conn) {
+				defer client.Close()
+				select {}
+			}(conn)
 		}
 	}()
 	return listener

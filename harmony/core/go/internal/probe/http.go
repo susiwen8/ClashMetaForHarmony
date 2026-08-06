@@ -7,12 +7,13 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
 	"net/http"
-	"net/netip"
 	"net/url"
+	"regexp"
 	"strings"
 	"time"
 )
@@ -35,23 +36,24 @@ type HTTPSRequest struct {
 	OriginURL          string
 	CAPEM              []byte
 	ExpectedBodySHA256 string
+	Timeout            time.Duration
 	AwaitTracker       func(context.Context, FlowObservation) (TrackerRecord, error)
 }
 
 type HTTPSResult struct {
-	ProbeRunID         string
-	Protocol           Protocol
-	OriginID           string
-	RequestIDEcho      string
-	HTTPStatus         int
-	ResponseSHA256     string
-	TLSPeerSHA256      string
-	BodyBytes          int64
-	StartedAt          time.Time
-	CompletedAt        time.Time
-	ClientLocalAddress string
+	ProbeRunID          string
+	Protocol            Protocol
+	OriginID            string
+	RequestIDEcho       string
+	HTTPStatus          int
+	ResponseSHA256      string
+	TLSPeerSHA256       string
+	BodyBytes           int64
+	StartedAt           time.Time
+	CompletedAt         time.Time
+	ClientLocalAddress  string
 	ClientRemoteAddress string
-	Tracker            TrackerRecord
+	Tracker             TrackerRecord
 }
 
 type Error struct {
@@ -84,13 +86,23 @@ type TrackerRecord struct {
 	OpenedAt           time.Time
 }
 
-func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
+var (
+	probeURLUserInfoPattern = regexp.MustCompile(`://[^/@\s]+@`)
+	probeSecretQueryPattern = regexp.MustCompile(`(?i)(token|password|secret)=([^&\s]+)`)
+)
+
+func HTTPS(ctx context.Context, request HTTPSRequest) (result HTTPSResult, err error) {
 	startedAt := time.Now().UTC()
-	result := HTTPSResult{
+	result = HTTPSResult{
 		ProbeRunID: request.ProbeRunID,
 		Protocol:   request.Protocol,
 		StartedAt:  startedAt,
 	}
+	defer func() {
+		if result.CompletedAt.IsZero() {
+			result.CompletedAt = time.Now().UTC()
+		}
+	}()
 
 	if strings.TrimSpace(request.ProbeRunID) == "" {
 		return result, &Error{Code: "INVALID_ARGUMENT", Stage: "request", Detail: "probeRunID must not be empty"}
@@ -105,9 +117,15 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 		return result, &Error{Code: "INVALID_ARGUMENT", Stage: "request", Detail: "caPem must not be empty"}
 	}
 
+	ctx, releaseProbeRun, err := manageProbeRun(ctx, request.ProbeRunID, request.Timeout)
+	if err != nil {
+		return result, err
+	}
+	defer releaseProbeRun()
+
 	originURL, err := url.Parse(request.OriginURL)
 	if err != nil {
-		return result, &Error{Code: "INVALID_ORIGIN_URL", Stage: "request", Detail: err.Error()}
+		return result, &Error{Code: "INVALID_ORIGIN_URL", Stage: "request", Detail: sanitizeProbeDetail(err.Error())}
 	}
 	if originURL.Scheme != "https" {
 		return result, &Error{Code: "INVALID_ORIGIN_URL", Stage: "request", Detail: "originURL must use https"}
@@ -176,7 +194,7 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	}
 	response, err := http.ReadResponse(responseReader, httpRequest)
 	if err != nil {
-		return result, &Error{Code: "RESPONSE_READ_FAILED", Stage: "response", Detail: err.Error()}
+		return result, newOperationError(ctx, "response", "RESPONSE_READ_FAILED", err)
 	}
 	defer response.Body.Close()
 
@@ -195,13 +213,13 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	if err != nil {
 		_ = requestBodyWriter.CloseWithError(err)
 		<-requestWriteDone
-		return result, err
+		return result, classifyProbeError(ctx, "tracker", err)
 	}
 	if err := requestBodyWriter.Close(); err != nil {
-		return result, &Error{Code: "REQUEST_RELEASE_FAILED", Stage: "request", Detail: err.Error()}
+		return result, newOperationError(ctx, "request", "REQUEST_RELEASE_FAILED", err)
 	}
 	if err := <-requestWriteDone; err != nil {
-		return result, &Error{Code: "REQUEST_WRITE_FAILED", Stage: "request", Detail: err.Error()}
+		return result, newOperationError(ctx, "request", "REQUEST_WRITE_FAILED", err)
 	}
 	result.Tracker = trackerRecord
 	result.RequestIDEcho = response.Header.Get("X-CMFA-Request-ID")
@@ -212,7 +230,7 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	bodyHasher := sha256.New()
 	bodyBytes, err := io.Copy(bodyHasher, bodyReader)
 	if err != nil {
-		return result, &Error{Code: "RESPONSE_BODY_READ_FAILED", Stage: "response", Detail: err.Error()}
+		return result, newOperationError(ctx, "response", "RESPONSE_BODY_READ_FAILED", err)
 	}
 	if bodyBytes > maxResponseBodyBytes {
 		return result, &Error{Code: "RESPONSE_BODY_TOO_LARGE", Stage: "response", Detail: fmt.Sprintf("response exceeded %d bytes", maxResponseBodyBytes)}
@@ -235,31 +253,26 @@ func HTTPS(ctx context.Context, request HTTPSRequest) (HTTPSResult, error) {
 	return result, nil
 }
 
-func sourcePortFromAddress(address string) (uint16, error) {
-	addrPort, err := netip.ParseAddrPort(address)
-	if err != nil {
-		return 0, &Error{Code: "CLIENT_ADDRESS_INVALID", Stage: "tracker", Detail: err.Error()}
-	}
-	return addrPort.Port(), nil
-}
-
 func dialTunnel(ctx context.Context, protocol Protocol, listenerAddress string, targetAddress string) (net.Conn, *bufio.Reader, error) {
 	dialer := &net.Dialer{}
 	conn, err := dialer.DialContext(ctx, "tcp", listenerAddress)
 	if err != nil {
-		return nil, nil, &Error{Code: "PROXY_DIAL_FAILED", Stage: "dial", Detail: err.Error()}
+		return nil, nil, newOperationError(ctx, "dial", "PROXY_DIAL_FAILED", err)
+	}
+	if deadline, ok := ctx.Deadline(); ok {
+		_ = conn.SetDeadline(deadline)
 	}
 
 	switch protocol {
 	case ProtocolHTTPConnect:
-		buffered, err := establishHTTPConnectTunnel(conn, targetAddress)
+		buffered, err := establishHTTPConnectTunnel(ctx, conn, targetAddress)
 		if err != nil {
 			_ = conn.Close()
 			return nil, nil, err
 		}
 		return conn, buffered, nil
 	case ProtocolSOCKS5:
-		if err := establishSOCKS5Tunnel(conn, targetAddress); err != nil {
+		if err := establishSOCKS5Tunnel(ctx, conn, targetAddress); err != nil {
 			_ = conn.Close()
 			return nil, nil, err
 		}
@@ -270,24 +283,102 @@ func dialTunnel(ctx context.Context, protocol Protocol, listenerAddress string, 
 	}
 }
 
-func establishHTTPConnectTunnel(conn net.Conn, targetAddress string) (*bufio.Reader, error) {
+func establishHTTPConnectTunnel(ctx context.Context, conn net.Conn, targetAddress string) (*bufio.Reader, error) {
 	request, err := http.NewRequest(http.MethodConnect, "http://"+targetAddress, nil)
 	if err != nil {
-		return nil, &Error{Code: "CONNECT_REQUEST_INVALID", Stage: "dial", Detail: err.Error()}
+		return nil, &Error{Code: "CONNECT_REQUEST_INVALID", Stage: "dial", Detail: sanitizeProbeDetail(err.Error())}
 	}
 	request.Host = targetAddress
 	if err := request.Write(conn); err != nil {
-		return nil, &Error{Code: "CONNECT_WRITE_FAILED", Stage: "dial", Detail: err.Error()}
+		return nil, newOperationError(ctx, "dial", "CONNECT_WRITE_FAILED", err)
 	}
 
 	reader := bufio.NewReader(conn)
 	response, err := http.ReadResponse(reader, request)
 	if err != nil {
-		return nil, &Error{Code: "CONNECT_RESPONSE_INVALID", Stage: "dial", Detail: err.Error()}
+		return nil, newOperationError(ctx, "dial", "CONNECT_RESPONSE_INVALID", err)
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
 		return nil, &Error{Code: "CONNECT_STATUS_UNEXPECTED", Stage: "dial", Detail: fmt.Sprintf("unexpected CONNECT status %d", response.StatusCode)}
 	}
 	return reader, nil
+}
+
+func sanitizeProbeDetail(detail string) string {
+	redacted := probeURLUserInfoPattern.ReplaceAllString(detail, "://<redacted>@")
+	redacted = probeSecretQueryPattern.ReplaceAllString(redacted, `$1=<redacted>`)
+	return redacted
+}
+
+func classifyProbeError(ctx context.Context, stage string, err error) error {
+	if err == nil {
+		return nil
+	}
+
+	var probeErr *Error
+	if errors.As(err, &probeErr) {
+		probeErr.Detail = sanitizeProbeDetail(probeErr.Detail)
+		if probeErr.Stage == "" {
+			probeErr.Stage = stage
+		}
+		return probeErr
+	}
+
+	if ctxErr := contextErrorForStage(ctx, stage, err); ctxErr != nil {
+		return ctxErr
+	}
+	return &Error{
+		Code:   "BACKEND_ERROR",
+		Stage:  stage,
+		Detail: sanitizeProbeDetail(err.Error()),
+	}
+}
+
+func newOperationError(ctx context.Context, stage string, code string, err error) error {
+	if ctxErr := contextErrorForStage(ctx, stage, err); ctxErr != nil {
+		return ctxErr
+	}
+	return &Error{
+		Code:   code,
+		Stage:  stage,
+		Detail: sanitizeProbeDetail(err.Error()),
+	}
+}
+
+func contextErrorForStage(ctx context.Context, stage string, err error) *Error {
+	if err == nil {
+		return nil
+	}
+	if errors.Is(context.Cause(ctx), errProbeCanceled) || errors.Is(err, context.Canceled) {
+		return &Error{
+			Code:   "PROBE_CANCELLED",
+			Stage:  stage,
+			Detail: fmt.Sprintf("probe canceled during %s", stage),
+		}
+	}
+	if errors.Is(context.Cause(ctx), errProbeTimedOut) || errors.Is(err, context.DeadlineExceeded) {
+		code := "PROBE_TIMEOUT"
+		if stage == "tracker" {
+			code = "TRACKER_TIMEOUT"
+		}
+		return &Error{
+			Code:   code,
+			Stage:  stage,
+			Detail: fmt.Sprintf("probe exceeded the %s deadline", stage),
+		}
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		code := "PROBE_TIMEOUT"
+		if stage == "tracker" {
+			code = "TRACKER_TIMEOUT"
+		}
+		return &Error{
+			Code:   code,
+			Stage:  stage,
+			Detail: fmt.Sprintf("probe exceeded the %s deadline", stage),
+		}
+	}
+	return nil
 }

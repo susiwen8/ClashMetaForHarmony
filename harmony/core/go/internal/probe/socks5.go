@@ -7,22 +7,22 @@ import (
 	"net"
 )
 
-func establishSOCKS5Tunnel(conn net.Conn, targetAddress string) error {
+func establishSOCKS5Tunnel(ctx context.Context, conn net.Conn, targetAddress string) error {
 	host, portText, err := net.SplitHostPort(targetAddress)
 	if err != nil {
-		return &Error{Code: "SOCKS5_TARGET_INVALID", Stage: "dial", Detail: err.Error()}
+		return &Error{Code: "SOCKS5_TARGET_INVALID", Stage: "dial", Detail: sanitizeProbeDetail(err.Error())}
 	}
 	port, err := net.LookupPort("tcp", portText)
 	if err != nil {
-		return &Error{Code: "SOCKS5_TARGET_INVALID", Stage: "dial", Detail: err.Error()}
+		return &Error{Code: "SOCKS5_TARGET_INVALID", Stage: "dial", Detail: sanitizeProbeDetail(err.Error())}
 	}
 
 	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
-		return &Error{Code: "SOCKS5_GREETING_WRITE_FAILED", Stage: "dial", Detail: err.Error()}
+		return newOperationError(ctx, "dial", "SOCKS5_GREETING_WRITE_FAILED", err)
 	}
 	greetingReply := make([]byte, 2)
 	if _, err := io.ReadFull(conn, greetingReply); err != nil {
-		return &Error{Code: "SOCKS5_GREETING_READ_FAILED", Stage: "dial", Detail: err.Error()}
+		return newOperationError(ctx, "dial", "SOCKS5_GREETING_READ_FAILED", err)
 	}
 	if greetingReply[0] != 0x05 || greetingReply[1] != 0x00 {
 		return &Error{Code: "SOCKS5_AUTH_UNSUPPORTED", Stage: "dial", Detail: fmt.Sprintf("unexpected SOCKS5 auth reply %v", greetingReply)}
@@ -52,12 +52,12 @@ func establishSOCKS5Tunnel(conn net.Conn, targetAddress string) error {
 	binary.BigEndian.PutUint16(portBytes, uint16(port))
 	request = append(request, portBytes...)
 	if _, err := conn.Write(request); err != nil {
-		return &Error{Code: "SOCKS5_CONNECT_WRITE_FAILED", Stage: "dial", Detail: err.Error()}
+		return newOperationError(ctx, "dial", "SOCKS5_CONNECT_WRITE_FAILED", err)
 	}
 
 	replyHeader := make([]byte, 4)
 	if _, err := io.ReadFull(conn, replyHeader); err != nil {
-		return &Error{Code: "SOCKS5_CONNECT_READ_FAILED", Stage: "dial", Detail: err.Error()}
+		return newOperationError(ctx, "dial", "SOCKS5_CONNECT_READ_FAILED", err)
 	}
 	if replyHeader[0] != 0x05 {
 		return &Error{Code: "SOCKS5_CONNECT_INVALID", Stage: "dial", Detail: fmt.Sprintf("unexpected SOCKS5 version %d", replyHeader[0])}
@@ -75,7 +75,7 @@ func establishSOCKS5Tunnel(conn net.Conn, targetAddress string) error {
 	case 0x03:
 		size := make([]byte, 1)
 		if _, err := io.ReadFull(conn, size); err != nil {
-			return &Error{Code: "SOCKS5_CONNECT_READ_FAILED", Stage: "dial", Detail: err.Error()}
+			return newOperationError(ctx, "dial", "SOCKS5_CONNECT_READ_FAILED", err)
 		}
 		addressLength = int(size[0])
 	default:
@@ -84,7 +84,7 @@ func establishSOCKS5Tunnel(conn net.Conn, targetAddress string) error {
 
 	discardLength := addressLength + 2
 	if _, err := io.CopyN(io.Discard, conn, int64(discardLength)); err != nil {
-		return &Error{Code: "SOCKS5_CONNECT_READ_FAILED", Stage: "dial", Detail: err.Error()}
+		return newOperationError(ctx, "dial", "SOCKS5_CONNECT_READ_FAILED", err)
 	}
 	return nil
 }

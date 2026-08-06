@@ -1,4 +1,5 @@
 #include "cmfa_napi.h"
+#include "cmfa_mihomo_backend.h"
 
 #include <array>
 #include <new>
@@ -34,6 +35,23 @@ cmfa::napi::ReleaseResult release_delivery(AddonState *addon, AsyncDelivery *del
 void request_cancel_async(void *handle) {
   auto *async_handle = static_cast<AsyncThreadHandle *>(handle);
   async_handle->cancel_requested.store(true, std::memory_order_relaxed);
+  if (async_handle->op != AsyncOp::PROBE_HTTPS || async_handle->probe_run_id.empty()) {
+    return;
+  }
+
+  bool expected = false;
+  if (!async_handle->probe_cancel_requested.compare_exchange_strong(
+          expected, true, std::memory_order_acq_rel, std::memory_order_acquire)) {
+    return;
+  }
+
+  std::array<char, 128> error_message{};
+  cmfa_error error{};
+  error.code = CMFA_OK;
+  error.message = error_message.data();
+  error.capacity = error_message.size();
+  error.length = 0;
+  (void)cmfa::cancel_mihomo_probe(async_handle->probe_run_id.c_str(), &error);
 }
 
 void join_async(void *handle) {
@@ -411,6 +429,10 @@ napi_value start_async_operation(napi_env env, const DecodedAsyncCall &decoded) 
       (void)release_delivery(addon, delivery, true);
       reject_deferred_with_napi_failure(env, deferred, async_operation_name(op), napi_generic_failure);
       return promise;
+    }
+    async_handle->op = op;
+    if (op == AsyncOp::PROBE_HTTPS) {
+      async_handle->probe_run_id = decoded.input.probe_request.probe_run_id;
     }
     if (!addon->owner.try_add_async({async_handle, request_cancel_async, join_async, release_async})) {
       delete async_handle;

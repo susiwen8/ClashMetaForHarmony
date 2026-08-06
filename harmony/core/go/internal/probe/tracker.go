@@ -3,6 +3,10 @@ package probe
 import (
 	"context"
 	"fmt"
+	"net"
+	"net/netip"
+	"strconv"
+	"strings"
 	"time"
 
 	mihomoconstant "github.com/metacubex/mihomo/constant"
@@ -12,7 +16,7 @@ import (
 const trackerPollInterval = 25 * time.Millisecond
 
 func AwaitRealTracker(ctx context.Context, observation FlowObservation) (TrackerRecord, error) {
-	sourcePort, err := sourcePortFromAddress(observation.ClientLocalAddress)
+	matcher, err := newTrackerObservation(observation.ClientLocalAddress, observation.TargetAddress, "")
 	if err != nil {
 		return TrackerRecord{}, err
 	}
@@ -21,22 +25,30 @@ func AwaitRealTracker(ctx context.Context, observation FlowObservation) (Tracker
 	if err != nil {
 		return TrackerRecord{}, err
 	}
+	matcher.inboundType = inboundType
 
 	ticker := time.NewTicker(trackerPollInterval)
 	defer ticker.Stop()
 
 	for {
-		record, ok := findMatchingTracker(sourcePort, observation.TargetAddress, inboundType)
+		record, ok := findMatchingTracker(matcher)
 		if ok {
 			return record, nil
 		}
 
 		select {
 		case <-ctx.Done():
+			if ctxErr := contextErrorForStage(ctx, "tracker", ctx.Err()); ctxErr != nil {
+				if ctxErr.Code == "TRACKER_TIMEOUT" {
+					ctxErr.Detail = fmt.Sprintf("timed out waiting for tracker src=%s dst=%s inbound=%s",
+						matcher.sourceAddress, matcher.targetAddress, matcher.inboundType)
+				}
+				return TrackerRecord{}, ctxErr
+			}
 			return TrackerRecord{}, &Error{
 				Code:   "TRACKER_TIMEOUT",
 				Stage:  "tracker",
-				Detail: fmt.Sprintf("timed out waiting for tracker srcPort=%d dst=%s inbound=%s", sourcePort, observation.TargetAddress, inboundType),
+				Detail: fmt.Sprintf("timed out waiting for tracker src=%s dst=%s inbound=%s", matcher.sourceAddress, matcher.targetAddress, matcher.inboundType),
 			}
 		case <-ticker.C:
 		}
@@ -54,7 +66,35 @@ func inboundTypeForProtocol(protocol Protocol) (string, error) {
 	}
 }
 
-func findMatchingTracker(sourcePort uint16, targetAddress string, inboundType string) (TrackerRecord, bool) {
+type trackerObservation struct {
+	sourceAddress string
+	targetAddress string
+	inboundType   string
+}
+
+func newTrackerObservation(sourceAddress string, targetAddress string, inboundType string) (trackerObservation, error) {
+	normalizedSource, err := normalizeTrackerAddress(sourceAddress)
+	if err != nil {
+		return trackerObservation{}, &Error{Code: "CLIENT_ADDRESS_INVALID", Stage: "tracker", Detail: sanitizeProbeDetail(err.Error())}
+	}
+	return trackerObservation{
+		sourceAddress: normalizedSource,
+		targetAddress: targetAddress,
+		inboundType:   inboundType,
+	}, nil
+}
+
+func (observation trackerObservation) matches(sourceAddress string, targetAddress string, inboundType string) bool {
+	normalizedSource, err := normalizeTrackerAddress(sourceAddress)
+	if err != nil {
+		return false
+	}
+	return normalizedSource == observation.sourceAddress &&
+		targetAddress == observation.targetAddress &&
+		inboundType == observation.inboundType
+}
+
+func findMatchingTracker(observation trackerObservation) (TrackerRecord, bool) {
 	var record TrackerRecord
 	found := false
 	statistic.DefaultManager.Range(func(tracker statistic.Tracker) bool {
@@ -64,13 +104,7 @@ func findMatchingTracker(sourcePort uint16, targetAddress string, inboundType st
 		}
 
 		metadata := info.Metadata
-		if metadata.SrcPort != sourcePort {
-			return true
-		}
-		if metadata.Type.String() != inboundType {
-			return true
-		}
-		if metadata.RemoteAddress() != targetAddress {
+		if !observation.matches(metadata.SourceAddress(), metadata.RemoteAddress(), metadata.Type.String()) {
 			return true
 		}
 
@@ -85,4 +119,38 @@ func findMatchingTracker(sourcePort uint16, targetAddress string, inboundType st
 		return false
 	})
 	return record, found
+}
+
+func normalizeTrackerAddress(address string) (string, error) {
+	if addrPort, err := netip.ParseAddrPort(address); err == nil {
+		return addrPort.String(), nil
+	}
+
+	host, portText, err := splitTrackerAddress(address)
+	if err != nil {
+		return "", err
+	}
+	portValue, err := strconv.ParseUint(portText, 10, 16)
+	if err != nil {
+		return "", err
+	}
+	addr, err := netip.ParseAddr(strings.Trim(host, "[]"))
+	if err != nil {
+		return "", err
+	}
+	return netip.AddrPortFrom(addr, uint16(portValue)).String(), nil
+}
+
+func splitTrackerAddress(address string) (string, string, error) {
+	host, port, err := net.SplitHostPort(address)
+	if err == nil {
+		return host, port, nil
+	}
+	if strings.Count(address, ":") > 1 && !strings.HasPrefix(address, "[") {
+		index := strings.LastIndex(address, ":")
+		if index > 0 && index < len(address)-1 {
+			return address[:index], address[index+1:], nil
+		}
+	}
+	return "", "", err
 }

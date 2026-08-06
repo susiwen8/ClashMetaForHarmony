@@ -28,6 +28,8 @@ cmfa_runtime_snapshot g_runtime_snapshot{};
 bool g_preserve_error_on_stop = false;
 cmfa_probe_result g_probe_result{};
 cmfa_status g_probe_status = CMFA_OK;
+std::string g_last_cancel_probe_run_id;
+cmfa_status g_cancel_probe_status = CMFA_OK;
 struct cmfa_mihomo_runtime_log_record_v1 {
   uint32_t struct_size;
   cmfa_log_level level;
@@ -58,6 +60,8 @@ void reset_runtime_snapshot_storage() {
   g_probe_result.tracker.struct_size = sizeof(g_probe_result.tracker);
   g_probe_result.error.struct_size = sizeof(g_probe_result.error);
   g_probe_status = CMFA_OK;
+  g_last_cancel_probe_run_id.clear();
+  g_cancel_probe_status = CMFA_OK;
 }
 
 class TestFailure : public std::runtime_error {
@@ -521,6 +525,25 @@ void test_probe_https_returns_structured_owned_result() {
   cmfa_probe_result_free(result);
 }
 
+void test_cancel_probe_forwards_run_id_to_go_backend() {
+  reset_contract();
+  ErrorBox error;
+  g_cancel_probe_status = CMFA_OK;
+
+  expect_eq(cmfa::cancel_mihomo_probe("probe-run", &error.error), CMFA_OK, "cancel should succeed");
+  expect_string_eq(g_last_cancel_probe_run_id, "probe-run", "cancel should forward the exact probeRunID");
+}
+
+void test_cancel_probe_rejects_empty_run_id() {
+  reset_contract();
+  ErrorBox error;
+
+  expect_eq(cmfa::cancel_mihomo_probe("", &error.error),
+            CMFA_INVALID_ARGUMENT,
+            "cancel should reject an empty probeRunID");
+  expect(error.message().find("probeRunID") != std::string::npos, "cancel failure should explain the invalid run id");
+}
+
 void test_shutdown_and_repeated_unregister_are_safe() {
   reset_contract();
   HostCapture first_capture;
@@ -601,6 +624,11 @@ extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *requ
   return g_probe_status;
 }
 
+extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmfa_error *) {
+  g_last_cancel_probe_run_id = probe_run_id != nullptr ? probe_run_id : "";
+  return g_cancel_probe_status;
+}
+
 extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
                                                                    cmfa_runtime_snapshot *snapshot,
                                                                    cmfa_error *error);
@@ -639,6 +667,8 @@ int main() {
       {"backend start_local direct null options preserves snapshot",
        test_backend_start_local_direct_null_options_preserves_snapshot},
       {"probe https returns structured owned result", test_probe_https_returns_structured_owned_result},
+      {"cancel probe forwards run id to go backend", test_cancel_probe_forwards_run_id_to_go_backend},
+      {"cancel probe rejects empty run id", test_cancel_probe_rejects_empty_run_id},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
   };
 

@@ -159,7 +159,10 @@ struct AsyncDelivery {
 
 struct AsyncThreadHandle {
   std::thread worker;
+  AsyncOp op = AsyncOp::CORE_VERSION;
+  std::string probe_run_id;
   std::atomic<bool> cancel_requested{false};
+  std::atomic<bool> probe_cancel_requested{false};
 };
 
 struct AsyncPromiseJob {

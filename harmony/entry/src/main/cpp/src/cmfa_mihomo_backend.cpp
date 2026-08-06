@@ -29,6 +29,7 @@ extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snaps
 extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *request,
                                                   cmfa_probe_result *result,
                                                   cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmfa_error *error);
 
 namespace {
 
@@ -325,6 +326,13 @@ cmfa_status unregister_mihomo_backend(cmfa_error *error) {
   g_backend_state.attached = false;
   clear_error(error);
   return CMFA_OK;
+}
+
+cmfa_status cancel_mihomo_probe(const char *probe_run_id, cmfa_error *error) {
+  if (probe_run_id == nullptr || probe_run_id[0] == '\0') {
+    return fail(error, CMFA_INVALID_ARGUMENT, "probeRunID must not be empty");
+  }
+  return cmfa_mihomo_probe_cancel_v1(probe_run_id, error);
 }
 
 } // namespace cmfa
