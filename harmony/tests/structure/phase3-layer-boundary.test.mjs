@@ -11,15 +11,6 @@ const MODULE_TEST_ROOTS = [
   ['platform', path.join(HARMONY_ROOT, 'platform', 'src', 'test')],
   ['entry', path.join(HARMONY_ROOT, 'entry', 'src', 'test')]
 ];
-const FORBIDDEN_SHARED_IMPORT_PATTERNS = [
-  /@kit\./u,
-  /@ohos\./u,
-  /\bArkUI\b/u,
-  /\bRDB\b/u,
-  /\bPicker\b/u,
-  /\bHUKS\b/u,
-  /\bNode-API\b/u
-];
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -48,6 +39,27 @@ function skipWhitespace(source, index) {
   let current = index;
   while (current < source.length && /\s/u.test(source[current])) {
     current += 1;
+  }
+  return current;
+}
+
+function skipTrivia(source, index) {
+  let current = index;
+  while (current < source.length) {
+    const next = skipWhitespace(source, current);
+    if (next !== current) {
+      current = next;
+      continue;
+    }
+    if (source[current] === '/' && source[current + 1] === '/') {
+      current = skipLineComment(source, current);
+      continue;
+    }
+    if (source[current] === '/' && source[current + 1] === '*') {
+      current = skipBlockComment(source, current);
+      continue;
+    }
+    break;
   }
   return current;
 }
@@ -140,7 +152,7 @@ function readQuotedSpecifier(source, index) {
 }
 
 function readStaticImportSpecifier(source, index) {
-  let current = skipWhitespace(source, index);
+  let current = skipTrivia(source, index);
   if (source[current] === '(') {
     return { specifier: null, end: current + 1 };
   }
@@ -179,7 +191,7 @@ function readStaticImportSpecifier(source, index) {
       isIdentifierBoundaryChar(source[current - 1]) &&
       isIdentifierBoundaryChar(source[current + 4])
     ) {
-      current = skipWhitespace(source, current + 4);
+      current = skipTrivia(source, current + 4);
       return readQuotedSpecifier(source, current) ?? { specifier: null, end: current };
     }
     if (depth === 0 && source[current] === ';') {
@@ -191,7 +203,7 @@ function readStaticImportSpecifier(source, index) {
 }
 
 function readStaticExportSpecifier(source, index) {
-  let current = skipWhitespace(source, index);
+  let current = skipTrivia(source, index);
   if (source[current] !== '*' && source[current] !== '{') {
     return { specifier: null, end: current + 1 };
   }
@@ -226,7 +238,7 @@ function readStaticExportSpecifier(source, index) {
       isIdentifierBoundaryChar(source[current - 1]) &&
       isIdentifierBoundaryChar(source[current + 4])
     ) {
-      current = skipWhitespace(source, current + 4);
+      current = skipTrivia(source, current + 4);
       return readQuotedSpecifier(source, current) ?? { specifier: null, end: current };
     }
     if (depth === 0 && source[current] === ';') {
@@ -260,7 +272,7 @@ function extractStaticModuleSpecifiers(source) {
       isIdentifierBoundaryChar(source[current - 1]) &&
       isIdentifierBoundaryChar(source[current + 6])
     ) {
-      const { specifier, end } = readStaticImportSpecifier(source, current + 6);
+      const { specifier, end } = readStaticImportSpecifier(source, skipTrivia(source, current + 6));
       if (specifier) {
         specifiers.push(specifier);
       }
@@ -273,7 +285,7 @@ function extractStaticModuleSpecifiers(source) {
       isIdentifierBoundaryChar(source[current - 1]) &&
       isIdentifierBoundaryChar(source[current + 6])
     ) {
-      const { specifier, end } = readStaticExportSpecifier(source, current + 6);
+      const { specifier, end } = readStaticExportSpecifier(source, skipTrivia(source, current + 6));
       if (specifier) {
         specifiers.push(specifier);
       }
@@ -295,10 +307,8 @@ function getForbiddenImportReason(specifier) {
   if (normalizedSpecifier.startsWith('@ohos.')) {
     return '@ohos.';
   }
-  for (const candidate of ['arkui', 'rdb', 'picker', 'huks', 'node-api']) {
-    if (normalizedSpecifier.includes(candidate)) {
-      return candidate;
-    }
+  if (normalizedSpecifier.startsWith('node-api:')) {
+    return 'node-api:';
   }
   return null;
 }
@@ -398,6 +408,36 @@ test('Task 1 shared import guard ignores comments and strings while still catchi
       { file: 'synthetic/SharedImports.ets', specifier: '@kit.ArkUI' },
       { file: 'synthetic/SharedImports.ets', specifier: 'node-api:bridge' }
     ]
+  );
+});
+
+test('Task 1 shared import guard accepts trivia after import and export keywords before forbidden specifiers', () => {
+  const source = `
+    import /*keep*/ "@ohos.file.picker";
+    export /*keep*/ { x } from "@kit.ArkUI";
+  `;
+
+  assert.deepEqual(
+    collectForbiddenSharedImports('synthetic/SharedImportTrivia.ets', source),
+    [
+      { file: 'synthetic/SharedImportTrivia.ets', specifier: '@ohos.file.picker' },
+      { file: 'synthetic/SharedImportTrivia.ets', specifier: '@kit.ArkUI' }
+    ]
+  );
+});
+
+test('Task 1 shared import guard ignores relative specifiers even when their names mention platform concepts', () => {
+  const source = `
+    import pickerUtils from "./picker-utils";
+    import rdbModel from "../rdb-model";
+    export { seal } from "./huks-envelope";
+    export * from "./arkui-names";
+    import localBridge from "./node-api-helper";
+  `;
+
+  assert.deepEqual(
+    collectForbiddenSharedImports('synthetic/SharedRelativeImports.ets', source),
+    []
   );
 });
 
