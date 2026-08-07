@@ -36,18 +36,17 @@ export interface CreateAppErrorOptions {
 const CANONICAL_UTC_ISO_PATTERN: RegExp = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u;
 
 export function normalizeCanonicalUtcIsoTimestamp(rawTimestamp: string, label: string): string {
-  const normalizedTimestamp: string = rawTimestamp.trim();
-  if (!CANONICAL_UTC_ISO_PATTERN.test(normalizedTimestamp)) {
+  if (rawTimestamp.trim() !== rawTimestamp || !CANONICAL_UTC_ISO_PATTERN.test(rawTimestamp)) {
     throw new Error(`${label} must be canonical ISO-8601 UTC.`);
   }
 
-  const year: number = Number.parseInt(normalizedTimestamp.substring(0, 4), 10);
-  const month: number = Number.parseInt(normalizedTimestamp.substring(5, 7), 10);
-  const day: number = Number.parseInt(normalizedTimestamp.substring(8, 10), 10);
-  const hour: number = Number.parseInt(normalizedTimestamp.substring(11, 13), 10);
-  const minute: number = Number.parseInt(normalizedTimestamp.substring(14, 16), 10);
-  const second: number = Number.parseInt(normalizedTimestamp.substring(17, 19), 10);
-  const millisecond: number = Number.parseInt(normalizedTimestamp.substring(20, 23), 10);
+  const year: number = Number.parseInt(rawTimestamp.substring(0, 4), 10);
+  const month: number = Number.parseInt(rawTimestamp.substring(5, 7), 10);
+  const day: number = Number.parseInt(rawTimestamp.substring(8, 10), 10);
+  const hour: number = Number.parseInt(rawTimestamp.substring(11, 13), 10);
+  const minute: number = Number.parseInt(rawTimestamp.substring(14, 16), 10);
+  const second: number = Number.parseInt(rawTimestamp.substring(17, 19), 10);
+  const millisecond: number = Number.parseInt(rawTimestamp.substring(20, 23), 10);
   const parsedTimestamp: Date = new Date(Date.UTC(year, month - 1, day, hour, minute, second, millisecond));
 
   if (parsedTimestamp.getUTCFullYear() !== year ||
@@ -57,10 +56,10 @@ export function normalizeCanonicalUtcIsoTimestamp(rawTimestamp: string, label: s
     parsedTimestamp.getUTCMinutes() !== minute ||
     parsedTimestamp.getUTCSeconds() !== second ||
     parsedTimestamp.getUTCMilliseconds() !== millisecond ||
-    parsedTimestamp.toISOString() !== normalizedTimestamp) {
+    parsedTimestamp.toISOString() !== rawTimestamp) {
     throw new Error(`${label} must be canonical ISO-8601 UTC.`);
   }
-  return normalizedTimestamp;
+  return rawTimestamp;
 }
 
 export function defaultErrorCodeForStage(stage: AppErrorStage): string {
@@ -116,7 +115,7 @@ export function createAppError(
   const code: string = options?.code !== undefined && options.code.trim().length > 0
     ? options.code.trim()
     : defaultErrorCodeForStage(stage);
-  const timestampInput: string = options?.timestamp !== undefined && options.timestamp.trim().length > 0
+  const timestampInput: string = options?.timestamp !== undefined
     ? options.timestamp
     : new Date().toISOString();
   const timestamp: string = normalizeCanonicalUtcIsoTimestamp(timestampInput, 'App error timestamp');

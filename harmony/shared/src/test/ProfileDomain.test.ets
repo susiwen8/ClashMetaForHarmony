@@ -7,6 +7,7 @@ import {
   createProfileRevision,
   isProfileEligibleForActivation,
   mapCoreError,
+  normalizeCanonicalUtcIsoTimestamp,
   normalizeProfileName,
   redactCoreEventMessage,
   redactSensitiveText,
@@ -95,6 +96,10 @@ function buildInvalidMissingTimezoneTimestamp(): string {
 
 function buildInvalidCalendarTimestamp(): string {
   return '2026-13-07T00:00:00.000Z';
+}
+
+function buildTimestampWithOuterWhitespace(): string {
+  return ` ${buildCanonicalIsoTimestamp()} `;
 }
 
 function buildLowercaseDigest(): string {
@@ -353,6 +358,53 @@ export default function profileDomainTestsuite() {
       expectThrows((): void => {
         createAppError('IMPORT', 'safe detail', {
           timestamp: buildInvalidNaturalTimestamp()
+        });
+      }, 'ISO-8601');
+    });
+
+    it('rejectsWhitespaceWrappedCanonicalTimestampsInsteadOfTrimmingThem', 0, () => {
+      expectThrows((): void => {
+        normalizeCanonicalUtcIsoTimestamp(buildTimestampWithOuterWhitespace(), 'Shared timestamp');
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfileRevision(
+          'profiles/current/space-wrapped.yaml',
+          buildLowercaseDigest(),
+          0,
+          buildTimestampWithOuterWhitespace()
+        );
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfile({
+          id: 'space-wrapped-profile',
+          name: 'Space Wrapped',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildDownloadFixturePath('space.yaml'),
+          currentRevision: createProfileRevision(
+            'profiles/current/space.yaml',
+            buildLowercaseDigest(),
+            0,
+            buildCanonicalIsoTimestamp()
+          ),
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildTimestampWithOuterWhitespace(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'ISO-8601');
+    });
+
+    it('treatsExplicitBlankOrWhitespaceErrorTimestampsAsInvalidNotMissing', 0, () => {
+      expectThrows((): void => {
+        createAppError('IMPORT', 'safe detail', {
+          timestamp: '   '
+        });
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createAppError('IMPORT', 'safe detail', {
+          timestamp: buildTimestampWithOuterWhitespace()
         });
       }, 'ISO-8601');
     });
