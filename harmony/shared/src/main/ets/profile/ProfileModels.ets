@@ -1,4 +1,4 @@
-import { normalizeCanonicalUtcIsoTimestamp, type AppError } from './AppErrors';
+import { createAppError, normalizeCanonicalUtcIsoTimestamp, type AppError } from './AppErrors';
 import { redactUrl } from './SecretRedactor';
 
 export type ProfileAvailability = 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID';
@@ -58,6 +58,14 @@ function basenameOfPath(rawPath: string): string {
   return separatorIndex >= 0 ? normalizedPath.substring(separatorIndex + 1) : normalizedPath;
 }
 
+function normalizeProfileId(rawId: string): string {
+  const normalizedId: string = rawId.trim();
+  if (normalizedId.length === 0) {
+    throw new Error('Profile id must not be empty.');
+  }
+  return normalizedId;
+}
+
 function hasCurrentValidRevision(profile: Profile): boolean {
   return profile.currentRevision !== null &&
     (profile.availability === 'VALID' || profile.availability === 'UPDATE_FAILED_USING_VALID');
@@ -71,11 +79,30 @@ function ensureProfileCanRepresentAvailability(profile: Profile): void {
   }
 }
 
+function normalizeLocalSourceDisplay(sourceDisplay: string): string {
+  const normalizedDisplay: string = basenameOfPath(sourceDisplay.trim());
+  if (normalizedDisplay.length === 0 || normalizedDisplay === '.' || normalizedDisplay === '..') {
+    throw new Error('Local profile source display must normalize to a file basename.');
+  }
+  return normalizedDisplay;
+}
+
+function normalizeRemoteSourceDisplay(sourceDisplay: string): string {
+  if (!(sourceDisplay.startsWith('http://') || sourceDisplay.startsWith('https://'))) {
+    throw new Error('Remote profile source display must use http or https.');
+  }
+  const redactedDisplay: string = redactUrl(sourceDisplay);
+  if (redactedDisplay === '<redacted-url>' || redactedDisplay.indexOf('<redacted-host>') >= 0) {
+    throw new Error('Remote profile source display must contain a valid host.');
+  }
+  return redactedDisplay;
+}
+
 function normalizeSourceDisplay(sourceKind: ProfileSourceKind, sourceDisplay: string): string {
   if (sourceKind === 'REMOTE_URL') {
-    return redactUrl(sourceDisplay);
+    return normalizeRemoteSourceDisplay(sourceDisplay);
   }
-  return basenameOfPath(sourceDisplay.trim());
+  return normalizeLocalSourceDisplay(sourceDisplay);
 }
 
 function normalizeProfileTimestamp(rawTimestamp: string, label: string): string {
@@ -118,6 +145,18 @@ function cloneProfileRevision(revision: ProfileRevision | null): ProfileRevision
     revision.byteLength,
     revision.validatedAt
   );
+}
+
+function cloneProfileError(error: AppError | null): AppError | null {
+  if (error === null) {
+    return null;
+  }
+  return createAppError(error.stage, error.technicalDetail, {
+    code: error.code,
+    timestamp: error.timestamp,
+    retryable: error.retryable,
+    userMessageResource: error.userMessageResource
+  });
 }
 
 export function normalizeProfileName(rawName: string): string {
@@ -173,14 +212,14 @@ export function createProfile(input: CreateProfileInput): Profile {
   }
 
   const profile: Profile = {
-    id: input.id.trim(),
+    id: normalizeProfileId(input.id),
     name: normalizeProfileName(input.name),
     sourceKind: input.sourceKind,
     sourceDisplay: normalizeSourceDisplay(input.sourceKind, input.sourceDisplay),
     currentRevision: cloneProfileRevision(input.currentRevision),
     failedCandidate: cloneProfileRevision(input.failedCandidate),
     availability: input.availability,
-    lastError: input.lastError,
+    lastError: cloneProfileError(input.lastError),
     createdAt: normalizeProfileTimestamp(input.createdAt, 'Profile createdAt'),
     updatedAt: normalizeProfileTimestamp(input.updatedAt, 'Profile updatedAt'),
     lastSuccessfulUpdateAt: normalizeOptionalProfileTimestamp(

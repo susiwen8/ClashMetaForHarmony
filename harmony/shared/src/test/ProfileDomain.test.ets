@@ -13,7 +13,7 @@ import {
   redactSensitiveText,
   redactUrl
 } from '../../Index';
-import type { AppError, CoreError, CreateProfileInput, Profile, ProfileRevision } from '../../Index';
+import type { AppError, AppErrorStage, CoreError, CreateProfileInput, Profile, ProfileRevision } from '../../Index';
 
 interface RedactionCase {
   input: string;
@@ -31,6 +31,31 @@ class MutableRevisionFixture implements ProfileRevision {
     this.sha256Digest = sha256Digest;
     this.byteLength = byteLength;
     this.validatedAt = validatedAt;
+  }
+}
+
+class MutableAppErrorFixture implements AppError {
+  code: string;
+  stage: AppErrorStage;
+  userMessageResource: string;
+  technicalDetail: string;
+  timestamp: string;
+  retryable: boolean;
+
+  constructor(
+    code: string,
+    stage: AppErrorStage,
+    userMessageResource: string,
+    technicalDetail: string,
+    timestamp: string,
+    retryable: boolean
+  ) {
+    this.code = code;
+    this.stage = stage;
+    this.userMessageResource = userMessageResource;
+    this.technicalDetail = technicalDetail;
+    this.timestamp = timestamp;
+    this.retryable = retryable;
   }
 }
 
@@ -72,6 +97,10 @@ function buildHomeFixturePath(): string {
 
 function buildDownloadFixturePath(fileName: string): string {
   return `/sandbox/Downloads/${fileName}`;
+}
+
+function buildLocalFilePath(fileName: string): string {
+  return `/sandbox/local/${fileName}`;
 }
 
 function buildCanonicalIsoTimestamp(): string {
@@ -116,6 +145,121 @@ function buildShortDigest(): string {
 
 function buildNonHexDigest(): string {
   return 'gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg';
+}
+
+function buildQuotedYamlCredentialLine(quote: string, keyFragments: string[], value: string): string {
+  const key: string = joinTextFragments(keyFragments);
+  return `${quote}${key}${quote}: ${quote}${value}${quote}`;
+}
+
+function buildYamlBlockScalar(
+  keyFragments: string[],
+  indicator: string,
+  valueLines: string[],
+  trailingLine: string
+): string {
+  const lines: string[] = [`${joinTextFragments(keyFragments)}: ${indicator}`];
+  for (let index = 0; index < valueLines.length; index += 1) {
+    lines.push(`  ${valueLines[index]}`);
+  }
+  lines.push(trailingLine);
+  return lines.join('\n');
+}
+
+function buildDrivePathWithSpaces(): string {
+  return joinTextFragments([
+    'C',
+    ':',
+    '\\',
+    '\\',
+    'Us',
+    'ers',
+    '\\',
+    '\\',
+    'demo',
+    '\\',
+    '\\',
+    'Space Folder',
+    '\\',
+    '\\',
+    'config.yaml'
+  ]);
+}
+
+function buildUncPathWithSpaces(): string {
+  return joinTextFragments([
+    '\\',
+    '\\',
+    '\\',
+    '\\',
+    'server',
+    '\\',
+    '\\',
+    'share',
+    '\\',
+    '\\',
+    'Folder Name',
+    '\\',
+    '\\',
+    'secret.yaml'
+  ]);
+}
+
+function buildValidProfileRevision(): ProfileRevision {
+  return createProfileRevision(
+    'profiles/current/valid.yaml',
+    buildLowercaseDigest(),
+    64,
+    buildCanonicalIsoTimestamp()
+  );
+}
+
+function buildAllowedBusyCoreError(): CoreError {
+  return {
+    name: 'CoreError',
+    code: 'CMFA_BUSY',
+    category: 'StateError',
+    message: 'busy',
+    detail: 'retry later',
+    retryable: true,
+    action: 'retry',
+    context: {
+      operation: 'startLocal',
+      status: 8
+    }
+  };
+}
+
+function buildAllowedNapiFailureError(): CoreError {
+  return {
+    name: 'CoreError',
+    code: 'NAPI_FAILURE',
+    category: 'CoreError',
+    message: 'bridge failed',
+    detail: 'bridge failed',
+    retryable: false,
+    action: 'check bridge',
+    context: {
+      operation: 'load',
+      status: -1
+    }
+  };
+}
+
+function buildUntrustedCoreError(code: string): CoreError {
+  return {
+    name: 'CoreError',
+    code,
+    category: 'CoreError',
+    message: 'untrusted',
+    detail: `detail ${buildYamlLine(['to', 'ken'], '=', 'abc123')}`,
+    retryable: false,
+    action: 'ignore',
+    context: {
+      operation: 'startLocal',
+      status: 500
+    }
+  };
 }
 
 export default function profileDomainTestsuite() {
@@ -575,11 +719,160 @@ export default function profileDomainTestsuite() {
       expect(safe.includes(buildYamlLine(['au', 'th'], ': ', '<redacted>'))).assertTrue();
     });
 
+    it('redactsQuotedYamlKeysAndBlockScalarsWithoutSwallowingFollowingLines', 0, () => {
+      const quotedSafe: string = redactSensitiveText([
+        `- ${buildQuotedYamlCredentialLine('"', ['to', 'ken'], 'abc123')}`,
+        buildQuotedYamlCredentialLine('\'', ['pass', 'word'], 'hunter2'),
+        'label: keep'
+      ].join('\n'));
+      expect(quotedSafe.includes('abc123')).assertFalse();
+      expect(quotedSafe.includes('hunter2')).assertFalse();
+      expect(quotedSafe.includes('- "token": "<redacted>"')).assertTrue();
+      expect(quotedSafe.includes('\'password\': \'<redacted>\'')).assertTrue();
+      expect(quotedSafe.includes('label: keep')).assertTrue();
+
+      const blockSafe: string = redactSensitiveText(buildYamlBlockScalar(
+        ['to', 'ken'],
+        '|',
+        ['abc123', 'second-line'],
+        'label: keep'
+      ));
+      expect(blockSafe.includes('abc123')).assertFalse();
+      expect(blockSafe.includes('second-line')).assertFalse();
+      expect(blockSafe.includes('label: keep')).assertTrue();
+
+      const foldedSafe: string = redactSensitiveText(buildYamlBlockScalar(
+        ['pass', 'word'],
+        '>-',
+        ['hunter2', 'second-line'],
+        'next: keep'
+      ));
+      expect(foldedSafe.includes('hunter2')).assertFalse();
+      expect(foldedSafe.includes('second-line')).assertFalse();
+      expect(foldedSafe.includes('next: keep')).assertTrue();
+    });
+
+    it('redactsWindowsDriveAndUncPathsIncludingQuotedPathsWithSpaces', 0, () => {
+      const safe: string = redactSensitiveText(`failed at "${buildDrivePathWithSpaces()}" and "${buildUncPathWithSpaces()}"`);
+      expect(safe.includes('Space Folder')).assertFalse();
+      expect(safe.includes('server')).assertFalse();
+      expect(safe.includes('<path>')).assertTrue();
+    });
+
     it('redactsRawCoreEventMessages', 0, () => {
       const safe: string = redactCoreEventMessage(
         `Proxy started with ${buildYamlLine(['to', 'ken'], '=', 'secret')} at ${buildRepoFixturePath()}`
       );
       expect(safe).assertEqual('Core event received.');
+    });
+
+    it('requiresNonEmptyProfileIdsAndValidLocalSourceDisplays', 0, () => {
+      const revision: ProfileRevision = buildValidProfileRevision();
+      expectThrows((): void => {
+        createProfile({
+          id: '   ',
+          name: 'Local Invalid',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildLocalFilePath('local.yaml'),
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'id');
+      expectThrows((): void => {
+        createProfile({
+          id: 'local-empty',
+          name: 'Local Invalid',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: '/',
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'source');
+      expectThrows((): void => {
+        createProfile({
+          id: 'local-dot',
+          name: 'Local Invalid',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: '.',
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'source');
+      expectThrows((): void => {
+        createProfile({
+          id: 'local-dotdot',
+          name: 'Local Invalid',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: 'folder/..',
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'source');
+    });
+
+    it('requiresSupportedRemoteUrlsForDurableSourceDisplay', 0, () => {
+      const revision: ProfileRevision = buildValidProfileRevision();
+      const validProfile: Profile = createProfile({
+        id: 'remote-valid',
+        name: 'Remote Valid',
+        sourceKind: 'REMOTE_URL',
+        sourceDisplay: buildIpv6UrlWithUserinfo(),
+        sourceSecretRef: 'secret-ref-remote',
+        currentRevision: revision,
+        failedCandidate: null,
+        availability: 'VALID',
+        lastError: null,
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildSecondCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+      });
+      expect(validProfile.sourceDisplay).assertEqual('http://[2001:db8::1]:9090');
+
+      const invalidUrls: string[] = [
+        'https:///missing-host',
+        'ftp://example.com/path',
+        '<redacted-url>',
+        'https://<redacted-host>',
+        'not-a-url'
+      ];
+      for (let index = 0; index < invalidUrls.length; index += 1) {
+        expectThrows((): void => {
+          createProfile({
+            id: `remote-invalid-${index}`,
+            name: 'Remote Invalid',
+            sourceKind: 'REMOTE_URL',
+            sourceDisplay: invalidUrls[index],
+            sourceSecretRef: 'secret-ref-remote',
+            currentRevision: revision,
+            failedCandidate: null,
+            availability: 'VALID',
+            lastError: null,
+            createdAt: buildCanonicalIsoTimestamp(),
+            updatedAt: buildSecondCanonicalIsoTimestamp(),
+            lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+          });
+        }, 'source');
+      }
     });
 
     it('mapsStartCoreErrorWithoutRawDetail', 0, () => {
@@ -600,13 +893,33 @@ export default function profileDomainTestsuite() {
 
       const error: AppError = mapCoreError('startLocal', unsafeCoreError);
       expect(error.stage).assertEqual('RUNTIME_START');
-      expect(error.code).assertEqual('CMFA_START_FAILED');
+      expect(error.code).assertEqual('CMFA_RUNTIME_START_FAILED');
       expect(error.retryable).assertTrue();
       expect(error.technicalDetail.includes(buildYamlLine(['to', 'ken'], '=', ''))).assertFalse();
       expect(error.technicalDetail.includes('.config/cmfa')).assertFalse();
       expect(error.technicalDetail.includes(joinTextFragments(['us', 'er']))).assertFalse();
       expect(error.technicalDetail.includes('example.com')).assertTrue();
       expect(error.technicalDetail.includes('raw core message')).assertFalse();
+    });
+
+    it('allowsOnlyKnownNativeCoreErrorCodesAndFallsBackForUntrustedCodes', 0, () => {
+      const busyError: AppError = mapCoreError('startLocal', buildAllowedBusyCoreError());
+      expect(busyError.code).assertEqual('CMFA_BUSY');
+
+      const napiError: AppError = mapCoreError('load', buildAllowedNapiFailureError());
+      expect(napiError.code).assertEqual('NAPI_FAILURE');
+
+      const secretCodeError: AppError = mapCoreError(
+        'startLocal',
+        buildUntrustedCoreError('CMFA_SECRET_TOKEN')
+      );
+      expect(secretCodeError.code).assertEqual('CMFA_RUNTIME_START_FAILED');
+
+      const longCodeError: AppError = mapCoreError(
+        'startLocal',
+        buildUntrustedCoreError(`CMFA_${'A'.repeat(200)}`)
+      );
+      expect(longCodeError.code).assertEqual('CMFA_RUNTIME_START_FAILED');
     });
 
     it('mapsUnknownCoreOperationsToStableFallbacks', 0, () => {
@@ -629,6 +942,40 @@ export default function profileDomainTestsuite() {
       expect(error.code).assertEqual('CMFA_CORE_LOAD_FAILED');
       expect(error.technicalDetail.includes('abc123')).assertFalse();
       expect(error.userMessageResource).assertEqual('error.core.load');
+    });
+
+    it('defensivelyCopiesAndRedactsLastErrorWhenPersistingProfiles', 0, () => {
+      const mutableError: MutableAppErrorFixture = new MutableAppErrorFixture(
+        'APP_PLATFORM_TIMEOUT',
+        'DOWNLOAD',
+        'error.download.platform',
+        `download failed for ${buildUrlWithUserinfo()} at ${buildHomeFixturePath()}`,
+        buildCanonicalIsoTimestamp(),
+        true
+      );
+      const profile: Profile = createProfile({
+        id: 'last-error-profile',
+        name: 'Last Error Profile',
+        sourceKind: 'LOCAL_FILE',
+        sourceDisplay: buildLocalFilePath('error.yaml'),
+        currentRevision: buildValidProfileRevision(),
+        failedCandidate: null,
+        availability: 'VALID',
+        lastError: mutableError,
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildSecondCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+      });
+
+      mutableError.code = 'MUTATED_CODE';
+      mutableError.technicalDetail = buildYamlLine(['to', 'ken'], '=', 'abc123');
+
+      expect(profile.lastError?.code).assertEqual('APP_PLATFORM_TIMEOUT');
+      expect(profile.lastError?.userMessageResource).assertEqual('error.download.platform');
+      expect(profile.lastError?.retryable).assertTrue();
+      expect(profile.lastError?.technicalDetail.includes('example.com')).assertTrue();
+      expect(profile.lastError?.technicalDetail.includes('abc123')).assertFalse();
+      expect(profile.lastError?.technicalDetail.includes('hunter2')).assertFalse();
     });
   });
 }

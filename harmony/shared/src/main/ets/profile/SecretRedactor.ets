@@ -18,6 +18,15 @@ const REDACTABLE_KEYS: string[] = [
 const REPOSITORY_HINT_SEGMENTS: string[] = ['harmony', '.git', '.worktrees'];
 const HOME_HINT_SEGMENTS: string[] = ['.config', 'Downloads', 'Desktop', 'Documents', 'Library'];
 
+interface ParsedSecretLine {
+  indent: number;
+  isBlockScalar: boolean;
+  keyLiteral: string;
+  normalizedKey: string;
+  prefix: string;
+  value: string;
+}
+
 function isAllowedSchemeCharacter(character: string): boolean {
   const code: number = character.charCodeAt(0);
   return (code >= 97 && code <= 122) ||
@@ -49,35 +58,211 @@ function isRedactableKey(value: string): boolean {
   return false;
 }
 
-function replaceCredentialLine(line: string): string {
-  let start: number = 0;
-  while (start < line.length && (line[start] === ' ' || line[start] === '\t' || line[start] === '-')) {
-    start += 1;
+function countIndent(line: string): number {
+  let index: number = 0;
+  while (index < line.length && (line[index] === ' ' || line[index] === '\t')) {
+    index += 1;
   }
-
-  let separatorIndex: number = line.indexOf(':', start);
-  if (separatorIndex < 0) {
-    return line;
-  }
-
-  const key: string = line.substring(start, separatorIndex).trim().toLowerCase();
-  if (!isRedactableKey(key)) {
-    return line;
-  }
-
-  return `${line.substring(0, separatorIndex + 1)} <redacted>`;
+  return index;
 }
 
-function redactCredentialLines(raw: string): string {
+function stripMatchingQuotes(value: string): string {
+  if (value.length >= 2 && (
+    (value[0] === '"' && value[value.length - 1] === '"') ||
+    (value[0] === '\'' && value[value.length - 1] === '\'')
+  )) {
+    return value.substring(1, value.length - 1);
+  }
+  return value;
+}
+
+function parseSecretLine(line: string): ParsedSecretLine | null {
+  const indent: number = countIndent(line);
+  let cursor: number = indent;
+  if (line.substring(cursor, cursor + 2) === '- ') {
+    cursor += 2;
+  }
+
+  if (cursor >= line.length) {
+    return null;
+  }
+
+  let keyLiteral: string = '';
+  let separatorIndex: number = -1;
+  if (line[cursor] === '"' || line[cursor] === '\'') {
+    const quote: string = line[cursor];
+    let endQuoteIndex: number = cursor + 1;
+    while (endQuoteIndex < line.length && line[endQuoteIndex] !== quote) {
+      endQuoteIndex += 1;
+    }
+    if (endQuoteIndex >= line.length) {
+      return null;
+    }
+    keyLiteral = line.substring(cursor, endQuoteIndex + 1);
+    separatorIndex = line.indexOf(':', endQuoteIndex + 1);
+    if (separatorIndex < 0) {
+      return null;
+    }
+  } else {
+    const colonIndex: number = line.indexOf(':', cursor);
+    const equalsIndex: number = line.indexOf('=', cursor);
+    if (colonIndex < 0 && equalsIndex < 0) {
+      return null;
+    }
+    if (colonIndex >= 0 && (equalsIndex < 0 || colonIndex < equalsIndex)) {
+      separatorIndex = colonIndex;
+    } else {
+      separatorIndex = equalsIndex;
+    }
+    keyLiteral = line.substring(cursor, separatorIndex).trim();
+  }
+
+  const normalizedKey: string = stripMatchingQuotes(keyLiteral).trim().toLowerCase();
+  if (!isRedactableKey(normalizedKey)) {
+    return null;
+  }
+
+  let valueStart: number = separatorIndex + 1;
+  while (valueStart < line.length && (line[valueStart] === ' ' || line[valueStart] === '\t')) {
+    valueStart += 1;
+  }
+  const value: string = line.substring(valueStart);
+  if (separatorIndex === line.indexOf('=') && value.indexOf(' ') >= 0) {
+    return null;
+  }
+  const isBlockScalar: boolean = value.length > 0 && (value[0] === '|' || value[0] === '>');
+  return {
+    indent,
+    isBlockScalar,
+    keyLiteral,
+    normalizedKey,
+    prefix: line.substring(0, valueStart),
+    value
+  };
+}
+
+function redactInlineSecretValue(value: string): string {
+  if (value.length >= 2 && value[0] === '"' && value[value.length - 1] === '"') {
+    return '"<redacted>"';
+  }
+  if (value.length >= 2 && value[0] === '\'' && value[value.length - 1] === '\'') {
+    return '\'<redacted>\'';
+  }
+  return '<redacted>';
+}
+
+function redactStructuredSecrets(raw: string): string {
   const lines: string[] = raw.split('\n');
-  for (let index = 0; index < lines.length; index += 1) {
-    lines[index] = replaceCredentialLine(lines[index]);
+  let activeBlockIndent: number = -1;
+  for (let index: number = 0; index < lines.length; index += 1) {
+    const currentLine: string = lines[index];
+    const trimmedLine: string = currentLine.trim();
+    const currentIndent: number = countIndent(currentLine);
+
+    if (activeBlockIndent >= 0) {
+      if (trimmedLine.length === 0) {
+        continue;
+      }
+      if (currentIndent > activeBlockIndent) {
+        lines[index] = `${currentLine.substring(0, currentIndent)}<redacted>`;
+        continue;
+      }
+      activeBlockIndent = -1;
+    }
+
+    const parsedLine: ParsedSecretLine | null = parseSecretLine(currentLine);
+    if (parsedLine === null) {
+      continue;
+    }
+    if (parsedLine.isBlockScalar) {
+      activeBlockIndent = parsedLine.indent;
+      continue;
+    }
+    lines[index] = `${parsedLine.prefix}${redactInlineSecretValue(parsedLine.value)}`;
   }
   return lines.join('\n');
 }
 
+function isAsciiLetter(character: string): boolean {
+  const code: number = character.charCodeAt(0);
+  return (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+}
+
+function isPathBoundary(character: string): boolean {
+  return character === ' ' ||
+    character === '\t' ||
+    character === '\n' ||
+    character === '\r' ||
+    character === '"' ||
+    character === '\'' ||
+    character === '<' ||
+    character === '>' ||
+    character === ')' ||
+    character === '}' ||
+    character === ']';
+}
+
+function isScannerBoundary(text: string, index: number): boolean {
+  if (index === 0) {
+    return true;
+  }
+  return isPathBoundary(text[index - 1]) ||
+    text[index - 1] === '(' ||
+    text[index - 1] === '[' ||
+    text[index - 1] === '=';
+}
+
+function consumeWindowsPath(text: string, startIndex: number): number {
+  const quoteBoundary: string = startIndex > 0 && (text[startIndex - 1] === '"' || text[startIndex - 1] === '\'')
+    ? text[startIndex - 1]
+    : '';
+  let index: number = startIndex;
+  while (index < text.length) {
+    if (quoteBoundary.length > 0) {
+      if (text[index] === quoteBoundary) {
+        return index;
+      }
+      index += 1;
+      continue;
+    }
+    if (isPathBoundary(text[index])) {
+      return index;
+    }
+    index += 1;
+  }
+  return text.length;
+}
+
+function redactWindowsAbsolutePaths(rawText: string): string {
+  let sanitized: string = '';
+  let index: number = 0;
+  while (index < rawText.length) {
+    const hasDrivePath: boolean = isScannerBoundary(rawText, index) &&
+      index + 2 < rawText.length &&
+      isAsciiLetter(rawText[index]) &&
+      rawText[index + 1] === ':' &&
+      (rawText[index + 2] === '\\' || rawText[index + 2] === '/');
+    const hasUncPath: boolean = isScannerBoundary(rawText, index) &&
+      index + 1 < rawText.length &&
+      rawText[index] === '\\' &&
+      rawText[index + 1] === '\\';
+
+    if (!hasDrivePath && !hasUncPath) {
+      sanitized += rawText[index];
+      index += 1;
+      continue;
+    }
+
+    const endIndex: number = consumeWindowsPath(rawText, index);
+    sanitized += classifyAbsolutePath(rawText.substring(index, endIndex));
+    index = endIndex;
+  }
+  return sanitized;
+}
+
 function classifyAbsolutePath(pathToken: string): string {
-  const segments: string[] = pathToken.split('/');
+  const normalizedPathToken: string = pathToken.replace(/\\/g, '/');
+  const segments: string[] = normalizedPathToken.split('/');
   for (let index = 0; index < segments.length; index += 1) {
     const segment: string = segments[index];
     for (let hintIndex = 0; hintIndex < REPOSITORY_HINT_SEGMENTS.length; hintIndex += 1) {
@@ -134,7 +319,7 @@ export function redactSensitiveText(rawText: string): string {
   sanitized = sanitized.replace(URL_PATTERN, (match: string): string => {
     return redactUrl(match);
   });
-  sanitized = redactCredentialLines(sanitized);
+  sanitized = redactStructuredSecrets(sanitized);
   sanitized = sanitized.replace(
     INLINE_ASSIGNMENT_PATTERN,
     (_match: string, key: string, separator: string): string => {
@@ -153,6 +338,7 @@ export function redactSensitiveText(rawText: string): string {
       return `${prefix}${classifyAbsolutePath(token)}`;
     }
   );
+  sanitized = redactWindowsAbsolutePaths(sanitized);
   return sanitized;
 }
 

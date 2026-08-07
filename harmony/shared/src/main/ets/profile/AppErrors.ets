@@ -1,3 +1,5 @@
+import { redactSensitiveText } from './SecretRedactor';
+
 export type AppErrorStage =
   'IMPORT' |
   'DOWNLOAD' |
@@ -109,9 +111,10 @@ export function createAppError(
   technicalDetail: string,
   options?: CreateAppErrorOptions
 ): AppError {
-  const normalizedDetail: string = technicalDetail.trim().length > 0
+  const normalizedDetailInput: string = technicalDetail.trim().length > 0
     ? technicalDetail.trim()
     : 'Operation failed.';
+  const normalizedDetail: string = redactSensitiveText(normalizedDetailInput);
   const code: string = options?.code !== undefined && options.code.trim().length > 0
     ? options.code.trim()
     : defaultErrorCodeForStage(stage);

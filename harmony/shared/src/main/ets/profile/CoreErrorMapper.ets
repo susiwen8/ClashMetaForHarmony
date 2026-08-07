@@ -2,6 +2,20 @@ import type { CoreError } from '../core/CoreErrors';
 import { createAppError, defaultErrorCodeForStage, type AppError, type AppErrorStage } from './AppErrors';
 import { redactSensitiveText } from './SecretRedactor';
 
+const ALLOWED_CORE_ERROR_CODES: string[] = [
+  'CMFA_INVALID_ARGUMENT',
+  'CMFA_INVALID_UTF8',
+  'CMFA_OUT_OF_RANGE',
+  'CMFA_BUFFER_TOO_SMALL',
+  'CMFA_NOT_INITIALIZED',
+  'CMFA_ALREADY_INITIALIZED',
+  'CMFA_INVALID_STATE',
+  'CMFA_BUSY',
+  'CMFA_CORE_UNAVAILABLE',
+  'CMFA_BACKEND_ERROR',
+  'NAPI_FAILURE'
+];
+
 function resolveStageFromOperation(operation: string): AppErrorStage {
   switch (operation) {
     case 'validate':
@@ -35,10 +49,20 @@ function resolveAllowedOperation(requestedOperation: string, coreOperation?: str
   return 'load';
 }
 
+function normalizeCoreMappedCode(rawCode: string, stage: AppErrorStage): string {
+  const normalizedCode: string = rawCode.trim();
+  for (let index: number = 0; index < ALLOWED_CORE_ERROR_CODES.length; index += 1) {
+    if (ALLOWED_CORE_ERROR_CODES[index] === normalizedCode) {
+      return normalizedCode;
+    }
+  }
+  return defaultErrorCodeForStage(stage);
+}
+
 export function mapCoreError(requestedOperation: string, error: CoreError): AppError {
   const operation: string = resolveAllowedOperation(requestedOperation, error.context?.operation);
   const stage: AppErrorStage = resolveStageFromOperation(operation);
-  const code: string = error.code.trim().length > 0 ? error.code.trim() : defaultErrorCodeForStage(stage);
+  const code: string = normalizeCoreMappedCode(error.code, stage);
   const technicalDetail: string = redactSensitiveText(error.detail);
   return createAppError(stage, technicalDetail, {
     code,
