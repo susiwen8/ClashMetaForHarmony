@@ -166,6 +166,20 @@ function buildYamlBlockScalar(
   return lines.join('\n');
 }
 
+function buildYamlListBlockScalar(
+  keyFragments: string[],
+  indicator: string,
+  valueLines: string[],
+  siblingLine: string
+): string {
+  const lines: string[] = [`- ${joinTextFragments(keyFragments)}: ${indicator}`];
+  for (let index: number = 0; index < valueLines.length; index += 1) {
+    lines.push(`    ${valueLines[index]}`);
+  }
+  lines.push(`  ${siblingLine}`);
+  return lines.join('\n');
+}
+
 function buildDrivePathWithSpaces(): string {
   return joinTextFragments([
     'C',
@@ -673,33 +687,24 @@ export default function profileDomainTestsuite() {
     });
 
     it('redactsSensitiveDetailTables', 0, () => {
-      const values: RedactionCase[] = [
-        {
-          input: `Download failed for ${buildUrlWithUserinfo()}`,
-          expectedFragment: 'https://example.com'
-        },
-        {
-          input: `${buildYamlLine(['to', 'ken'], '=', 'secret-value')} ${buildYamlLine(['pass', 'word'], ': ', 'hunter2')}`,
-          expectedFragment: `${buildYamlLine(['to', 'ken'], '=', '<redacted>')} ${buildYamlLine(['pass', 'word'], ': ', '<redacted>')}`
-        },
-        {
-          input: buildRepoFixturePath(),
-          expectedFragment: '<repo>'
-        },
-        {
-          input: buildHomeFixturePath(),
-          expectedFragment: '<home>'
-        }
-      ];
+      const urlSafe: string = redactSensitiveText(`Download failed for ${buildUrlWithUserinfo()}`);
+      expect(urlSafe.includes('https://example.com')).assertTrue();
+      expect(urlSafe.includes(joinTextFragments(['sec', 'ret']))).assertFalse();
 
-      for (let index = 0; index < values.length; index += 1) {
-        const input: string = values[index].input;
-        const expectedFragment: string = values[index].expectedFragment;
-        const safe: string = redactSensitiveText(input);
-        expect(safe.includes(expectedFragment)).assertTrue();
-        expect(safe.includes(joinTextFragments(['sec', 'ret']))).assertFalse();
-        expect(safe.includes('hunter2')).assertFalse();
-      }
+      const inlineSafe: string = redactSensitiveText(
+        `${buildYamlLine(['to', 'ken'], '=', 'secret-value')} ${buildYamlLine(['pass', 'word'], ': ', 'hunter2')}`
+      );
+      expect(
+        inlineSafe.includes(`${buildYamlLine(['to', 'ken'], '=', '<redacted>')} ${buildYamlLine(['pass', 'word'], ': ', '<redacted>')}`)
+      ).assertTrue();
+      expect(inlineSafe.includes(joinTextFragments(['sec', 'ret']))).assertFalse();
+      expect(inlineSafe.includes('hunter2')).assertFalse();
+
+      const repoSafe: string = redactSensitiveText(buildRepoFixturePath());
+      expect(repoSafe.includes('<repo>')).assertTrue();
+
+      const homeSafe: string = redactSensitiveText(buildHomeFixturePath());
+      expect(homeSafe.includes('<home>')).assertTrue();
     });
 
     it('redactsYamlCredentialValues', 0, () => {
@@ -750,6 +755,34 @@ export default function profileDomainTestsuite() {
       expect(foldedSafe.includes('hunter2')).assertFalse();
       expect(foldedSafe.includes('second-line')).assertFalse();
       expect(foldedSafe.includes('next: keep')).assertTrue();
+    });
+
+    it('keepsYamlListBlockSiblingsWhileRedactingBlockContent', 0, () => {
+      const literalSafe: string = redactSensitiveText(buildYamlListBlockScalar(
+        ['to', 'ken'],
+        '|',
+        ['abc123'],
+        'label: keep'
+      ));
+      expect(literalSafe.includes('abc123')).assertFalse();
+      expect(literalSafe.includes('label: keep')).assertTrue();
+
+      const foldedSafe: string = redactSensitiveText(buildYamlListBlockScalar(
+        ['pass', 'word'],
+        '>-',
+        ['hunter2'],
+        'label: keep'
+      ));
+      expect(foldedSafe.includes('hunter2')).assertFalse();
+      expect(foldedSafe.includes('label: keep')).assertTrue();
+    });
+
+    it('redactsBlockScalarsWithCrLfWithoutLeavingMixedNewlines', 0, () => {
+      const crlfInput: string = `token: |\r\n  abc123\r\nlabel: keep`;
+      const safe: string = redactSensitiveText(crlfInput);
+      expect(safe.includes('abc123')).assertFalse();
+      expect(safe.includes('label: keep')).assertTrue();
+      expect(safe.includes('\r')).assertFalse();
     });
 
     it('redactsWindowsDriveAndUncPathsIncludingQuotedPathsWithSpaces', 0, () => {
@@ -853,7 +886,12 @@ export default function profileDomainTestsuite() {
         'ftp://example.com/path',
         '<redacted-url>',
         'https://<redacted-host>',
-        'not-a-url'
+        'not-a-url',
+        'https://:443/path',
+        'https://example.com bad',
+        'https://example.com:/path',
+        'https://2001:db8::1/path',
+        'https://example.com\t/path'
       ];
       for (let index = 0; index < invalidUrls.length; index += 1) {
         expectThrows((): void => {

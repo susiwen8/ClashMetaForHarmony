@@ -20,6 +20,7 @@ const HOME_HINT_SEGMENTS: string[] = ['.config', 'Downloads', 'Desktop', 'Docume
 
 interface ParsedSecretLine {
   indent: number;
+  keyColumn: number;
   isBlockScalar: boolean;
   keyLiteral: string;
   normalizedKey: string;
@@ -133,6 +134,7 @@ function parseSecretLine(line: string): ParsedSecretLine | null {
   const isBlockScalar: boolean = value.length > 0 && (value[0] === '|' || value[0] === '>');
   return {
     indent,
+    keyColumn: cursor,
     isBlockScalar,
     keyLiteral,
     normalizedKey,
@@ -152,22 +154,23 @@ function redactInlineSecretValue(value: string): string {
 }
 
 function redactStructuredSecrets(raw: string): string {
-  const lines: string[] = raw.split('\n');
-  let activeBlockIndent: number = -1;
+  const normalizedRaw: string = raw.replace(/\r\n/g, '\n').replace(/\r/g, '\n');
+  const lines: string[] = normalizedRaw.split('\n');
+  let activeBlockKeyColumn: number = -1;
   for (let index: number = 0; index < lines.length; index += 1) {
     const currentLine: string = lines[index];
     const trimmedLine: string = currentLine.trim();
     const currentIndent: number = countIndent(currentLine);
 
-    if (activeBlockIndent >= 0) {
+    if (activeBlockKeyColumn >= 0) {
       if (trimmedLine.length === 0) {
         continue;
       }
-      if (currentIndent > activeBlockIndent) {
+      if (currentIndent > activeBlockKeyColumn) {
         lines[index] = `${currentLine.substring(0, currentIndent)}<redacted>`;
         continue;
       }
-      activeBlockIndent = -1;
+      activeBlockKeyColumn = -1;
     }
 
     const parsedLine: ParsedSecretLine | null = parseSecretLine(currentLine);
@@ -175,7 +178,7 @@ function redactStructuredSecrets(raw: string): string {
       continue;
     }
     if (parsedLine.isBlockScalar) {
-      activeBlockIndent = parsedLine.indent;
+      activeBlockKeyColumn = parsedLine.keyColumn;
       continue;
     }
     lines[index] = `${parsedLine.prefix}${redactInlineSecretValue(parsedLine.value)}`;

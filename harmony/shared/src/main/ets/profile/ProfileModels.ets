@@ -87,15 +87,133 @@ function normalizeLocalSourceDisplay(sourceDisplay: string): string {
   return normalizedDisplay;
 }
 
+function containsWhitespaceOrControl(value: string): boolean {
+  for (let index: number = 0; index < value.length; index += 1) {
+    const code: number = value.charCodeAt(index);
+    if (code <= 31 || code === 127 || value[index] === ' ' || value[index] === '\t') {
+      return true;
+    }
+  }
+  return false;
+}
+
+function isNumeric(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (let index: number = 0; index < value.length; index += 1) {
+    const code: number = value.charCodeAt(index);
+    if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isAllowedHostCharacter(character: string): boolean {
+  const code: number = character.charCodeAt(0);
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    character === '.' ||
+    character === '-';
+}
+
+function validatePort(port: string): void {
+  if (!isNumeric(port)) {
+    throw new Error('Remote profile source display must contain a numeric port.');
+  }
+  const value: number = Number.parseInt(port, 10);
+  if (value < 1 || value > 65535) {
+    throw new Error('Remote profile source display port must stay within 1..65535.');
+  }
+}
+
+function validateBracketedIpv6Authority(hostPort: string): void {
+  const closingBracketIndex: number = hostPort.indexOf(']');
+  if (closingBracketIndex <= 1 || hostPort.lastIndexOf(']') !== closingBracketIndex) {
+    throw new Error('Remote profile source display must contain a valid bracketed IPv6 host.');
+  }
+  const host: string = hostPort.substring(1, closingBracketIndex);
+  if (containsWhitespaceOrControl(host) || host.indexOf('[') >= 0) {
+    throw new Error('Remote profile source display must contain a valid bracketed IPv6 host.');
+  }
+  const suffix: string = hostPort.substring(closingBracketIndex + 1);
+  if (suffix.length === 0) {
+    return;
+  }
+  if (!suffix.startsWith(':')) {
+    throw new Error('Remote profile source display IPv6 suffix must be empty or a numeric port.');
+  }
+  validatePort(suffix.substring(1));
+}
+
+function validateStandardAuthority(hostPort: string): void {
+  const firstColonIndex: number = hostPort.indexOf(':');
+  const lastColonIndex: number = hostPort.lastIndexOf(':');
+  if (firstColonIndex >= 0 && firstColonIndex !== lastColonIndex) {
+    throw new Error('Remote profile source display must bracket IPv6 hosts.');
+  }
+
+  let host: string = hostPort;
+  if (lastColonIndex >= 0) {
+    host = hostPort.substring(0, lastColonIndex);
+    const port: string = hostPort.substring(lastColonIndex + 1);
+    validatePort(port);
+  }
+
+  if (host.length === 0) {
+    throw new Error('Remote profile source display must contain a host.');
+  }
+
+  for (let index: number = 0; index < host.length; index += 1) {
+    if (!isAllowedHostCharacter(host[index])) {
+      throw new Error('Remote profile source display host contains invalid characters.');
+    }
+  }
+}
+
+function validateRemoteAuthority(authority: string): string {
+  if (authority.length === 0 || containsWhitespaceOrControl(authority) || authority.indexOf('<') >= 0 ||
+    authority.indexOf('>') >= 0) {
+    throw new Error('Remote profile source display must contain a valid authority.');
+  }
+
+  const atIndex: number = authority.lastIndexOf('@');
+  const hostPort: string = atIndex >= 0 ? authority.substring(atIndex + 1) : authority;
+  if (hostPort.length === 0) {
+    throw new Error('Remote profile source display must contain a host.');
+  }
+
+  if (hostPort.startsWith('[')) {
+    validateBracketedIpv6Authority(hostPort);
+  } else {
+    validateStandardAuthority(hostPort);
+  }
+  return hostPort;
+}
+
 function normalizeRemoteSourceDisplay(sourceDisplay: string): string {
-  if (!(sourceDisplay.startsWith('http://') || sourceDisplay.startsWith('https://'))) {
+  if (containsWhitespaceOrControl(sourceDisplay) ||
+    !(sourceDisplay.startsWith('http://') || sourceDisplay.startsWith('https://'))) {
     throw new Error('Remote profile source display must use http or https.');
   }
-  const redactedDisplay: string = redactUrl(sourceDisplay);
-  if (redactedDisplay === '<redacted-url>' || redactedDisplay.indexOf('<redacted-host>') >= 0) {
-    throw new Error('Remote profile source display must contain a valid host.');
+
+  const separatorIndex: number = sourceDisplay.indexOf('://');
+  const scheme: string = sourceDisplay.substring(0, separatorIndex);
+  const authorityStart: number = separatorIndex + 3;
+  let authorityEnd: number = sourceDisplay.length;
+  for (let index: number = authorityStart; index < sourceDisplay.length; index += 1) {
+    const character: string = sourceDisplay[index];
+    if (character === '/' || character === '?' || character === '#') {
+      authorityEnd = index;
+      break;
+    }
   }
-  return redactedDisplay;
+
+  const authority: string = sourceDisplay.substring(authorityStart, authorityEnd);
+  const validatedHostPort: string = validateRemoteAuthority(authority);
+  return `${scheme}://${validatedHostPort}`;
 }
 
 function normalizeSourceDisplay(sourceKind: ProfileSourceKind, sourceDisplay: string): string {
