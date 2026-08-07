@@ -1,4 +1,4 @@
-import type { AppError } from './AppErrors';
+import { normalizeCanonicalUtcIsoTimestamp, type AppError } from './AppErrors';
 import { redactUrl } from './SecretRedactor';
 
 export type ProfileAvailability = 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID';
@@ -47,6 +47,8 @@ export interface CreateProfileInput {
   lastSuccessfulUpdateAt: string | null;
 }
 
+const SHA256_DIGEST_PATTERN: RegExp = /^[0-9a-fA-F]{64}$/u;
+
 function basenameOfPath(rawPath: string): string {
   let normalizedPath: string = rawPath.replace(/\\/g, '/');
   while (normalizedPath.endsWith('/')) {
@@ -74,6 +76,48 @@ function normalizeSourceDisplay(sourceKind: ProfileSourceKind, sourceDisplay: st
     return redactUrl(sourceDisplay);
   }
   return basenameOfPath(sourceDisplay.trim());
+}
+
+function normalizeProfileTimestamp(rawTimestamp: string, label: string): string {
+  return normalizeCanonicalUtcIsoTimestamp(rawTimestamp, label);
+}
+
+function normalizeOptionalProfileTimestamp(rawTimestamp: string | null, label: string): string | null {
+  if (rawTimestamp === null) {
+    return null;
+  }
+  return normalizeProfileTimestamp(rawTimestamp, label);
+}
+
+function normalizeSha256Digest(rawDigest: string): string {
+  const normalizedDigest: string = rawDigest.trim();
+  if (!SHA256_DIGEST_PATTERN.test(normalizedDigest)) {
+    throw new Error('Profile revision digest must be a 64-character SHA-256 hex string.');
+  }
+  return normalizedDigest.toLowerCase();
+}
+
+function normalizeByteLength(byteLength: number): number {
+  if (byteLength !== byteLength ||
+    byteLength === Number.POSITIVE_INFINITY ||
+    byteLength === Number.NEGATIVE_INFINITY ||
+    byteLength < 0 ||
+    Math.floor(byteLength) !== byteLength) {
+    throw new Error('Profile revision byte length must be a non-negative integer.');
+  }
+  return byteLength;
+}
+
+function cloneProfileRevision(revision: ProfileRevision | null): ProfileRevision | null {
+  if (revision === null) {
+    return null;
+  }
+  return createProfileRevision(
+    revision.relativePath,
+    revision.sha256Digest,
+    revision.byteLength,
+    revision.validatedAt
+  );
 }
 
 export function normalizeProfileName(rawName: string): string {
@@ -110,17 +154,11 @@ export function createProfileRevision(
   if (!isSandboxRelativePath(relativePath)) {
     throw new Error('Profile revision path must stay sandbox-relative.');
   }
-  if (sha256Digest.trim().length === 0) {
-    throw new Error('Profile revision digest must not be empty.');
-  }
-  if (byteLength < 0) {
-    throw new Error('Profile revision byte length must be non-negative.');
-  }
   return {
     relativePath,
-    sha256Digest: sha256Digest.trim(),
-    byteLength,
-    validatedAt: validatedAt.trim()
+    sha256Digest: normalizeSha256Digest(sha256Digest),
+    byteLength: normalizeByteLength(byteLength),
+    validatedAt: normalizeProfileTimestamp(validatedAt, 'Profile revision timestamp')
   };
 }
 
@@ -139,13 +177,16 @@ export function createProfile(input: CreateProfileInput): Profile {
     name: normalizeProfileName(input.name),
     sourceKind: input.sourceKind,
     sourceDisplay: normalizeSourceDisplay(input.sourceKind, input.sourceDisplay),
-    currentRevision: input.currentRevision,
-    failedCandidate: input.failedCandidate,
+    currentRevision: cloneProfileRevision(input.currentRevision),
+    failedCandidate: cloneProfileRevision(input.failedCandidate),
     availability: input.availability,
     lastError: input.lastError,
-    createdAt: input.createdAt.trim(),
-    updatedAt: input.updatedAt.trim(),
-    lastSuccessfulUpdateAt: input.lastSuccessfulUpdateAt === null ? null : input.lastSuccessfulUpdateAt.trim()
+    createdAt: normalizeProfileTimestamp(input.createdAt, 'Profile createdAt'),
+    updatedAt: normalizeProfileTimestamp(input.updatedAt, 'Profile updatedAt'),
+    lastSuccessfulUpdateAt: normalizeOptionalProfileTimestamp(
+      input.lastSuccessfulUpdateAt,
+      'Profile lastSuccessfulUpdateAt'
+    )
   };
 
   if (input.sourceSecretRef !== undefined && input.sourceSecretRef.trim().length > 0) {

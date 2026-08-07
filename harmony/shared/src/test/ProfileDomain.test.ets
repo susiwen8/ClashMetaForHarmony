@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   APP_ERROR_STAGES,
   PROFILE_AVAILABILITIES,
+  createAppError,
   createProfile,
   createProfileRevision,
   isProfileEligibleForActivation,
@@ -16,6 +17,20 @@ import type { AppError, CoreError, CreateProfileInput, Profile, ProfileRevision 
 interface RedactionCase {
   input: string;
   expectedFragment: string;
+}
+
+class MutableRevisionFixture implements ProfileRevision {
+  relativePath: string;
+  sha256Digest: string;
+  byteLength: number;
+  validatedAt: string;
+
+  constructor(relativePath: string, sha256Digest: string, byteLength: number, validatedAt: string) {
+    this.relativePath = relativePath;
+    this.sha256Digest = sha256Digest;
+    this.byteLength = byteLength;
+    this.validatedAt = validatedAt;
+  }
 }
 
 function joinTextFragments(fragments: string[]): string {
@@ -56,6 +71,46 @@ function buildHomeFixturePath(): string {
 
 function buildDownloadFixturePath(fileName: string): string {
   return `/sandbox/Downloads/${fileName}`;
+}
+
+function buildCanonicalIsoTimestamp(): string {
+  return '2026-08-07T00:00:00.000Z';
+}
+
+function buildSecondCanonicalIsoTimestamp(): string {
+  return '2026-08-07T01:00:00.000Z';
+}
+
+function buildThirdCanonicalIsoTimestamp(): string {
+  return '2026-08-07T02:00:00.000Z';
+}
+
+function buildInvalidNaturalTimestamp(): string {
+  return joinTextFragments(['yester', 'day']);
+}
+
+function buildInvalidMissingTimezoneTimestamp(): string {
+  return '2026-08-07T00:00:00.000';
+}
+
+function buildInvalidCalendarTimestamp(): string {
+  return '2026-13-07T00:00:00.000Z';
+}
+
+function buildLowercaseDigest(): string {
+  return '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef';
+}
+
+function buildUppercaseDigest(): string {
+  return 'ABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCDEFABCD';
+}
+
+function buildShortDigest(): string {
+  return 'abc123';
+}
+
+function buildNonHexDigest(): string {
+  return 'gggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggggg';
 }
 
 export default function profileDomainTestsuite() {
@@ -119,9 +174,9 @@ export default function profileDomainTestsuite() {
     it('treatsOnlyProfilesWithValidCurrentRevisionAsActiveEligible', 0, () => {
       const revision: ProfileRevision = createProfileRevision(
         'profiles/current/config.yaml',
-        '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+        buildLowercaseDigest(),
         256,
-        '2026-08-07T01:00:00.000Z'
+        buildSecondCanonicalIsoTimestamp()
       );
       const validProfileInput: CreateProfileInput = {
         id: 'valid-profile',
@@ -132,15 +187,15 @@ export default function profileDomainTestsuite() {
         failedCandidate: null,
         availability: 'VALID',
         lastError: null,
-        createdAt: '2026-08-07T00:00:00.000Z',
-        updatedAt: '2026-08-07T01:00:00.000Z',
-        lastSuccessfulUpdateAt: '2026-08-07T01:00:00.000Z'
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildSecondCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildSecondCanonicalIsoTimestamp()
       };
       const failedCandidate: ProfileRevision = createProfileRevision(
         'profiles/failed/config.yaml',
         'abcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcdefabcd',
         512,
-        '2026-08-07T02:00:00.000Z'
+        buildThirdCanonicalIsoTimestamp()
       );
       const updateFailedUsingValidInput: CreateProfileInput = {
         id: 'failed-using-valid-profile',
@@ -151,9 +206,9 @@ export default function profileDomainTestsuite() {
         failedCandidate,
         availability: 'UPDATE_FAILED_USING_VALID',
         lastError: null,
-        createdAt: '2026-08-07T00:00:00.000Z',
-        updatedAt: '2026-08-07T02:00:00.000Z',
-        lastSuccessfulUpdateAt: '2026-08-07T01:00:00.000Z'
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildThirdCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildSecondCanonicalIsoTimestamp()
       };
       const invalidProfileInput: CreateProfileInput = {
         id: 'invalid-profile',
@@ -164,8 +219,8 @@ export default function profileDomainTestsuite() {
         failedCandidate: revision,
         availability: 'INVALID',
         lastError: null,
-        createdAt: '2026-08-07T00:00:00.000Z',
-        updatedAt: '2026-08-07T02:00:00.000Z',
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildThirdCanonicalIsoTimestamp(),
         lastSuccessfulUpdateAt: null
       };
       const validProfile: Profile = createProfile(validProfileInput);
@@ -182,7 +237,7 @@ export default function profileDomainTestsuite() {
         'profiles/current/safe.yaml',
         'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb',
         128,
-        '2026-08-07T01:00:00.000Z'
+        buildSecondCanonicalIsoTimestamp()
       );
 
       expect(revision.relativePath).assertEqual('profiles/current/safe.yaml');
@@ -192,7 +247,7 @@ export default function profileDomainTestsuite() {
             '/devices/secrets.yaml',
             'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc',
             128,
-            '2026-08-07T01:00:00.000Z'
+            buildSecondCanonicalIsoTimestamp()
           );
         },
         'sandbox-relative'
@@ -203,11 +258,206 @@ export default function profileDomainTestsuite() {
             '../outside.yaml',
             'dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd',
             128,
-            '2026-08-07T01:00:00.000Z'
+            buildSecondCanonicalIsoTimestamp()
           );
         },
         'sandbox-relative'
       );
+    });
+
+    it('requiresCanonicalUtcIsoTimestampsForRevisionsProfilesAndErrors', 0, () => {
+      const revision: ProfileRevision = createProfileRevision(
+        'profiles/current/iso.yaml',
+        buildLowercaseDigest(),
+        0,
+        buildCanonicalIsoTimestamp()
+      );
+      expect(revision.validatedAt).assertEqual(buildCanonicalIsoTimestamp());
+
+      const profile: Profile = createProfile({
+        id: 'iso-profile',
+        name: 'ISO Profile',
+        sourceKind: 'LOCAL_FILE',
+        sourceDisplay: buildDownloadFixturePath('iso.yaml'),
+        currentRevision: revision,
+        failedCandidate: null,
+        availability: 'VALID',
+        lastError: null,
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildSecondCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+      });
+      expect(profile.createdAt).assertEqual(buildCanonicalIsoTimestamp());
+      expect(profile.updatedAt).assertEqual(buildSecondCanonicalIsoTimestamp());
+      expect(profile.lastSuccessfulUpdateAt).assertEqual(buildThirdCanonicalIsoTimestamp());
+
+      const error: AppError = createAppError('IMPORT', 'safe detail', {
+        timestamp: buildCanonicalIsoTimestamp()
+      });
+      expect(error.timestamp).assertEqual(buildCanonicalIsoTimestamp());
+
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/bad-natural.yaml', buildLowercaseDigest(), 0, buildInvalidNaturalTimestamp());
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/bad-zone.yaml', buildLowercaseDigest(), 0, buildInvalidMissingTimezoneTimestamp());
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/bad-date.yaml', buildLowercaseDigest(), 0, buildInvalidCalendarTimestamp());
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfile({
+          id: 'bad-profile-created-at',
+          name: 'Bad Profile',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildDownloadFixturePath('bad.yaml'),
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildInvalidNaturalTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfile({
+          id: 'bad-profile-updated-at',
+          name: 'Bad Profile',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildDownloadFixturePath('bad.yaml'),
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildInvalidMissingTimezoneTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createProfile({
+          id: 'bad-profile-success-at',
+          name: 'Bad Profile',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildDownloadFixturePath('bad.yaml'),
+          currentRevision: revision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildInvalidCalendarTimestamp()
+        });
+      }, 'ISO-8601');
+      expectThrows((): void => {
+        createAppError('IMPORT', 'safe detail', {
+          timestamp: buildInvalidNaturalTimestamp()
+        });
+      }, 'ISO-8601');
+    });
+
+    it('requiresNormalizedSixtyFourCharacterSha256Digests', 0, () => {
+      const normalizedRevision: ProfileRevision = createProfileRevision(
+        'profiles/current/upper.yaml',
+        buildUppercaseDigest(),
+        8,
+        buildCanonicalIsoTimestamp()
+      );
+      expect(normalizedRevision.sha256Digest).assertEqual(buildUppercaseDigest().toLowerCase());
+
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/short.yaml', buildShortDigest(), 8, buildCanonicalIsoTimestamp());
+      }, 'SHA-256');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/non-hex.yaml', buildNonHexDigest(), 8, buildCanonicalIsoTimestamp());
+      }, 'SHA-256');
+    });
+
+    it('requiresNonNegativeIntegerByteLengths', 0, () => {
+      const zeroRevision: ProfileRevision = createProfileRevision(
+        'profiles/current/empty.yaml',
+        buildLowercaseDigest(),
+        0,
+        buildCanonicalIsoTimestamp()
+      );
+      expect(zeroRevision.byteLength).assertEqual(0);
+
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/negative.yaml', buildLowercaseDigest(), -1, buildCanonicalIsoTimestamp());
+      }, 'byte length');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/fraction.yaml', buildLowercaseDigest(), 0.5, buildCanonicalIsoTimestamp());
+      }, 'byte length');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/nan.yaml', buildLowercaseDigest(), Number.NaN, buildCanonicalIsoTimestamp());
+      }, 'byte length');
+      expectThrows((): void => {
+        createProfileRevision('profiles/current/infinity.yaml', buildLowercaseDigest(), Number.POSITIVE_INFINITY, buildCanonicalIsoTimestamp());
+      }, 'byte length');
+    });
+
+    it('revalidatesNestedRevisionsInsideCreateProfile', 0, () => {
+      const invalidRevision: MutableRevisionFixture = new MutableRevisionFixture(
+        '../outside.yaml',
+        buildShortDigest(),
+        1.5,
+        buildInvalidNaturalTimestamp()
+      );
+
+      expectThrows((): void => {
+        createProfile({
+          id: 'nested-invalid-profile',
+          name: 'Nested Invalid',
+          sourceKind: 'LOCAL_FILE',
+          sourceDisplay: buildDownloadFixturePath('nested.yaml'),
+          currentRevision: invalidRevision,
+          failedCandidate: null,
+          availability: 'VALID',
+          lastError: null,
+          createdAt: buildCanonicalIsoTimestamp(),
+          updatedAt: buildSecondCanonicalIsoTimestamp(),
+          lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+        });
+      }, 'sandbox-relative');
+    });
+
+    it('defensivelyCopiesNestedRevisionsToPreventCallerMutation', 0, () => {
+      const mutableRevision: MutableRevisionFixture = new MutableRevisionFixture(
+        'profiles/current/mutable.yaml',
+        buildLowercaseDigest(),
+        64,
+        buildCanonicalIsoTimestamp()
+      );
+      const profile: Profile = createProfile({
+        id: 'mutable-profile',
+        name: 'Mutable Profile',
+        sourceKind: 'LOCAL_FILE',
+        sourceDisplay: buildDownloadFixturePath('mutable.yaml'),
+        currentRevision: mutableRevision,
+        failedCandidate: mutableRevision,
+        availability: 'VALID',
+        lastError: null,
+        createdAt: buildCanonicalIsoTimestamp(),
+        updatedAt: buildSecondCanonicalIsoTimestamp(),
+        lastSuccessfulUpdateAt: buildThirdCanonicalIsoTimestamp()
+      });
+
+      mutableRevision.relativePath = 'profiles/current/changed.yaml';
+      mutableRevision.sha256Digest = buildShortDigest();
+      mutableRevision.byteLength = 999;
+      mutableRevision.validatedAt = buildInvalidNaturalTimestamp();
+
+      expect(profile.currentRevision?.relativePath).assertEqual('profiles/current/mutable.yaml');
+      expect(profile.currentRevision?.sha256Digest).assertEqual(buildLowercaseDigest());
+      expect(profile.currentRevision?.byteLength).assertEqual(64);
+      expect(profile.currentRevision?.validatedAt).assertEqual(buildCanonicalIsoTimestamp());
+      expect(profile.failedCandidate?.relativePath).assertEqual('profiles/current/mutable.yaml');
+    });
+
+    it('createsDefaultAppErrorTimestampsAsCanonicalUtcIsoStrings', 0, () => {
+      const error: AppError = createAppError('DOWNLOAD', 'safe detail');
+      expect(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(error.timestamp)).assertTrue();
     });
 
     it('exposesExactSevenErrorStages', 0, () => {
