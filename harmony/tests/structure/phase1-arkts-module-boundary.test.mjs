@@ -6,6 +6,18 @@ import { fileURLToPath } from 'node:url';
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 
+function assertRegisteredArktsModules(projectBuildProfile) {
+  const registeredModuleOrder = projectBuildProfile.modules.map((entry) => entry.name);
+  assert.deepEqual(registeredModuleOrder, ['shared', 'platform', 'core', 'entry']);
+  const registeredModuleNames = projectBuildProfile.modules.map((entry) => entry.name).sort();
+  assert.deepEqual(registeredModuleNames, ['core', 'entry', 'platform', 'shared']);
+  for (const moduleName of ['core', 'platform', 'shared']) {
+    const registration = projectBuildProfile.modules.find((entry) => entry.name === moduleName);
+    assert.equal(registration.srcPath, `./${moduleName}`);
+    assert.deepEqual(registration.targets, [{ name: 'default' }]);
+  }
+}
+
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
 }
@@ -55,13 +67,7 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
     readText('core/src/main/ets/CoreNativeAdapter.ets')
   ]);
 
-  const registeredModuleNames = projectBuildProfile.modules.map((entry) => entry.name).sort();
-  assert.deepEqual(registeredModuleNames, ['core', 'entry', 'platform', 'shared']);
-  for (const moduleName of ['core', 'platform', 'shared']) {
-    const registration = projectBuildProfile.modules.find((entry) => entry.name === moduleName);
-    assert.equal(registration.srcPath, `./${moduleName}`);
-    assert.deepEqual(registration.targets, [{ name: 'default' }]);
-  }
+  assertRegisteredArktsModules(projectBuildProfile);
 
   assert.equal(sharedPkg.name, '@cmfa/shared');
   assert.equal(sharedPkg.main, 'Index.ets');
@@ -113,6 +119,34 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
 
   assert.match(adapter, /from ['"]@cmfa\/shared['"]/u);
   assert.doesNotMatch(adapter, /\.\.\/\.\.\/\.\.\/shared/u);
+});
+
+test('Task 1 module registration guard rejects reordered modules even when the set matches', () => {
+  const reorderedBuildProfile = {
+    modules: [
+      { name: 'shared', srcPath: './shared', targets: [{ name: 'default' }] },
+      {
+        name: 'core',
+        srcPath: './core',
+        targets: [{ name: 'default' }]
+      },
+      {
+        name: 'platform',
+        srcPath: './platform',
+        targets: [{ name: 'default' }]
+      },
+      {
+        name: 'entry',
+        srcPath: './entry',
+        targets: [{ name: 'default', applyToProducts: ['default'] }]
+      }
+    ]
+  };
+
+  assert.throws(
+    () => assertRegisteredArktsModules(reorderedBuildProfile),
+    /shared|platform/u
+  );
 });
 
 test('CoreNativeAdapter normalizes both synchronous native throws and Promise rejections', async () => {
