@@ -5,3 +5,8 @@ export * from './src/main/ets/profile/AppErrors';
 export * from './src/main/ets/profile/ProfileModels';
 export * from './src/main/ets/profile/SecretRedactor';
 export * from './src/main/ets/profile/CoreErrorMapper';
+export * from './src/main/ets/profile/ProfilePorts';
+export * from './src/main/ets/profile/SerialCommandQueue';
+export * from './src/main/ets/profile/ProfileCommitService';
+export * from './src/main/ets/profile/ImportProfileUseCase';
+export * from './src/main/ets/profile/RefreshProfileUseCase';
