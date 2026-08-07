@@ -24,6 +24,12 @@ accepts HTTP and SOCKS traffic. Phase 2 and Phase 3 physical-device proofs
 remain `incomplete` until the exact packaged build can be run on a physical
 HarmonyOS 6 phone.
 
+This document deliberately narrows the broader Phase 3 full non-VPN scope in
+the 2026-07-31 rewrite design to its first tracer-bullet milestone. Proxy and
+provider management, latency tests, traffic views, logs, settings, and
+scheduled refresh remain later milestones and must not be pulled into this
+implementation plan.
+
 ## 2. Confirmed Decisions
 
 | Topic | Decision |
@@ -278,9 +284,12 @@ currently running profile is rejected before mutation.
 4. The import use case validates and commits according to Section 8.
 5. A valid result creates a `VALID` profile. A validation failure creates an
    `INVALID` profile with a failed candidate and structured error.
-6. A read or copy failure after a source was selected creates an invalid
-   profile when enough source metadata is available to retry by replacement;
-   otherwise it returns an error without creating an unusable anonymous row.
+6. Once the picker returns a non-cancelled selection, any later read or copy
+   failure deterministically creates an `INVALID` local-file profile with no
+   candidate revision and a structured import error. Its recovery action is
+   `重新选择文件`. If the picker does not provide a usable file name, the fixed
+   resource string `本地配置` is used as both the initial name and source
+   display. Only picker cancellation creates no profile.
 
 The default name is derived from the selected file name and can be edited in
 the import flow before commit.
@@ -309,6 +318,15 @@ file is removed.
   with a prior valid revision becomes `UPDATE_FAILED_USING_VALID`; an initial
   invalid profile stays `INVALID`.
 - Refreshing a running profile is rejected until the runtime is stopped.
+
+If a URL source cannot be found or decrypted, no download begins and no
+candidate file is created. A profile with a valid current revision becomes
+`UPDATE_FAILED_USING_VALID`; a profile without one remains `INVALID`. The
+current revision and active selection are unchanged, and `lastError` records a
+non-retryable `PERSISTENCE` error such as `SOURCE_SECRET_MISSING`,
+`SOURCE_DECRYPT_FAILED`, or `SOURCE_SECRET_VERSION_UNSUPPORTED`. The detail
+page offers `替换订阅地址` as the recovery action; retrying the same corrupted
+secret is not presented as useful.
 
 ### 9.4 Enable profile
 
@@ -414,6 +432,7 @@ are:
 
 - enable a valid profile;
 - manually update a URL profile;
+- replace the subscription address when its saved secret cannot be decrypted;
 - select a replacement for a local-file profile;
 - delete a non-running profile.
 
@@ -438,6 +457,16 @@ Unknown platform and native errors map to a stable fallback code within the
 correct stage. Raw exception text, stack traces, YAML fragments, full paths,
 and full URLs never become user-facing messages or durable normal logs.
 
+The shared core-error mapper uses the operation that raised an existing typed
+`CoreError` to select `VALIDATION`, `CORE_LOAD`, `RUNTIME_START`, or
+`RUNTIME_STOP`, preserves only allowlisted stable code/retryable fields, and
+redacts its detail. Runtime event messages are untrusted diagnostic input and
+are never displayed directly. If the current `CoreService` implementation
+cannot expose the operation, stable code, and retryable flag already available
+from its typed rejection, the only permitted contract expansion in this
+milestone is a typed `CoreFailure` carrying those three fields plus sanitized
+detail. It must not expand the native capability groups or ABI.
+
 Recovery rules are:
 
 - acquisition or validation failure cannot replace a valid revision;
@@ -446,8 +475,8 @@ Recovery rules are:
 - start failure returns to an error state with no claimed listener;
 - a core error/stop event immediately updates the canonical state;
 - a user retry runs a new command after the previous one has completed;
-- local-file retry reopens the picker, while URL retry reuses the encrypted
-  source.
+- local-file retry reopens the picker; URL retry reuses a decryptable encrypted
+  source, while secret-store errors require replacing the subscription URL.
 
 ## 13. Security and Resource Limits
 
@@ -461,8 +490,11 @@ Recovery rules are:
   filesystem roots, and likely credential values. The public URL form is at
   most scheme plus host.
 - Only `http` and `https` schemes are accepted. HTTP is allowed for compatible
-  local subscriptions but requires a clear plaintext-transport warning before
-  the first request.
+  local subscriptions but requires explicit confirmation before every network
+  attempt, including initial import and each manual refresh. Confirmation is
+  ephemeral and is not stored in RDB, Preferences, or the profile. Cancelling
+  the warning performs no request, creates no error, and leaves the profile
+  unchanged.
 - Downloads have a 30-second request timeout, at most five redirects, and a
   maximum body size of 16 MiB. Redirects are revalidated for allowed schemes.
 - Non-success HTTP status, empty response, oversized body, timeout, redirect
@@ -498,8 +530,11 @@ Use isolated temporary stores and deterministic network fixtures to cover:
 - commit compensation and startup orphan reconciliation;
 - picker cancellation versus read/copy failure;
 - HUKS encryption round-trip without plaintext persistence;
+- missing, corrupt, and unsupported-version URL secrets with deterministic
+  profile status and replacement recovery;
 - HTTP success, status failures, TLS failure, timeout, redirects, scheme
   rejection, empty body, and 16 MiB limit;
+- per-attempt HTTP warning confirmation/cancellation without persisted consent;
 - cleanup after success, failure, cancellation, and simulated process gaps.
 
 Tests must not depend on a real subscription service or persist test secrets in
