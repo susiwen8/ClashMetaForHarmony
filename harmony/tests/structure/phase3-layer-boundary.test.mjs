@@ -327,6 +327,19 @@ function collectForbiddenSharedImports(relativePath, source) {
   return forbiddenSharedImports;
 }
 
+function normalizeRelativeTestSpecifier(specifier) {
+  if (!specifier.startsWith('./') && !specifier.startsWith('../')) {
+    return null;
+  }
+
+  let normalizedSpecifier = specifier;
+  if (!normalizedSpecifier.endsWith('.ets')) {
+    normalizedSpecifier = `${normalizedSpecifier}.ets`;
+  }
+
+  return path.posix.normalize(normalizedSpecifier);
+}
+
 function assertTask1RootTestingSurface(rootPkg, rootLock) {
   assert.deepEqual(rootPkg.devDependencies ?? {}, {
     '@ohos/hypium': '1.0.25'
@@ -340,8 +353,25 @@ function assertTask1RootTestingSurface(rootPkg, rootLock) {
 }
 
 function assertModuleTestEntrypoints(moduleTestFiles) {
-  for (const [moduleName, files] of moduleTestFiles) {
-    assert.deepEqual(files, ['List.test.ets'], `${moduleName} must keep exactly one suite entrypoint`);
+  for (const [moduleName, files, listSource] of moduleTestFiles) {
+    assert.ok(files.includes('List.test.ets'), `${moduleName} must keep List.test.ets as the cumulative entrypoint`);
+
+    const listLikeEntrypoints = files.filter((fileName) => /^List.+\.test\.ets$/u.test(fileName));
+    assert.deepEqual(listLikeEntrypoints, [], `${moduleName} must not add a second List-style entrypoint`);
+
+    const siblingSuiteFiles = files.filter((fileName) => fileName !== 'List.test.ets' && fileName.endsWith('.test.ets'));
+    const importedSuites = new Set(
+      extractStaticModuleSpecifiers(listSource)
+        .map((specifier) => normalizeRelativeTestSpecifier(specifier))
+        .filter((specifier) => specifier !== null)
+        .map((specifier) => path.posix.basename(specifier))
+    );
+
+    assert.deepEqual(
+      siblingSuiteFiles.filter((fileName) => !importedSuites.has(fileName)),
+      [],
+      `${moduleName} List.test.ets must statically import every sibling suite`
+    );
   }
 }
 
@@ -353,10 +383,15 @@ test('Task 1 registers the platform HAR and keeps shared ArkTS free of platform 
     readJson('platform/oh-package.json5'),
     readJson('entry/oh-package.json5'),
     collectFiles(SHARED_ETS_ROOT),
-    Promise.all(MODULE_TEST_ROOTS.map(async ([moduleName, rootDir]) => [
-      moduleName,
-      (await collectFiles(rootDir)).map((filePath) => path.basename(filePath))
-    ]))
+    Promise.all(MODULE_TEST_ROOTS.map(async ([moduleName, rootDir]) => {
+      const files = await collectFiles(rootDir);
+      const listFilePath = files.find((filePath) => path.basename(filePath) === 'List.test.ets');
+      return [
+        moduleName,
+        files.map((filePath) => path.basename(filePath)),
+        listFilePath ? await fs.readFile(listFilePath, 'utf8') : ''
+      ];
+    }))
   ]);
 
   const registeredModuleNames = projectBuildProfile.modules.map((entry) => entry.name).sort();
@@ -468,13 +503,50 @@ test('Task 1 root test surface guard rejects dependency and lockfile drift', () 
 
 test('Task 1 module test entrypoint guard rejects unexpected suite files', () => {
   const invalidModuleTestFiles = [
-    ['shared', ['List.test.ets', 'Extra.test.ets']],
-    ['platform', ['List.test.ets']],
-    ['entry', ['List.test.ets']]
+    ['shared', ['List.test.ets', 'Extra.test.ets'], ''],
+    ['platform', ['List.test.ets'], ''],
+    ['entry', ['List.test.ets'], '']
   ];
 
   assert.throws(
     () => assertModuleTestEntrypoints(invalidModuleTestFiles),
-    /Extra|unique|only/u
+    /import|suite/u
+  );
+});
+
+test('Task 1 module test entrypoint guard allows sibling suites when List.test.ets imports them', () => {
+  const validModuleTestFiles = [
+    ['shared', ['List.test.ets', 'ProfileDomain.test.ets'], `import './ProfileDomain.test';`],
+    ['platform', ['List.test.ets'], ''],
+    ['entry', ['List.test.ets'], '']
+  ];
+
+  assert.doesNotThrow(() => assertModuleTestEntrypoints(validModuleTestFiles));
+});
+
+test('Task 1 module test entrypoint guard rejects missing List.test.ets, unimported suites, and second List-style entrypoints', () => {
+  assert.throws(
+    () => assertModuleTestEntrypoints([
+      ['shared', ['ProfileDomain.test.ets'], `import './ProfileDomain.test';`]
+    ]),
+    /List\.test\.ets/u
+  );
+
+  assert.throws(
+    () => assertModuleTestEntrypoints([
+      ['shared', ['List.test.ets', 'ProfileDomain.test.ets'], ''],
+      ['platform', ['List.test.ets'], ''],
+      ['entry', ['List.test.ets'], '']
+    ]),
+    /statically import every sibling suite/u
+  );
+
+  assert.throws(
+    () => assertModuleTestEntrypoints([
+      ['shared', ['List.test.ets', 'List2.test.ets'], `import './List2.test';`],
+      ['platform', ['List.test.ets'], ''],
+      ['entry', ['List.test.ets'], '']
+    ]),
+    /List-style entrypoint/u
   );
 });
