@@ -1,0 +1,11 @@
+{
+  "name": "@cmfa/platform",
+  "version": "1.0.0",
+  "description": "HarmonyOS platform adapters for Clash Meta.",
+  "main": "Index.ets",
+  "author": "",
+  "license": "",
+  "dependencies": {
+    "@cmfa/shared": "file:../shared"
+  }
+}

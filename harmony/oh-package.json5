@@ -2,5 +2,7 @@
   "modelVersion": "5.0.0",
   "description": "HarmonyOS Stage project for Clash Meta.",
   "dependencies": {},
-  "devDependencies": {}
+  "devDependencies": {
+    "@ohos/hypium": "1.0.25"
+  }
 }

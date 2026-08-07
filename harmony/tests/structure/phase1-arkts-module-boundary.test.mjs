@@ -18,38 +18,46 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
   const [
     projectBuildProfile,
     sharedPkg,
+    platformPkg,
     corePkg,
     entryPkg,
     sharedIndex,
     coreIndex,
     sharedBuildProfile,
+    platformBuildProfile,
     coreBuildProfile,
     sharedModuleProfile,
+    platformModuleProfile,
     coreModuleProfile,
     sharedHvigor,
+    platformHvigor,
     coreHvigor,
     composition,
     adapter
   ] = await Promise.all([
     readJson('build-profile.json5'),
     readJson('shared/oh-package.json5'),
+    readJson('platform/oh-package.json5'),
     readJson('core/oh-package.json5'),
     readJson('entry/oh-package.json5'),
     readText('shared/Index.ets'),
     readText('core/Index.ets'),
     readJson('shared/build-profile.json5'),
+    readJson('platform/build-profile.json5'),
     readJson('core/build-profile.json5'),
     readJson('shared/src/main/module.json5'),
+    readJson('platform/src/main/module.json5'),
     readJson('core/src/main/module.json5'),
     readText('shared/hvigorfile.ts'),
+    readText('platform/hvigorfile.ts'),
     readText('core/hvigorfile.ts'),
     readText('entry/src/main/ets/bootstrap/CoreComposition.ets'),
     readText('core/src/main/ets/CoreNativeAdapter.ets')
   ]);
 
   const registeredModuleNames = projectBuildProfile.modules.map((entry) => entry.name).sort();
-  assert.deepEqual(registeredModuleNames, ['core', 'entry', 'shared']);
-  for (const moduleName of ['core', 'shared']) {
+  assert.deepEqual(registeredModuleNames, ['core', 'entry', 'platform', 'shared']);
+  for (const moduleName of ['core', 'platform', 'shared']) {
     const registration = projectBuildProfile.modules.find((entry) => entry.name === moduleName);
     assert.equal(registration.srcPath, `./${moduleName}`);
     assert.deepEqual(registration.targets, [{ name: 'default' }]);
@@ -59,10 +67,15 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
   assert.equal(sharedPkg.main, 'Index.ets');
   assert.deepEqual(sharedPkg.dependencies ?? {}, {});
 
+  assert.equal(platformPkg.name, '@cmfa/platform');
+  assert.equal(platformPkg.main, 'Index.ets');
+  assert.equal(platformPkg.dependencies?.['@cmfa/shared'], 'file:../shared');
+
   assert.equal(corePkg.name, '@cmfa/core');
   assert.equal(corePkg.main, 'Index.ets');
   assert.equal(corePkg.dependencies?.['@cmfa/shared'], 'file:../shared');
 
+  assert.equal(entryPkg.dependencies?.['@cmfa/platform'], 'file:../platform');
   assert.equal(entryPkg.dependencies?.['@cmfa/shared'], 'file:../shared');
   assert.equal(entryPkg.dependencies?.['@cmfa/core'], 'file:../core');
   assert.equal(entryPkg.dependencies?.['libentry.so'], 'file:./src/main/cpp/types/libentry');
@@ -78,6 +91,7 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
 
   for (const [buildProfile, moduleProfile, hvigor, moduleName] of [
     [sharedBuildProfile, sharedModuleProfile, sharedHvigor, 'shared'],
+    [platformBuildProfile, platformModuleProfile, platformHvigor, 'platform'],
     [coreBuildProfile, coreModuleProfile, coreHvigor, 'core']
   ]) {
     assert.equal(buildProfile.apiType, 'stageMode');

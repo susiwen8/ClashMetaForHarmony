@@ -36,6 +36,15 @@
       ]
     },
     {
+      "name": "platform",
+      "srcPath": "./platform",
+      "targets": [
+        {
+          "name": "default"
+        }
+      ]
+    },
+    {
       "name": "core",
       "srcPath": "./core",
       "targets": [
