@@ -57,12 +57,19 @@ class FailedLocalProfileAcquisitionValue implements LocalProfileAcquisitionFailu
   readonly profileName?: string;
   readonly sourceDisplay?: string;
 
-  constructor(technicalDetail: string, retryable: boolean, timestamp: string, profileName?: string, sourceDisplay?: string) {
+  constructor(
+    technicalDetail: string,
+    retryable: boolean,
+    shouldPersistInvalidProfile: boolean,
+    timestamp: string,
+    profileName?: string,
+    sourceDisplay?: string
+  ) {
     this.error = createAppError('IMPORT', technicalDetail, {
       retryable,
       timestamp
     });
-    this.shouldPersistInvalidProfile = true;
+    this.shouldPersistInvalidProfile = shouldPersistInvalidProfile;
     this.profileName = profileName;
     this.sourceDisplay = sourceDisplay;
   }
@@ -125,6 +132,7 @@ export class HarmonyFilePicker {
     let shouldValidateNameSuffix: boolean = false;
     let failure: CopyFailure | undefined = undefined;
     let copiedLength: number = 0;
+    let hasSelectedSource: boolean = false;
 
     try {
       const selection: string[] = await this.picker.select(new PickerSelectOptionsRecord(1, [PICKER_SUFFIX_FILTER]));
@@ -135,6 +143,7 @@ export class HarmonyFilePicker {
         return this.fail('Select exactly one YAML file.', safeName, safeSourceDisplay);
       }
 
+      hasSelectedSource = true;
       sourceHandle = await this.fileDriver.open(selection[0], FILE_OPEN_MODE_READ_ONLY);
       safeName = normalizeDisplayName(sourceHandle.name);
       safeSourceDisplay = safeName;
@@ -143,10 +152,14 @@ export class HarmonyFilePicker {
         failure = new CopyFailure('Selected file must use .yaml or .yml.');
       } else {
         const stageId: string = this.idGenerator.nextId();
-        stagePath = `${this.filesDir}/tmp/${stageId}.yaml`;
-        await this.fileDriver.mkdir(`${this.filesDir}/tmp`, true);
-        stageHandle = await this.fileDriver.open(stagePath, FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_CREATE | FILE_OPEN_MODE_TRUNC);
-        copiedLength = await this.copyIntoStage(sourceHandle.fd, stageHandle.fd);
+        if (!isSafePathSegment(stageId)) {
+          failure = new CopyFailure('Selected file could not be copied into the app sandbox.');
+        } else {
+          stagePath = `${this.filesDir}/tmp/${stageId}.yaml`;
+          await this.fileDriver.mkdir(`${this.filesDir}/tmp`, true);
+          stageHandle = await this.fileDriver.open(stagePath, FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_CREATE | FILE_OPEN_MODE_TRUNC);
+          copiedLength = await this.copyIntoStage(sourceHandle.fd, stageHandle.fd);
+        }
       }
     } catch (error) {
       failure = toCopyFailure(error, 'Selected file copy into the app sandbox failed.');
@@ -158,6 +171,9 @@ export class HarmonyFilePicker {
     }
     if (failure !== undefined) {
       await this.cleanupStage(stagePath);
+      if (!hasSelectedSource) {
+        return this.fail(failure.detail, undefined, undefined, true, false);
+      }
       return this.fail(failure.detail, safeName, safeSourceDisplay, true);
     }
 
@@ -195,10 +211,21 @@ export class HarmonyFilePicker {
       if (total > MAX_PROFILE_BYTES) {
         throw new CopyFailure('Selected YAML file exceeds 16 MiB.');
       }
-      await this.fileDriver.write(targetFd, buffer, {
-        offset: 0,
-        length: bytesRead
-      });
+      let bytesWritten: number = 0;
+      while (bytesWritten < bytesRead) {
+        const remaining: number = bytesRead - bytesWritten;
+        const chunk: ArrayBuffer = bytesWritten === 0 && bytesRead === buffer.byteLength
+          ? buffer
+          : buffer.slice(bytesWritten, bytesRead);
+        const written: number = await this.fileDriver.write(targetFd, chunk, {
+          offset: 0,
+          length: remaining
+        });
+        if (written <= 0 || written > remaining) {
+          throw new CopyFailure('Selected file could not be copied into the app sandbox.');
+        }
+        bytesWritten += written;
+      }
     }
   }
 
@@ -234,8 +261,21 @@ export class HarmonyFilePicker {
     }
   }
 
-  private fail(detail: string, profileName: string, sourceDisplay: string, retryable: boolean = false): LocalProfileAcquisitionFailure {
-    return new FailedLocalProfileAcquisitionValue(detail, retryable, this.clock.now(), profileName, sourceDisplay);
+  private fail(
+    detail: string,
+    profileName?: string,
+    sourceDisplay?: string,
+    retryable: boolean = false,
+    shouldPersistInvalidProfile: boolean = true
+  ): LocalProfileAcquisitionFailure {
+    return new FailedLocalProfileAcquisitionValue(
+      detail,
+      retryable,
+      shouldPersistInvalidProfile,
+      this.clock.now(),
+      profileName,
+      sourceDisplay
+    );
   }
 }
 
@@ -285,6 +325,16 @@ function normalizeDisplayName(rawName: string): string {
 function isYamlName(fileName: string): boolean {
   const lowered: string = fileName.toLowerCase();
   return lowered.endsWith('.yaml') || lowered.endsWith('.yml');
+}
+
+function isSafePathSegment(value: string): boolean {
+  if (value.trim() !== value || value.length === 0 || value === '.' || value === '..') {
+    return false;
+  }
+  if (value.indexOf('/') >= 0 || value.indexOf('\\') >= 0 || value.indexOf('%') >= 0 || value.indexOf(':') >= 0) {
+    return false;
+  }
+  return true;
 }
 
 function toCopyFailure(error: Object | undefined, fallback: string): CopyFailure {

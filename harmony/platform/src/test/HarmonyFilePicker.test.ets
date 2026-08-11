@@ -83,6 +83,17 @@ function assertFailureIsRetryable(failure: LocalProfileAcquisitionFailure): void
   expect(failure.error.retryable).assertTrue();
 }
 
+function assertFailureDoesNotPersistInvalidProfile(failure: LocalProfileAcquisitionFailure): void {
+  expect(failure.shouldPersistInvalidProfile).assertFalse();
+}
+
+function assertBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
+  expect(actual.length).assertEqual(expected.length);
+  for (let index = 0; index < expected.length; index += 1) {
+    expect(actual[index]).assertEqual(expected[index]);
+  }
+}
+
 export default function harmonyFilePickerTestsuite() {
   describe('HarmonyFilePickerTest', () => {
     it('returnsCancelledWhenPickerReturnsNoSelection', 0, async () => {
@@ -97,6 +108,28 @@ export default function harmonyFilePickerTestsuite() {
 
       expect(result.kind).assertEqual('CANCELLED');
       expect(pickerPort.requests.length).assertEqual(1);
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-one.yaml`)).assertFalse();
+    });
+
+    it('returnsRetryableNonPersistedFailureWhenPickerThrowsBeforeSelection', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      pickerPort.failNext(new Error('picker failed near content://documents/tree/private'));
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T09:30:00.000Z']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+      const failure = requireFailure(result);
+
+      assertFailureDoesNotPersistInvalidProfile(failure);
+      assertFailureIsRetryable(failure);
+      expect(failure.error.stage).assertEqual('IMPORT');
+      expect(failure.error.technicalDetail.includes('Selected file')).assertTrue();
+      assertNoLeak(failure.error.technicalDetail, ['picker failed near', 'content://documents/tree/private']);
+      expect(failure.profileName).assertUndefined();
+      expect(failure.sourceDisplay).assertUndefined();
+      expect(fileDriver.operationLog.length).assertEqual(0);
       expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-one.yaml`)).assertFalse();
     });
 
@@ -280,6 +313,76 @@ export default function harmonyFilePickerTestsuite() {
       expect(failure.profileName).assertEqual('hash.yaml');
       expect(failure.sourceDisplay).assertEqual('hash.yaml');
       expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-hash.yaml`)).assertFalse();
+    });
+
+    it('rejectsHostileStageIdsBeforeCreatingAnyStageArtifacts', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      const sourceUri = 'content://documents/tree/primary%3Aprofiles/document/hostile-stage';
+      pickerPort.scriptedSelections.push([sourceUri]);
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(sourceUri, buildBytes(96), 'hostile.yaml');
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T15:30:00.000Z'], ['../escape']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+
+      const failure = assertFailureIsSafe(
+        result,
+        'Selected file',
+        [sourceUri, '../escape', `${FILES_DIR}/escape.yaml`, `${FILES_DIR}/tmp/../escape.yaml`]
+      );
+      assertFailureIsRetryable(failure);
+      expect(failure.profileName).assertEqual('hostile.yaml');
+      expect(failure.sourceDisplay).assertEqual('hostile.yaml');
+      expect(fileDriver.countCloses(sourceUri)).assertEqual(1);
+      expect(fileDriver.operationLog.some((value: string): boolean => value.startsWith(`mkdir:${FILES_DIR}/tmp`))).assertFalse();
+      expect(fileDriver.operationLog.some((value: string): boolean => value.startsWith(`open:${FILES_DIR}/escape.yaml`))).assertFalse();
+      expect(fileDriver.operationLog.some((value: string): boolean => value.startsWith(`open:${FILES_DIR}/tmp/../escape.yaml`))).assertFalse();
+      expect(fileDriver.operationLog.some((value: string): boolean => value.startsWith(`write:${FILES_DIR}`))).assertFalse();
+      expect(fileDriver.fileExists(`${FILES_DIR}/escape.yaml`)).assertFalse();
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/../escape.yaml`)).assertFalse();
+    });
+
+    it('retriesPositiveShortWritesUntilEveryReadChunkIsFullyPersisted', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      const sourceUri = 'content://documents/tree/primary%3Aprofiles/document/short-write';
+      pickerPort.scriptedSelections.push([sourceUri]);
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      const sourceBytes = buildBytes(97);
+      fileDriver.seedFile(sourceUri, sourceBytes, 'short-write.yaml');
+      fileDriver.scriptWriteCounts(`${FILES_DIR}/tmp/stage-short-write.yaml`, [7]);
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T15:40:00.000Z'], ['stage-short-write']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+      const acquired = result as AcquiredLocalResultView;
+
+      expect(result.kind).assertEqual('ACQUIRED');
+      expect(acquired.staged.byteLength).assertEqual(sourceBytes.length);
+      assertBytesEqual(fileDriver.readFileBytes(acquired.staged.validationPath), sourceBytes);
+    });
+
+    it('failsSafelyWhenWriteMakesNoProgressAndCleansUpTheStage', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      const sourceUri = 'content://documents/tree/primary%3Aprofiles/document/zero-write';
+      pickerPort.scriptedSelections.push([sourceUri]);
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(sourceUri, buildBytes(80), 'zero-write.yaml');
+      fileDriver.scriptWriteCounts(`${FILES_DIR}/tmp/stage-zero-write.yaml`, [0]);
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T15:45:00.000Z'], ['stage-zero-write']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+
+      const failure = assertFailureIsSafe(result, 'Selected file', [sourceUri, `${FILES_DIR}/tmp/stage-zero-write.yaml`]);
+      assertFailureIsRetryable(failure);
+      expect(failure.profileName).assertEqual('zero-write.yaml');
+      expect(failure.sourceDisplay).assertEqual('zero-write.yaml');
+      expect(fileDriver.hashPaths.length).assertEqual(0);
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-zero-write.yaml`)).assertFalse();
     });
   });
 }
