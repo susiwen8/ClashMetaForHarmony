@@ -17,7 +17,7 @@ import {
   type RevisionKind,
   type StagedSource
 } from '@cmfa/shared';
-import { HarmonyProfileSourceGateway, PlatformFactory } from '../../Index';
+import { PlatformFactory, type PlatformFactoryDependencies, type PlatformGraph, type PlatformPaths, type CloseableRdbDriver, type PrepareableHuksDriver, type PlatformSecretStore, type PlatformPickerDependencies, type PlatformRequestAgentTransportDependencies } from '../main/ets/PlatformFactory';
 import type { DurableProfileRow } from '../main/ets/rdb/RdbDriver';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import { RdbProfileRepository } from '../main/ets/rdb/RdbProfileRepository';
@@ -26,21 +26,12 @@ import type { FileDriver } from '../main/ets/files/FileDriver';
 import { HuksSubscriptionSecretStore } from '../main/ets/secrets/HuksSubscriptionSecretStore';
 import type { HuksDriver, HuksEncryptedPayload } from '../main/ets/secrets/HuksDriver';
 import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from '../main/ets/source/HttpTransport';
+import { HarmonyProfileSourceGateway } from '../main/ets/source/HarmonyProfileSourceGateway';
 import type {
   HarmonyProfileSourceGatewayDependencies,
   LocalProfileAcquirer,
   RemoteProfileAcquirer
 } from '../main/ets/source/HarmonyProfileSourceGateway';
-import type {
-  CloseableRdbDriver,
-  PlatformFactoryDependencies,
-  PlatformGraph,
-  PlatformPaths,
-  PlatformPickerDependencies,
-  PlatformRequestAgentTransportDependencies,
-  PlatformSecretStore,
-  PrepareableHuksDriver
-} from '../main/ets/PlatformFactory';
 import {
   DeterministicHuksDriver,
   FakeFileDriver,
@@ -131,6 +122,18 @@ class RecordingPrepareHuksDriver implements PrepareableHuksDriver {
 
   async decrypt(payload: HuksEncryptedPayload): Promise<Uint8Array> {
     return await this.delegate.decrypt(payload);
+  }
+}
+
+class ThrowingPrepareHuksDriverFactory {
+  readonly error: Error;
+
+  constructor(error: Error) {
+    this.error = error;
+  }
+
+  create(): PrepareableHuksDriver {
+    throw this.error;
   }
 }
 
@@ -363,8 +366,13 @@ async function createTransportGraph(config: TransportGraphConfig): Promise<Platf
   );
   let pickerContextMatched: boolean = false;
   let requestContextMatched: boolean = false;
+  let resolvedSdkApiVersionCallCount: number = 0;
 
   dependencies.resolveSdkApiVersion = (): number => config.sdkApiVersion;
+  dependencies.resolveSdkApiVersion = (): number => {
+    resolvedSdkApiVersionCallCount += 1;
+    return config.sdkApiVersion;
+  };
   dependencies.createPicker = (pickerDependencies: PlatformPickerDependencies): LocalProfileAcquirer => {
     pickerContextMatched = pickerDependencies.context === config.context;
     return new FakeLocalAcquirer({
@@ -385,6 +393,7 @@ async function createTransportGraph(config: TransportGraphConfig): Promise<Platf
   const graph: PlatformGraph = await new PlatformFactory(config.context, dependencies).create();
   expect(pickerContextMatched).assertTrue();
   expect(requestContextMatched).assertTrue();
+  expect(resolvedSdkApiVersionCallCount).assertEqual(1);
   return graph;
 }
 
@@ -587,6 +596,58 @@ export default function platformFactoryTestsuite() {
 
       dependencies.createContentStore = (_fileDriver: FileDriver, paths: PlatformPaths): ProfileContentStore =>
         new SandboxProfileContentStore(_fileDriver, paths.filesDir);
+      const graph: PlatformGraph = await factory.create();
+      expect(driverIndex).assertEqual(2);
+      expect(graph.repository instanceof RdbProfileRepository).assertTrue();
+
+      await graph.close();
+      expect(secondDriver.closeCallCount).assertEqual(1);
+    });
+
+    it('closesTheAcquiredRdbDriverWhenCreateHuksDriverThrowsSynchronouslyAndRetriesWithFreshDrivers', 0, async () => {
+      const context: common.UIAbilityContext = createContext();
+      const fileDriver: FakeFileDriver = new FakeFileDriver();
+      const firstDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver([]);
+      const secondDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver([]);
+      const drivers: CloseableRecordingRdbDriver[] = [firstDriver, secondDriver];
+      const dependencies: PlatformFactoryDependencies = createDefaultDependencies(
+        context,
+        fileDriver,
+        firstDriver,
+        new RecordingPrepareHuksDriver([])
+      );
+      let driverIndex: number = 0;
+      let throwHuksFactory: boolean = true;
+      const huksThrow = new ThrowingPrepareHuksDriverFactory(new Error('huks create failed'));
+
+      dependencies.createRdbDriver = (): CloseableRdbDriver => {
+        const nextDriver: CloseableRecordingRdbDriver = drivers[Math.min(driverIndex, drivers.length - 1)];
+        driverIndex += 1;
+        return nextDriver;
+      };
+      dependencies.createHuksDriver = (): PrepareableHuksDriver => {
+        if (throwHuksFactory) {
+          return huksThrow.create();
+        }
+        return new RecordingPrepareHuksDriver([]);
+      };
+
+      const factory: PlatformFactory = new PlatformFactory(context, dependencies);
+
+      try {
+        await factory.create();
+        expect(false).assertTrue();
+      } catch (error) {
+        const appError: AppError = asAppError(error as Object);
+        expect(appError.stage).assertEqual('PERSISTENCE');
+        expect(appError.technicalDetail).assertEqual('Platform initialization failed.');
+      }
+
+      expect(firstDriver.closeCallCount).assertEqual(1);
+      expect(secondDriver.closeCallCount).assertEqual(0);
+      expect(driverIndex).assertEqual(1);
+
+      throwHuksFactory = false;
       const graph: PlatformGraph = await factory.create();
       expect(driverIndex).assertEqual(2);
       expect(graph.repository instanceof RdbProfileRepository).assertTrue();

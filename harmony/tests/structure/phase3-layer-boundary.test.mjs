@@ -17,6 +17,7 @@ const HTTP_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', '
 const NETWORK_KIT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'NetworkKitHttpTransport.ets');
 const REQUEST_AGENT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets');
 const PLATFORM_INDEX_PATH = path.join(HARMONY_ROOT, 'platform', 'Index.ets');
+const PLATFORM_FACTORY_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'PlatformFactory.ets');
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -523,8 +524,17 @@ test('Task 1 module test entrypoint guard rejects unexpected suite files', () =>
 test('Task 9 platform barrel exposes only the shared-compatible factory surface', async () => {
   const source = await fs.readFile(PLATFORM_INDEX_PATH, 'utf8');
 
-  assert.match(source, /PlatformFactory/u);
-  assert.match(source, /HarmonyProfileSourceGateway/u);
+  assert.match(source, /export\s*\{\s*PlatformFactory\s*\}\s*from/u);
+  assert.match(source, /export\s+type\s*\{\s*PlatformGraph\s*\}\s*from/u);
+  assert.doesNotMatch(source, /export\s+\*/u);
+  assert.doesNotMatch(source, /HarmonyProfileSourceGateway/u);
+  assert.doesNotMatch(source, /PlatformFactoryDependencies/u);
+  assert.doesNotMatch(source, /PlatformPaths/u);
+  assert.doesNotMatch(source, /CloseableRdbDriver/u);
+  assert.doesNotMatch(source, /PrepareableHuksDriver/u);
+  assert.doesNotMatch(source, /PlatformSecretStore/u);
+  assert.doesNotMatch(source, /PlatformPickerDependencies/u);
+  assert.doesNotMatch(source, /PlatformRequestAgentTransportDependencies/u);
   assert.doesNotMatch(source, /HarmonyRdbDriver/u);
   assert.doesNotMatch(source, /HarmonyFileDriver/u);
   assert.doesNotMatch(source, /HarmonyHuksDriver/u);
@@ -532,6 +542,17 @@ test('Task 9 platform barrel exposes only the shared-compatible factory surface'
   assert.doesNotMatch(source, /SandboxProfileContentStore/u);
   assert.doesNotMatch(source, /HuksSubscriptionSecretStore/u);
   assert.doesNotMatch(source, /SubscriptionDownloader/u);
+});
+
+test('Task 9 platform factory uses runtime deviceInfo sdkApiVersion once per graph and avoids a hardcoded API23 fallback', async () => {
+  const source = await fs.readFile(PLATFORM_FACTORY_PATH, 'utf8');
+
+  assert.match(source, /from '@kit\.BasicServicesKit'/u);
+  assert.match(source, /deviceInfo\.sdkApiVersion/u);
+  assert.match(source, /const sdkApiVersion:\s*number/u);
+  assert.match(source, /sdkApiVersion:\s*sdkApiVersion/u);
+  assert.doesNotMatch(source, /DEFAULT_SDK_API_VERSION/u);
+  assert.doesNotMatch(source, /return 23/u);
 });
 
 test('Task 1 module test entrypoint guard allows sibling suites when List.test.ets imports them', () => {

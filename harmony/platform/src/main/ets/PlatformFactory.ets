@@ -1,4 +1,5 @@
 import { util } from '@kit.ArkTS';
+import { deviceInfo } from '@kit.BasicServicesKit';
 import common from '@ohos.app.ability.common';
 import {
   createAppError,
@@ -29,7 +30,6 @@ import { HarmonyProfileSourceGateway, type HarmonyProfileSourceGatewayDependenci
 import type { HttpTransport } from './source/HttpTransport';
 
 const DEFAULT_DATABASE_NAME: string = 'cmfa_profiles.db';
-const DEFAULT_SDK_API_VERSION: number = 23;
 
 export interface PlatformPaths {
   filesDir: string;
@@ -230,12 +230,14 @@ export class PlatformFactory {
     const clock: Clock = this.dependencies.createClock?.() ?? new SystemClock();
     const idGenerator: IdGenerator = this.dependencies.createIdGenerator?.() ?? new SystemIdGenerator();
     const fileDriver: FileDriver = this.dependencies.createFileDriver?.() ?? new HarmonyFileDriver();
-    const rdbDriver: CloseableRdbDriver = this.dependencies.createRdbDriver?.(this.context, paths) ??
-      new HarmonyRdbDriver(this.context, paths.databaseName);
-    const huksDriver: PrepareableHuksDriver = this.dependencies.createHuksDriver?.() ?? new HarmonyHuksDriver();
+    let rdbDriver: CloseableRdbDriver | undefined = undefined;
     let graph: PlatformGraph | undefined = undefined;
 
     try {
+      rdbDriver = this.dependencies.createRdbDriver?.(this.context, paths) ??
+        new HarmonyRdbDriver(this.context, paths.databaseName);
+      const huksDriver: PrepareableHuksDriver = this.dependencies.createHuksDriver?.() ?? new HarmonyHuksDriver();
+      const sdkApiVersion: number = resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion);
       const repository: ProfileRepository = this.dependencies.createRepository?.(rdbDriver) ??
         new RdbProfileRepository(rdbDriver);
       const contentStore: ProfileContentStore = this.dependencies.createContentStore?.(fileDriver, paths) ??
@@ -274,7 +276,7 @@ export class PlatformFactory {
       });
       const downloader: RemoteProfileAcquirer = this.dependencies.createDownloader?.({
         context: this.context,
-        sdkApiVersion: resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion),
+        sdkApiVersion: sdkApiVersion,
         fileDriver,
         paths,
         clock,
@@ -282,7 +284,7 @@ export class PlatformFactory {
         networkKitTransport,
         requestAgentTransport
       }) ?? new SubscriptionDownloader({
-        sdkApiVersion: resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion),
+        sdkApiVersion: sdkApiVersion,
         networkKitTransport,
         requestAgentTransport,
         fileDriver,
@@ -303,6 +305,7 @@ export class PlatformFactory {
       await secretStore.reconcile(collectReferencedSecretIds(profiles));
       await huksDriver.prepare();
 
+      const readyRdbDriver: CloseableRdbDriver = rdbDriver;
       graph = new PlatformGraphRecord(
         repository,
         contentStore,
@@ -311,7 +314,7 @@ export class PlatformFactory {
         clock,
         idGenerator,
         async (): Promise<void> => {
-          await rdbDriver.close();
+          await readyRdbDriver.close();
         }
       );
       const readyGraph: PlatformGraph = graph;
@@ -319,7 +322,7 @@ export class PlatformFactory {
     } catch (error) {
       if (graph !== undefined) {
         await safeCloseGraph(graph);
-      } else {
+      } else if (rdbDriver !== undefined) {
         await safeCloseRdbDriver(rdbDriver);
       }
       throw error as Error;
@@ -380,7 +383,11 @@ function resolveSdkApiVersion(
   if (override !== undefined) {
     return override(context);
   }
-  return DEFAULT_SDK_API_VERSION;
+  const runtimeSdkApiVersion: number = deviceInfo.sdkApiVersion;
+  if (!Number.isInteger(runtimeSdkApiVersion) || runtimeSdkApiVersion <= 0) {
+    throw new Error('Runtime sdk api version was unavailable.');
+  }
+  return runtimeSdkApiVersion;
 }
 
 function sanitizeInitializationError(): PlatformInitializationError {

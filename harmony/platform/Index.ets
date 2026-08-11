@@ -1,2 +1,2 @@
-export * from './src/main/ets/source/HarmonyProfileSourceGateway';
-export * from './src/main/ets/PlatformFactory';
+export { PlatformFactory } from './src/main/ets/PlatformFactory';
+export type { PlatformGraph } from './src/main/ets/PlatformFactory';
