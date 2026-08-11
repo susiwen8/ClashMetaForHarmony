@@ -113,27 +113,49 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         appendEvidenceFailure(SUITE_NAME, `${error}`);
         throw toError(error);
       } finally {
+        let cleanupError: Error | undefined = undefined;
         try {
           homeViewModel?.dispose();
-          if (application !== undefined) {
+        } catch (error) {
+          cleanupError = toError(error);
+        }
+        if (application !== undefined) {
+          try {
             const cleanupStop = await application.stopLocal();
             ensure(cleanupStop.kind === 'STOPPED', `Cleanup stop must not fail: ${JSON.stringify(cleanupStop)}`);
-            application.dispose();
+          } catch (error) {
+            cleanupError = cleanupError ?? toError(error);
+          } finally {
+            try {
+              application.dispose();
+            } catch (error) {
+              cleanupError = cleanupError ?? toError(error);
+            }
           }
-          if (graph !== undefined) {
+        }
+        if (graph !== undefined) {
+          try {
             for (let index: number = 0; index < profileIds.length; index += 1) {
               await graph.repository.deleteAndClearActive(profileIds[index]);
               await graph.contentStore.removeProfile(profileIds[index]);
             }
-            await graph.close();
+          } catch (error) {
+            cleanupError = cleanupError ?? toError(error);
+          } finally {
+            try {
+              await graph.close();
+            } catch (error) {
+              cleanupError = cleanupError ?? toError(error);
+            }
           }
-        } catch (cleanupError) {
+        }
+        if (cleanupError !== undefined) {
           setEvidenceStatus('FAIL');
           appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
-          throw toError(cleanupError);
-        } finally {
           await flushEvidence();
+          throw cleanupError;
         }
+        await flushEvidence();
       }
     });
   });

@@ -206,9 +206,10 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
         appendEvidenceFailure(SUITE_NAME, `${error}`);
         throw toError(error);
       } finally {
+        let cleanupError: Error | undefined = undefined;
         const finalGraph: PlatformGraph | undefined = reopenedGraph ?? graph;
-        try {
-          if (finalGraph !== undefined) {
+        if (finalGraph !== undefined) {
+          try {
             for (let index: number = 0; index < profileIds.length; index += 1) {
               const profileId: string = profileIds[index];
               await finalGraph.repository.deleteAndClearActive(profileId);
@@ -217,27 +218,48 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
             for (let index: number = 0; index < secretIds.length; index += 1) {
               await finalGraph.secretStore.remove(secretIds[index]);
             }
-            await finalGraph.close();
-            await finalGraph.close();
+          } catch (error) {
+            cleanupError = cleanupError ?? toError(error);
+          } finally {
+            try {
+              await finalGraph.close();
+              await finalGraph.close();
+            } catch (error) {
+              cleanupError = cleanupError ?? toError(error);
+            }
           }
+        }
 
-          const cleanupGraph: PlatformGraph = await new PlatformFactory(getTestAbilityContext()).create();
+        let cleanupGraph: PlatformGraph | undefined = undefined;
+        try {
+          cleanupGraph = await new PlatformFactory(getTestAbilityContext()).create();
           const remainingProfiles: Profile[] = await cleanupGraph.repository.list();
           expect(remainingProfiles.length).assertEqual(0);
           expect(await cleanupGraph.repository.getActiveId()).assertEqual(undefined);
-          await cleanupGraph.close();
           await assertNoResidualTask14Artifacts(getTestAbilityContext(), profileIds, secretIds);
           cleanupVerified = true;
-        } catch (cleanupError) {
-          setEvidenceStatus('FAIL');
-          appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
-          throw toError(cleanupError);
+        } catch (error) {
+          cleanupError = cleanupError ?? toError(error);
         } finally {
-          if (cleanupVerified) {
-            appendEvidenceTrace(`${SUITE_NAME}.cleanupVerified`);
+          if (cleanupGraph !== undefined) {
+            try {
+              await cleanupGraph.close();
+            } catch (error) {
+              cleanupError = cleanupError ?? toError(error);
+            }
           }
-          await flushEvidence();
         }
+
+        if (cleanupError !== undefined) {
+          setEvidenceStatus('FAIL');
+          await flushEvidence();
+          appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
+          throw cleanupError;
+        }
+        if (cleanupVerified) {
+          appendEvidenceTrace(`${SUITE_NAME}.cleanupVerified`);
+        }
+        await flushEvidence();
       }
     });
   });

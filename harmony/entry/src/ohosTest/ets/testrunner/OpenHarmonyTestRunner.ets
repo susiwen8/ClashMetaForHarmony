@@ -64,24 +64,32 @@ function describeBusinessError(error: Object | undefined): string {
 
 async function waitForTask14CompletionOrTimeout(): Promise<void> {
   let timeoutId: number = -1;
-  const barrier: Promise<void> = waitForTask14Completion().then(() => {
-    if (timeoutId >= 0) {
-      clearTimeout(timeoutId);
-    }
-  });
+  const barrier: Promise<void> = waitForTask14Completion();
   const timeout: Promise<void> = new Promise<void>((_resolve, reject) => {
     timeoutId = setTimeout(() => {
       void failTask14CompletionTimeout(reject);
     }, TASK14_COMPLETION_TIMEOUT_MS) as number;
   });
-  await Promise.race([barrier, timeout]);
+  try {
+    await Promise.race([barrier, timeout]);
+  } finally {
+    if (timeoutId >= 0) {
+      clearTimeout(timeoutId);
+    }
+  }
 }
 
 async function failTask14CompletionTimeout(reject: (error: Error) => void): Promise<void> {
-  setEvidenceStatus('FAIL');
-  appendEvidenceFailure('OpenHarmonyTestRunner', 'Task 14 completion barrier timeout.');
-  await flushEvidence();
-  reject(new Error('Task 14 completion barrier timeout.'));
+  let timeoutError: Error = new Error('Task 14 completion barrier timeout.');
+  try {
+    setEvidenceStatus('FAIL');
+    appendEvidenceFailure('OpenHarmonyTestRunner', timeoutError.message);
+    await flushEvidence();
+  } catch (error) {
+    timeoutError = new Error(`Task 14 completion barrier timeout: ${describeBusinessError(error)}`);
+  } finally {
+    reject(timeoutError);
+  }
 }
 
 function toError(error: Object | undefined): Error {

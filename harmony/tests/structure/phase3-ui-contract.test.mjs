@@ -445,6 +445,9 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(runnerSource, /appendEvidenceFailure\([\s\S]*timeout/iu,
     'OpenHarmonyTestRunner must record a timeout as FAIL evidence before throwing'
   );
+  assert.match(runnerSource, /finally[\s\S]*reject\(/u,
+    'OpenHarmonyTestRunner timeout handling must reject from a finally path even if evidence flushing throws'
+  );
   assert.match(testabilitySource, /export\s+async\s+function\s+waitForTask14Completion\(/u,
     'TestAbility must expose a waitForTask14Completion Promise barrier'
   );
@@ -479,6 +482,11 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   );
   assert.match(listSource, /getEvidence\(\)\.failures/u,
     'List.test.ets finalization must inspect accumulated evidence failures'
+  );
+  const lastSignalIndex = listSource.lastIndexOf('signalTask14Completion(');
+  const lastItIndex = listSource.lastIndexOf('it(');
+  assert.ok(lastSignalIndex > lastItIndex,
+    'List.test.ets must not register any test item after the completion signal'
   );
   assert.match(pagesSource, /"src"\s*:\s*\[\s*"testability\/pages\/Index"\s*\]/u,
     'test_pages.json must only register the isolated testability page'
@@ -551,6 +559,12 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   assert.doesNotMatch(runtimeSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
     'Phase3RuntimeFlow cleanup must not swallow repository/content removal failures'
   );
+  assert.match(runtimeSource, /if\s*\(\s*application\s*!==\s*undefined\s*\)\s*\{[\s\S]*try\s*\{[\s\S]*await\s+application\.stopLocal\([\s\S]*\}[\s\S]*finally\s*\{[\s\S]*application\.dispose\(/u,
+    'Phase3RuntimeFlow must dispose the application from a finally branch even if stopLocal fails'
+  );
+  assert.match(runtimeSource, /if\s*\(\s*graph\s*!==\s*undefined\s*\)\s*\{[\s\S]*try\s*\{[\s\S]*deleteAndClearActive[\s\S]*removeProfile[\s\S]*\}[\s\S]*finally\s*\{[\s\S]*await\s+graph\.close\(/u,
+    'Phase3RuntimeFlow must close the graph from a finally branch even if repository/content cleanup fails'
+  );
 
   assert.doesNotMatch(platformSource, /sourceDisplay:\s*EXTERNAL_PICKER_URI/u,
     'Phase3PlatformAdapters local test profiles must not persist the external Picker URI as sourceDisplay'
@@ -563,5 +577,11 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   );
   assert.doesNotMatch(platformSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
     'Phase3PlatformAdapters cleanup must not swallow profile/content/secret deletion failures'
+  );
+  assert.match(platformSource, /if\s*\(\s*finalGraph\s*!==\s*undefined\s*\)\s*\{[\s\S]*try\s*\{[\s\S]*deleteAndClearActive[\s\S]*secretStore\.remove[\s\S]*\}[\s\S]*finally\s*\{[\s\S]*await\s+finalGraph\.close\(/u,
+    'Phase3PlatformAdapters must close finalGraph from a finally branch even if profile/secret cleanup fails'
+  );
+  assert.match(platformSource, /cleanupGraph[\s\S]*try\s*\{[\s\S]*repository\.list\([\s\S]*assertNoResidualTask14Artifacts[\s\S]*\}[\s\S]*finally\s*\{[\s\S]*await\s+cleanupGraph\.close\(/u,
+    'Phase3PlatformAdapters must close cleanupGraph from a finally branch even if cleanup assertions fail'
   );
 });

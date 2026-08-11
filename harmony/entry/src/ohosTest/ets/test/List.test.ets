@@ -27,13 +27,12 @@ export default function testsuite(): void {
         appendEvidenceFailure('Task14Finalization', `${error}`);
         throw toError(error);
       } finally {
-        await flushEvidence();
-        signalTask14Completion();
+        try {
+          await flushEvidence();
+        } finally {
+          signalTask14Completion();
+        }
       }
-    });
-
-    it('registers the deterministic Task 14 suites', 0, () => {
-      expect(true).assertTrue();
     });
   });
 }
