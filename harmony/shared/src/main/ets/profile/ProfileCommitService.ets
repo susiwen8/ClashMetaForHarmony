@@ -48,13 +48,14 @@ export class ProfileCommitService {
   async reconcileStoredContent(): Promise<void> {
     const profiles: Profile[] = await this.repository.list();
     const referenced: ProfileRevision[] = [];
+    const seenRelativePaths: string[] = [];
     for (let index = 0; index < profiles.length; index += 1) {
       const profile: Profile = profiles[index];
       if (profile.currentRevision !== null) {
-        referenced.push(profile.currentRevision);
+        this.pushReferencedRevision(referenced, seenRelativePaths, profile.currentRevision);
       }
       if (profile.failedCandidate !== null) {
-        referenced.push(profile.failedCandidate);
+        this.pushReferencedRevision(referenced, seenRelativePaths, profile.failedCandidate);
       }
     }
     await this.contentStore.reconcile(referenced);
@@ -79,6 +80,20 @@ export class ProfileCommitService {
 
   now(): string {
     return this.clock.now();
+  }
+
+  private pushReferencedRevision(
+    referenced: ProfileRevision[],
+    seenRelativePaths: string[],
+    revision: ProfileRevision
+  ): void {
+    for (let index = 0; index < seenRelativePaths.length; index += 1) {
+      if (seenRelativePaths[index] === revision.relativePath) {
+        return;
+      }
+    }
+    seenRelativePaths.push(revision.relativePath);
+    referenced.push(revision);
   }
 
   private async removeRetainedRevisions(revisions: ProfileRevision[]): Promise<void> {

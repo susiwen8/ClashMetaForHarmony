@@ -4,7 +4,6 @@ import type {
   IdGenerator,
   ImportProfileUseCaseDependencies as PortImportProfileUseCaseDependencies,
   LocalAcquireCommand as PortLocalAcquireCommand,
-  Profile,
   ProfileCommitServiceDependencies as PortProfileCommitServiceDependencies,
   ProfileContentStore,
   ProfileRepository,
@@ -21,9 +20,11 @@ import {
   CancelledLocalSource,
   Deferred,
   FailedLocalSource,
+  FailedRemoteSource,
   FakeClock,
   FakeCoreService,
   FakeIdGenerator,
+  FakeOperationTimeline,
   FakeProfileContentStore,
   FakeProfileRepository,
   FakeProfileSourceGateway,
@@ -38,6 +39,7 @@ import {
   ScriptedStringFailure,
   ScriptedVoidFailure,
   buildAppError,
+  buildJsonStateSnapshot,
   buildCoreError,
   buildProfile,
   buildRevision,
@@ -153,10 +155,10 @@ class CommitServiceDependencies implements PortProfileCommitServiceDependencies 
   }
 }
 
-function collapseOrder(parts: string[]): string {
+function collapseTimeline(entries: string[]): string {
   const collapsed: string[] = [];
-  for (let index = 0; index < parts.length; index += 1) {
-    const current: string = parts[index];
+  for (let index = 0; index < entries.length; index += 1) {
+    const current: string = entries[index];
     if (current === 'removeRevision') {
       if (collapsed[collapsed.length - 1] !== 'removeSuperseded') {
         collapsed.push('removeSuperseded');
@@ -168,19 +170,43 @@ function collapseOrder(parts: string[]): string {
   return collapsed.join('>');
 }
 
+function assertNoPlaintextLeak(snapshot: string, forbiddenFragments: string[]): void {
+  for (let index = 0; index < forbiddenFragments.length; index += 1) {
+    expect(snapshot.includes(forbiddenFragments[index])).assertFalse();
+  }
+}
+
+function buildRemoteStateSnapshot(
+  gateway: FakeProfileSourceGateway,
+  secretStore: FakeSubscriptionSecretStore,
+  repository?: FakeProfileRepository
+): string {
+  const parts: Object[] = [
+    gateway.remoteCommands,
+    secretStore.decryptCalls,
+    secretStore.storedRefs,
+    secretStore.removedRefs
+  ];
+  if (repository !== undefined) {
+    parts.push(repository.savedProfiles);
+  }
+  return buildJsonStateSnapshot(parts);
+}
+
 export default function profileImportUseCasesTestsuite() {
   describe('ProfileImportUseCasesTest', () => {
     it('importsValidLocalProfileInTransactionalOrder', 0, async () => {
-      const repository = new FakeProfileRepository();
-      const contentStore = new FakeProfileContentStore();
-      const gateway = new FakeProfileSourceGateway();
-      const coreService = new FakeCoreService();
+      const timeline = new FakeOperationTimeline();
+      const repository = new FakeProfileRepository(undefined, undefined, timeline);
+      const contentStore = new FakeProfileContentStore(timeline);
+      const gateway = new FakeProfileSourceGateway(timeline);
+      const coreService = new FakeCoreService(timeline);
       const clock = new FakeClock(['2026-08-07T00:00:00.000Z', '2026-08-07T00:01:00.000Z']);
       const useCase: ImportProfileUseCase = createImportUseCase(
         repository,
         contentStore,
         gateway,
-        new FakeSubscriptionSecretStore(),
+        new FakeSubscriptionSecretStore(timeline),
         coreService,
         clock,
         new FakeIdGenerator(['profile-local-1']),
@@ -201,12 +227,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.failedCandidate === null).assertTrue();
       expect(result.profile.sourceDisplay).assertEqual('home.yaml');
       expect(result.profile.lastSuccessfulUpdateAt).assertEqual('2026-08-07T00:01:00.000Z');
-      expect(collapseOrder([
-        gateway.operationLog[0],
-        'validate',
-        contentStore.operationLog[0],
-        repository.operationLog[0]
-      ])).assertEqual('acquire>validate>retainRevision>saveProfile');
+      expect(collapseTimeline(timeline.entries)).assertEqual('acquire>validate>retainRevision>saveProfile');
     });
 
     it('retainsInvalidLocalImportAsInvalidProfile', 0, async () => {
@@ -287,7 +308,51 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.failedCandidate !== null).assertTrue();
       expect(result.profile.sourceDisplay).assertEqual('https://remote.example.com');
       expect(result.profile.sourceSecretRef).assertEqual('secret-1');
-      expect(secretStore.encryptCalls.length).assertEqual(1);
+      expect(secretStore.encryptCallCount).assertEqual(1);
+    });
+
+    it('persistsRemoteDownloadFailureWithOpaqueSecretRefAndNoPlaintextLeak', 0, async () => {
+      const repository = new FakeProfileRepository();
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const useCase: ImportProfileUseCase = createImportUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T00:00:00.000Z', '2026-08-07T00:01:00.000Z']),
+        new FakeIdGenerator(['profile-remote-download-failure']),
+        createQueue()
+      );
+
+      gateway.remoteResults.push(new FailedRemoteSource(
+        buildAppError('DOWNLOAD', 'download https://user:secret@remote.example.com/path?token=abc123 failed', true, 'APP_PLATFORM_TIMEOUT'),
+        'Remote Download Failure',
+        'https://remote.example.com',
+        true
+      ));
+
+      const result = await useCase.executeRemote(new RemoteImportArgs(
+        'https://user:secret@remote.example.com/path?token=abc123',
+        'Remote Download Failure',
+        false
+      ));
+
+      expect(result.kind).assertEqual('CREATED');
+      if (result.kind !== 'CREATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.profile.availability).assertEqual('INVALID');
+      expect(result.profile.currentRevision === null).assertTrue();
+      expect(result.profile.failedCandidate === null).assertTrue();
+      expect(result.profile.sourceDisplay).assertEqual('https://remote.example.com');
+      expect(result.profile.sourceSecretRef).assertEqual('secret-1');
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      expect(snapshot.includes('https://remote.example.com')).assertTrue();
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=', 'subscription']);
     });
 
     it('returnsCancelledWithoutPersistingWhenLocalPickerCancels', 0, async () => {
@@ -403,7 +468,7 @@ export default function profileImportUseCasesTestsuite() {
       ));
 
       expect(result.kind).assertEqual('CANCELLED');
-      expect(secretStore.encryptCalls.length).assertEqual(0);
+      expect(secretStore.encryptCallCount).assertEqual(0);
       expect(gateway.remoteCommands.length).assertEqual(0);
       expect(repository.savedProfiles.length).assertEqual(0);
     });
@@ -421,17 +486,18 @@ export default function profileImportUseCasesTestsuite() {
       existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
       existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
       existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
-      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-valid');
-      const contentStore = new FakeProfileContentStore();
-      const gateway = new FakeProfileSourceGateway();
-      const coreService = new FakeCoreService();
+      const timeline = new FakeOperationTimeline();
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-valid', timeline);
+      const contentStore = new FakeProfileContentStore(timeline);
+      const gateway = new FakeProfileSourceGateway(timeline);
+      const coreService = new FakeCoreService(timeline);
       const firstSave: Deferred<void> = createDeferred<void>();
       repository.saveDeferreds.push(firstSave);
       const useCase: RefreshProfileUseCase = createRefreshUseCase(
         repository,
         contentStore,
         gateway,
-        new FakeSubscriptionSecretStore(),
+        new FakeSubscriptionSecretStore(timeline),
         coreService,
         new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z'])
       );
@@ -458,13 +524,9 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.currentRevision?.relativePath.includes('refresh-valid')).assertTrue();
       expect(result.profile.failedCandidate === null).assertTrue();
       expect(contentStore.removedRevisions.length).assertEqual(2);
-      expect(collapseOrder([
-        gateway.operationLog[0],
-        'validate',
-        contentStore.operationLog[0],
-        repository.operationLog[1],
-        contentStore.operationLog[1]
-      ])).assertEqual('acquire>validate>retainRevision>saveProfile>removeSuperseded');
+      expect(collapseTimeline(timeline.entries)).assertEqual(
+        'getProfile>acquire>validate>retainRevision>saveProfile>removeSuperseded'
+      );
     });
 
     it('keepsPriorValidRevisionAndRecordsFailedCandidateWhenRefreshValidationFails', 0, async () => {
@@ -523,16 +585,17 @@ export default function profileImportUseCasesTestsuite() {
       existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
       existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
       existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
-      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-save-fail');
+      const timeline = new FakeOperationTimeline();
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-save-fail', timeline);
       repository.scriptedSaveResults.push(new ScriptedVoidFailure(true, new Error('sqlite write failed')));
-      const contentStore = new FakeProfileContentStore();
-      const gateway = new FakeProfileSourceGateway();
+      const contentStore = new FakeProfileContentStore(timeline);
+      const gateway = new FakeProfileSourceGateway(timeline);
       const useCase: RefreshProfileUseCase = createRefreshUseCase(
         repository,
         contentStore,
         gateway,
-        new FakeSubscriptionSecretStore(),
-        new FakeCoreService(),
+        new FakeSubscriptionSecretStore(timeline),
+        new FakeCoreService(timeline),
         new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z'])
       );
 
@@ -549,6 +612,10 @@ export default function profileImportUseCasesTestsuite() {
       expect(contentStore.removedRevisions[0].relativePath.includes('refresh-save-fail')).assertTrue();
       expect(repository.currentProfile('profile-refresh-save-fail')?.currentRevision?.relativePath).assertEqual(
         previousCurrent.relativePath
+      );
+      expect(contentStore.removedRevisions[0].relativePath === previousCurrent.relativePath).assertFalse();
+      expect(timeline.joined()).assertEqual(
+        'getProfile>acquire>validate>retainRevision>saveProfile>saveProfileFailed>removeRevision'
       );
     });
 
@@ -594,6 +661,113 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.lastError?.stage).assertEqual('PERSISTENCE');
       expect(result.profile.lastError?.retryable).assertFalse();
       expect(gateway.remoteCommands.length).assertEqual(0);
+    });
+
+    it('preservesSourceSecretVersionUnsupportedDuringRemoteRefreshWithoutAcquisitionOrNewCandidate', 0, async () => {
+      const previousCurrent = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-remote-refresh-version';
+      existingOptions.name = 'Remote';
+      existingOptions.sourceKind = 'REMOTE_URL';
+      existingOptions.sourceDisplay = 'https://remote.example.com';
+      existingOptions.sourceSecretRef = 'secret-remote-version';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.availability = 'VALID';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const timeline = new FakeOperationTimeline();
+      const repository = new FakeProfileRepository(
+        [buildProfile(existingOptions)],
+        'profile-remote-refresh-version',
+        timeline
+      );
+      const contentStore = new FakeProfileContentStore(timeline);
+      const gateway = new FakeProfileSourceGateway(timeline);
+      const secretStore = new FakeSubscriptionSecretStore(timeline);
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        new FakeCoreService(timeline),
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z'])
+      );
+
+      secretStore.scriptedDecryptResults.push(new ScriptedStringFailure(
+        true,
+        undefined,
+        buildSecretError('SOURCE_SECRET_VERSION_UNSUPPORTED', 'version 0 secret unsupported')
+      ));
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-version', false));
+
+      expect(result.kind).assertEqual('UPDATED');
+      if (result.kind !== 'UPDATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.profile.availability).assertEqual('UPDATE_FAILED_USING_VALID');
+      expect(result.profile.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
+      expect(result.profile.failedCandidate === null).assertTrue();
+      expect(result.profile.lastError?.code).assertEqual('SOURCE_SECRET_VERSION_UNSUPPORTED');
+      expect(result.profile.lastError?.stage).assertEqual('PERSISTENCE');
+      expect(result.profile.lastError?.retryable).assertFalse();
+      expect(gateway.remoteCommands.length).assertEqual(0);
+      expect(contentStore.retainedKinds.length).assertEqual(0);
+      expect(timeline.joined()).assertEqual('getProfile>decryptSource>saveProfile');
+    });
+
+    it('fallsBackToSafeDecryptFailureCodeWithoutLeakingPlaintextDuringRemoteRefresh', 0, async () => {
+      const previousCurrent = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-remote-refresh-generic';
+      existingOptions.name = 'Remote';
+      existingOptions.sourceKind = 'REMOTE_URL';
+      existingOptions.sourceDisplay = 'https://remote.example.com';
+      existingOptions.sourceSecretRef = 'secret-remote-generic';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.availability = 'VALID';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-remote-refresh-generic');
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z'])
+      );
+
+      secretStore.scriptedDecryptResults.push(new ScriptedStringFailure(
+        true,
+        undefined,
+        new Error(
+          'decrypt https://user:secret@remote.example.com/path?token=abc123 failed near /tmp/private-cache'
+        )
+      ));
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-generic', false));
+
+      expect(result.kind).assertEqual('UPDATED');
+      if (result.kind !== 'UPDATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.profile.availability).assertEqual('UPDATE_FAILED_USING_VALID');
+      expect(result.profile.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
+      expect(result.profile.failedCandidate === null).assertTrue();
+      expect(result.profile.lastError?.code).assertEqual('SOURCE_DECRYPT_FAILED');
+      expect(result.profile.lastError?.technicalDetail.includes('https://remote.example.com')).assertTrue();
+      assertNoPlaintextLeak(result.profile.lastError?.technicalDetail ?? '', ['user:secret', 'abc123', '/path', 'token=', '/tmp/private-cache']);
+      expect(gateway.remoteCommands.length).assertEqual(0);
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=']);
     });
 
     it('serializesConcurrentMutationsThroughTheCommandQueue', 0, async () => {
@@ -645,6 +819,49 @@ export default function profileImportUseCasesTestsuite() {
       expect(repository.maxSaveConcurrency).assertEqual(1);
     });
 
+    it('continuesProcessingQueuedCommandsAfterTheFirstCommandRejects', 0, async () => {
+      const queue = createQueue();
+      const firstStarted = createDeferred<void>();
+      const releaseFirst = createDeferred<void>();
+      let currentOverlap = 0;
+      let maxOverlap = 0;
+      let secondRan = false;
+
+      const first = queue.execute(async () => {
+        currentOverlap += 1;
+        maxOverlap = Math.max(maxOverlap, currentOverlap);
+        firstStarted.resolve(undefined);
+        await releaseFirst.promise;
+        currentOverlap -= 1;
+        throw new Error('first failed');
+      });
+      const second = queue.execute(async () => {
+        currentOverlap += 1;
+        maxOverlap = Math.max(maxOverlap, currentOverlap);
+        secondRan = true;
+        currentOverlap -= 1;
+        return 'second-result';
+      });
+
+      await firstStarted.promise;
+      expect(secondRan).assertFalse();
+
+      releaseFirst.resolve(undefined);
+
+      let firstMessage = '';
+      try {
+        await first;
+      } catch (error) {
+        firstMessage = error instanceof Error ? error.message : '';
+      }
+      const secondResult = await second;
+
+      expect(firstMessage).assertEqual('first failed');
+      expect(secondResult).assertEqual('second-result');
+      expect(secondRan).assertTrue();
+      expect(maxOverlap).assertEqual(1);
+    });
+
     it('reconcilesEveryCurrentAndFailedRevisionFromRepositoryOnStartup', 0, async () => {
       const firstCurrent = buildRevision('profiles/one/current.yaml', '2026-08-07T00:00:00.000Z');
       const firstFailed = buildRevision('profiles/one/failed.yaml', '2026-08-07T00:00:10.000Z');
@@ -680,6 +897,42 @@ export default function profileImportUseCasesTestsuite() {
       expect(revisions[0].relativePath).assertEqual(firstCurrent.relativePath);
       expect(revisions[1].relativePath).assertEqual(firstFailed.relativePath);
       expect(revisions[2].relativePath).assertEqual(secondCurrent.relativePath);
+    });
+
+    it('deduplicatesReferencedRevisionPathsBeforeReconcilingStoredContent', 0, async () => {
+      const duplicateCurrent = buildRevision('profiles/shared/current.yaml', '2026-08-07T00:00:00.000Z');
+      const duplicateFailed = buildRevision('profiles/shared/current.yaml', '2026-08-07T00:00:00.000Z');
+      const uniqueRevision = buildRevision('profiles/shared/failed.yaml', '2026-08-07T00:00:10.000Z');
+
+      const firstOptions = new ProfileFixtureOptions();
+      firstOptions.id = 'one';
+      firstOptions.name = 'One';
+      firstOptions.currentRevision = duplicateCurrent;
+      firstOptions.failedCandidate = duplicateFailed;
+      firstOptions.availability = 'UPDATE_FAILED_USING_VALID';
+      firstOptions.sourceDisplay = 'one.yaml';
+
+      const secondOptions = new ProfileFixtureOptions();
+      secondOptions.id = 'two';
+      secondOptions.name = 'Two';
+      secondOptions.currentRevision = buildRevision('profiles/shared/current.yaml', '2026-08-07T00:00:00.000Z');
+      secondOptions.failedCandidate = uniqueRevision;
+      secondOptions.availability = 'UPDATE_FAILED_USING_VALID';
+      secondOptions.sourceDisplay = 'two.yaml';
+
+      const repository = new FakeProfileRepository([buildProfile(firstOptions), buildProfile(secondOptions)]);
+      const contentStore = new FakeProfileContentStore();
+      const service: ProfileCommitService = createCommitService(
+        createCommitServiceDependencies(repository, contentStore, new FakeClock(['2026-08-07T01:00:00.000Z']))
+      );
+
+      await service.reconcileStoredContent();
+
+      expect(contentStore.reconcileCalls.length).assertEqual(1);
+      const revisions = contentStore.reconcileCalls[0];
+      expect(revisions.length).assertEqual(2);
+      expect(revisions[0].relativePath).assertEqual('profiles/shared/current.yaml');
+      expect(revisions[1].relativePath).assertEqual(uniqueRevision.relativePath);
     });
   });
 }

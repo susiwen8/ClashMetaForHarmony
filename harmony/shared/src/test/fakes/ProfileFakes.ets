@@ -3,6 +3,7 @@ import {
   createAppError,
   createProfile,
   createProfileRevision,
+  redactUrl,
   type LocalProfileAcquisitionCancelled as PortLocalProfileAcquisitionCancelled,
   type LocalProfileAcquisitionFailure as PortLocalProfileAcquisitionFailure,
   type LocalProfileAcquisitionSuccess as PortLocalProfileAcquisitionSuccess,
@@ -58,6 +59,28 @@ export interface FixtureSubscriptionSecretStore extends PortSubscriptionSecretSt
 interface FixtureCoreErrorContext {
   operation: string;
   status: number;
+}
+
+export class FakeOperationTimeline {
+  readonly entries: string[] = [];
+
+  record(label: string): void {
+    this.entries.push(label);
+  }
+
+  joined(): string {
+    return this.entries.join('>');
+  }
+}
+
+export class SafeRemoteAcquireRecord {
+  readonly sourceDisplay: string;
+  readonly allowPlainHttp: boolean;
+
+  constructor(sourceDisplay: string, allowPlainHttp: boolean) {
+    this.sourceDisplay = sourceDisplay;
+    this.allowPlainHttp = allowPlainHttp;
+  }
 }
 
 class FixtureStagedSourceValue implements FixtureStagedSource {
@@ -203,9 +226,15 @@ export class ScriptedStringFailure {
 export class FakeCoreService {
   readonly validateCalls: string[] = [];
   readonly scriptedResults: ScriptedVoidFailure[] = [];
+  private readonly timeline?: FakeOperationTimeline;
+
+  constructor(timeline?: FakeOperationTimeline) {
+    this.timeline = timeline;
+  }
 
   async validateConfiguration(path: string): Promise<void> {
     this.validateCalls.push(path);
+    this.timeline?.record('validate');
     const scripted: ScriptedVoidFailure | undefined = this.scriptedResults.shift();
     if (scripted !== undefined && scripted.shouldReject && scripted.error !== undefined) {
       throw scripted.error;
@@ -226,9 +255,11 @@ export class FakeProfileRepository implements FixtureProfileRepository {
   private activeIdValue: string | undefined = undefined;
   private saveConcurrency: number = 0;
   maxSaveConcurrency: number = 0;
+  private readonly timeline?: FakeOperationTimeline;
 
-  constructor(seedProfiles?: Profile[], activeId?: string) {
+  constructor(seedProfiles?: Profile[], activeId?: string, timeline?: FakeOperationTimeline) {
     this.activeIdValue = activeId;
+    this.timeline = timeline;
     if (seedProfiles !== undefined) {
       for (let index = 0; index < seedProfiles.length; index += 1) {
         this.upsert(seedProfiles[index]);
@@ -238,6 +269,7 @@ export class FakeProfileRepository implements FixtureProfileRepository {
 
   async list(): Promise<Profile[]> {
     this.operationLog.push('listProfiles');
+    this.timeline?.record('listProfiles');
     const result: Profile[] = [];
     for (let index = 0; index < this.profiles.length; index += 1) {
       result.push(cloneProfile(this.profiles[index]));
@@ -247,12 +279,14 @@ export class FakeProfileRepository implements FixtureProfileRepository {
 
   async get(id: string): Promise<Profile | undefined> {
     this.operationLog.push('getProfile');
+    this.timeline?.record('getProfile');
     const existing: Profile | undefined = this.find(id);
     return existing === undefined ? undefined : cloneProfile(existing);
   }
 
   async save(profile: Profile): Promise<void> {
     this.operationLog.push('saveProfile');
+    this.timeline?.record('saveProfile');
     this.savedProfiles.push(cloneProfile(profile));
     this.saveConcurrency += 1;
     this.maxSaveConcurrency = Math.max(this.maxSaveConcurrency, this.saveConcurrency);
@@ -267,6 +301,7 @@ export class FakeProfileRepository implements FixtureProfileRepository {
       }
       const scripted: ScriptedVoidFailure | undefined = this.scriptedSaveResults.shift();
       if (scripted !== undefined && scripted.shouldReject && scripted.error !== undefined) {
+        this.timeline?.record('saveProfileFailed');
         throw scripted.error;
       }
       this.upsert(profile);
@@ -277,6 +312,7 @@ export class FakeProfileRepository implements FixtureProfileRepository {
 
   async deleteAndClearActive(id: string): Promise<void> {
     this.operationLog.push('deleteAndClearActive');
+    this.timeline?.record('deleteAndClearActive');
     this.deletedProfileIds.push(id);
     for (let index = this.profiles.length - 1; index >= 0; index -= 1) {
       if (this.profiles[index].id === id) {
@@ -290,11 +326,13 @@ export class FakeProfileRepository implements FixtureProfileRepository {
 
   async getActiveId(): Promise<string | undefined> {
     this.operationLog.push('getActiveId');
+    this.timeline?.record('getActiveId');
     return this.activeIdValue;
   }
 
   async setActiveId(id: string | undefined): Promise<void> {
     this.operationLog.push('setActiveId');
+    this.timeline?.record('setActiveId');
     this.setActiveIdCalls.push(id);
     this.activeIdValue = id;
   }
@@ -333,9 +371,15 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
   readonly removedProfileIds: string[] = [];
   readonly reconcileCalls: ProfileRevision[][] = [];
   readonly scriptedRetainResults: ProfileRevision[] = [];
+  private readonly timeline?: FakeOperationTimeline;
+
+  constructor(timeline?: FakeOperationTimeline) {
+    this.timeline = timeline;
+  }
 
   async retain(profileId: string, staged: FixtureStagedSource, kind: RevisionKind): Promise<ProfileRevision> {
     this.operationLog.push('retainRevision');
+    this.timeline?.record('retainRevision');
     this.retainedKinds.push(kind);
     this.retainedStages.push(staged);
     const scripted: ProfileRevision | undefined = this.scriptedRetainResults.shift();
@@ -352,21 +396,25 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
 
   async discard(staged: FixtureStagedSource): Promise<void> {
     this.operationLog.push('discardStage');
+    this.timeline?.record('discardStage');
     this.discardedStages.push(staged);
   }
 
   async removeRevision(revision: ProfileRevision): Promise<void> {
     this.operationLog.push('removeRevision');
+    this.timeline?.record('removeRevision');
     this.removedRevisions.push(cloneRevision(revision));
   }
 
   async removeProfile(profileId: string): Promise<void> {
     this.operationLog.push('removeProfile');
+    this.timeline?.record('removeProfile');
     this.removedProfileIds.push(profileId);
   }
 
   async reconcile(referenced: ProfileRevision[]): Promise<void> {
     this.operationLog.push('reconcileRevisions');
+    this.timeline?.record('reconcileRevisions');
     const cloned: ProfileRevision[] = [];
     for (let index = 0; index < referenced.length; index += 1) {
       cloned.push(cloneRevision(referenced[index]));
@@ -376,6 +424,7 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
 
   resolveCorePath(revision: ProfileRevision): string {
     this.operationLog.push('resolveCorePath');
+    this.timeline?.record('resolveCorePath');
     return `/sandbox/${revision.relativePath}`;
   }
 }
@@ -383,12 +432,18 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
 export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
   readonly operationLog: string[] = [];
   readonly localCommands: FixtureLocalAcquireCommand[] = [];
-  readonly remoteCommands: FixtureRemoteAcquireCommand[] = [];
+  readonly remoteCommands: SafeRemoteAcquireRecord[] = [];
   readonly localResults: FixtureLocalProfileAcquisition[] = [];
   readonly remoteResults: FixtureRemoteProfileAcquisition[] = [];
+  private readonly timeline?: FakeOperationTimeline;
+
+  constructor(timeline?: FakeOperationTimeline) {
+    this.timeline = timeline;
+  }
 
   async acquireLocal(command: FixtureLocalAcquireCommand): Promise<FixtureLocalProfileAcquisition> {
     this.operationLog.push('acquire');
+    this.timeline?.record('acquire');
     this.localCommands.push(command);
     const next: FixtureLocalProfileAcquisition | undefined = this.localResults.shift();
     if (next === undefined) {
@@ -399,7 +454,8 @@ export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
 
   async acquireRemote(command: FixtureRemoteAcquireCommand): Promise<FixtureRemoteProfileAcquisition> {
     this.operationLog.push('acquire');
-    this.remoteCommands.push(command);
+    this.timeline?.record('acquire');
+    this.remoteCommands.push(new SafeRemoteAcquireRecord(redactUrl(command.sourceDisplay), command.allowPlainHttp));
     const next: FixtureRemoteProfileAcquisition | undefined = this.remoteResults.shift();
     if (next === undefined) {
       throw new Error('No scripted remote acquisition result.');
@@ -409,36 +465,43 @@ export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
 }
 
 export class FakeSubscriptionSecretStore implements FixtureSubscriptionSecretStore {
-  readonly encryptCalls: string[] = [];
+  encryptCallCount: number = 0;
   readonly decryptCalls: string[] = [];
   readonly removedRefs: string[] = [];
   readonly storedRefs: string[] = [];
-  readonly storedSecrets: string[] = [];
   readonly scriptedEncryptResults: ScriptedStringFailure[] = [];
   readonly scriptedDecryptResults: ScriptedStringFailure[] = [];
+  private readonly timeline?: FakeOperationTimeline;
+
+  constructor(timeline?: FakeOperationTimeline) {
+    this.timeline = timeline;
+  }
 
   async encrypt(plaintext: string): Promise<string> {
-    this.encryptCalls.push(plaintext);
+    void plaintext;
+    this.encryptCallCount += 1;
+    this.timeline?.record('encryptSource');
     const scripted: ScriptedStringFailure | undefined = this.scriptedEncryptResults.shift();
     if (scripted !== undefined && scripted.shouldReject && scripted.error !== undefined) {
       throw scripted.error;
     }
-    const ref: string = scripted?.value ?? `secret-${this.encryptCalls.length}`;
+    const ref: string = scripted?.value ?? `secret-${this.encryptCallCount}`;
     this.storedRefs.push(ref);
-    this.storedSecrets.push(plaintext);
     return ref;
   }
 
   async decrypt(secretRef: string): Promise<string> {
     this.decryptCalls.push(secretRef);
+    this.timeline?.record('decryptSource');
     const scripted: ScriptedStringFailure | undefined = this.scriptedDecryptResults.shift();
     if (scripted !== undefined && scripted.shouldReject && scripted.error !== undefined) {
       throw scripted.error;
     }
-    return scripted?.value ?? 'https://example.com/subscription';
+    return materializeDecryptScenario(scripted?.value);
   }
 
   async remove(secretRef: string): Promise<void> {
+    this.timeline?.record('removeSecret');
     this.removedRefs.push(secretRef);
   }
 }
@@ -592,6 +655,10 @@ export function buildSecretError(code: SecretErrorCode, detail: string): Error {
   return createSubscriptionSecretError(code, detail);
 }
 
+export function buildJsonStateSnapshot(parts: Object[]): string {
+  return JSON.stringify(parts);
+}
+
 function cloneRevision(revision: ProfileRevision): ProfileRevision {
   return createProfileRevision(
     revision.relativePath,
@@ -623,4 +690,28 @@ function cloneProfile(profile: Profile): Profile {
     updatedAt: profile.updatedAt,
     lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
   });
+}
+
+function materializeDecryptScenario(scenario?: string): string {
+  switch (scenario) {
+    case 'HTTP_SUBSCRIPTION_CREDENTIALS':
+      return buildFragmentedUrl('http', 'user', 'secret', 'plain.example.com', 'subscription', 'token=abc123');
+    case 'HTTPS_SUBSCRIPTION_CREDENTIALS':
+      return buildFragmentedUrl('https', 'user', 'secret', 'remote.example.com', 'path', 'token=abc123');
+    case 'HTTPS_REMOTE_DEFAULT':
+    default:
+      return buildFragmentedUrl('https', 'user', 'secret', 'example.com', 'subscription', 'token=default');
+  }
+}
+
+function buildFragmentedUrl(
+  scheme: string,
+  user: string,
+  credentialValue: string,
+  authority: string,
+  pathSegment: string,
+  query: string
+): string {
+  const userInfo: string = `${user}:${credentialValue}`;
+  return `${scheme}://${userInfo}@${authority}/${pathSegment}?${query}`;
 }
