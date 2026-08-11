@@ -143,7 +143,7 @@ export class SandboxProfileContentStore implements ProfileContentStore {
   }
 
   private async removeManagedTree(rootPath: string): Promise<void> {
-    const stat = await this.statIfPresent(rootPath);
+    const stat = await this.fileDriver.statIfPresent(rootPath);
     if (stat === undefined) {
       return;
     }
@@ -164,7 +164,7 @@ export class SandboxProfileContentStore implements ProfileContentStore {
     let current: string = parentDirectory(targetPath);
     const stopAt: string = this.filesDir;
     while (current.length > stopAt.length && current.startsWith(stopAt)) {
-      const stat = await this.statIfPresent(current);
+      const stat = await this.fileDriver.statIfPresent(current);
       if (stat === undefined || !stat.isDirectory) {
         return;
       }
@@ -178,7 +178,7 @@ export class SandboxProfileContentStore implements ProfileContentStore {
   }
 
   private async removeIfPresent(path: string): Promise<void> {
-    const stat = await this.statIfPresent(path);
+    const stat = await this.fileDriver.statIfPresent(path);
     if (stat === undefined) {
       return;
     }
@@ -189,7 +189,7 @@ export class SandboxProfileContentStore implements ProfileContentStore {
   }
 
   private async listIfPresent(path: string): Promise<string[]> {
-    const stat = await this.statIfPresent(path);
+    const stat = await this.fileDriver.statIfPresent(path);
     if (stat === undefined) {
       return [];
     }
@@ -197,14 +197,6 @@ export class SandboxProfileContentStore implements ProfileContentStore {
       throw new Error('Sandbox directory listing failed.');
     }
     return await this.fileDriver.list(path);
-  }
-
-  private async statIfPresent(path: string): Promise<FileStat | undefined> {
-    try {
-      return await this.fileDriver.stat(path);
-    } catch (_) {
-      return undefined;
-    }
   }
 
   private async requireFileStat(path: string, fallback: string): Promise<FileStat> {

@@ -53,6 +53,7 @@ export interface FileDriver {
   mkdir(path: string, recursive: boolean): Promise<void>;
   list(path: string): Promise<string[]>;
   stat(path: string): Promise<FileStat>;
+  statIfPresent(path: string): Promise<FileStat | undefined>;
   open(path: string, mode: number): Promise<FileToken>;
   close(file: number | FileToken): Promise<void>;
   read(fd: number, buffer: ArrayBuffer, options?: BufferIoOptions): Promise<number>;

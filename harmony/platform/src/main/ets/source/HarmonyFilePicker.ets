@@ -57,9 +57,9 @@ class FailedLocalProfileAcquisitionValue implements LocalProfileAcquisitionFailu
   readonly profileName?: string;
   readonly sourceDisplay?: string;
 
-  constructor(technicalDetail: string, timestamp: string, profileName?: string, sourceDisplay?: string) {
+  constructor(technicalDetail: string, retryable: boolean, timestamp: string, profileName?: string, sourceDisplay?: string) {
     this.error = createAppError('IMPORT', technicalDetail, {
-      retryable: false,
+      retryable,
       timestamp
     });
     this.shouldPersistInvalidProfile = true;
@@ -158,11 +158,11 @@ export class HarmonyFilePicker {
     }
     if (failure !== undefined) {
       await this.cleanupStage(stagePath);
-      return this.fail(failure.detail, safeName, safeSourceDisplay);
+      return this.fail(failure.detail, safeName, safeSourceDisplay, true);
     }
 
     if (stagePath === undefined) {
-      return this.fail('Selected file could not be copied into the app sandbox.', safeName, safeSourceDisplay);
+      return this.fail('Selected file could not be copied into the app sandbox.', safeName, safeSourceDisplay, true);
     }
 
     let digest: string;
@@ -170,7 +170,7 @@ export class HarmonyFilePicker {
       digest = await this.fileDriver.hash(stagePath, 'sha256');
     } catch (_) {
       await this.cleanupStage(stagePath);
-      return this.fail('Selected file could not be hashed after staging.', safeName, safeSourceDisplay);
+      return this.fail('Selected file could not be hashed after staging.', safeName, safeSourceDisplay, true);
     }
 
     const staged: StagedSource = {
@@ -234,8 +234,8 @@ export class HarmonyFilePicker {
     }
   }
 
-  private fail(detail: string, profileName: string, sourceDisplay: string): LocalProfileAcquisitionFailure {
-    return new FailedLocalProfileAcquisitionValue(detail, this.clock.now(), profileName, sourceDisplay);
+  private fail(detail: string, profileName: string, sourceDisplay: string, retryable: boolean = false): LocalProfileAcquisitionFailure {
+    return new FailedLocalProfileAcquisitionValue(detail, retryable, this.clock.now(), profileName, sourceDisplay);
   }
 }
 

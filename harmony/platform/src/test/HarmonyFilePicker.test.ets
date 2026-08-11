@@ -79,6 +79,10 @@ function assertFailureIsSafe(
   return failure;
 }
 
+function assertFailureIsRetryable(failure: LocalProfileAcquisitionFailure): void {
+  expect(failure.error.retryable).assertTrue();
+}
+
 export default function harmonyFilePickerTestsuite() {
   describe('HarmonyFilePickerTest', () => {
     it('returnsCancelledWhenPickerReturnsNoSelection', 0, async () => {
@@ -124,6 +128,24 @@ export default function harmonyFilePickerTestsuite() {
       expect(fileDriver.countCloses(`${FILES_DIR}/tmp/stage-one.yaml`)).assertEqual(1);
       expect(pickerPort.requests[0].maxSelectNumber).assertEqual(1);
       expect(pickerPort.requests[0].fileSuffixFilters.join(',')).assertEqual('Clash YAML|.yaml,.yml');
+    });
+
+    it('normalizesMixedSeparatorNamesToTheirBasename', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      const sourceUri = 'content://documents/tree/primary%3Aprofiles/document/basename';
+      pickerPort.scriptedSelections.push([sourceUri]);
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(sourceUri, buildBytes(256), 'folder\\nested/profile.yaml');
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T10:05:00.000Z'], ['stage-basename']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+      const acquired = result as AcquiredLocalResultView;
+
+      expect(result.kind).assertEqual('ACQUIRED');
+      expect(acquired.profileName).assertEqual('profile.yaml');
+      expect(acquired.sourceDisplay).assertEqual('profile.yaml');
     });
 
     it('rejectsMultipleSelectionsAndUnsafeSuffixesWithoutLeakingPickerUris', 0, async () => {
@@ -202,18 +224,21 @@ export default function harmonyFilePickerTestsuite() {
       const fileDriver = new FakeFileDriver();
       fileDriver.seedDirectory(FILES_DIR);
       fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
-      fileDriver.seedFile(sourceUri, buildBytes(256), 'broken.yaml');
+      fileDriver.seedFile(sourceUri, buildBytes(256), 'folder\\copied/broken.yaml');
       fileDriver.injectFailure('read', sourceUri, new Error('read failed at content://documents/tree/primary'));
       fileDriver.injectFailure('unlink', `${FILES_DIR}/tmp/stage-broken.yaml`, new Error('cleanup failed at /private/tmp/stage-broken.yaml'));
       const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T13:00:00.000Z'], ['stage-broken']);
 
       const result = await picker.acquire(new EmptyLocalAcquireCommand());
 
-      assertFailureIsSafe(
+      const failure = assertFailureIsSafe(
         result,
         'copy',
         [sourceUri, '/private/tmp/stage-broken.yaml', `${FILES_DIR}/tmp/stage-broken.yaml`]
       );
+      assertFailureIsRetryable(failure);
+      expect(failure.profileName).assertEqual('broken.yaml');
+      expect(failure.sourceDisplay).assertEqual('broken.yaml');
       expect(fileDriver.countCloses(sourceUri)).assertEqual(1);
       expect(fileDriver.countCloses(`${FILES_DIR}/tmp/stage-broken.yaml`)).assertEqual(1);
     });
@@ -231,9 +256,30 @@ export default function harmonyFilePickerTestsuite() {
 
       const result = await picker.acquire(new EmptyLocalAcquireCommand());
 
-      assertFailureIsSafe(result, 'close', [sourceUri, `${FILES_DIR}/tmp/stage-close.yaml`]);
+      const failure = assertFailureIsSafe(result, 'close', [sourceUri, `${FILES_DIR}/tmp/stage-close.yaml`]);
+      assertFailureIsRetryable(failure);
       expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-close.yaml`)).assertFalse();
       expect(fileDriver.countCloses(sourceUri)).assertEqual(1);
+    });
+
+    it('returnsRetryableFailureWhenHashingTheStagedCopyFails', 0, async () => {
+      const pickerPort = new FakeDocumentPickerPort();
+      const sourceUri = 'content://documents/tree/primary%3Aprofiles/document/hash';
+      pickerPort.scriptedSelections.push([sourceUri]);
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(sourceUri, buildBytes(128), 'hash.yaml');
+      fileDriver.injectFailure('hash', `${FILES_DIR}/tmp/stage-hash.yaml`, new Error(`hash failed for ${FILES_DIR}/tmp/stage-hash.yaml`));
+      const picker = buildPicker(pickerPort, fileDriver, ['2026-08-11T15:00:00.000Z'], ['stage-hash']);
+
+      const result = await picker.acquire(new EmptyLocalAcquireCommand());
+
+      const failure = assertFailureIsSafe(result, 'hashed', [sourceUri, `${FILES_DIR}/tmp/stage-hash.yaml`]);
+      assertFailureIsRetryable(failure);
+      expect(failure.profileName).assertEqual('hash.yaml');
+      expect(failure.sourceDisplay).assertEqual('hash.yaml');
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/stage-hash.yaml`)).assertFalse();
     });
   });
 }

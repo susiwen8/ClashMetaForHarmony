@@ -671,6 +671,21 @@ export class FakeFileDriver implements FileDriver {
     );
   }
 
+  async statIfPresent(path: string): Promise<FakeStatRecord | undefined> {
+    const normalizedPath: string = normalizeFakePath(path);
+    this.operationLog.push(`statIfPresent:${normalizedPath}`);
+    this.failIfScripted('stat', normalizedPath);
+    const entry: FakeFileEntry | undefined = this.entries.get(normalizedPath);
+    if (entry === undefined) {
+      return undefined;
+    }
+    return new FakeStatRecord(
+      entry.kind === 'FILE' ? entry.byteLength : 0,
+      entry.kind === 'FILE',
+      entry.kind === 'DIRECTORY'
+    );
+  }
+
   async open(path: string, mode: number): Promise<FakeOpenedFileRecord> {
     const normalizedPath: string = normalizeFakePath(path);
     this.operationLog.push(`open:${normalizedPath}:${mode}`);

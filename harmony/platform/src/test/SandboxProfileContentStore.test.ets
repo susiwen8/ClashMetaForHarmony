@@ -249,5 +249,31 @@ export default function sandboxProfileContentStoreTestsuite() {
       expect(driver.fileExists(`${FILES_DIR}/tmp/stale.yaml`)).assertFalse();
       expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/valid/orphan.yaml`)).assertFalse();
     });
+
+    it('rejectsStatFaultsDuringReconcileInsteadOfTreatingThemAsMissingAndSucceedsOnRetry', 0, async () => {
+      const driver = new FakeFileDriver();
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedFile(`${FILES_DIR}/tmp/stale.yaml`, buildBytes(12));
+      driver.seedFile(`${FILES_DIR}/profiles/alpha/valid/current.yaml`, buildBytes(20));
+      driver.seedFile(`${FILES_DIR}/profiles/alpha/valid/orphan.yaml`, buildBytes(22));
+      const store = new SandboxProfileContentStore(driver, FILES_DIR);
+
+      driver.injectFailure('stat', `${FILES_DIR}/tmp`, new Error(`stat denied for ${FILES_DIR}/tmp`));
+      await expectSafeFailure(
+        async () => {
+          await store.reconcile([buildRevision('profiles/alpha/valid/current.yaml')]);
+        },
+        'cleanup',
+        [`${FILES_DIR}/tmp`, 'profiles/alpha/valid/orphan.yaml']
+      );
+
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stale.yaml`)).assertTrue();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/valid/orphan.yaml`)).assertTrue();
+
+      await store.reconcile([buildRevision('profiles/alpha/valid/current.yaml')]);
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stale.yaml`)).assertFalse();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/valid/orphan.yaml`)).assertFalse();
+    });
   });
 }

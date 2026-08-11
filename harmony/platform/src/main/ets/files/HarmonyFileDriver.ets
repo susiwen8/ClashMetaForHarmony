@@ -33,6 +33,22 @@ export class HarmonyFileDriver implements FileDriver {
     }
   }
 
+  async statIfPresent(path: string): Promise<FileStat | undefined> {
+    try {
+      const exists: boolean = await fileIo.access(path);
+      if (!exists) {
+        return undefined;
+      }
+      const value = await fileIo.stat(path);
+      return new FileStatRecord(value.size, value.isFile(), value.isDirectory());
+    } catch (error) {
+      if (isNoSuchFileError(error)) {
+        return undefined;
+      }
+      throw new Error('Sandbox file status lookup failed.');
+    }
+  }
+
   async open(path: string, mode: number): Promise<FileToken> {
     try {
       const file = await fileIo.open(path, mode);
@@ -104,4 +120,13 @@ export class HarmonyFileDriver implements FileDriver {
       throw new Error('Sandbox file hash failed.');
     }
   }
+}
+
+interface BusinessErrorShape {
+  code?: number;
+}
+
+function isNoSuchFileError(error: Object | undefined): boolean {
+  const record = error as BusinessErrorShape;
+  return record?.code === 13900002;
 }
