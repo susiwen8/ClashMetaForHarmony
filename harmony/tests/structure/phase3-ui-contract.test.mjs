@@ -8,6 +8,9 @@ const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const ENTRY_ROOT = path.join(HARMONY_ROOT, 'entry');
 const ETS_ROOT = path.join(ENTRY_ROOT, 'src', 'main', 'ets');
 const RESOURCES_ROOT = path.join(ENTRY_ROOT, 'src', 'main', 'resources');
+const OHOS_TEST_ROOT = path.join(ENTRY_ROOT, 'src', 'ohosTest');
+const OHOS_TEST_ETS_ROOT = path.join(OHOS_TEST_ROOT, 'ets');
+const OHOS_TEST_RESOURCES_ROOT = path.join(OHOS_TEST_ROOT, 'resources');
 const COMPONENTS_ROOT = path.join(ETS_ROOT, 'components');
 const PAGES_ROOT = path.join(ETS_ROOT, 'pages');
 
@@ -16,6 +19,12 @@ const CORE_COMPOSITION_PATH = path.join(ETS_ROOT, 'bootstrap', 'CoreComposition.
 const ENTRY_ABILITY_PATH = path.join(ETS_ROOT, 'entryability', 'EntryAbility.ets');
 const INDEX_PATH = path.join(PAGES_ROOT, 'Index.ets');
 const MAIN_PAGES_PATH = path.join(RESOURCES_ROOT, 'base', 'profile', 'main_pages.json');
+const OHOS_TEST_MODULE_PATH = path.join(OHOS_TEST_ROOT, 'module.json5');
+const OHOS_TEST_RUNNER_PATH = path.join(OHOS_TEST_ETS_ROOT, 'testrunner', 'OpenHarmonyTestRunner.ets');
+const OHOS_TEST_LIST_PATH = path.join(OHOS_TEST_ETS_ROOT, 'test', 'List.test.ets');
+const OHOS_TEST_CANONICAL_FIXTURE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase3-valid.yaml');
+const OHOS_TEST_RAWFILE_FIXTURE_PATH = path.join(OHOS_TEST_RESOURCES_ROOT, 'rawfile', 'phase3-valid.yaml');
+const OHOS_TEST_PAGES_PATH = path.join(OHOS_TEST_RESOURCES_ROOT, 'base', 'profile', 'test_pages.json');
 const STRING_RESOURCE_PATH = path.join(RESOURCES_ROOT, 'base', 'element', 'string.json');
 const BASE_COLOR_RESOURCE_PATH = path.join(RESOURCES_ROOT, 'base', 'element', 'color.json');
 const DARK_COLOR_RESOURCE_PATH = path.join(RESOURCES_ROOT, 'dark', 'element', 'color.json');
@@ -166,6 +175,18 @@ const REQUIRED_SEMANTIC_IDS = [
   'detail.refresh',
   'detail.delete'
 ];
+
+const REQUIRED_OHOS_TEST_SUITES = [
+  'Phase3PlatformAdapters',
+  'Phase3RuntimeFlow',
+  'Phase3UiFlow'
+];
+
+const PHASE3_VALID_YAML = `mode: rule
+mixed-port: 7890
+rules:
+  - MATCH,DIRECT
+`;
 
 const BANNED_COPY_TERMS = [
   'VPN',
@@ -384,4 +405,69 @@ test('Task 13 detail and error surfaces stay redacted and copy only pre-sanitize
   assert.doesNotMatch(safeErrorCardSource, /sourceUrl|yaml|picker|storage/u,
     'SafeErrorCard must not reach into raw source, YAML, picker, or storage data'
   );
+});
+
+test('Task 14 isolated Simulator test bundle registers an entry_test runner with deterministic suite order', async () => {
+  const [moduleSource, runnerSource, listSource, pagesSource] = await Promise.all([
+    readUtf8(OHOS_TEST_MODULE_PATH),
+    readUtf8(OHOS_TEST_RUNNER_PATH),
+    readUtf8(OHOS_TEST_LIST_PATH),
+    readUtf8(OHOS_TEST_PAGES_PATH)
+  ]);
+
+  assert.match(moduleSource, /"name"\s*:\s*"entry_test"/u, 'ohosTest module must register the SDK entry_test test module name');
+  assert.match(moduleSource, /"type"\s*:\s*"feature"/u, 'ohosTest module must keep the SDK feature module type');
+  assert.match(moduleSource, /"deviceTypes"\s*:\s*\[\s*"phone"\s*\]/u, 'ohosTest module must stay phone-only');
+  assert.match(moduleSource, /"srcEntry"\s*:\s*"\.\/ets\/testability\/TestAbility\.ets"/u,
+    'ohosTest module must point the test ability at ets/testability/TestAbility.ets'
+  );
+  assert.doesNotMatch(moduleSource, /"exported"\s*:\s*true/u, 'ohosTest test ability must not be exported');
+  assert.match(moduleSource, /"testRunner"\s*:\s*\{[\s\S]*"name"\s*:\s*"OpenHarmonyTestRunner"/u,
+    'ohosTest module must bind the Hypium runner by class name'
+  );
+  assert.match(moduleSource, /"testRunner"\s*:\s*\{[\s\S]*"srcPath"\s*:\s*"\.\/ets\/testrunner\/OpenHarmonyTestRunner\.ets"/u,
+    'ohosTest module must bind the runner source entrypoint'
+  );
+  assert.match(moduleSource, /"pages"\s*:\s*"\$profile:test_pages"/u, 'ohosTest module must use test_pages only');
+  assert.match(runnerSource, /implements\s+TestRunner/u, 'OpenHarmonyTestRunner must implement the SDK TestRunner contract');
+  assert.match(runnerSource, /List\.test/u, 'OpenHarmonyTestRunner must load List.test.ets');
+
+  const suiteMentions = [...listSource.matchAll(/from\s+'\.\/([^']+)\.test'/gu)].map((match) => match[1]);
+  assert.deepEqual(suiteMentions, REQUIRED_OHOS_TEST_SUITES,
+    'List.test.ets must import Phase3PlatformAdapters, Phase3RuntimeFlow, and Phase3UiFlow in deterministic order'
+  );
+
+  const suiteInvocationOrder = REQUIRED_OHOS_TEST_SUITES.map((suiteName) => {
+    const index = listSource.indexOf(`${suiteName}Testsuite()`);
+    assert.notEqual(index, -1, `${suiteName}Testsuite() must be invoked from List.test.ets`);
+    return index;
+  });
+  assert.deepEqual([...suiteInvocationOrder].sort((left, right) => left - right), suiteInvocationOrder,
+    'List.test.ets must invoke the three Task 14 suites in deterministic order'
+  );
+  assert.match(pagesSource, /"src"\s*:\s*\[\s*"testability\/pages\/Index"\s*\]/u,
+    'test_pages.json must only register the isolated testability page'
+  );
+});
+
+test('Task 14 isolated Simulator fixture stays canonical and production sources stay clean', async () => {
+  const [canonicalFixture, rawfileFixture, mainPagesSource, productionModuleSource] = await Promise.all([
+    fs.readFile(OHOS_TEST_CANONICAL_FIXTURE_PATH),
+    fs.readFile(OHOS_TEST_RAWFILE_FIXTURE_PATH),
+    readUtf8(MAIN_PAGES_PATH),
+    readUtf8(path.join(ENTRY_ROOT, 'src', 'main', 'module.json5'))
+  ]);
+
+  assert.equal(canonicalFixture.toString('utf8'), PHASE3_VALID_YAML,
+    'tests/fixtures/phase3-valid.yaml must match the canonical Task 14 YAML exactly'
+  );
+  assert.deepEqual(rawfileFixture, canonicalFixture,
+    'ohosTest rawfile fixture must stay byte-identical to tests/fixtures/phase3-valid.yaml'
+  );
+
+  for (const productionSource of [mainPagesSource, productionModuleSource]) {
+    assert.doesNotMatch(productionSource, /ohosTest|entry_test|test_pages|TestAbility|OpenHarmonyTestRunner|phase3-valid\.yaml/u,
+      'production routes and manifest must not reference the isolated ohosTest bundle'
+    );
+  }
 });

@@ -1,0 +1,20 @@
+{
+  "string": [
+    {
+      "name": "module_test_desc",
+      "value": "Task 14 isolated Simulator test bundle."
+    },
+    {
+      "name": "TestAbility_desc",
+      "value": "Task 14 isolated Simulator test ability."
+    },
+    {
+      "name": "TestAbility_label",
+      "value": "Task 14 Tests"
+    },
+    {
+      "name": "testability_title",
+      "value": "Task 14 Testability"
+    }
+  ]
+}

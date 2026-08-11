@@ -1,0 +1,312 @@
+import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
+import { util } from '@kit.ArkTS';
+import { fileIo, hash } from '@kit.CoreFileKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
+import { window } from '@kit.ArkUI';
+import type { StagedSource } from '@cmfa/shared';
+import common from '@ohos.app.ability.common';
+
+const DOMAIN: number = 0x0000;
+const TAG: string = 'Task14TestAbility';
+const TEST_ABILITY_PAGE: string = 'testability/pages/Index';
+const EVIDENCE_FILE_NAME: string = 'phase3-simulator-app-evidence.json';
+const URL_PATTERN: RegExp = /https?:\/\/[^\s"']+/gu;
+const FILE_URL_PATTERN: RegExp = /file:\/\/[^\s"']+/gu;
+const TOKEN_PATTERN: RegExp = /token=[^&\s"']+/gu;
+
+export const TASK14_PRODUCTION_BUNDLE_NAME: string = 'com.github.kr328.clash.harmony';
+export const TASK14_PRODUCTION_MODULE_NAME: string = 'entry';
+export const TASK14_PRODUCTION_ABILITY_NAME: string = 'EntryAbility';
+export const TASK14_TEST_MODULE_NAME: string = 'entry_test';
+export const TASK14_TEST_ABILITY_NAME: string = 'TestAbility';
+
+export interface Task14EvidenceFailure {
+  suite: string;
+  detail: string;
+}
+
+class Task14EvidenceFailureRecord implements Task14EvidenceFailure {
+  suite: string;
+  detail: string;
+
+  constructor(suite: string, detail: string) {
+    this.suite = suite;
+    this.detail = detail;
+  }
+}
+
+export interface Task14Evidence {
+  schemaVersion: '1.0.0';
+  phase: 3;
+  task: 14;
+  status: 'RUNNING' | 'PASS' | 'FAIL' | 'INCOMPLETE';
+  updatedAt: string;
+  suites: string[];
+  trace: string[];
+  checks: string[];
+  failures: Task14EvidenceFailure[];
+}
+
+let sharedContext: common.UIAbilityContext | undefined = undefined;
+let contextWaiters: Array<(context: common.UIAbilityContext) => void> = [];
+let evidence: Task14Evidence = createInitialEvidence();
+
+export default class TestAbility extends UIAbility {
+  onCreate(_want: Want, _launchParam: AbilityConstant.LaunchParam): void {
+    sharedContext = this.context;
+    resolveContextWaiters(this.context);
+    appendEvidenceTrace('TestAbility.onCreate');
+    void flushEvidence();
+    hilog.info(DOMAIN, TAG, '%{public}s', 'TestAbility onCreate');
+  }
+
+  onWindowStageCreate(windowStage: window.WindowStage): void {
+    appendEvidenceTrace('TestAbility.onWindowStageCreate');
+    void flushEvidence();
+    windowStage.loadContent(TEST_ABILITY_PAGE, () => {
+      hilog.info(DOMAIN, TAG, '%{public}s', 'TestAbility page loaded');
+    });
+  }
+
+  onForeground(): void {
+    appendEvidenceTrace('TestAbility.onForeground');
+  }
+
+  onBackground(): void {
+    appendEvidenceTrace('TestAbility.onBackground');
+  }
+}
+
+export async function waitForTestAbilityContext(): Promise<common.UIAbilityContext> {
+  if (sharedContext !== undefined) {
+    return sharedContext;
+  }
+  return await new Promise<common.UIAbilityContext>((resolve) => {
+    contextWaiters.push(resolve);
+  });
+}
+
+export function getTestAbilityContext(): common.UIAbilityContext {
+  if (sharedContext === undefined) {
+    throw new Error('Task 14 test ability context is not ready.');
+  }
+  return sharedContext;
+}
+
+export function getEvidence(): Task14Evidence {
+  return cloneEvidence(evidence);
+}
+
+export function setEvidenceStatus(status: 'RUNNING' | 'PASS' | 'FAIL' | 'INCOMPLETE'): void {
+  evidence.status = status;
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export function appendEvidenceTrace(step: string): void {
+  evidence.trace.push(sanitizeEvidenceText(step));
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export function appendEvidenceCheck(check: string): void {
+  evidence.checks.push(sanitizeEvidenceText(check));
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export function appendEvidenceFailure(suite: string, detail: string): void {
+  evidence.failures.push(new Task14EvidenceFailureRecord(suite, sanitizeEvidenceText(detail)));
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export async function flushEvidence(): Promise<void> {
+  if (sharedContext === undefined) {
+    return;
+  }
+  const filePath: string = evidenceFilePath(sharedContext);
+  const file = await fileIo.open(
+    filePath,
+    fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC
+  );
+  try {
+    await fileIo.write(file.fd, `${JSON.stringify(evidence)}\n`);
+  } finally {
+    await fileIo.close(file.fd);
+  }
+}
+
+export function evidencePath(): string {
+  return evidenceFilePath(getTestAbilityContext());
+}
+
+export async function stageRawfileToSandbox(fileName: string): Promise<StagedFixture> {
+  const context: common.UIAbilityContext = await waitForTestAbilityContext();
+  const rawBytes: Uint8Array = context.resourceManager.getRawFileContentSync(fileName);
+  const stagingId: string = createScopedId('stage');
+  const stageDirectory: string = `${context.filesDir}/tmp`;
+  const validationPath: string = `${stageDirectory}/${stagingId}.yaml`;
+  await ensureDirectory(stageDirectory);
+  await writeBytesFile(validationPath, rawBytes);
+  return new StagedFixture(
+    stagingId,
+    validationPath,
+    await hashStage(validationPath),
+    rawBytes.length,
+    new Date().toISOString()
+  );
+}
+
+export async function writeUtf8File(filePath: string, contents: string): Promise<void> {
+  const encoder = util.TextEncoder.create('utf-8');
+  await writeBytesFile(filePath, encoder.encodeInto(contents));
+}
+
+export async function writeBytesFile(filePath: string, bytes: Uint8Array): Promise<void> {
+  const file = await fileIo.open(
+    filePath,
+    fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC
+  );
+  try {
+    let written: number = 0;
+    while (written < bytes.length) {
+      const chunk: Uint8Array = bytes.slice(written);
+      const wroteNow: number = await fileIo.write(file.fd, chunk.buffer, { length: chunk.length });
+      written += wroteNow;
+    }
+  } finally {
+    await fileIo.close(file.fd);
+  }
+}
+
+export async function readBytesFile(filePath: string): Promise<Uint8Array> {
+  const stat = await fileIo.stat(filePath);
+    const file = await fileIo.open(filePath, fileIo.OpenMode.READ_ONLY);
+  try {
+    const buffer = new ArrayBuffer(Number(stat.size));
+    let readNow: number = 0;
+    while (readNow < Number(stat.size)) {
+      const bytesRead: number = await fileIo.read(file.fd, buffer, {
+        offset: readNow,
+        length: Number(stat.size) - readNow
+      });
+      if (bytesRead <= 0) {
+        break;
+      }
+      readNow += bytesRead;
+    }
+    return new Uint8Array(buffer);
+  } finally {
+    await fileIo.close(file.fd);
+  }
+}
+
+export async function readUtf8File(filePath: string): Promise<string> {
+  return decodeUtf8(await readBytesFile(filePath));
+}
+
+export async function ensureDirectory(directoryPath: string): Promise<void> {
+  await fileIo.mkdir(directoryPath, true);
+}
+
+export function decodeUtf8(bytes: Uint8Array): string {
+  return util.TextDecoder.create('utf-8', { ignoreBOM: true }).decodeWithStream(bytes);
+}
+
+export async function removeIfPresent(filePath: string): Promise<void> {
+  try {
+    const exists: boolean = await fileIo.access(filePath);
+    if (exists) {
+      await fileIo.unlink(filePath);
+    }
+  } catch (_) {
+  }
+}
+
+export async function listDirectory(directoryPath: string): Promise<string[]> {
+  try {
+    return await fileIo.listFile(directoryPath);
+  } catch (_) {
+    return [];
+  }
+}
+
+export function sanitizeEvidenceText(rawValue: string): string {
+  let sanitized: string = rawValue;
+  const context: common.UIAbilityContext | undefined = sharedContext;
+  if (context !== undefined) {
+    for (const root of [context.filesDir, context.cacheDir, context.tempDir, context.databaseDir]) {
+      sanitized = sanitized.split(root).join('<sandbox>');
+    }
+  }
+  sanitized = sanitized.replace(FILE_URL_PATTERN, 'file://<redacted>');
+  sanitized = sanitized.replace(URL_PATTERN, '<url>');
+  sanitized = sanitized.replace(TOKEN_PATTERN, 'token=<redacted>');
+  return sanitized;
+}
+
+export class StagedFixture implements StagedSource {
+  stagingId: string;
+  validationPath: string;
+  sha256Digest: string;
+  byteLength: number;
+  validatedAt: string;
+
+  constructor(stagingId: string, validationPath: string, sha256Digest: string, byteLength: number, validatedAt: string) {
+    this.stagingId = stagingId;
+    this.validationPath = validationPath;
+    this.sha256Digest = sha256Digest;
+    this.byteLength = byteLength;
+    this.validatedAt = validatedAt;
+  }
+}
+
+function createInitialEvidence(): Task14Evidence {
+  return {
+    schemaVersion: '1.0.0',
+    phase: 3,
+    task: 14,
+    status: 'RUNNING',
+    updatedAt: new Date().toISOString(),
+    suites: ['Phase3PlatformAdapters', 'Phase3RuntimeFlow', 'Phase3UiFlow'],
+    trace: [],
+    checks: [],
+    failures: []
+  };
+}
+
+function cloneEvidence(source: Task14Evidence): Task14Evidence {
+  const failures: Task14EvidenceFailure[] = [];
+  for (let index: number = 0; index < source.failures.length; index += 1) {
+    const failure: Task14EvidenceFailure = source.failures[index];
+    failures.push(new Task14EvidenceFailureRecord(failure.suite, failure.detail));
+  }
+  return {
+    schemaVersion: source.schemaVersion,
+    phase: source.phase,
+    task: source.task,
+    status: source.status,
+    updatedAt: source.updatedAt,
+    suites: source.suites.slice(),
+    trace: source.trace.slice(),
+    checks: source.checks.slice(),
+    failures
+  };
+}
+
+function resolveContextWaiters(context: common.UIAbilityContext): void {
+  const waiters = contextWaiters;
+  contextWaiters = [];
+  for (let index: number = 0; index < waiters.length; index += 1) {
+    waiters[index](context);
+  }
+}
+
+function evidenceFilePath(context: common.UIAbilityContext): string {
+  return `${context.filesDir}/${EVIDENCE_FILE_NAME}`;
+}
+
+async function hashStage(filePath: string): Promise<string> {
+  return await hash.hash(filePath, 'sha256');
+}
+
+function createScopedId(prefix: string): string {
+  return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+}

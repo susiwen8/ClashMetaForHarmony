@@ -1,0 +1,4 @@
+mode: rule
+mixed-port: 7890
+rules:
+  - MATCH,DIRECT
