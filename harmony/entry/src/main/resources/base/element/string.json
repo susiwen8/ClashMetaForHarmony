@@ -11,6 +11,274 @@
     {
       "name": "EntryAbility_label",
       "value": "Clash Meta"
+    },
+    {
+      "name": "app_loading",
+      "value": "正在初始化"
+    },
+    {
+      "name": "common_back",
+      "value": "返回"
+    },
+    {
+      "name": "home_title",
+      "value": "本地代理"
+    },
+    {
+      "name": "home_profile_title",
+      "value": "当前配置"
+    },
+    {
+      "name": "home_profile_empty",
+      "value": "还没有可启用的配置"
+    },
+    {
+      "name": "home_profile_manage",
+      "value": "管理配置"
+    },
+    {
+      "name": "home_runtime_title",
+      "value": "运行状态"
+    },
+    {
+      "name": "home_runtime_status_stopped",
+      "value": "已停止"
+    },
+    {
+      "name": "home_runtime_status_starting",
+      "value": "启动中"
+    },
+    {
+      "name": "home_runtime_status_running",
+      "value": "运行中"
+    },
+    {
+      "name": "home_runtime_status_stopping",
+      "value": "停止中"
+    },
+    {
+      "name": "home_runtime_status_error",
+      "value": "异常"
+    },
+    {
+      "name": "home_runtime_primary_start",
+      "value": "启动本地代理"
+    },
+    {
+      "name": "home_runtime_primary_stop",
+      "value": "停止本地代理"
+    },
+    {
+      "name": "home_runtime_primary_busy",
+      "value": "处理中"
+    },
+    {
+      "name": "home_runtime_missing_profile",
+      "value": "请先启用一个有效配置"
+    },
+    {
+      "name": "home_runtime_http_label",
+      "value": "HTTP 监听"
+    },
+    {
+      "name": "home_runtime_socks_label",
+      "value": "SOCKS 监听"
+    },
+    {
+      "name": "home_runtime_local_proxy",
+      "value": "本地代理"
+    },
+    {
+      "name": "profiles_title",
+      "value": "配置列表"
+    },
+    {
+      "name": "profiles_add",
+      "value": "添加配置"
+    },
+    {
+      "name": "profiles_empty_title",
+      "value": "还没有配置"
+    },
+    {
+      "name": "profiles_empty_body",
+      "value": "从文件或 URL 导入后，配置会显示在这里。"
+    },
+    {
+      "name": "profiles_locked_message",
+      "value": "请先停止本地代理，再切换或删除配置。"
+    },
+    {
+      "name": "profiles_badge_active",
+      "value": "当前"
+    },
+    {
+      "name": "profiles_badge_valid",
+      "value": "有效"
+    },
+    {
+      "name": "profiles_badge_invalid",
+      "value": "无效"
+    },
+    {
+      "name": "profiles_badge_update_failed",
+      "value": "更新失败"
+    },
+    {
+      "name": "import_title",
+      "value": "导入配置"
+    },
+    {
+      "name": "import_name_label",
+      "value": "名称"
+    },
+    {
+      "name": "import_name_placeholder",
+      "value": "输入配置名称"
+    },
+    {
+      "name": "import_url_label",
+      "value": "订阅地址"
+    },
+    {
+      "name": "import_url_placeholder",
+      "value": "输入 HTTP 或 HTTPS 地址"
+    },
+    {
+      "name": "import_file_action",
+      "value": "从文件导入"
+    },
+    {
+      "name": "import_url_action",
+      "value": "通过 URL 导入"
+    },
+    {
+      "name": "import_submit",
+      "value": "开始导入"
+    },
+    {
+      "name": "import_cancel",
+      "value": "关闭"
+    },
+    {
+      "name": "import_http_warning_title",
+      "value": "确认使用 HTTP"
+    },
+    {
+      "name": "import_http_warning_message",
+      "value": "HTTP 地址不会提供传输加密。仅在你确认来源可信时继续。"
+    },
+    {
+      "name": "import_http_warning_confirm",
+      "value": "继续"
+    },
+    {
+      "name": "import_http_warning_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "import_progress_import",
+      "value": "导入"
+    },
+    {
+      "name": "import_progress_download",
+      "value": "下载"
+    },
+    {
+      "name": "import_progress_validation",
+      "value": "校验"
+    },
+    {
+      "name": "import_progress_persistence",
+      "value": "保存"
+    },
+    {
+      "name": "detail_title",
+      "value": "配置详情"
+    },
+    {
+      "name": "detail_source_kind_file",
+      "value": "文件"
+    },
+    {
+      "name": "detail_source_kind_url",
+      "value": "URL"
+    },
+    {
+      "name": "detail_source_title",
+      "value": "来源"
+    },
+    {
+      "name": "detail_updated_at",
+      "value": "最近更新"
+    },
+    {
+      "name": "detail_enable",
+      "value": "启用配置"
+    },
+    {
+      "name": "detail_refresh",
+      "value": "重新获取"
+    },
+    {
+      "name": "detail_replace",
+      "value": "替换来源"
+    },
+    {
+      "name": "detail_delete",
+      "value": "删除配置"
+    },
+    {
+      "name": "detail_delete_confirm_title",
+      "value": "确认删除"
+    },
+    {
+      "name": "detail_delete_confirm_message",
+      "value": "删除后不会保留当前来源和本地内容。"
+    },
+    {
+      "name": "detail_delete_confirm_action",
+      "value": "删除"
+    },
+    {
+      "name": "detail_delete_cancel",
+      "value": "取消"
+    },
+    {
+      "name": "detail_copy_detail",
+      "value": "复制错误详情"
+    },
+    {
+      "name": "detail_source_repair_required",
+      "value": "当前保存的订阅来源不可用，请替换后再试。"
+    },
+    {
+      "name": "error_import",
+      "value": "导入失败"
+    },
+    {
+      "name": "error_download",
+      "value": "下载失败"
+    },
+    {
+      "name": "error_validation",
+      "value": "校验失败"
+    },
+    {
+      "name": "error_persistence",
+      "value": "保存失败"
+    },
+    {
+      "name": "error_core_load",
+      "value": "加载核心配置失败"
+    },
+    {
+      "name": "error_runtime_start",
+      "value": "启动本地代理失败"
+    },
+    {
+      "name": "error_runtime_stop",
+      "value": "停止本地代理失败"
     }
   ]
 }

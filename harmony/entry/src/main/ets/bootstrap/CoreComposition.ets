@@ -82,6 +82,7 @@ interface AppStorageBridge {
 }
 
 const PHASE1_LAUNCH_CONTEXT_KEY: string = '__cmfa_phase1_launch_context__';
+const APPLICATION_COMPOSITION_STORAGE_KEY: string = '__cmfa_application_composition__';
 const SELF_TEST_KEY = 'cmfa.phase1.selfTest';
 const RUN_ID_KEY = 'cmfa.phase1.runId';
 const RUNNER_STARTED_AT_KEY = 'cmfa.phase1.runnerStartedAt';
@@ -166,6 +167,16 @@ export function getPhase1LaunchContext(): Phase1LaunchContext {
     probeFixturePath: raw.probeFixturePath ?? '',
     probeFixtureSha256: raw.probeFixtureSha256 ?? ''
   };
+}
+
+export function createApplicationCompositionStorage(composition: ApplicationComposition): LocalStorage {
+  const storage = new LocalStorage();
+  storage.setOrCreate<ApplicationComposition>(APPLICATION_COMPOSITION_STORAGE_KEY, composition);
+  return storage;
+}
+
+export function getApplicationCompositionFromStorage(storage: LocalStorage | undefined): ApplicationComposition | undefined {
+  return storage?.get<ApplicationComposition>(APPLICATION_COMPOSITION_STORAGE_KEY);
 }
 
 export function createApplicationComposition(

@@ -84,6 +84,10 @@ export class ProfileDetailViewModel {
     return cloneProfileDetailViewState(this.state);
   }
 
+  currentReplacementUrlDraft(): string {
+    return this.replacementUrlDraft;
+  }
+
   subscribe(listener: ProfileDetailViewListener): number {
     this.nextListenerId += 1;
     this.listeners.set(this.nextListenerId, listener);

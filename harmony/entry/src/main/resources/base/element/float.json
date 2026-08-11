@@ -3,6 +3,66 @@
     {
       "name": "page_text_font_size",
       "value": "50fp"
+    },
+    {
+      "name": "space_xs",
+      "value": "4vp"
+    },
+    {
+      "name": "space_sm",
+      "value": "8vp"
+    },
+    {
+      "name": "space_md",
+      "value": "12vp"
+    },
+    {
+      "name": "space_lg",
+      "value": "16vp"
+    },
+    {
+      "name": "space_xl",
+      "value": "24vp"
+    },
+    {
+      "name": "radius_chip",
+      "value": "12vp"
+    },
+    {
+      "name": "radius_card",
+      "value": "20vp"
+    },
+    {
+      "name": "radius_sheet",
+      "value": "28vp"
+    },
+    {
+      "name": "type_caption",
+      "value": "12fp"
+    },
+    {
+      "name": "type_body",
+      "value": "16fp"
+    },
+    {
+      "name": "type_title",
+      "value": "20fp"
+    },
+    {
+      "name": "type_headline",
+      "value": "28fp"
+    },
+    {
+      "name": "touch_target_min",
+      "value": "48vp"
+    },
+    {
+      "name": "page_padding_compact",
+      "value": "16vp"
+    },
+    {
+      "name": "page_padding_regular",
+      "value": "24vp"
     }
   ]
 }

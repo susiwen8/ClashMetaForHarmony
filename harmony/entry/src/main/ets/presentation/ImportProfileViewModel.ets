@@ -69,6 +69,14 @@ export class ImportProfileViewModel {
     return cloneImportProfileViewState(this.state);
   }
 
+  currentNameDraft(): string {
+    return this.nameDraft;
+  }
+
+  currentUrlDraft(): string {
+    return this.urlDraft;
+  }
+
   subscribe(listener: ImportProfileViewListener): number {
     this.nextListenerId += 1;
     this.listeners.set(this.nextListenerId, listener);

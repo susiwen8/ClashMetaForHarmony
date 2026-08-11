@@ -5,6 +5,7 @@ import { window } from '@kit.ArkUI';
 import type { ApplicationComposition } from '../bootstrap/ApplicationComposition';
 import {
   applyPhase1LaunchWant,
+  createApplicationCompositionStorage,
   createApplicationComposition,
   getPhase1LaunchContext
 } from '../bootstrap/CoreComposition';
@@ -86,7 +87,7 @@ export default class EntryAbility extends UIAbility {
       if (generation !== this.navigationGeneration) {
         return;
       }
-      await this.loadPage(currentWindowStage, SELF_TEST_ROUTE);
+      await this.loadSelfTestPage(currentWindowStage);
       return;
     }
     const applicationComposition: ApplicationComposition = this.applicationComposition ?? createApplicationComposition(this.context);
@@ -96,7 +97,8 @@ export default class EntryAbility extends UIAbility {
     if (generation !== this.navigationGeneration) {
       return;
     }
-    await this.loadPage(currentWindowStage, PRODUCTION_ROUTE);
+    const storage = createApplicationCompositionStorage(applicationComposition);
+    await this.loadProductionPage(currentWindowStage, storage);
   }
 
   private async closeApplicationComposition(): Promise<void> {
@@ -108,9 +110,23 @@ export default class EntryAbility extends UIAbility {
     await applicationComposition.close();
   }
 
-  private async loadPage(windowStage: window.WindowStage, route: string): Promise<void> {
+  private async loadProductionPage(windowStage: window.WindowStage, storage: LocalStorage): Promise<void> {
     await new Promise<void>((resolve) => {
-      windowStage.loadContent(route, (err) => {
+      windowStage.loadContent(PRODUCTION_ROUTE, storage, (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, 'testTag', 'Failed to load the content.');
+          resolve();
+          return;
+        }
+        hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+        resolve();
+      });
+    });
+  }
+
+  private async loadSelfTestPage(windowStage: window.WindowStage): Promise<void> {
+    await new Promise<void>((resolve) => {
+      windowStage.loadContent(SELF_TEST_ROUTE, (err) => {
         if (err.code) {
           hilog.error(DOMAIN, 'testTag', 'Failed to load the content.');
           resolve();
