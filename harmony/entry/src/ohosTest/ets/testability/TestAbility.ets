@@ -49,6 +49,8 @@ export interface Task14Evidence {
 
 let sharedContext: common.UIAbilityContext | undefined = undefined;
 let contextWaiters: Array<(context: common.UIAbilityContext) => void> = [];
+let task14CompletionResolved: boolean = false;
+let task14CompletionWaiters: Array<() => void> = [];
 let evidence: Task14Evidence = createInitialEvidence();
 
 export default class TestAbility extends UIAbility {
@@ -95,6 +97,27 @@ export function getTestAbilityContext(): common.UIAbilityContext {
 
 export function getEvidence(): Task14Evidence {
   return cloneEvidence(evidence);
+}
+
+export async function waitForTask14Completion(): Promise<void> {
+  if (task14CompletionResolved) {
+    return;
+  }
+  return await new Promise<void>((resolve) => {
+    task14CompletionWaiters.push(resolve);
+  });
+}
+
+export function signalTask14Completion(): void {
+  if (task14CompletionResolved) {
+    return;
+  }
+  task14CompletionResolved = true;
+  const waiters: Array<() => void> = task14CompletionWaiters;
+  task14CompletionWaiters = [];
+  for (let index: number = 0; index < waiters.length; index += 1) {
+    waiters[index]();
+  }
 }
 
 export function setEvidenceStatus(status: 'RUNNING' | 'PASS' | 'FAIL' | 'INCOMPLETE'): void {

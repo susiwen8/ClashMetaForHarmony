@@ -1,5 +1,4 @@
 import { Want } from '@kit.AbilityKit';
-import { hilog } from '@kit.PerformanceAnalysisKit';
 import { abilityDelegatorRegistry } from '@kit.TestKit';
 import { describe, expect, it } from '@ohos/hypium';
 import { Driver, ON } from '@ohos.UiTest';
@@ -44,6 +43,12 @@ export default function Phase3UiFlowTestsuite(): void {
         await addButton.click();
 
         await driver.waitForComponent(ON.id('import.file'), 5000);
+        const importFile = await driver.findComponent(ON.id('import.file'));
+        await importFile.click();
+        await driver.delayMs(500);
+        await driver.pressBack();
+        await driver.waitForComponent(ON.id('import.file'), 5000);
+        await driver.assertComponentExist(ON.id('import.submit'));
         const urlInput = await driver.findComponent(ON.id('import.url'));
         await urlInput.inputText('http://plain.example.com/subscription.yaml?token=cancelled');
         const submit = await driver.findComponent(ON.id('import.submit'));

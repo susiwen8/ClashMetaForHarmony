@@ -1,5 +1,6 @@
 import { describe, expect, it } from '@ohos/hypium';
 import { fileIo } from '@kit.CoreFileKit';
+import common from '@ohos.app.ability.common';
 import { PlatformFactory, type PlatformGraph } from '@cmfa/platform';
 import {
   createProfile,
@@ -14,6 +15,7 @@ import {
   decodeUtf8,
   flushEvidence,
   getTestAbilityContext,
+  listDirectory,
   readBytesFile,
   readUtf8File,
   removeIfPresent,
@@ -26,8 +28,10 @@ import {
 const SUITE_NAME: string = 'Phase3PlatformAdapters';
 const DATABASE_NAME: string = 'cmfa_profiles.db';
 const REMOTE_URL: string = 'https://masked-user:masked-secret@example.com/subscription.yaml?token=super-secret-token';
+const REMOTE_SOURCE_DISPLAY: string = 'https://example.com';
 const REMOTE_TOKEN_FRAGMENT: string = 'super-secret-token';
 const EXTERNAL_PICKER_URI: string = ['file', '://', '/storage/', 'Us', 'ers', '/currentDevice/external/profile-phase3-valid.yaml'].join('');
+const LOCAL_SOURCE_DISPLAY: string = 'profile-phase3-valid.yaml';
 const YAML_SENTINEL: string = 'MATCH,DIRECT';
 
 export default function Phase3PlatformAdaptersTestsuite(): void {
@@ -66,7 +70,7 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           id: localProfileId,
           name: 'Task 14 Local',
           sourceKind: 'LOCAL_FILE',
-          sourceDisplay: EXTERNAL_PICKER_URI,
+          sourceDisplay: LOCAL_SOURCE_DISPLAY,
           currentRevision: localCurrentRevision,
           failedCandidate: localFailedRevision,
           availability: 'VALID',
@@ -79,7 +83,7 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           id: remoteProfileId,
           name: 'Task 14 Remote',
           sourceKind: 'REMOTE_URL',
-          sourceDisplay: REMOTE_URL,
+          sourceDisplay: REMOTE_SOURCE_DISPLAY,
           sourceSecretRef: remoteSecretId,
           currentRevision: remoteCurrentRevision,
           failedCandidate: null,
@@ -111,6 +115,8 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
         ensure(reopenedLocalProfile !== undefined, 'Reopened local profile must exist.');
         ensure(reopenedRemoteProfile !== undefined, 'Reopened remote profile must exist.');
         ensure(reopenedLocalProfile!.failedCandidate !== null, 'Reopened local profile must keep the failed candidate while referenced.');
+        expect(reopenedLocalProfile!.sourceDisplay).assertEqual(LOCAL_SOURCE_DISPLAY);
+        expect(reopenedRemoteProfile!.sourceDisplay).assertEqual(REMOTE_SOURCE_DISPLAY);
 
         const updatedLocalProfile: Profile = createProfile({
           id: reopenedLocalProfile!.id,
@@ -205,14 +211,11 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           if (finalGraph !== undefined) {
             for (let index: number = 0; index < profileIds.length; index += 1) {
               const profileId: string = profileIds[index];
-              await finalGraph.repository.deleteAndClearActive(profileId).catch(() => {
-              });
-              await finalGraph.contentStore.removeProfile(profileId).catch(() => {
-              });
+              await finalGraph.repository.deleteAndClearActive(profileId);
+              await finalGraph.contentStore.removeProfile(profileId);
             }
             for (let index: number = 0; index < secretIds.length; index += 1) {
-              await finalGraph.secretStore.remove(secretIds[index]).catch(() => {
-              });
+              await finalGraph.secretStore.remove(secretIds[index]);
             }
             await finalGraph.close();
             await finalGraph.close();
@@ -223,6 +226,7 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           expect(remainingProfiles.length).assertEqual(0);
           expect(await cleanupGraph.repository.getActiveId()).assertEqual(undefined);
           await cleanupGraph.close();
+          await assertNoResidualTask14Artifacts(getTestAbilityContext(), profileIds, secretIds);
           cleanupVerified = true;
         } catch (cleanupError) {
           setEvidenceStatus('FAIL');
@@ -312,4 +316,19 @@ function toError(error: Object | undefined): Error {
     return error;
   }
   return new Error(`${error}`);
+}
+
+async function assertNoResidualTask14Artifacts(
+  context: common.UIAbilityContext,
+  profileIds: string[],
+  secretIds: string[]
+): Promise<void> {
+  const residualProfileNames: string[] = await listDirectory(`${context.filesDir}/profiles`);
+  for (let index: number = 0; index < profileIds.length; index += 1) {
+    ensure(!residualProfileNames.includes(profileIds[index]), 'Task 14 cleanup must remove every profile artifact directory.');
+  }
+  const residualSecretNames: string[] = await listDirectory(`${context.filesDir}/profile-secrets`);
+  for (let index: number = 0; index < secretIds.length; index += 1) {
+    ensure(!residualSecretNames.includes(`${secretIds[index]}.json`), 'Task 14 cleanup must remove every secret envelope.');
+  }
 }

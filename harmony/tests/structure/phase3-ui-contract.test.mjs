@@ -22,6 +22,10 @@ const MAIN_PAGES_PATH = path.join(RESOURCES_ROOT, 'base', 'profile', 'main_pages
 const OHOS_TEST_MODULE_PATH = path.join(OHOS_TEST_ROOT, 'module.json5');
 const OHOS_TEST_RUNNER_PATH = path.join(OHOS_TEST_ETS_ROOT, 'testrunner', 'OpenHarmonyTestRunner.ets');
 const OHOS_TEST_LIST_PATH = path.join(OHOS_TEST_ETS_ROOT, 'test', 'List.test.ets');
+const OHOS_TEST_TESTABILITY_PATH = path.join(OHOS_TEST_ETS_ROOT, 'testability', 'TestAbility.ets');
+const OHOS_TEST_PLATFORM_ADAPTERS_PATH = path.join(OHOS_TEST_ETS_ROOT, 'test', 'Phase3PlatformAdapters.test.ets');
+const OHOS_TEST_RUNTIME_FLOW_PATH = path.join(OHOS_TEST_ETS_ROOT, 'test', 'Phase3RuntimeFlow.test.ets');
+const OHOS_TEST_UI_FLOW_PATH = path.join(OHOS_TEST_ETS_ROOT, 'test', 'Phase3UiFlow.test.ets');
 const OHOS_TEST_CANONICAL_FIXTURE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase3-valid.yaml');
 const OHOS_TEST_RAWFILE_FIXTURE_PATH = path.join(OHOS_TEST_RESOURCES_ROOT, 'rawfile', 'phase3-valid.yaml');
 const OHOS_TEST_PAGES_PATH = path.join(OHOS_TEST_RESOURCES_ROOT, 'base', 'profile', 'test_pages.json');
@@ -408,11 +412,12 @@ test('Task 13 detail and error surfaces stay redacted and copy only pre-sanitize
 });
 
 test('Task 14 isolated Simulator test bundle registers an entry_test runner with deterministic suite order', async () => {
-  const [moduleSource, runnerSource, listSource, pagesSource] = await Promise.all([
+  const [moduleSource, runnerSource, listSource, pagesSource, testabilitySource] = await Promise.all([
     readUtf8(OHOS_TEST_MODULE_PATH),
     readUtf8(OHOS_TEST_RUNNER_PATH),
     readUtf8(OHOS_TEST_LIST_PATH),
-    readUtf8(OHOS_TEST_PAGES_PATH)
+    readUtf8(OHOS_TEST_PAGES_PATH),
+    readUtf8(OHOS_TEST_TESTABILITY_PATH)
   ]);
 
   assert.match(moduleSource, /"name"\s*:\s*"entry_test"/u, 'ohosTest module must register the SDK entry_test test module name');
@@ -431,6 +436,21 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(moduleSource, /"pages"\s*:\s*"\$profile:test_pages"/u, 'ohosTest module must use test_pages only');
   assert.match(runnerSource, /implements\s+TestRunner/u, 'OpenHarmonyTestRunner must implement the SDK TestRunner contract');
   assert.match(runnerSource, /List\.test/u, 'OpenHarmonyTestRunner must load List.test.ets');
+  assert.match(runnerSource, /await\s+waitForTask14Completion(?:OrTimeout)?\(/u,
+    'OpenHarmonyTestRunner must await the Task 14 completion barrier after registering Hypium tests'
+  );
+  assert.match(runnerSource, /TIMEOUT|timeout/u,
+    'OpenHarmonyTestRunner must enforce a bounded completion timeout'
+  );
+  assert.match(runnerSource, /appendEvidenceFailure\([\s\S]*timeout/iu,
+    'OpenHarmonyTestRunner must record a timeout as FAIL evidence before throwing'
+  );
+  assert.match(testabilitySource, /export\s+async\s+function\s+waitForTask14Completion\(/u,
+    'TestAbility must expose a waitForTask14Completion Promise barrier'
+  );
+  assert.match(testabilitySource, /signalTask14Completion/u,
+    'TestAbility must expose a single-shot completion signal'
+  );
 
   const suiteMentions = [...listSource.matchAll(/from\s+'\.\/([^']+)\.test'/gu)].map((match) => match[1]);
   assert.deepEqual(suiteMentions, REQUIRED_OHOS_TEST_SUITES,
@@ -444,6 +464,21 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   });
   assert.deepEqual([...suiteInvocationOrder].sort((left, right) => left - right), suiteInvocationOrder,
     'List.test.ets must invoke the three Task 14 suites in deterministic order'
+  );
+  assert.match(listSource, /describe\(['"`]Task14Finalization/u,
+    'List.test.ets must register a deterministic finalization suite after the three Task 14 suites'
+  );
+  assert.match(listSource, /setEvidenceStatus\(['"`]PASS['"`]\)/u,
+    'List.test.ets finalization must set PASS when no evidence failures remain'
+  );
+  assert.match(listSource, /signalTask14Completion\(/u,
+    'List.test.ets finalization must signal the completion barrier exactly once'
+  );
+  assert.match(listSource, /await\s+flushEvidence\(/u,
+    'List.test.ets finalization must flush evidence before completion'
+  );
+  assert.match(listSource, /getEvidence\(\)\.failures/u,
+    'List.test.ets finalization must inspect accumulated evidence failures'
   );
   assert.match(pagesSource, /"src"\s*:\s*\[\s*"testability\/pages\/Index"\s*\]/u,
     'test_pages.json must only register the isolated testability page'
@@ -470,4 +505,63 @@ test('Task 14 isolated Simulator fixture stays canonical and production sources 
       'production routes and manifest must not reference the isolated ohosTest bundle'
     );
   }
+});
+
+test('Task 14 suite sources keep completion, picker cancel, sanitized displays, and non-swallowing cleanup semantics', async () => {
+  const [platformSource, runtimeSource, uiSource] = await Promise.all([
+    readUtf8(OHOS_TEST_PLATFORM_ADAPTERS_PATH),
+    readUtf8(OHOS_TEST_RUNTIME_FLOW_PATH),
+    readUtf8(OHOS_TEST_UI_FLOW_PATH)
+  ]);
+
+  assert.match(uiSource, /ON\.id\(['"`]import\.file['"`]\)[\s\S]*click\(/u,
+    'Phase3UiFlow must click the production import.file semantic id before system Picker cancellation'
+  );
+  assert.match(uiSource, /pressBack\(/u,
+    'Phase3UiFlow must cancel the system Picker via Driver.pressBack'
+  );
+  assert.match(uiSource, /waitForComponent\(\s*ON\.id\(['"`]import\.file['"`]\)/u,
+    'Phase3UiFlow must return to the import sheet after Picker cancellation before the HTTP warning flow'
+  );
+  assert.match(uiSource, /waitForComponent\(\s*ON\.id\(['"`]profiles\.add['"`]\)/u,
+    'Phase3UiFlow must return to the profiles list after the HTTP warning cancel path'
+  );
+
+  assert.match(runtimeSource, /application\.current\(\)\.runtime\.state[\s\S]*['"`]RUNNING['"`]/u,
+    'Phase3RuntimeFlow must assert a RUNNING application snapshot after start'
+  );
+  assert.match(runtimeSource, /(?:application\.current\(\)\.runtime\.latest|latest)\.state[\s\S]*['"`]RUNNING['"`]/u,
+    'Phase3RuntimeFlow must assert a RUNNING latest snapshot after start'
+  );
+  assert.match(runtimeSource, /application\.current\(\)\.runtime\.state[\s\S]*['"`]STOPPED['"`]/u,
+    'Phase3RuntimeFlow must assert a STOPPED application snapshot after stop'
+  );
+  assert.match(runtimeSource, /(?:application\.current\(\)\.runtime\.latest|latest)\.state[\s\S]*['"`]STOPPED['"`]/u,
+    'Phase3RuntimeFlow must assert a STOPPED latest snapshot after stop'
+  );
+  assert.match(runtimeSource, /finally[\s\S]*await\s+application\.stopLocal\(/u,
+    'Phase3RuntimeFlow must unconditionally call stopLocal in finally once an application exists'
+  );
+  assert.doesNotMatch(runtimeSource, /if\s*\(\s*runtimeState\s*===\s*['"`]RUNNING['"`][\s\S]*await\s+application\.stopLocal/u,
+    'Phase3RuntimeFlow finally must not skip stopLocal based on a snapshot-state guard'
+  );
+  assert.match(runtimeSource, /['"`]retain\/save['"`][\s\S]*['"`]enable\.validate['"`][\s\S]*['"`]enable\.load['"`][\s\S]*['"`]start\.revalidate['"`][\s\S]*['"`]start\.load['"`][\s\S]*['"`]startLocal\(7890\)['"`]/u,
+    'Phase3RuntimeFlow trace must acknowledge both enable validate/load and start revalidate/load before startLocal(7890)'
+  );
+  assert.doesNotMatch(runtimeSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
+    'Phase3RuntimeFlow cleanup must not swallow repository/content removal failures'
+  );
+
+  assert.doesNotMatch(platformSource, /sourceDisplay:\s*EXTERNAL_PICKER_URI/u,
+    'Phase3PlatformAdapters local test profiles must not persist the external Picker URI as sourceDisplay'
+  );
+  assert.doesNotMatch(platformSource, /sourceDisplay:\s*REMOTE_URL/u,
+    'Phase3PlatformAdapters remote test profiles must not persist the raw remote URL as sourceDisplay'
+  );
+  assert.match(platformSource, /decrypt\(remoteSecretId\)[\s\S]*assertEqual\(REMOTE_URL\)/u,
+    'Phase3PlatformAdapters must still prove the raw remote URL survives only through HUKS decrypt'
+  );
+  assert.doesNotMatch(platformSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
+    'Phase3PlatformAdapters cleanup must not swallow profile/content/secret deletion failures'
+  );
 });

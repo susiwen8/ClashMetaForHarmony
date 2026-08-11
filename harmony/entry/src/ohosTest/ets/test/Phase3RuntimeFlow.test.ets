@@ -78,7 +78,9 @@ export default function Phase3RuntimeFlowTestsuite(): void {
 
         const startResult = await application.startLocal();
         ensure(startResult.kind === 'STARTED', `startLocal must succeed: ${JSON.stringify(startResult)}`);
+        expect(application.current().runtime.state).assertEqual('RUNNING');
         const latest = application.current().runtime.latest;
+        expect(latest.state).assertEqual('RUNNING');
         expect(latest.httpAddress).assertEqual(EXPECTED_HTTP_ADDRESS);
         expect(latest.socksAddress).assertEqual(EXPECTED_SOCKS_ADDRESS);
         trace.push(`RUNNING ${latest.httpAddress} ${latest.socksAddress}`);
@@ -89,13 +91,17 @@ export default function Phase3RuntimeFlowTestsuite(): void {
 
         const stopResult = await application.stopLocal();
         ensure(stopResult.kind === 'STOPPED', `stopLocal must succeed: ${JSON.stringify(stopResult)}`);
+        expect(application.current().runtime.state).assertEqual('STOPPED');
+        expect(application.current().runtime.latest.state).assertEqual('STOPPED');
         trace.push('STOPPED');
 
         expect(JSON.stringify(trace)).assertEqual(JSON.stringify([
           'validate',
           'retain/save',
-          'revalidate',
-          'load',
+          'enable.validate',
+          'enable.load',
+          'start.revalidate',
+          'start.load',
           'startLocal(7890)',
           `RUNNING ${EXPECTED_HTTP_ADDRESS} ${EXPECTED_SOCKS_ADDRESS}`,
           'stop',
@@ -110,19 +116,14 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         try {
           homeViewModel?.dispose();
           if (application !== undefined) {
-            const runtimeState = application.current().runtime.state;
-            if (runtimeState === 'RUNNING' || runtimeState === 'STARTING' || runtimeState === 'STOPPING') {
-              const cleanupStop = await application.stopLocal();
-              ensure(cleanupStop.kind === 'STOPPED', `Cleanup stop must not fail: ${JSON.stringify(cleanupStop)}`);
-            }
+            const cleanupStop = await application.stopLocal();
+            ensure(cleanupStop.kind === 'STOPPED', `Cleanup stop must not fail: ${JSON.stringify(cleanupStop)}`);
             application.dispose();
           }
           if (graph !== undefined) {
             for (let index: number = 0; index < profileIds.length; index += 1) {
-              await graph.repository.deleteAndClearActive(profileIds[index]).catch(() => {
-              });
-              await graph.contentStore.removeProfile(profileIds[index]).catch(() => {
-              });
+              await graph.repository.deleteAndClearActive(profileIds[index]);
+              await graph.contentStore.removeProfile(profileIds[index]);
             }
             await graph.close();
           }
@@ -141,6 +142,8 @@ export default function Phase3RuntimeFlowTestsuite(): void {
 class TracedCoreService implements CoreService {
   private readonly delegate: CoreService;
   private readonly trace: string[];
+  private validateCallCount: number = 0;
+  private loadCallCount: number = 0;
 
   constructor(delegate: CoreService, trace: string[]) {
     this.delegate = delegate;
@@ -157,13 +160,15 @@ class TracedCoreService implements CoreService {
 
   async validateConfiguration(path: string): Promise<void> {
     void path;
-    this.trace.push('revalidate');
+    this.validateCallCount += 1;
+    this.trace.push(this.validateCallCount === 1 ? 'enable.validate' : 'start.revalidate');
     await this.delegate.validateConfiguration(path);
   }
 
   async loadConfiguration(path: string): Promise<void> {
     void path;
-    this.trace.push('load');
+    this.loadCallCount += 1;
+    this.trace.push(this.loadCallCount === 1 ? 'enable.load' : 'start.load');
     await this.delegate.loadConfiguration(path);
   }
 

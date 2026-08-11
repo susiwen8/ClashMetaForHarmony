@@ -8,13 +8,16 @@ import {
   appendEvidenceFailure,
   appendEvidenceTrace,
   flushEvidence,
+  setEvidenceStatus,
   TASK14_TEST_ABILITY_NAME,
   TASK14_TEST_MODULE_NAME,
+  waitForTask14Completion,
   waitForTestAbilityContext
 } from '../testability/TestAbility';
 
 const DOMAIN: number = 0x0000;
 const TAG: string = 'Task14Runner';
+const TASK14_COMPLETION_TIMEOUT_MS: number = 120000;
 
 export default class OpenHarmonyTestRunner implements TestRunner {
   onPrepare(): void {
@@ -40,6 +43,9 @@ export default class OpenHarmonyTestRunner implements TestRunner {
       appendEvidenceTrace('runner.contextReady');
       await flushEvidence();
       Hypium.hypiumTest(abilityDelegator, abilityDelegatorArguments, testsuite);
+      await waitForTask14CompletionOrTimeout();
+      appendEvidenceTrace('runner.completionObserved');
+      await flushEvidence();
     } catch (error) {
       appendEvidenceFailure('OpenHarmonyTestRunner', describeBusinessError(error));
       await flushEvidence();
@@ -54,6 +60,28 @@ function describeBusinessError(error: Object | undefined): string {
     return record.message;
   }
   return `${error}`;
+}
+
+async function waitForTask14CompletionOrTimeout(): Promise<void> {
+  let timeoutId: number = -1;
+  const barrier: Promise<void> = waitForTask14Completion().then(() => {
+    if (timeoutId >= 0) {
+      clearTimeout(timeoutId);
+    }
+  });
+  const timeout: Promise<void> = new Promise<void>((_resolve, reject) => {
+    timeoutId = setTimeout(() => {
+      void failTask14CompletionTimeout(reject);
+    }, TASK14_COMPLETION_TIMEOUT_MS) as number;
+  });
+  await Promise.race([barrier, timeout]);
+}
+
+async function failTask14CompletionTimeout(reject: (error: Error) => void): Promise<void> {
+  setEvidenceStatus('FAIL');
+  appendEvidenceFailure('OpenHarmonyTestRunner', 'Task 14 completion barrier timeout.');
+  await flushEvidence();
+  reject(new Error('Task 14 completion barrier timeout.'));
 }
 
 function toError(error: Object | undefined): Error {
