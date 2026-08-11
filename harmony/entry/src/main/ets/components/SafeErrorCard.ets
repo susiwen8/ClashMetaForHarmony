@@ -60,9 +60,14 @@ export struct SafeErrorCard {
     if (technicalDetail.trim().length === 0) {
       return;
     }
-    const systemPasteboard = Pasteboard.getSystemPasteboard();
-    const pasteData = Pasteboard.createData(Pasteboard.MIMETYPE_TEXT_PLAIN, technicalDetail);
-    systemPasteboard.setData(pasteData);
+    try {
+      const systemPasteboard = Pasteboard.getSystemPasteboard();
+      const pasteData = Pasteboard.createData(Pasteboard.MIMETYPE_TEXT_PLAIN, technicalDetail);
+      const writePromise: Promise<void> = systemPasteboard.setData(pasteData);
+      void writePromise.catch((_error: Error) => {
+      });
+    } catch (_error) {
+    }
   }
 }
 

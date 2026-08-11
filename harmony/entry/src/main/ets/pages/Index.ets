@@ -54,6 +54,7 @@ struct Index {
   private importNavigationSubscriptionId: number = 0;
   private profileDetailSubscriptionId: number = 0;
   private profileDetailNavigationSubscriptionId: number = 0;
+  private detailViewModelProfileId?: string;
   private importHttpAlertOpen: boolean = false;
   private detailHttpAlertOpen: boolean = false;
   private detailDeleteAlertOpen: boolean = false;
@@ -296,8 +297,8 @@ struct Index {
   }
 
   private openDetailRoute(profileId: string): void {
-    this.detailProfileId = profileId;
     this.ensureDetailViewModel(profileId);
+    this.detailProfileId = profileId;
     this.route = 'DETAIL';
   }
 
@@ -305,11 +306,12 @@ struct Index {
     if (this.application === undefined) {
       return;
     }
-    if (this.profileDetailViewModel !== undefined && this.detailProfileId === profileId) {
+    if (this.profileDetailViewModel !== undefined && this.detailViewModelProfileId === profileId) {
       return;
     }
     this.disposeDetailViewModel();
     this.profileDetailViewModel = new ProfileDetailViewModel(this.application, profileId);
+    this.detailViewModelProfileId = profileId;
     this.profileDetailSubscriptionId = this.profileDetailViewModel.subscribe((state: ProfileDetailViewState): void => {
       this.detailState = state;
       this.synchronizeDetailHttpAlert(state);
@@ -430,10 +432,14 @@ struct Index {
       void this.profileDetailViewModel?.requestReplaceSubscriptionUrl();
       return;
     }
+    const host: string | undefined = safeRemoteHostFromUrl(rawUrl);
+    if (host === undefined) {
+      void this.profileDetailViewModel?.requestReplaceSubscriptionUrl();
+      return;
+    }
     if (this.replaceHttpAlertOpen) {
       return;
     }
-    const host: string = safeRemoteHostFromUrl(rawUrl) ?? rawUrl;
     this.replaceHttpAlertOpen = true;
     AlertDialog.show({
       title: $r('app.string.import_http_warning_title'),
@@ -491,6 +497,7 @@ struct Index {
       this.profileDetailViewModel.unsubscribeNavigation(this.profileDetailNavigationSubscriptionId);
       this.profileDetailViewModel.dispose();
       this.profileDetailViewModel = undefined;
+      this.detailViewModelProfileId = undefined;
       this.profileDetailSubscriptionId = 0;
       this.profileDetailNavigationSubscriptionId = 0;
     }

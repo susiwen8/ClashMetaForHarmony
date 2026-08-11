@@ -334,6 +334,18 @@ test('Task 13 lifecycle bridge injects one shared ApplicationComposition into In
   assert.match(indexSource, /new\s+ProfilesViewModel\(/u);
   assert.match(indexSource, /new\s+ImportProfileViewModel\(/u);
   assert.match(indexSource, /new\s+ProfileDetailViewModel\(/u);
+  assert.match(indexSource, /private\s+detailViewModelProfileId\??:\s*string/u,
+    'Index must track the profile id bound to the current detail view model'
+  );
+  assert.match(indexSource, /private\s+openDetailRoute\(profileId:\s*string\):\s*void\s*\{[\s\S]*this\.ensureDetailViewModel\(profileId\)[\s\S]*this\.detailProfileId\s*=\s*profileId[\s\S]*this\.route\s*=\s*'DETAIL'/u,
+    'Index must create or reuse the correct detail view model before publishing the selected detail profile id'
+  );
+  assert.doesNotMatch(indexSource, /private\s+openDetailRoute\(profileId:\s*string\):\s*void\s*\{[\s\S]*this\.detailProfileId\s*=\s*profileId[\s\S]*this\.ensureDetailViewModel\(profileId\)/u,
+    'Index must not mark the new profile id before deciding whether the existing detail view model matches'
+  );
+  assert.doesNotMatch(indexSource, /if\s*\(\s*this\.profileDetailViewModel\s*!==\s*undefined\s*&&\s*this\.detailProfileId\s*===\s*profileId\s*\)/u,
+    'Index must not use the published route id to decide whether the existing detail view model can be reused'
+  );
   assert.match(indexSource, /this\.\w+\s*=\s*this\.composition\.subscribe[\s\S]*this\.composition\.state\(\)/u,
     'Index must subscribe before reading composition state to avoid missing READY'
   );
@@ -343,6 +355,15 @@ test('Task 13 lifecycle bridge injects one shared ApplicationComposition into In
     'Index must not bootstrap concrete dependencies or fallback to creating the graph'
   );
   assert.doesNotMatch(indexSource, /\.close\(\)/u, 'Index must not own ApplicationComposition teardown');
+  assert.doesNotMatch(indexSource, /safeRemoteHostFromUrl\(rawUrl\)\s*\?\?\s*rawUrl/u,
+    'Index must never fall back to a raw replacement draft when preparing the HTTP warning subtitle'
+  );
+  assert.match(indexSource, /const\s+host:\s*string\s*\|\s*undefined\s*=\s*safeRemoteHostFromUrl\(rawUrl\)/u,
+    'Index must derive the replacement HTTP warning subtitle from the sanitized host helper'
+  );
+  assert.match(indexSource, /if\s*\(\s*host\s*===\s*undefined\s*\)\s*\{[\s\S]*requestReplaceSubscriptionUrl\(\)[\s\S]*return/u,
+    'Malformed plain HTTP replacement drafts must return to the view-model validation path instead of opening a raw-draft alert'
+  );
 });
 
 test('Task 13 detail and error surfaces stay redacted and copy only pre-sanitized technical detail', async () => {
@@ -354,6 +375,12 @@ test('Task 13 detail and error surfaces stay redacted and copy only pre-sanitize
   assert.match(detailPageSource, /technicalDetail/u, 'detail page must render only redacted technical detail');
   assert.match(safeErrorCardSource, /Pasteboard/u, 'SafeErrorCard must use the system pasteboard');
   assert.match(safeErrorCardSource, /technicalDetail/u, 'SafeErrorCard must only copy the passed pre-redacted detail');
+  assert.match(safeErrorCardSource, /try\s*\{[\s\S]*Pasteboard\.getSystemPasteboard\(\)[\s\S]*Pasteboard\.createData\([\s\S]*setData\(/u,
+    'SafeErrorCard must guard pasteboard access behind a synchronous try block'
+  );
+  assert.match(safeErrorCardSource, /setData\([\s\S]*\.catch\(/u,
+    'SafeErrorCard must swallow rejected pasteboard writes so copy failures cannot crash the page'
+  );
   assert.doesNotMatch(safeErrorCardSource, /sourceUrl|yaml|picker|storage/u,
     'SafeErrorCard must not reach into raw source, YAML, picker, or storage data'
   );
