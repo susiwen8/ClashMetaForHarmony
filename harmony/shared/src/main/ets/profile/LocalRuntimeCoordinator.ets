@@ -17,6 +17,8 @@ export interface LocalRuntimeCoordinatorSnapshot {
   lastError: AppError | null;
 }
 
+export type LocalRuntimeCoordinatorListener = (snapshot: LocalRuntimeCoordinatorSnapshot) => void;
+
 export interface LocalRuntimeStartedResult {
   kind: 'STARTED';
   snapshot: LocalRuntimeCoordinatorSnapshot;
@@ -116,6 +118,8 @@ export class LocalRuntimeCoordinator {
   private mutationLeaseHeld: boolean = false;
   private hasRunningEvidence: boolean = false;
   private initialized: boolean = false;
+  private readonly listeners: Map<number, LocalRuntimeCoordinatorListener> = new Map();
+  private nextListenerId: number = 0;
 
   constructor(dependencies: LocalRuntimeCoordinatorDependencies) {
     this.repository = dependencies.repository;
@@ -134,6 +138,16 @@ export class LocalRuntimeCoordinator {
 
   current(): LocalRuntimeCoordinatorSnapshot {
     return cloneCoordinatorSnapshot(this.snapshot);
+  }
+
+  subscribe(listener: LocalRuntimeCoordinatorListener): number {
+    this.nextListenerId += 1;
+    this.listeners.set(this.nextListenerId, listener);
+    return this.nextListenerId;
+  }
+
+  unsubscribe(id: number): void {
+    this.listeners.delete(id);
   }
 
   isInitialized(): boolean {
@@ -200,11 +214,11 @@ export class LocalRuntimeCoordinator {
         timestamp: this.clock.now()
       }), this.current());
     }
-    this.snapshot = {
+    this.publishSnapshot({
       state: 'STARTING',
       latest: this.snapshot.latest,
       lastError: null
-    };
+    });
     const startPromise: Promise<LocalRuntimeStartResult> = this.startInternal();
     this.startPromise = startPromise;
     try {
@@ -287,34 +301,34 @@ export class LocalRuntimeCoordinator {
       }
       if (event.state === 'STOPPED') {
         this.hasRunningEvidence = false;
-        this.snapshot = createStoppedSnapshot(this.snapshot.lastError);
+        this.publishSnapshot(createStoppedSnapshot(this.snapshot.lastError));
         return;
       }
       const latest: RuntimeSnapshot = this.coreService.runtimeSnapshot();
       if (event.state === 'ERROR') {
-        this.snapshot = {
+        this.publishSnapshot({
           state: 'ERROR',
           latest,
           lastError: createAppError('RUNTIME_START', event.message, {
             retryable: false,
             timestamp: this.clock.now()
           })
-        };
+        });
         return;
       }
       if (event.state === 'RUNNING') {
         this.hasRunningEvidence = true;
       }
-      this.snapshot = {
+      this.publishSnapshot({
         state: event.state,
         latest,
         lastError: null
-      };
+      });
     };
     this.subscriptionId = this.coreService.subscribe(callback);
     const initialSnapshot: RuntimeSnapshot = this.coreService.runtimeSnapshot();
     this.hasRunningEvidence = initialSnapshot.state === 'RUNNING';
-    this.snapshot = createStoppedSnapshot(null);
+    this.publishSnapshot(createStoppedSnapshot(null));
     this.initialized = true;
   }
 
@@ -391,20 +405,20 @@ export class LocalRuntimeCoordinator {
 
     const latest: RuntimeSnapshot = this.coreService.runtimeSnapshot();
     this.hasRunningEvidence = latest.state === 'RUNNING';
-    this.snapshot = {
+    this.publishSnapshot({
       state: latest.state,
       latest,
       lastError: null
-    };
+    });
     return new LocalRuntimeStartedResultValue(this.current());
   }
 
   private async stopInternal(): Promise<LocalRuntimeStopResult> {
-    this.snapshot = {
+    this.publishSnapshot({
       state: 'STOPPING',
       latest: this.snapshot.latest,
       lastError: this.snapshot.lastError
-    };
+    });
     try {
       await this.coreService.stopRuntime();
     } catch (error) {
@@ -412,35 +426,35 @@ export class LocalRuntimeCoordinator {
         retryable: false,
         timestamp: this.clock.now()
       });
-      this.snapshot = {
+      this.publishSnapshot({
         state: 'ERROR',
         latest: this.snapshot.latest,
         lastError: appError
-      };
+      });
       return new LocalRuntimeFailedResultValue(appError, this.current());
     }
 
     const latest: RuntimeSnapshot = this.coreService.runtimeSnapshot();
     if (latest.state === 'STOPPED') {
       this.hasRunningEvidence = false;
-      this.snapshot = createStoppedSnapshot(this.snapshot.lastError);
+      this.publishSnapshot(createStoppedSnapshot(this.snapshot.lastError));
     } else {
       this.hasRunningEvidence = latest.state === 'RUNNING';
-      this.snapshot = {
+      this.publishSnapshot({
         state: latest.state,
         latest,
         lastError: this.snapshot.lastError
-      };
+      });
     }
     return new LocalRuntimeStoppedResultValue(this.current());
   }
 
   private failStart(error: AppError): LocalRuntimeFailedResult {
-    this.snapshot = {
+    this.publishSnapshot({
       state: 'ERROR',
       latest: this.snapshot.latest,
       lastError: error
-    };
+    });
     return new LocalRuntimeFailedResultValue(error, this.current());
   }
 
@@ -454,6 +468,20 @@ export class LocalRuntimeCoordinator {
 
   releaseMutationLease(): void {
     this.mutationLeaseHeld = false;
+  }
+
+  private publishSnapshot(snapshot: LocalRuntimeCoordinatorSnapshot): void {
+    this.snapshot = cloneCoordinatorSnapshot(snapshot);
+    if (this.listeners.size === 0) {
+      return;
+    }
+    const listeners: LocalRuntimeCoordinatorListener[] = [];
+    this.listeners.forEach((listener: LocalRuntimeCoordinatorListener): void => {
+      listeners.push(listener);
+    });
+    for (let index: number = 0; index < listeners.length; index += 1) {
+      listeners[index](cloneCoordinatorSnapshot(this.snapshot));
+    }
   }
 }
 

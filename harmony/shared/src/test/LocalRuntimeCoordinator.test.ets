@@ -8,6 +8,7 @@ import {
   type CoreEvent,
   type CoreService,
   type LocalRuntimeCoordinatorDependencies,
+  type LocalRuntimeCoordinatorSnapshot,
   type LocalOptions,
   type Profile,
   type ProfileContentStore,
@@ -41,20 +42,6 @@ type RuntimeCoordinatorStartResultContract =
 type RuntimeCoordinatorStopResultContract =
   | RuntimeCoordinatorStoppedResultContract
   | RuntimeCoordinatorFailedResultContract;
-
-interface RuntimeCoordinatorSnapshotContract {
-  state: string;
-  latest: RuntimeSnapshot;
-  lastError?: AppError | null;
-}
-
-interface RuntimeCoordinatorContract {
-  initialize(): Promise<void>;
-  current(): RuntimeCoordinatorSnapshotContract;
-  start(): Promise<RuntimeCoordinatorStartResultContract>;
-  stop(): Promise<RuntimeCoordinatorStopResultContract>;
-  dispose(): void;
-}
 
 function stitch(parts: string[]): string {
   return parts.join('');
@@ -661,6 +648,45 @@ export default function localRuntimeCoordinatorTestsuite() {
 
       expect(coreService.subscribeIds.length).assertEqual(1);
       expect(coreService.unsubscribeIds.length).assertEqual(1);
+    });
+
+    it('runtimeSnapshotObserversReceiveFreshSnapshotsAndUnsubscribeStopsCallbacks', 0, async () => {
+      const revision = buildRevision('observer');
+      const repository = new FakeProfileRepository([buildProfileRecord('observer', revision)], 'observer');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/observer.yaml');
+      const coreService = new FakeCoreService();
+      const coordinator = createCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(25), buildTimestamp(26), buildTimestamp(27), buildTimestamp(28)]
+      );
+      const observedStates: string[] = [];
+      const observedSnapshots: LocalRuntimeCoordinatorSnapshot[] = [];
+
+      await coordinator.initialize();
+      const subscriptionId = coordinator.subscribe((snapshot: LocalRuntimeCoordinatorSnapshot): void => {
+        observedStates.push(snapshot.state);
+        observedSnapshots.push(snapshot);
+      });
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot(
+        'RUNNING',
+        '/sandbox/profiles/observer.yaml',
+        '127.0.0.1:8080',
+        '127.0.0.1:1080',
+        7890
+      );
+      coreService.emitRuntime('RUNNING', 'running');
+      coordinator.unsubscribe(subscriptionId);
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED', '', '', '', 0);
+      coreService.emitRuntime('STOPPED', 'stopped');
+
+      expect(observedStates.join('>')).assertEqual('RUNNING');
+      expect(observedSnapshots.length).assertEqual(1);
+      expect(observedSnapshots[0].latest.httpAddress).assertEqual('127.0.0.1:8080');
+      expect(observedSnapshots[0] === coordinator.current()).assertFalse();
+      expect(coreService.subscribeIds.length).assertEqual(1);
     });
   });
 }

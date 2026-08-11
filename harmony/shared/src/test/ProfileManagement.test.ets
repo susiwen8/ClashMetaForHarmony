@@ -10,6 +10,8 @@ import {
   type ManageProfileUseCasesDependencies,
   ProfileApplication,
   type ProfileApplicationDependencies,
+  type ProfileApplicationProfileSnapshot,
+  type ProfileApplicationSnapshot,
   ProfileCommitService,
   RefreshProfileUseCase,
   SerialCommandQueue,
@@ -65,23 +67,9 @@ interface ManageProfileUseCasesContract {
   replaceSubscriptionUrl(profileId: string, sourceUrl: string): Promise<ManageReplaceResultContract>;
 }
 
-interface ProfileApplicationSnapshotContract {
-  runtime: ProfileApplicationRuntimeContract;
-}
-
-interface ProfileApplicationRuntimeContract {
-  state: string;
-}
-
 interface RefreshFailedResultContract {
   kind: 'FAILED';
   error: AppError;
-}
-
-interface ProfileApplicationContract {
-  initialize(): Promise<void>;
-  refresh(profileId: string): Promise<RefreshResultContract>;
-  current(): ProfileApplicationSnapshotContract;
 }
 
 interface RefreshResultContract {
@@ -138,19 +126,22 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
   readonly manageProfileUseCases: ManageProfileUseCases;
   readonly runtimeCoordinator: LocalRuntimeCoordinator;
   readonly commitService: ProfileCommitService;
+  readonly repository: FakeProfileRepository;
 
   constructor(
     importUseCase: ImportProfileUseCase,
     refreshUseCase: RefreshProfileUseCase,
     manageProfileUseCases: ManageProfileUseCases,
     runtimeCoordinator: LocalRuntimeCoordinator,
-    commitService: ProfileCommitService
+    commitService: ProfileCommitService,
+    repository: FakeProfileRepository
   ) {
     this.importUseCase = importUseCase;
     this.refreshUseCase = refreshUseCase;
     this.manageProfileUseCases = manageProfileUseCases;
     this.runtimeCoordinator = runtimeCoordinator;
     this.commitService = commitService;
+    this.repository = repository;
   }
 }
 
@@ -714,7 +705,8 @@ function createApplicationWithCoordinator(
       refreshUseCase,
       manageProfileUseCases,
       runtimeCoordinator,
-      commitService
+      commitService,
+      repository
     )
   );
 }
@@ -1192,6 +1184,90 @@ export default function profileManagementTestsuite() {
         new FakeCoreService()
       ).replaceSubscriptionUrl('typed', 'https://next.example.com/subscription.yaml');
       expect(replaceFailed.kind).assertEqual('FAILED');
+    });
+
+    it('applicationCurrentPublishesSafeProfilesAndActiveSelectionAfterInitialize', 0, async () => {
+      const alphaRevision = buildRevision('alpha');
+      const betaRevision = buildRevision('beta');
+      const alpha = buildProfileRecord('alpha', 'VALID', 'LOCAL_FILE', alphaRevision);
+      const beta = buildProfileRecord('beta', 'UPDATE_FAILED_USING_VALID', 'REMOTE_URL', betaRevision, 'secret-beta');
+      const repository = new FakeProfileRepository([alpha, beta], 'beta');
+      const contentStore = new FakeProfileContentStore();
+      const coreService = new FakeCoreService();
+      const application = createApplication(
+        repository,
+        contentStore,
+        new FakeSubscriptionSecretStore(),
+        coreService
+      );
+
+      await application.initialize();
+      const snapshot: ProfileApplicationSnapshot = application.current();
+      const serialized = JSON.stringify(snapshot);
+
+      expect(snapshot.status).assertEqual('READY');
+      expect(snapshot.activeProfileId).assertEqual('beta');
+      expect(snapshot.profiles.length).assertEqual(2);
+      expect(snapshot.profiles[0].id).assertEqual('alpha');
+      expect(snapshot.profiles[1].id).assertEqual('beta');
+      expect(snapshot.profiles[1].availability).assertEqual('UPDATE_FAILED_USING_VALID');
+      expect(serialized.includes('sourceSecretRef')).assertFalse();
+      expect(serialized.includes('/sandbox/profiles')).assertFalse();
+      expect(serialized.includes('https://origin.example.com/subscription.yaml')).assertFalse();
+      expect(serialized.includes('profiles/alpha.yaml')).assertFalse();
+      expect(serialized.includes('technicalDetail')).assertFalse();
+    });
+
+    it('applicationObserversSeeMutationAndRuntimeRefreshWhileCoreKeepsSingleSubscription', 0, async () => {
+      const revision = buildRevision('active');
+      const remoteRevision = buildRevision('remote');
+      const active = buildProfileRecord('active', 'VALID', 'LOCAL_FILE', revision);
+      const remote = buildProfileRecord('remote', 'VALID', 'REMOTE_URL', remoteRevision, 'secret-remote');
+      const repository = new FakeProfileRepository([active, remote], 'active');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/active.yaml');
+      contentStore.resolvedPaths.set(remoteRevision.relativePath, '/sandbox/profiles/remote.yaml');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-remote', 'https://origin.example.com/subscription.yaml');
+      const coreService = new FakeCoreService();
+      const application = createApplication(
+        repository,
+        contentStore,
+        secretStore,
+        coreService
+      );
+      const observed: ProfileApplicationSnapshot[] = [];
+
+      await application.initialize();
+      const subscriptionId = application.subscribe((snapshot: ProfileApplicationSnapshot): void => {
+        observed.push(snapshot);
+      });
+
+      await application.enable('remote');
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING');
+      await application.startLocal();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED');
+      await application.stopLocal();
+      await application.delete('active');
+      await application.replaceSubscriptionUrl('remote', 'https://next.example.com/subscription.yaml');
+      application.unsubscribe(subscriptionId);
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('ERROR');
+      coreService.emitRuntime('ERROR', 'ignored-after-unsubscribe');
+      const runtimeStates: string[] = [];
+      for (let index: number = 0; index < observed.length; index += 1) {
+        runtimeStates.push(observed[index].runtime.state);
+      }
+
+      expect(observed.length >= 4).assertTrue();
+      expect(observed[0] === observed[1]).assertFalse();
+      expect(observed[0].activeProfileId).assertEqual('remote');
+      expect(runtimeStates.includes('STARTING')).assertTrue();
+      expect(runtimeStates.includes('RUNNING')).assertTrue();
+      expect(runtimeStates.includes('STOPPING')).assertTrue();
+      expect(runtimeStates.includes('STOPPED')).assertTrue();
+      expect(observed[observed.length - 1].profiles.length).assertEqual(1);
+      expect(coreService.subscribeIds.length).assertEqual(1);
+      expect(application.current().profiles[0].sourceDisplay).assertEqual('https://next.example.com');
     });
 
     it('profileApplicationInitializesReconcileBeforeCoordinatorAndDelegatesWithoutRepositoryExposure', 0, async () => {

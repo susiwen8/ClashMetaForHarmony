@@ -352,7 +352,8 @@ function createProfileApplicationDependencies(
     refreshUseCase,
     manageProfileUseCases,
     runtimeCoordinator,
-    commitService
+    commitService,
+    repository: graph.repository
   };
 }
 

@@ -345,7 +345,8 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       refreshUseCase,
       manageProfileUseCases,
       runtimeCoordinator,
-      commitService
+      commitService,
+      repository: graph.repository
     });
   }
 
