@@ -174,16 +174,12 @@ export class ImportProfileViewModel {
     }
     const pendingImport: ParsedRemoteSourceInput | undefined = this.pendingHttpImport;
     const pendingName: string | undefined = this.pendingHttpName;
+    if (pendingImport === undefined || pendingName === undefined) {
+      return;
+    }
     this.pendingHttpImport = undefined;
     this.pendingHttpName = undefined;
     this.httpConfirmationHost = undefined;
-    if (pendingImport === undefined || pendingName === undefined) {
-      this.urlDraft = '';
-      this.urlIssue = 'REQUIRED';
-      this.error = undefined;
-      this.publishCurrent('IDLE');
-      return;
-    }
     await this.executeUrlImport(pendingImport, true, pendingName);
   }
 

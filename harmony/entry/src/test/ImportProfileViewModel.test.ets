@@ -84,6 +84,10 @@ export default function importProfileViewModelTestsuite() {
       const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
       application.queueImportUrlResult(createCreatedImportResult('plain-created'));
       const viewModel = new ImportProfileViewModel(application);
+      const intents: ImportNavigationIntent[] = [];
+      viewModel.subscribeNavigation((intent: ImportNavigationIntent): void => {
+        intents.push(intent);
+      });
 
       viewModel.updateNameDraft('Plain HTTP');
       viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
@@ -99,9 +103,11 @@ export default function importProfileViewModelTestsuite() {
       expect(viewModel.current().error).assertEqual(undefined);
       expect(application.importUrlCommands.length).assertEqual(0);
 
+      const staleConfirmState = serialize(viewModel.current());
       await viewModel.confirmPlainHttpImport();
       expect(application.importUrlCommands.length).assertEqual(0);
-      expect(viewModel.current().urlIssue).assertEqual('REQUIRED');
+      expect(serialize(viewModel.current())).assertEqual(staleConfirmState);
+      expect(intents.length).assertEqual(0);
 
       viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
       await viewModel.requestImportUrl();
