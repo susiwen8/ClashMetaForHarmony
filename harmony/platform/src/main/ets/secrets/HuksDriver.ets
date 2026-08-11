@@ -43,6 +43,7 @@ export interface HuksRandomSource {
 }
 
 export interface HuksDriver {
+  prepare(): Promise<void>;
   encrypt(plaintext: Uint8Array): Promise<HuksEncryptedPayload>;
   decrypt(payload: HuksEncryptedPayload): Promise<Uint8Array>;
 }

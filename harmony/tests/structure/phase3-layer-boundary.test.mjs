@@ -16,6 +16,7 @@ const SUBSCRIPTION_DOWNLOADER_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 
 const HTTP_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'HttpTransport.ets');
 const NETWORK_KIT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'NetworkKitHttpTransport.ets');
 const REQUEST_AGENT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets');
+const PLATFORM_INDEX_PATH = path.join(HARMONY_ROOT, 'platform', 'Index.ets');
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -517,6 +518,20 @@ test('Task 1 module test entrypoint guard rejects unexpected suite files', () =>
     () => assertModuleTestEntrypoints(invalidModuleTestFiles),
     /import|suite/u
   );
+});
+
+test('Task 9 platform barrel exposes only the shared-compatible factory surface', async () => {
+  const source = await fs.readFile(PLATFORM_INDEX_PATH, 'utf8');
+
+  assert.match(source, /PlatformFactory/u);
+  assert.match(source, /HarmonyProfileSourceGateway/u);
+  assert.doesNotMatch(source, /HarmonyRdbDriver/u);
+  assert.doesNotMatch(source, /HarmonyFileDriver/u);
+  assert.doesNotMatch(source, /HarmonyHuksDriver/u);
+  assert.doesNotMatch(source, /RdbProfileRepository/u);
+  assert.doesNotMatch(source, /SandboxProfileContentStore/u);
+  assert.doesNotMatch(source, /HuksSubscriptionSecretStore/u);
+  assert.doesNotMatch(source, /SubscriptionDownloader/u);
 });
 
 test('Task 1 module test entrypoint guard allows sibling suites when List.test.ets imports them', () => {

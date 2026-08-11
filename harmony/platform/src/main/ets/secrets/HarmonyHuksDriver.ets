@@ -26,6 +26,10 @@ export class HarmonyHuksDriver implements HuksDriver {
     this.randomSource = randomSource ?? new DefaultHuksRandomSource();
   }
 
+  async prepare(): Promise<void> {
+    await this.ensureKeyMaterial();
+  }
+
   async encrypt(plaintext: Uint8Array): Promise<HuksEncryptedPayload> {
     await this.ensureKeyMaterial();
     const nonce: Uint8Array = this.randomSource.nextNonce(HUKS_SECRET_NONCE_LENGTH);

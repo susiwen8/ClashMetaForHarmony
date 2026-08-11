@@ -5,6 +5,7 @@ import sandboxProfileContentStoreTestsuite from './SandboxProfileContentStore.te
 import harmonyFilePickerTestsuite from './HarmonyFilePicker.test';
 import huksSubscriptionSecretStoreTestsuite from './HuksSubscriptionSecretStore.test';
 import subscriptionDownloaderTestsuite from './SubscriptionDownloader.test';
+import platformFactoryTestsuite from './PlatformFactory.test';
 
 export default function testsuite() {
   profileRowCodecTestsuite();
@@ -13,6 +14,7 @@ export default function testsuite() {
   harmonyFilePickerTestsuite();
   huksSubscriptionSecretStoreTestsuite();
   subscriptionDownloaderTestsuite();
+  platformFactoryTestsuite();
   describe('PlatformListTest', () => {
     it('contains a baseline passing case', 0, () => {
       expect(true).assertTrue();

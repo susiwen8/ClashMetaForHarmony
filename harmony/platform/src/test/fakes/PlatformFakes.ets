@@ -994,6 +994,10 @@ export class DeterministicHuksDriver implements HuksDriver {
     this.queuedNonces.push(cloneBytes(value));
   }
 
+  async prepare(): Promise<void> {
+    this.ensureKey();
+  }
+
   async encrypt(plaintext: Uint8Array): Promise<HuksEncryptedPayload> {
     this.ensureKey();
     const nonce: Uint8Array = this.nextNonce();
