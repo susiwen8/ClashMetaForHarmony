@@ -52,8 +52,12 @@ export default class OpenHarmonyTestRunner implements TestRunner {
       appendEvidenceTrace('runner.completionObserved');
       await flushEvidence();
     } catch (error) {
-      appendEvidenceFailure('OpenHarmonyTestRunner', describeBusinessError(error));
-      await flushEvidence();
+      setEvidenceStatus('FAIL');
+      appendEvidenceFailure('OpenHarmonyTestRunner', 'Task 14 runner failed.');
+      try {
+        await flushEvidence();
+      } catch (_) {
+      }
       throw toError(error);
     }
   }
@@ -86,14 +90,7 @@ async function waitForTask14CompletionOrTimeout(): Promise<void> {
 
 async function failTask14CompletionTimeout(reject: (error: Error) => void): Promise<void> {
   const timeoutError: Error = new Error('Task 14 completion barrier timeout.');
-  try {
-    setEvidenceStatus('FAIL');
-    appendEvidenceFailure('OpenHarmonyTestRunner', timeoutError.message);
-    await flushEvidence();
-  } catch (_) {
-  } finally {
-    reject(timeoutError);
-  }
+  reject(timeoutError);
 }
 
 function toError(error: Object | undefined): Error {

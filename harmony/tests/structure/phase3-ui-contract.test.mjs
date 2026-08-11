@@ -442,9 +442,6 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(runnerSource, /TIMEOUT|timeout/u,
     'OpenHarmonyTestRunner must enforce a bounded completion timeout'
   );
-  assert.match(runnerSource, /appendEvidenceFailure\([\s\S]*timeout/iu,
-    'OpenHarmonyTestRunner must record a timeout as FAIL evidence before throwing'
-  );
   assert.match(runnerSource, /finally[\s\S]*reject\(/u,
     'OpenHarmonyTestRunner timeout handling must reject from a finally path even if evidence flushing throws'
   );
@@ -456,6 +453,16 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   );
   assert.match(runnerSource, /getEvidence\([\s\S]*completionObserved/iu,
     'OpenHarmonyTestRunner must check evidence before appending completionObserved'
+  );
+  const runnerFailureAppends = [...runnerSource.matchAll(/appendEvidenceFailure\(\s*['"`]OpenHarmonyTestRunner['"`]/gu)];
+  assert.equal(runnerFailureAppends.length, 1,
+    'OpenHarmonyTestRunner must record runner failure evidence at exactly one common catch point'
+  );
+  assert.doesNotMatch(runnerSource, /async\s+function\s+failTask14CompletionTimeout[\s\S]*appendEvidenceFailure\(/u,
+    'OpenHarmonyTestRunner timeout helper must not append evidence directly'
+  );
+  assert.match(runnerSource, /catch[\s\S]*setEvidenceStatus\(['"`]FAIL['"`]\)[\s\S]*appendEvidenceFailure\([\s\S]*flushEvidence\([\s\S]*throw/u,
+    'OpenHarmonyTestRunner common catch must set FAIL, append one generic failure, best-effort flush, and rethrow'
   );
   assert.match(testabilitySource, /export\s+async\s+function\s+waitForTask14Completion\(/u,
     'TestAbility must expose a waitForTask14Completion Promise barrier'
