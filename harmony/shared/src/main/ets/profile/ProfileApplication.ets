@@ -98,7 +98,7 @@ export class ProfileApplication {
 
   async refresh(profileId: string): Promise<RefreshProfileResult> {
     await this.initialize();
-    if (this.runtimeCoordinator.currentCoreState() !== 'STOPPED') {
+    if (this.runtimeCoordinator.current().state !== 'STOPPED') {
       return new RefreshFailedResultValue(createAppError('RUNTIME_START', 'Runtime must be stopped before refresh.', {
         retryable: false
       }));

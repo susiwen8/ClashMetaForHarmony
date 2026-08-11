@@ -368,13 +368,30 @@ class FakeSubscriptionSecretStore implements SubscriptionSecretStore {
   }
 }
 
+class DeferredRuntimeSnapshot {
+  readonly promise: Promise<RuntimeSnapshot>;
+  private resolveRef?: (value: RuntimeSnapshot) => void;
+
+  constructor() {
+    this.promise = new Promise<RuntimeSnapshot>((resolve) => {
+      this.resolveRef = resolve;
+    });
+  }
+
+  resolve(value: RuntimeSnapshot): void {
+    this.resolveRef!(value);
+  }
+}
+
 class FakeCoreService implements CoreService {
   readonly log: string[] = [];
   readonly validateCalls: string[] = [];
   readonly loadCalls: string[] = [];
+  readonly startCalls: LocalOptions[] = [];
   runtimeSnapshotValue: RuntimeSnapshot = buildRuntimeSnapshot('STOPPED');
   validateError?: Error;
   loadError?: Error;
+  startDeferred?: DeferredRuntimeSnapshot;
 
   hello(): string {
     return 'hello';
@@ -400,7 +417,12 @@ class FakeCoreService implements CoreService {
     }
   }
 
-  async startLocal(_options: LocalOptions): Promise<RuntimeSnapshot> {
+  async startLocal(options: LocalOptions): Promise<RuntimeSnapshot> {
+    this.log.push(`core.startLocal:${options.configPath}:${options.mixedPort}`);
+    this.startCalls.push(options);
+    if (this.startDeferred !== undefined) {
+      return await this.startDeferred.promise;
+    }
     return cloneRuntimeSnapshot(this.runtimeSnapshotValue);
   }
 
@@ -511,13 +533,11 @@ function createManagement(
   secretStore: FakeSubscriptionSecretStore,
   coreService: FakeCoreService
 ): ManageProfileUseCases {
-  const runtimeCoordinator = new LocalRuntimeCoordinator(
-    new RuntimeCoordinatorDependencyBag(
-      repository,
-      contentStore,
-      coreService,
-      new FakeClock([buildTimestamp(4), buildTimestamp(5), buildTimestamp(6), buildTimestamp(7)])
-    )
+  const runtimeCoordinator = createRuntimeCoordinator(
+    repository,
+    contentStore,
+    coreService,
+    [buildTimestamp(4), buildTimestamp(5), buildTimestamp(6), buildTimestamp(7)]
   );
   return new ManageProfileUseCases(
     new ManageProfileUseCasesDependencyBag(
@@ -531,19 +551,64 @@ function createManagement(
   );
 }
 
+function createRuntimeCoordinator(
+  repository: FakeProfileRepository,
+  contentStore: FakeProfileContentStore,
+  coreService: FakeCoreService,
+  timestamps: string[]
+): LocalRuntimeCoordinator {
+  return new LocalRuntimeCoordinator(
+    new RuntimeCoordinatorDependencyBag(
+      repository,
+      contentStore,
+      coreService,
+      new FakeClock(timestamps)
+    )
+  );
+}
+
+function createCommitService(
+  repository: FakeProfileRepository,
+  contentStore: FakeProfileContentStore
+): ProfileCommitService {
+  return new ProfileCommitService({
+    repository,
+    contentStore,
+    clock: new FakeClock([buildTimestamp(12), buildTimestamp(13), buildTimestamp(14)])
+  });
+}
+
 function createApplication(
   repository: FakeProfileRepository,
   contentStore: FakeProfileContentStore,
   secretStore: FakeSubscriptionSecretStore,
   coreService: FakeCoreService
 ): ProfileApplication {
-  const sourceGateway = new FakeSourceGateway();
-  const queue = new SerialCommandQueue();
-  const commitService = new ProfileCommitService({
+  const runtimeCoordinator = createRuntimeCoordinator(
     repository,
     contentStore,
-    clock: new FakeClock([buildTimestamp(12), buildTimestamp(13), buildTimestamp(14)])
-  });
+    coreService,
+    [buildTimestamp(20), buildTimestamp(21), buildTimestamp(22)]
+  );
+  return createApplicationWithCoordinator(
+    repository,
+    contentStore,
+    secretStore,
+    coreService,
+    runtimeCoordinator
+  );
+}
+
+function createApplicationWithCoordinator(
+  repository: FakeProfileRepository,
+  contentStore: FakeProfileContentStore,
+  secretStore: FakeSubscriptionSecretStore,
+  coreService: FakeCoreService,
+  runtimeCoordinator: LocalRuntimeCoordinator
+): ProfileApplication {
+  const sourceGateway = new FakeSourceGateway();
+  const queue = new SerialCommandQueue();
+  const commitService = createCommitService(repository, contentStore);
   const importUseCase = new ImportProfileUseCase({
     repository,
     contentStore,
@@ -565,14 +630,6 @@ function createApplication(
     queue,
     commitService
   });
-  const runtimeCoordinator = new LocalRuntimeCoordinator(
-    new RuntimeCoordinatorDependencyBag(
-      repository,
-      contentStore,
-      coreService,
-      new FakeClock([buildTimestamp(20), buildTimestamp(21), buildTimestamp(22)])
-    )
-  );
   const manageProfileUseCases = new ManageProfileUseCases(
     new ManageProfileUseCasesDependencyBag(
       repository,
@@ -677,28 +734,63 @@ export default function profileManagementTestsuite() {
       expect(repository.setActiveIdCalls.length).assertEqual(0);
     });
 
-    it('nonStoppedRuntimeRejectsEnableDeleteReplaceAndRefresh', 0, async () => {
+    it('startingRuntimeRejectsEnableDeleteReplaceAndRefreshWhileCoreSnapshotStillStopped', 0, async () => {
       const revision = buildRevision('running');
       const profile = buildProfileRecord('running', 'VALID', 'REMOTE_URL', revision, 'secret-old');
       const repository = new FakeProfileRepository([profile], 'running');
       const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/running.yaml');
       const coreService = new FakeCoreService();
-      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING');
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED');
+      coreService.startDeferred = new DeferredRuntimeSnapshot();
       const secretStore = new FakeSubscriptionSecretStore();
       secretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
-      const management = createManagement(repository, contentStore, secretStore, coreService);
-      const application = createApplication(repository, contentStore, secretStore, coreService);
+      const runtimeCoordinator = createRuntimeCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(20), buildTimestamp(21), buildTimestamp(22), buildTimestamp(23), buildTimestamp(24)]
+      );
+      const management = new ManageProfileUseCases(
+        new ManageProfileUseCasesDependencyBag(
+          repository,
+          contentStore,
+          secretStore,
+          coreService,
+          new FakeClock([buildTimestamp(25), buildTimestamp(26), buildTimestamp(27), buildTimestamp(28)]),
+          runtimeCoordinator
+        )
+      );
+      const application = createApplicationWithCoordinator(
+        repository,
+        contentStore,
+        secretStore,
+        coreService,
+        runtimeCoordinator
+      );
 
+      await application.initialize();
+      const startPromise = application.startLocal();
       const enableResult = await management.enable('running');
       const deleteResult = await management.delete('running');
       const replaceResult = await management.replaceSubscriptionUrl('running', 'https://next.example.com/subscription.yaml');
-      await application.initialize();
       const refreshResult = await application.refresh('running');
+      coreService.startDeferred.resolve(buildRuntimeSnapshot('RUNNING'));
+      await startPromise;
 
       expect(enableResult.kind).assertEqual('FAILED');
       expect(deleteResult.kind).assertEqual('FAILED');
       expect(replaceResult.kind).assertEqual('FAILED');
       expect(refreshResult.kind).assertEqual('FAILED');
+      expect(repository.setActiveIdCalls.length).assertEqual(0);
+      expect(repository.deletedIds.length).assertEqual(0);
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(contentStore.removedProfiles.length).assertEqual(0);
+      expect(secretStore.encryptCalls.length).assertEqual(0);
+      expect(secretStore.removeCalls.length).assertEqual(0);
+      expect(coreService.validateCalls.length).assertEqual(1);
+      expect(coreService.loadCalls.length).assertEqual(1);
+      expect(coreService.startCalls.length).assertEqual(1);
     });
 
     it('deleteUsesRepositoryTransactionBeforeCleanupAndSkipsCleanupOnRepositoryFailure', 0, async () => {

@@ -227,7 +227,7 @@ export class ManageProfileUseCases {
   }
 
   private isRuntimeStoppedForMutation(): boolean {
-    const state: string = this.coreService.runtimeSnapshot().state;
+    const state: string = this.runtimeCoordinator.current().state;
     return state === 'STOPPED' || state === 'ERROR';
   }
 }

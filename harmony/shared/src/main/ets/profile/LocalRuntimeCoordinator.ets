@@ -96,10 +96,6 @@ export class LocalRuntimeCoordinator {
     return cloneCoordinatorSnapshot(this.snapshot);
   }
 
-  currentCoreState(): RuntimeState {
-    return this.coreService.runtimeSnapshot().state;
-  }
-
   async start(): Promise<LocalRuntimeStartResult> {
     await this.initialize();
     if (this.startPromise !== undefined) {
@@ -111,6 +107,11 @@ export class LocalRuntimeCoordinator {
         timestamp: this.clock.now()
       }));
     }
+    this.snapshot = {
+      state: 'STARTING',
+      latest: this.snapshot.latest,
+      lastError: null
+    };
     const startPromise: Promise<LocalRuntimeStartResult> = this.startInternal();
     this.startPromise = startPromise;
     try {
@@ -221,12 +222,6 @@ export class LocalRuntimeCoordinator {
         timestamp: this.clock.now()
       }));
     }
-
-    this.snapshot = {
-      state: 'STARTING',
-      latest: this.snapshot.latest,
-      lastError: null
-    };
 
     try {
       await this.coreService.startLocal({
