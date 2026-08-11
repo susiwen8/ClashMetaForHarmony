@@ -181,7 +181,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private readonly listeners: Map<number, (state: ApplicationCompositionState) => void> = new Map();
   private readonly coreService: CoreService;
   private listenerId: number = 0;
-  private currentState: ApplicationCompositionState = { status: 'LOADING' };
+  private currentState: ApplicationCompositionState = createLoadingState();
   private initializePromise?: Promise<void>;
   private closePromise?: Promise<void>;
   private graph?: PlatformGraph;
@@ -200,7 +200,8 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     if (this.initializePromise !== undefined) {
       return this.initializePromise;
     }
-    this.publish({ status: 'LOADING' });
+    const loadingState: ApplicationCompositionState = createLoadingState();
+    this.publish(loadingState);
     const initializePromise: Promise<void> = this.initializeInternal();
     this.initializePromise = initializePromise;
     return initializePromise;
@@ -237,19 +238,15 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       const application: ProfileApplication = this.createProfileApplication(graph, this.coreService);
       this.application = application;
       await application.initialize();
-      this.publish({
-        status: 'READY',
-        application
-      });
+      const readyState: ApplicationCompositionState = createReadyState(application);
+      this.publish(readyState);
     } catch (_error) {
       await this.closeResources();
-      const appError: AppError = createAppError('PERSISTENCE', 'Application composition initialization failed.', {
-        retryable: true
-      });
-      this.publish({
-        status: 'ERROR',
-        error: appError
-      });
+      const appError: ApplicationCompositionPersistenceError = new ApplicationCompositionPersistenceError(
+        'Application composition initialization failed.'
+      );
+      const errorState: ApplicationCompositionState = createErrorState(appError);
+      this.publish(errorState);
       throw appError;
     } finally {
       if (this.currentState.status !== 'READY') {
@@ -261,19 +258,19 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private async closeInternal(): Promise<void> {
     await this.initializePromise?.catch(() => {
     });
-    const cleanupError: AppError | null = await this.closeResources();
+    const cleanupError: ApplicationCompositionPersistenceError | null = await this.closeResources();
     this.initializePromise = undefined;
     if (cleanupError !== null) {
       throw cleanupError;
     }
   }
 
-  private async closeResources(): Promise<AppError | null> {
+  private async closeResources(): Promise<ApplicationCompositionPersistenceError | null> {
     const application: ProfileApplication | undefined = this.application;
     const graph: PlatformGraph | undefined = this.graph;
     this.application = undefined;
     this.graph = undefined;
-    let cleanupError: AppError | null = null;
+    let cleanupError: ApplicationCompositionPersistenceError | null = null;
     if (application !== undefined) {
       try {
         application.dispose();
@@ -354,7 +351,10 @@ class ApplicationCompositionRecord implements ApplicationComposition {
 
   private publish(state: ApplicationCompositionState): void {
     this.currentState = state;
-    const listeners = [...this.listeners.values()];
+    const listeners: Array<(state: ApplicationCompositionState) => void> = [];
+    this.listeners.forEach((listener) => {
+      listeners.push(listener);
+    });
     for (let index: number = 0; index < listeners.length; index += 1) {
       listeners[index](state);
     }
@@ -378,8 +378,47 @@ function createPhase1LaunchContext(context: common.UIAbilityContext, want: Want)
   };
 }
 
-function createCleanupError(): AppError {
-  return createAppError('PERSISTENCE', 'Application composition cleanup failed.', {
-    retryable: true
-  });
+function createCleanupError(): ApplicationCompositionPersistenceError {
+  return new ApplicationCompositionPersistenceError('Application composition cleanup failed.');
+}
+
+class ApplicationCompositionPersistenceError extends Error implements AppError {
+  readonly code: string;
+  readonly stage: 'PERSISTENCE' = 'PERSISTENCE';
+  readonly userMessageResource: string;
+  readonly technicalDetail: string;
+  readonly timestamp: string;
+  readonly retryable: boolean;
+
+  constructor(detail: string) {
+    const appError: AppError = createAppError('PERSISTENCE', detail, {
+      retryable: true
+    });
+    super(appError.technicalDetail);
+    this.code = appError.code;
+    this.userMessageResource = appError.userMessageResource;
+    this.technicalDetail = appError.technicalDetail;
+    this.timestamp = appError.timestamp;
+    this.retryable = appError.retryable;
+  }
+}
+
+function createLoadingState(): ApplicationCompositionState {
+  return {
+    status: 'LOADING'
+  };
+}
+
+function createReadyState(application: ProfileApplication): ApplicationCompositionState {
+  return {
+    status: 'READY',
+    application
+  };
+}
+
+function createErrorState(error: AppError): ApplicationCompositionState {
+  return {
+    status: 'ERROR',
+    error
+  };
 }

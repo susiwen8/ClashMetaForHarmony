@@ -18,6 +18,7 @@ import {
   type LocalAcquireCommand,
   type LocalOptions,
   type LocalProfileAcquisition,
+  type ProfileApplicationDependencies,
   type Profile,
   type ProfileContentStore,
   type ProfileRepository,
@@ -178,11 +179,15 @@ class RecordingPlatformGraph implements PlatformGraph {
   }
 }
 
-class RecordingApplication {
+class RecordingApplication extends ProfileApplication {
   initializeCallCount: number = 0;
   disposeCallCount: number = 0;
   initializeError?: Error;
   disposeError?: Error;
+
+  constructor() {
+    super(createProfileApplicationDependencies(new RuntimeAwareCoreService(), new RecordingPlatformGraph()));
+  }
 
   async initialize(): Promise<void> {
     this.initializeCallCount += 1;
@@ -278,7 +283,10 @@ function collectStatuses(history: ApplicationCompositionState[]): string {
   return statuses.join('>');
 }
 
-function createRealProfileApplication(coreService: CoreService, graph: PlatformGraph): ProfileApplication {
+function createProfileApplicationDependencies(
+  coreService: CoreService,
+  graph: PlatformGraph
+): ProfileApplicationDependencies {
   const runtimeCoordinator = new LocalRuntimeCoordinator({
     repository: graph.repository,
     contentStore: graph.contentStore,
@@ -338,13 +346,18 @@ function createRealProfileApplication(coreService: CoreService, graph: PlatformG
     ),
     runtimeCoordinator
   });
-  return new ProfileApplication({
+
+  return {
     importUseCase,
     refreshUseCase,
     manageProfileUseCases,
     runtimeCoordinator,
     commitService
-  });
+  };
+}
+
+function createRealProfileApplication(coreService: CoreService, graph: PlatformGraph): ProfileApplication {
+  return new ProfileApplication(createProfileApplicationDependencies(coreService, graph));
 }
 
 function createComposition(
@@ -367,7 +380,7 @@ export default function applicationCompositionTestsuite() {
           return await graphDeferred.promise;
         },
         createProfileApplication: (_graph: PlatformGraph, _coreService: CoreService): ProfileApplication => {
-          return application as ProfileApplication;
+          return application;
         }
       });
       composition.subscribe((state: ApplicationCompositionState): void => {
@@ -403,7 +416,7 @@ export default function applicationCompositionTestsuite() {
           return useSecondAttempt ? secondGraph : firstGraph;
         },
         createProfileApplication: (_graph: PlatformGraph, _coreService: CoreService): ProfileApplication => {
-          return (useSecondAttempt ? secondApplication : firstApplication) as ProfileApplication;
+          return useSecondAttempt ? secondApplication : firstApplication;
         }
       });
       composition.subscribe((state: ApplicationCompositionState): void => {
@@ -482,7 +495,7 @@ export default function applicationCompositionTestsuite() {
           return graph;
         },
         createProfileApplication: (): ProfileApplication => {
-          return application as ProfileApplication;
+          return application;
         }
       });
       composition.subscribe((state: ApplicationCompositionState): void => {
@@ -520,7 +533,7 @@ export default function applicationCompositionTestsuite() {
           return graph;
         },
         createProfileApplication: (): ProfileApplication => {
-          return application as ProfileApplication;
+          return application;
         }
       });
       composition.subscribe((state: ApplicationCompositionState): void => {
