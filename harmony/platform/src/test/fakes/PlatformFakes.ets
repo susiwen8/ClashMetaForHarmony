@@ -2,6 +2,13 @@ import { createAppError, createProfile, createProfileRevision, type AppError, ty
 import type { DurableProfileRow, RdbDriver, RdbTransaction } from '../../main/ets/rdb/RdbDriver';
 import type { Clock, IdGenerator } from '@cmfa/shared';
 import type { FileDriver } from '../../main/ets/files/FileDriver';
+import {
+  HUKS_SECRET_KEY_ALIAS_VERSION,
+  HUKS_SECRET_NONCE_LENGTH,
+  HUKS_SECRET_TAG_LENGTH,
+  type HuksDriver,
+  type HuksEncryptedPayload
+} from '../../main/ets/secrets/HuksDriver';
 
 class ScriptedFailure {
   readonly error: Error;
@@ -608,6 +615,10 @@ export class FakeFileDriver implements FileDriver {
     return asciiText(this.readFileBytes(path));
   }
 
+  writeTextFile(path: string, text: string): void {
+    this.seedTextFile(path, text);
+  }
+
   countCloses(path: string): number {
     return this.closeCounts.get(normalizeFakePath(path)) ?? 0;
   }
@@ -933,6 +944,108 @@ export function buildBytes(length: number): Uint8Array {
   return bytes;
 }
 
+export function utf8Bytes(value: string): Uint8Array {
+  return encodeUtf8(value);
+}
+
+class DeterministicHuksDriverCall {
+  readonly nonceHex: string;
+  readonly byteLength: number;
+
+  constructor(nonceHex: string, byteLength: number) {
+    this.nonceHex = nonceHex;
+    this.byteLength = byteLength;
+  }
+}
+
+export class DeterministicHuksDriver implements HuksDriver {
+  readonly operationLog: string[] = [];
+  readonly encryptCalls: DeterministicHuksDriverCall[] = [];
+  readonly decryptCalls: string[] = [];
+  ensureKeyCallCount: number = 0;
+  generateKeyCallCount: number = 0;
+  deleteKeyCallCount: number = 0;
+  private keyExists: boolean = false;
+  private readonly queuedNonces: Uint8Array[] = [];
+
+  seedNonce(value: Uint8Array): void {
+    this.queuedNonces.push(cloneBytes(value));
+  }
+
+  async encrypt(plaintext: Uint8Array): Promise<HuksEncryptedPayload> {
+    this.ensureKey();
+    const nonce: Uint8Array = this.nextNonce();
+    const ciphertext: Uint8Array = new Uint8Array(plaintext.length);
+    for (let index = 0; index < plaintext.length; index += 1) {
+      ciphertext[index] = plaintext[index] ^ nonce[index % nonce.length] ^ 0x5a;
+    }
+    const tag: Uint8Array = buildAuthenticationTag(nonce, ciphertext);
+    this.operationLog.push(`encrypt:${nonce.length}:${ciphertext.length}`);
+    this.encryptCalls.push(new DeterministicHuksDriverCall(hexBytes(nonce), plaintext.length));
+    return {
+      keyAliasVersion: HUKS_SECRET_KEY_ALIAS_VERSION,
+      nonce,
+      ciphertext,
+      tag
+    };
+  }
+
+  async decrypt(payload: HuksEncryptedPayload): Promise<Uint8Array> {
+    this.ensureKey();
+    validateDeterministicPayload(payload);
+    this.operationLog.push(`decrypt:${payload.nonce.length}:${payload.ciphertext.length}`);
+    this.decryptCalls.push(hexBytes(payload.tag));
+    const expectedTag: Uint8Array = buildAuthenticationTag(payload.nonce, payload.ciphertext);
+    if (!equalBytes(expectedTag, payload.tag)) {
+      throw new Error('Authenticated decryption rejected tampering.');
+    }
+    const plaintext: Uint8Array = new Uint8Array(payload.ciphertext.length);
+    for (let index = 0; index < payload.ciphertext.length; index += 1) {
+      plaintext[index] = payload.ciphertext[index] ^ payload.nonce[index % payload.nonce.length] ^ 0x5a;
+    }
+    return plaintext;
+  }
+
+  private ensureKey(): void {
+    this.ensureKeyCallCount += 1;
+    this.operationLog.push('ensureKey');
+    if (!this.keyExists) {
+      this.generateKeyCallCount += 1;
+      this.keyExists = true;
+      this.operationLog.push('generateKey');
+    }
+  }
+
+  private nextNonce(): Uint8Array {
+    const scripted: Uint8Array | undefined = this.queuedNonces.shift();
+    if (scripted !== undefined) {
+      if (scripted.length !== HUKS_SECRET_NONCE_LENGTH) {
+        throw new Error('Deterministic nonce must be 12 bytes.');
+      }
+      return cloneBytes(scripted);
+    }
+    const next = new Uint8Array(HUKS_SECRET_NONCE_LENGTH);
+    for (let index = 0; index < HUKS_SECRET_NONCE_LENGTH; index += 1) {
+      next[index] = (this.encryptCalls.length + index + 1) & 0xff;
+    }
+    return next;
+  }
+}
+
+export function replaceEnvelopeCiphertextByte(envelopeText: string): string {
+  return mutateBase64Field(envelopeText, 'ciphertext');
+}
+
+export function replaceEnvelopeTagByte(envelopeText: string): string {
+  return mutateBase64Field(envelopeText, 'tag');
+}
+
+export function replaceEnvelopeNumberField(envelopeText: string, fieldName: string, nextValue: number): string {
+  const parsed: Record<string, string | number> = JSON.parse(envelopeText) as Record<string, string | number>;
+  parsed[fieldName] = nextValue;
+  return JSON.stringify(parsed);
+}
+
 function asciiBytes(text: string): Uint8Array {
   const bytes = new Uint8Array(text.length);
   for (let index = 0; index < text.length; index += 1) {
@@ -947,6 +1060,153 @@ function asciiText(bytes: Uint8Array): string {
     text += String.fromCharCode(bytes[index]);
   }
   return text;
+}
+
+function encodeUtf8(value: string): Uint8Array {
+  const bytes: number[] = [];
+  let index: number = 0;
+  while (index < value.length) {
+    const codeUnit: number = value.charCodeAt(index);
+    if (codeUnit < 0x80) {
+      bytes.push(codeUnit);
+      index += 1;
+      continue;
+    }
+    if (codeUnit < 0x800) {
+      bytes.push(0xc0 | (codeUnit >> 6));
+      bytes.push(0x80 | (codeUnit & 0x3f));
+      index += 1;
+      continue;
+    }
+    if (codeUnit >= 0xd800 && codeUnit <= 0xdbff && index + 1 < value.length) {
+      const nextCodeUnit: number = value.charCodeAt(index + 1);
+      if (nextCodeUnit >= 0xdc00 && nextCodeUnit <= 0xdfff) {
+        const codePoint: number = 0x10000 + ((codeUnit - 0xd800) << 10) + (nextCodeUnit - 0xdc00);
+        bytes.push(0xf0 | (codePoint >> 18));
+        bytes.push(0x80 | ((codePoint >> 12) & 0x3f));
+        bytes.push(0x80 | ((codePoint >> 6) & 0x3f));
+        bytes.push(0x80 | (codePoint & 0x3f));
+        index += 2;
+        continue;
+      }
+    }
+    bytes.push(0xe0 | (codeUnit >> 12));
+    bytes.push(0x80 | ((codeUnit >> 6) & 0x3f));
+    bytes.push(0x80 | (codeUnit & 0x3f));
+    index += 1;
+  }
+  const encoded = new Uint8Array(bytes.length);
+  for (let position = 0; position < bytes.length; position += 1) {
+    encoded[position] = bytes[position];
+  }
+  return encoded;
+}
+
+function buildAuthenticationTag(nonce: Uint8Array, ciphertext: Uint8Array): Uint8Array {
+  let accumulatorA: number = 0x13579bdf;
+  let accumulatorB: number = 0x2468ace0;
+  for (let index = 0; index < nonce.length; index += 1) {
+    accumulatorA = ((accumulatorA << 5) - accumulatorA + nonce[index] + index) >>> 0;
+    accumulatorB = ((accumulatorB << 7) ^ (nonce[index] + index)) >>> 0;
+  }
+  for (let index = 0; index < ciphertext.length; index += 1) {
+    accumulatorA = ((accumulatorA << 5) - accumulatorA + ciphertext[index] + index) >>> 0;
+    accumulatorB = ((accumulatorB << 7) ^ (ciphertext[index] + index)) >>> 0;
+  }
+  const tag = new Uint8Array(HUKS_SECRET_TAG_LENGTH);
+  for (let index = 0; index < HUKS_SECRET_TAG_LENGTH; index += 1) {
+    accumulatorA = ((accumulatorA << 3) ^ (accumulatorB >>> 1) ^ index) >>> 0;
+    accumulatorB = ((accumulatorB << 5) ^ (accumulatorA >>> 2) ^ (ciphertext.length + index)) >>> 0;
+    tag[index] = (accumulatorA ^ accumulatorB) & 0xff;
+  }
+  return tag;
+}
+
+function validateDeterministicPayload(payload: HuksEncryptedPayload): void {
+  if (payload.keyAliasVersion !== HUKS_SECRET_KEY_ALIAS_VERSION ||
+    payload.nonce.length !== HUKS_SECRET_NONCE_LENGTH ||
+    payload.tag.length !== HUKS_SECRET_TAG_LENGTH) {
+    throw new Error('Deterministic payload shape is invalid.');
+  }
+}
+
+function equalBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.length !== right.length) {
+    return false;
+  }
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function hexBytes(bytes: Uint8Array): string {
+  let hex = '';
+  for (let index = 0; index < bytes.length; index += 1) {
+    hex += bytes[index].toString(16).padStart(2, '0');
+  }
+  return hex;
+}
+
+function mutateBase64Field(envelopeText: string, fieldName: string): string {
+  const parsed: Record<string, string | number> = JSON.parse(envelopeText) as Record<string, string | number>;
+  const encoded: string = `${parsed[fieldName] ?? ''}`;
+  const decoded: Uint8Array = decodeBase64Loose(encoded);
+  decoded[0] = decoded[0] ^ 0x01;
+  parsed[fieldName] = encodeBase64Loose(decoded);
+  return JSON.stringify(parsed);
+}
+
+function encodeBase64Loose(bytes: Uint8Array): string {
+  const alphabet: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let encoded = '';
+  let index = 0;
+  while (index < bytes.length) {
+    const first: number = bytes[index];
+    const second: number = index + 1 < bytes.length ? bytes[index + 1] : -1;
+    const third: number = index + 2 < bytes.length ? bytes[index + 2] : -1;
+    encoded += alphabet[(first >> 2) & 0x3f];
+    encoded += alphabet[((first & 0x03) << 4) | (second >= 0 ? ((second >> 4) & 0x0f) : 0)];
+    encoded += second >= 0 ? alphabet[((second & 0x0f) << 2) | (third >= 0 ? ((third >> 6) & 0x03) : 0)] : '=';
+    encoded += third >= 0 ? alphabet[third & 0x3f] : '=';
+    index += 3;
+  }
+  return encoded;
+}
+
+function decodeBase64Loose(encoded: string): Uint8Array {
+  const alphabet: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+  let paddingCount = 0;
+  if (encoded.endsWith('==')) {
+    paddingCount = 2;
+  } else if (encoded.endsWith('=')) {
+    paddingCount = 1;
+  }
+  const decoded = new Uint8Array((encoded.length / 4) * 3 - paddingCount);
+  let writeIndex = 0;
+  for (let index = 0; index < encoded.length; index += 4) {
+    const a: number = alphabet.indexOf(encoded[index]);
+    const b: number = alphabet.indexOf(encoded[index + 1]);
+    const c: number = encoded[index + 2] === '=' ? -1 : alphabet.indexOf(encoded[index + 2]);
+    const d: number = encoded[index + 3] === '=' ? -1 : alphabet.indexOf(encoded[index + 3]);
+    decoded[writeIndex] = ((a << 2) | (b >> 4)) & 0xff;
+    writeIndex += 1;
+    if (c >= 0 && writeIndex < decoded.length + 1) {
+      if (writeIndex < decoded.length) {
+        decoded[writeIndex] = (((b & 0x0f) << 4) | (c >> 2)) & 0xff;
+      }
+      writeIndex += 1;
+    }
+    if (d >= 0 && writeIndex < decoded.length + 1) {
+      if (writeIndex < decoded.length) {
+        decoded[writeIndex] = (((c & 0x03) << 6) | d) & 0xff;
+      }
+      writeIndex += 1;
+    }
+  }
+  return decoded;
 }
 
 function cloneBytes(bytes: Uint8Array): Uint8Array {

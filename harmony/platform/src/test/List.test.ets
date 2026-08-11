@@ -3,12 +3,14 @@ import profileRowCodecTestsuite from './ProfileRowCodec.test';
 import rdbProfileRepositoryTestsuite from './RdbProfileRepository.test';
 import sandboxProfileContentStoreTestsuite from './SandboxProfileContentStore.test';
 import harmonyFilePickerTestsuite from './HarmonyFilePicker.test';
+import huksSubscriptionSecretStoreTestsuite from './HuksSubscriptionSecretStore.test';
 
 export default function testsuite() {
   profileRowCodecTestsuite();
   rdbProfileRepositoryTestsuite();
   sandboxProfileContentStoreTestsuite();
   harmonyFilePickerTestsuite();
+  huksSubscriptionSecretStoreTestsuite();
   describe('PlatformListTest', () => {
     it('contains a baseline passing case', 0, () => {
       expect(true).assertTrue();

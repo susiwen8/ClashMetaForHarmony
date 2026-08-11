@@ -5,4 +5,7 @@ export * from './src/main/ets/rdb/RdbDriver';
 export * from './src/main/ets/rdb/ProfileRowCodec';
 export * from './src/main/ets/rdb/HarmonyRdbDriver';
 export * from './src/main/ets/rdb/RdbProfileRepository';
+export * from './src/main/ets/secrets/HuksDriver';
+export * from './src/main/ets/secrets/HarmonyHuksDriver';
+export * from './src/main/ets/secrets/HuksSubscriptionSecretStore';
 export * from './src/main/ets/source/HarmonyFilePicker';
