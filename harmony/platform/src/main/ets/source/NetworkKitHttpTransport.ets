@@ -42,7 +42,7 @@ export class NetworkKitHttpTransport implements HttpTransport {
         normalizeResponseBody(response.result)
       );
     } catch (error) {
-      throw mapNetworkKitFailure(error as Object | undefined, request.url);
+      throw mapNetworkKitFailure(error as Object | undefined);
     } finally {
       try {
         client.destroy();
@@ -87,17 +87,25 @@ function normalizeResponseBody(result: string | Object | ArrayBuffer): ArrayBuff
   throw createHttpTransportFailure('NETWORK', 'NetworkKit HTTP response body type was unsupported.');
 }
 
-function mapNetworkKitFailure(error: Object | undefined, requestUrl: string) {
+function mapNetworkKitFailure(error: Object | undefined) {
   const record: BusinessErrorShape = error as BusinessErrorShape;
   const code: number = typeof record.code === 'number' ? record.code : -1;
   const message: string = typeof record.message === 'string' ? record.message.toLowerCase() : '';
+  if (code === 2300063 || isExplicitMaxLimitFailureMessage(message)) {
+    return createHttpTransportFailure('OVERSIZE', 'NetworkKit response exceeded the configured size limit.');
+  }
   if (message.includes('ssl') || message.includes('tls') || message.includes('certificate')) {
-    return createHttpTransportFailure('TLS', `NetworkKit TLS request failed for ${requestUrl}.`);
+    return createHttpTransportFailure('TLS', 'NetworkKit TLS request failed.');
   }
   if (code === 2300008 || code === 2300052 || message.includes('timeout')) {
-    return createHttpTransportFailure('TIMEOUT', `NetworkKit request timed out for ${requestUrl}.`);
+    return createHttpTransportFailure('TIMEOUT', 'NetworkKit request timed out.');
   }
-  return createHttpTransportFailure('NETWORK', `NetworkKit request failed for ${requestUrl}.`);
+  return createHttpTransportFailure('NETWORK', 'NetworkKit request failed.');
+}
+
+function isExplicitMaxLimitFailureMessage(message: string): boolean {
+  return message.includes('maximum file size exceeded') ||
+    message.includes('max limit');
 }
 
 function encodeUtf8(value: string): ArrayBuffer {

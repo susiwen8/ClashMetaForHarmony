@@ -26,6 +26,7 @@ import {
 const FILES_DIR = '/sandbox/app/files';
 const EXACT_LIMIT_BYTES: number = 16 * 1024 * 1024;
 const SAFE_SOURCE_DISPLAY: string = 'https://profiles.example.com';
+const MIXED_PORT_SHA256: string = 'eee24b575ecf5f25d3095fa791fe4e4fd3b28dae95d26edcc66a5468030baa40';
 
 class RemoteAcquireCommandRecord implements RemoteAcquireCommand {
   readonly sourceUrl: string;
@@ -208,13 +209,27 @@ export default function subscriptionDownloaderTestsuite() {
       expect(staged.validationPath).assertEqual(`${FILES_DIR}/tmp/download-stage.yaml`);
       expect(staged.byteLength).assertEqual(payload.length);
       expect(staged.validatedAt).assertEqual('2026-08-11T13:00:00.000Z');
-      expect(/^[0-9a-f]{64}$/u.test(staged.sha256Digest)).assertTrue();
+      expect(staged.sha256Digest).assertEqual(MIXED_PORT_SHA256);
       expect(networkTransport.requestedUrls.length).assertEqual(1);
       expect(networkTransport.requestedUrls[0]).assertEqual('https://user:pass@profiles.example.com/sub.yaml?token=secret');
       expect(networkTransport.requests[0].timeoutMs).assertEqual(30000);
       expect(networkTransport.requests[0].maxResponseBytes).assertEqual(EXACT_LIMIT_BYTES);
       expect(requestTransport.requestedUrls.length).assertEqual(0);
       assertBytesEqual(fileDriver.readFileBytes(staged.validationPath), payload);
+    });
+
+    it('rejectsNonHttpSchemesBeforeAnyTransportCall', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('ftp://profiles.example.com/plain.yaml'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_INVALID_URL');
+
+      expect(failure.error.retryable).assertFalse();
+      expect(networkTransport.requestedUrls.length).assertEqual(0);
+      expect(requestTransport.requestedUrls.length).assertEqual(0);
     });
 
     it('rejectsPlainHttpWithoutExplicitConfirmationAndSkipsTransportCalls', 0, async () => {
@@ -255,14 +270,28 @@ export default function subscriptionDownloaderTestsuite() {
       expect(acquired.staged.byteLength).assertEqual(payload.length);
     });
 
-    it('failsOnNoContentAndEmptyBodies', 0, async () => {
+    it('failsOnEmptyTwoHundredBodies', 0, async () => {
       const networkTransport = new FakeHttpTransport();
       const requestTransport = new FakeHttpTransport();
       const fileDriver = new FakeFileDriver();
-      networkTransport.enqueueResponse(204, new Uint8Array(0));
+      networkTransport.enqueueResponse(200, new Uint8Array(0));
       const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver);
 
       const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/empty.yaml'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_EMPTY_BODY');
+
+      expect(failure.error.retryable).assertFalse();
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/download-stage.yaml`)).assertFalse();
+    });
+
+    it('rejectsNoContentEvenWhenTheTransportReturnsBytes', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      networkTransport.enqueueResponse(204, utf8Bytes('ignored body'));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/no-content.yaml'));
       const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_EMPTY_BODY');
 
       expect(failure.error.retryable).assertFalse();
@@ -335,6 +364,71 @@ export default function subscriptionDownloaderTestsuite() {
       const oversizeResult = await oversizeDownloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/too-large.yaml'));
       const oversizeFailure = assertFailureCode(oversizeResult, 'CMFA_DOWNLOAD_OVERSIZE');
       expect(oversizeFailure.error.retryable).assertFalse();
+    });
+
+    it('supportsShortWritesWhileStillProducingTheFullStage', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      const payload = utf8Bytes('abcdefghij');
+      networkTransport.enqueueResponse(200, payload);
+      fileDriver.scriptWriteCounts(`${FILES_DIR}/tmp/short-stage.yaml`, [3, 4, 3]);
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:40:00.000Z'], ['short-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/short-write.yaml'));
+      const acquired = requireSuccess(result);
+
+      expect(acquired.staged.byteLength).assertEqual(payload.length);
+      assertBytesEqual(fileDriver.readFileBytes(acquired.staged.validationPath), payload);
+    });
+
+    it('cleansUpTheStageWhenWriteFails', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      const payload = utf8Bytes('broken');
+      networkTransport.enqueueResponse(200, payload);
+      fileDriver.injectFailure('write', `${FILES_DIR}/tmp/write-fail-stage.yaml`, new Error('write failed at /private/tmp/download'));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:41:00.000Z'], ['write-fail-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://user:pass@profiles.example.com/write-fail.yaml?token=secret'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_STAGE_FAILED');
+
+      expect(failure.error.retryable).assertTrue();
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/write-fail-stage.yaml`)).assertFalse();
+      assertNoLeak(failure.error.technicalDetail, ['/private/tmp/download', 'user:pass', 'token=secret']);
+    });
+
+    it('cleansUpTheStageWhenCloseFails', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      networkTransport.enqueueResponse(200, utf8Bytes('close me'));
+      fileDriver.injectFailure('close', `${FILES_DIR}/tmp/close-fail-stage.yaml`, new Error('close failed at /sandbox/app/files/tmp/close-fail-stage.yaml'));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:42:00.000Z'], ['close-fail-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/close-fail.yaml'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_STAGE_FAILED');
+
+      expect(failure.error.retryable).assertTrue();
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/close-fail-stage.yaml`)).assertFalse();
+      assertNoLeak(failure.error.technicalDetail, ['/sandbox/app/files/tmp/close-fail-stage.yaml']);
+    });
+
+    it('cleansUpTheStageWhenHashFails', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      networkTransport.enqueueResponse(200, utf8Bytes('hash me'));
+      fileDriver.injectFailure('hash', `${FILES_DIR}/tmp/hash-fail-stage.yaml`, new Error('hash failed at /tmp/private'));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:43:00.000Z'], ['hash-fail-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/hash-fail.yaml'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_STAGE_FAILED');
+
+      expect(failure.error.retryable).assertTrue();
+      expect(fileDriver.fileExists(`${FILES_DIR}/tmp/hash-fail-stage.yaml`)).assertFalse();
+      assertNoLeak(failure.error.technicalDetail, ['/tmp/private']);
     });
 
     it('followsFiveRedirectsButRejectsTheSixthAndResolvesRelativeLocations', 0, async () => {

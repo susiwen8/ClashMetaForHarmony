@@ -137,6 +137,7 @@ test('the integrated SDK declarations expose the API 20 to API 23 network and re
   assert.match(httpApi, /connectTimeout\?: number;/u);
   assert.match(httpApi, /readTimeout\?: number;/u);
   assert.match(httpApi, /maxLimit\?: number;/u);
+  assert.match(httpApi, /2300063 - Maximum file size exceeded\./u);
   assert.match(httpApi, /usingCache\?: boolean;/u);
   assert.match(requestApi, /namespace agent \{/u);
   assert.match(requestApi, /interface Config \{/u);

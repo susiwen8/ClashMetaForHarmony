@@ -5,6 +5,7 @@ import { FILE_OPEN_MODE_READ_ONLY } from '../files/FileDriver';
 import type { IdGenerator } from '@cmfa/shared';
 import {
   createHttpTransportFailure,
+  isHttpTransportFailure,
   type HttpTransport,
   type HttpTransportFailureKind,
   type HttpTransportRequest,
@@ -12,6 +13,7 @@ import {
 } from './HttpTransport';
 
 const COPY_BUFFER_BYTES: number = 64 * 1024;
+const REDIRECT_STATUS_CODES: number[] = [301, 302, 303, 307, 308];
 
 class HttpTransportResponseRecord implements HttpTransportResponse {
   readonly statusCode: number;
@@ -100,17 +102,25 @@ export class RequestAgentRedirectTransport implements HttpTransport {
         if (timeoutHandle !== 0) {
           clearTimeout(timeoutHandle);
         }
+        if (isRedirectStatus(responseStatusCode)) {
+          resolve(new HttpTransportResponseRecord(responseStatusCode, responseHeaders, new ArrayBuffer(0)));
+          return;
+        }
         try {
           const body: ArrayBuffer = await readFileFully(this.fileDriver, tempPath, requestSpec.maxResponseBytes);
           resolve(new HttpTransportResponseRecord(responseStatusCode, responseHeaders, body));
-        } catch (_) {
-          reject(createHttpTransportFailure('NETWORK', `Request agent output read failed for ${requestSpec.url}.`));
+        } catch (error) {
+          if (isHttpTransportFailure(error as Object | undefined)) {
+            reject(error as Error);
+            return;
+          }
+          reject(createHttpTransportFailure('NETWORK', 'Request agent output read failed.'));
         }
       };
 
       timeoutHandle = setTimeout(() => {
         void safeStopTask(task);
-        completeWithFailure('TIMEOUT', `Request agent timed out for ${requestSpec.url}.`);
+        completeWithFailure('TIMEOUT', 'Request agent timed out.');
       }, requestSpec.timeoutMs) as number;
 
       task.on('response', (response: request.agent.HttpResponse) => {
@@ -120,23 +130,23 @@ export class RequestAgentRedirectTransport implements HttpTransport {
       task.on('progress', (progress: request.agent.Progress) => {
         if (progress.processed > requestSpec.maxResponseBytes) {
           void safeStopTask(task);
-          completeWithFailure('OVERSIZE', `Request agent exceeded ${requestSpec.maxResponseBytes} bytes for ${requestSpec.url}.`);
+          completeWithFailure('OVERSIZE', 'Request agent exceeded the configured size limit.');
         }
       });
       task.on('faultOccur', (fault: request.agent.Faults) => {
         void safeStopTask(task);
-        completeWithFailure(mapFaultKind(fault), `Request agent fault occurred for ${requestSpec.url}.`);
+        completeWithFailure(mapFaultKind(fault), 'Request agent fault occurred.');
       });
       task.on('failed', (_progress: request.agent.Progress) => {
         void safeStopTask(task);
-        completeWithFailure('NETWORK', `Request agent failed for ${requestSpec.url}.`);
+        completeWithFailure('NETWORK', 'Request agent failed.');
       });
       task.on('completed', (_progress: request.agent.Progress) => {
         void completeWithSuccess();
       });
 
       task.start().catch((_error: Error) => {
-        completeWithFailure('NETWORK', `Request agent start failed for ${requestSpec.url}.`);
+        completeWithFailure('NETWORK', 'Request agent start failed.');
       });
     });
   }
@@ -188,6 +198,15 @@ function normalizeAbsoluteSandboxRoot(rawPath: string): string {
   return normalized;
 }
 
+function isRedirectStatus(statusCode: number): boolean {
+  for (let index = 0; index < REDIRECT_STATUS_CODES.length; index += 1) {
+    if (REDIRECT_STATUS_CODES[index] === statusCode) {
+      return true;
+    }
+  }
+  return false;
+}
+
 async function readFileFully(
   fileDriver: FileDriver,
   path: string,
@@ -206,7 +225,7 @@ async function readFileFully(
       }
       total += bytesRead;
       if (total > maxResponseBytes) {
-        throw new Error('Response exceeded limit.');
+        throw createHttpTransportFailure('OVERSIZE', 'Request agent exceeded the configured size limit.');
       }
       chunks.push(new Uint8Array(buffer.slice(0, bytesRead)));
     }

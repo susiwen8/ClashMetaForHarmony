@@ -211,6 +211,14 @@ export class SubscriptionDownloader {
           response.statusCode >= 500
         );
       }
+      if (response.statusCode === 204) {
+        return this.fail(
+          command,
+          `Subscription download returned an empty response from ${redactUrl(current.requestUrl)}.`,
+          'CMFA_DOWNLOAD_EMPTY_BODY',
+          false
+        );
+      }
 
       const byteLength: number = response.body.byteLength;
       if (byteLength === 0) {
@@ -252,18 +260,16 @@ export class SubscriptionDownloader {
     const stageDirectory: string = `${this.filesDir}/tmp`;
     const stagePath: string = `${stageDirectory}/${stageId}${STAGING_SUFFIX}`;
     let handle: FileToken | undefined = undefined;
+    let closeFailure: Error | undefined = undefined;
     try {
       await this.fileDriver.mkdir(stageDirectory, true);
       handle = await this.fileDriver.open(stagePath, FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_CREATE | FILE_OPEN_MODE_TRUNC);
       await writeFully(this.fileDriver, handle.fd, body);
-    } catch (error) {
-      await this.closeHandle(handle);
-      await this.cleanupStage(stagePath);
-      throw error as Error;
-    }
-
-    try {
-      await this.closeHandle(handle);
+      closeFailure = await this.tryCloseHandle(handle);
+      handle = undefined;
+      if (closeFailure !== undefined) {
+        throw closeFailure;
+      }
       const digest: string = await this.fileDriver.hash(stagePath, 'sha256');
       return {
         stagingId: stageId,
@@ -273,19 +279,23 @@ export class SubscriptionDownloader {
         validatedAt: this.clock.now()
       };
     } catch (error) {
+      if (handle !== undefined) {
+        closeFailure = await this.tryCloseHandle(handle);
+      }
       await this.cleanupStage(stagePath);
-      throw error as Error;
+      throw (error as Error) ?? closeFailure ?? new Error('Subscription stage failed.');
     }
   }
 
-  private async closeHandle(handle?: FileToken): Promise<void> {
+  private async tryCloseHandle(handle?: FileToken): Promise<Error | undefined> {
     if (handle === undefined) {
-      return;
+      return undefined;
     }
     try {
       await this.fileDriver.close(handle);
+      return undefined;
     } catch (_) {
-      throw new Error('Staged file close failed.');
+      return new Error('Staged file close failed.');
     }
   }
 
