@@ -179,9 +179,9 @@ test('CoreDebugPage observes new Want contexts and runs each self-test runId at 
   assert.match(composition, /probeOriginUrl/u);
   assert.match(composition, /probeCaPem/u);
   assert.match(composition, /probeExpectedBodySha256/u);
-  assert.match(ability, /cmfa\.phase2\.originUrl/u);
-  assert.match(ability, /cmfa\.phase2\.caPem/u);
-  assert.match(ability, /cmfa\.phase2\.expectedBodySha256/u);
+  assert.match(composition, /cmfa\.phase2\.originUrl/u);
+  assert.match(composition, /cmfa\.phase2\.caPem/u);
+  assert.match(composition, /cmfa\.phase2\.expectedBodySha256/u);
   assert.match(page, /subscribePhase1LaunchContext/u);
   assert.match(page, /unsubscribePhase1LaunchContext/u);
   assert.match(page, /selfTestInFlight/u);

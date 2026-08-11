@@ -150,6 +150,7 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
     coreIndex: path.join(HARMONY_ROOT, 'core', 'Index.ets'),
     adapter: path.join(HARMONY_ROOT, 'core', 'src', 'main', 'ets', 'CoreNativeAdapter.ets'),
     composition: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'bootstrap', 'CoreComposition.ets'),
+    applicationComposition: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'bootstrap', 'ApplicationComposition.ets'),
     page: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'CoreDebugPage.ets'),
     ability: path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'entryability', 'EntryAbility.ets')
   };
@@ -186,12 +187,26 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
   assert.match(sources.composition, /getSelfTestCoreService/u);
   assert.match(sources.composition, /Phase2SelfTestCoreService/u);
   assert.match(sources.composition, /probeHttpsForSelfTest/u);
+  assert.match(sources.applicationComposition, /export type ApplicationCompositionState/u);
+  assert.match(sources.applicationComposition, /export interface ApplicationComposition/u);
+  assert.doesNotMatch(sources.applicationComposition, /HarmonyRdbDriver|HarmonyHuksDriver|NetworkKitHttpTransport/u);
 
   for (const visibleState of ['bridgeVersion', 'coreVersion', 'lastError', 'eventCount', 'proofStatus']) {
     assert.match(sources.page, new RegExp(`\\b${visibleState}\\b`, 'u'));
   }
-  for (const selfTestSignal of ['cmfa.phase1.selfTest', 'cmfa.phase1.runId', 'phase1-device-proof.json']) {
-    assert.match(`${sources.ability}\n${sources.page}`, new RegExp(selfTestSignal.replaceAll('.', '\\.'), 'u'));
+  for (const selfTestSignal of [
+    'cmfa.phase1.selfTest',
+    'cmfa.phase1.runId',
+    'cmfa.phase1.runnerStartedAt',
+    'cmfa.phase2.originRunId',
+    'cmfa.phase2.originUrl',
+    'cmfa.phase2.caPem',
+    'cmfa.phase2.expectedBodySha256',
+    'cmfa.phase2.fixturePath',
+    'cmfa.phase2.fixtureSha256',
+    'phase1-device-proof.json'
+  ]) {
+    assert.match(`${sources.composition}\n${sources.ability}\n${sources.page}`, new RegExp(selfTestSignal.replaceAll('.', '\\.'), 'u'));
   }
   assert.match(sources.page, /fileIo/u);
   assert.match(sources.page, /OpenMode\.(?:WRITE_ONLY|READ_WRITE)/u);
@@ -199,7 +214,9 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
 
   const mainPages = JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'resources', 'base', 'profile', 'main_pages.json'), 'utf8'));
   assert.ok(mainPages.src.includes('pages/CoreDebugPage'));
-  assert.match(sources.ability, /loadContent\(['"]pages\/CoreDebugPage['"]/u);
+  assert.ok(mainPages.src.includes('pages/Index'));
+  assert.match(sources.ability, /pages\/CoreDebugPage/u);
+  assert.match(sources.ability, /pages\/Index/u);
   assert.doesNotMatch(sources.page, /proxy|profiles|vpn|tun/iu, 'Phase 1 page must not contain placeholder product UI');
 });
 

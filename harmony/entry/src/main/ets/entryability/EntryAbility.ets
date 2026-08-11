@@ -2,50 +2,45 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 
-import { Phase1LaunchContext, setPhase1LaunchContext } from '../bootstrap/CoreComposition';
+import type { ApplicationComposition } from '../bootstrap/ApplicationComposition';
+import {
+  applyPhase1LaunchWant,
+  createApplicationComposition,
+  getPhase1LaunchContext
+} from '../bootstrap/CoreComposition';
 
 const DOMAIN = 0x0000;
-
-const SELF_TEST_KEY = 'cmfa.phase1.selfTest';
-const RUN_ID_KEY = 'cmfa.phase1.runId';
-const RUNNER_STARTED_AT_KEY = 'cmfa.phase1.runnerStartedAt';
-const FILES_DIR_KEY = 'cmfa.phase1.filesDir';
-const PROBE_ORIGIN_RUN_ID_KEY = 'cmfa.phase2.originRunId';
-const PROBE_ORIGIN_URL_KEY = 'cmfa.phase2.originUrl';
-const PROBE_CA_PEM_KEY = 'cmfa.phase2.caPem';
-const PROBE_EXPECTED_BODY_SHA256_KEY = 'cmfa.phase2.expectedBodySha256';
-const PROBE_FIXTURE_PATH_KEY = 'cmfa.phase2.fixturePath';
-const PROBE_FIXTURE_SHA256_KEY = 'cmfa.phase2.fixtureSha256';
+const PRODUCTION_ROUTE = 'pages/Index';
+const SELF_TEST_ROUTE = 'pages/CoreDebugPage';
 
 export default class EntryAbility extends UIAbility {
+  private windowStage?: window.WindowStage;
+  private applicationComposition?: ApplicationComposition;
+
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.applyPhase1Parameters(want);
+    applyPhase1LaunchWant(this.context, want);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onCreate');
   }
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
-    this.applyPhase1Parameters(want);
+    applyPhase1LaunchWant(this.context, want);
+    void this.loadTargetPage();
   }
 
   onDestroy(): void {
+    void this.closeApplicationComposition();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
-    // Main window is created, set main page for this ability
+    this.windowStage = windowStage;
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
-
-    windowStage.loadContent('pages/CoreDebugPage', (err) => {
-      if (err.code) {
-        hilog.error(DOMAIN, 'testTag', 'Failed to load the content. Cause: %{public}s', JSON.stringify(err));
-        return;
-      }
-      hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
-    });
+    void this.loadTargetPage();
   }
 
   onWindowStageDestroy(): void {
-    // Main window is destroyed, release UI related resources
+    this.windowStage = undefined;
+    void this.closeApplicationComposition();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
@@ -59,21 +54,44 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 
-  private applyPhase1Parameters(want: Want): void {
-    const parameters: Record<string, Object> = want.parameters ?? {};
-    const selfTestValue: string = `${parameters[SELF_TEST_KEY] ?? ''}`;
-    const launchContext: Phase1LaunchContext = {
-      selfTest: selfTestValue === 'true',
-      runId: `${parameters[RUN_ID_KEY] ?? ''}`,
-      runnerStartedAt: `${parameters[RUNNER_STARTED_AT_KEY] ?? ''}`,
-      filesDir: this.context.filesDir,
-      probeOriginRunId: `${parameters[PROBE_ORIGIN_RUN_ID_KEY] ?? ''}`,
-      probeOriginUrl: `${parameters[PROBE_ORIGIN_URL_KEY] ?? ''}`,
-      probeCaPem: `${parameters[PROBE_CA_PEM_KEY] ?? ''}`,
-      probeExpectedBodySha256: `${parameters[PROBE_EXPECTED_BODY_SHA256_KEY] ?? ''}`,
-      probeFixturePath: `${parameters[PROBE_FIXTURE_PATH_KEY] ?? ''}`,
-      probeFixtureSha256: `${parameters[PROBE_FIXTURE_SHA256_KEY] ?? ''}`
-    };
-    setPhase1LaunchContext(launchContext);
+  private async loadTargetPage(): Promise<void> {
+    const currentWindowStage: window.WindowStage | undefined = this.windowStage;
+    if (currentWindowStage === undefined) {
+      return;
+    }
+    const launchContext = getPhase1LaunchContext();
+    if (launchContext.selfTest) {
+      await this.closeApplicationComposition();
+      await this.loadPage(currentWindowStage, SELF_TEST_ROUTE);
+      return;
+    }
+    const applicationComposition: ApplicationComposition = this.applicationComposition ?? createApplicationComposition(this.context);
+    this.applicationComposition = applicationComposition;
+    void applicationComposition.initialize().catch(() => {
+    });
+    await this.loadPage(currentWindowStage, PRODUCTION_ROUTE);
+  }
+
+  private async closeApplicationComposition(): Promise<void> {
+    const applicationComposition: ApplicationComposition | undefined = this.applicationComposition;
+    this.applicationComposition = undefined;
+    if (applicationComposition === undefined) {
+      return;
+    }
+    await applicationComposition.close();
+  }
+
+  private async loadPage(windowStage: window.WindowStage, route: string): Promise<void> {
+    await new Promise<void>((resolve) => {
+      windowStage.loadContent(route, (err) => {
+        if (err.code) {
+          hilog.error(DOMAIN, 'testTag', 'Failed to load the content.');
+          resolve();
+          return;
+        }
+        hilog.info(DOMAIN, 'testTag', 'Succeeded in loading the content.');
+        resolve();
+      });
+    });
   }
 }
