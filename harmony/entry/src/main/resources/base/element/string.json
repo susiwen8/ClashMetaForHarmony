@@ -25,16 +25,28 @@
       "value": "本地代理"
     },
     {
+      "name": "home_subtitle",
+      "value": "在本机启动 HTTP 与 SOCKS 监听"
+    },
+    {
       "name": "home_profile_title",
       "value": "当前配置"
     },
     {
       "name": "home_profile_empty",
-      "value": "还没有可启用的配置"
+      "value": "尚未添加配置"
+    },
+    {
+      "name": "home_profile_empty_detail",
+      "value": "导入并启用一个有效配置后即可开始"
     },
     {
       "name": "home_profile_manage",
       "value": "管理配置"
+    },
+    {
+      "name": "home_profile_manage_trailing",
+      "value": "›"
     },
     {
       "name": "home_runtime_title",
@@ -42,23 +54,23 @@
     },
     {
       "name": "home_runtime_status_stopped",
-      "value": "已停止"
+      "value": "本地代理未启动"
     },
     {
       "name": "home_runtime_status_starting",
-      "value": "启动中"
+      "value": "本地代理启动中"
     },
     {
       "name": "home_runtime_status_running",
-      "value": "运行中"
+      "value": "本地代理运行中"
     },
     {
       "name": "home_runtime_status_stopping",
-      "value": "停止中"
+      "value": "本地代理停止中"
     },
     {
       "name": "home_runtime_status_error",
-      "value": "异常"
+      "value": "本地代理异常"
     },
     {
       "name": "home_runtime_primary_start",
@@ -87,6 +99,46 @@
     {
       "name": "home_runtime_local_proxy",
       "value": "本地代理"
+    },
+    {
+      "name": "home_runtime_listener_placeholder",
+      "value": "—"
+    },
+    {
+      "name": "home_runtime_detail_stopped",
+      "value": "等待有效配置"
+    },
+    {
+      "name": "home_runtime_detail_starting",
+      "value": "正在建立本机监听"
+    },
+    {
+      "name": "home_runtime_detail_running",
+      "value": "已在本机提供 HTTP 与 SOCKS 监听"
+    },
+    {
+      "name": "home_runtime_detail_stopping",
+      "value": "正在关闭本机监听"
+    },
+    {
+      "name": "home_runtime_detail_error",
+      "value": "检查当前配置与本机监听状态"
+    },
+    {
+      "name": "home_runtime_boundary_note",
+      "value": "仅提供本机监听，不会自动修改系统网络设置"
+    },
+    {
+      "name": "home_info_title",
+      "value": "从配置开始"
+    },
+    {
+      "name": "home_info_body",
+      "value": "支持从文件或订阅地址导入，敏感地址不会显示在配置列表和错误详情中。"
+    },
+    {
+      "name": "home_runtime_indicator",
+      "value": "●"
     },
     {
       "name": "profiles_title",

@@ -25,6 +25,10 @@
       "value": "24vp"
     },
     {
+      "name": "space_2xl",
+      "value": "32vp"
+    },
+    {
       "name": "radius_chip",
       "value": "12vp"
     },

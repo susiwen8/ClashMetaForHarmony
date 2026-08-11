@@ -17,6 +17,10 @@
       "value": "#E9EFF6"
     },
     {
+      "name": "color_surface_info_panel",
+      "value": "#E8F0FF"
+    },
+    {
       "name": "color_text_primary",
       "value": "#1C2430"
     },

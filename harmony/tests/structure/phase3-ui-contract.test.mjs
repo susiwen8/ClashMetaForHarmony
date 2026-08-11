@@ -37,9 +37,12 @@ const REQUIRED_COMPONENT_FILES = [
 const REQUIRED_STRING_KEYS = [
   'app_loading',
   'home_title',
+  'home_subtitle',
   'home_profile_title',
   'home_profile_empty',
+  'home_profile_empty_detail',
   'home_profile_manage',
+  'home_profile_manage_trailing',
   'home_runtime_title',
   'home_runtime_status_stopped',
   'home_runtime_status_starting',
@@ -52,7 +55,16 @@ const REQUIRED_STRING_KEYS = [
   'home_runtime_missing_profile',
   'home_runtime_http_label',
   'home_runtime_socks_label',
+  'home_runtime_listener_placeholder',
   'home_runtime_local_proxy',
+  'home_runtime_detail_stopped',
+  'home_runtime_detail_starting',
+  'home_runtime_detail_running',
+  'home_runtime_detail_stopping',
+  'home_runtime_detail_error',
+  'home_runtime_boundary_note',
+  'home_info_title',
+  'home_info_body',
   'profiles_title',
   'profiles_add',
   'profiles_empty_title',
@@ -108,6 +120,7 @@ const REQUIRED_BASE_COLOR_KEYS = [
   'color_surface_background',
   'color_surface_card',
   'color_surface_subtle',
+  'color_surface_info_panel',
   'color_text_primary',
   'color_text_secondary',
   'color_text_inverse',
@@ -244,6 +257,8 @@ test('Task 13 native UI files expose semantic ids, safe layouts, and resource-ba
   const productionFiles = [INDEX_PATH, ...REQUIRED_PAGE_FILES, ...REQUIRED_COMPONENT_FILES];
   const sources = await Promise.all(productionFiles.map(async (filePath) => [filePath, await readUtf8(filePath)]));
   const combinedSource = sources.map(([, source]) => source).join('\n');
+  const homePageSource = sources.find(([filePath]) => filePath.endsWith('HomePage.ets'))?.[1] ?? '';
+  const runtimeStatusCardSource = sources.find(([filePath]) => filePath.endsWith('RuntimeStatusCard.ets'))?.[1] ?? '';
 
   for (const semanticId of REQUIRED_SEMANTIC_IDS) {
     assert.match(combinedSource, new RegExp(`\\.id\\(['"\`]${semanticId.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}['"\`]\\)`, 'u'),
@@ -260,6 +275,24 @@ test('Task 13 native UI files expose semantic ids, safe layouts, and resource-ba
   assert.match(combinedSource, /expandSafeArea|safeAreaPadding/u, 'pages must handle system safe areas');
   assert.match(combinedSource, /onAreaChange|onSizeChange/u, 'pages must adapt padding to portrait width');
   assert.match(combinedSource, /touch_target_min/u, 'interactive targets must honor the minimum 48vp token');
+  assert.match(homePageSource, /\.width\('100%'\)[\s\S]*\.height\('100%'\)/u, 'HomePage root must fill the parent stack');
+  assert.match(homePageSource, /justifyContent\(FlexAlign\.Start\)|align\(Alignment\.TopStart\)/u, 'HomePage root must start from the top');
+  assert.match(homePageSource, /backgroundColor\(\$r\('app\.color\.color_surface_background'\)\)/u, 'HomePage must use the semantic page background');
+  assert.match(homePageSource, /\$r\('app\.string\.home_subtitle'\)/u, 'HomePage must show the resource-backed subtitle');
+  assert.match(homePageSource, /\$r\('app\.string\.home_profile_empty_detail'\)/u, 'HomePage must show the empty profile helper copy');
+  assert.match(homePageSource, /\$r\('app\.string\.home_profile_manage_trailing'\)/u, 'HomePage must render the trailing manage affordance through resources');
+  assert.match(homePageSource, /\$r\('app\.string\.home_info_title'\)/u, 'HomePage must render the bottom info panel title');
+  assert.match(homePageSource, /\$r\('app\.string\.home_info_body'\)/u, 'HomePage must render the bottom info panel body');
+  assert.match(homePageSource, /\.id\('home\.runtime\.primary'\)/u, 'HomePage must own the primary runtime action');
+  assert.doesNotMatch(runtimeStatusCardSource, /\.id\('home\.runtime\.primary'\)/u, 'RuntimeStatusCard must no longer own the primary action');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_http_label'\)/u, 'RuntimeStatusCard must always render the HTTP listener row');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_socks_label'\)/u, 'RuntimeStatusCard must always render the SOCKS listener row');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_listener_placeholder'\)/u, 'RuntimeStatusCard must show a resource-backed placeholder when listener addresses are missing');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_boundary_note'\)/u, 'RuntimeStatusCard must render the local-listener boundary note');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_detail_stopped'\)|\$r\('app\.string\.home_runtime_detail_starting'\)|\$r\('app\.string\.home_runtime_detail_running'\)|\$r\('app\.string\.home_runtime_detail_stopping'\)|\$r\('app\.string\.home_runtime_detail_error'\)/u,
+    'RuntimeStatusCard must render a resource-backed status detail'
+  );
+  assert.match(runtimeStatusCardSource, /Divider\(/u, 'RuntimeStatusCard must use dividers to separate status, listener rows, and boundary note');
 
   for (const [filePath, source] of sources) {
     assertNoVisibleLiterals(source, path.relative(HARMONY_ROOT, filePath));
