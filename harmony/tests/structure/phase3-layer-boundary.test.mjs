@@ -626,14 +626,14 @@ test('Task 8 platform source contract keeps transport selection and manual redir
   assert.doesNotMatch(networkKitSource, /requestUrl|request\.url.*createHttpTransportFailure|\$\{request\.url\}/u);
   assert.match(requestAgentSource, /from '@kit\.BasicServicesKit'/u);
   assert.match(requestAgentSource, /request\.agent\.create/u);
-  assert.match(requestAgentSource, /redirect:\s*false/u);
+  assert.match(requestAgentSource, /redirect:\s*false|redirect\s*=\s*false/u);
   assert.match(requestAgentSource, /isRedirectStatus\(responseStatusCode\)/u);
   assert.match(requestAgentSource, /new ArrayBuffer\(0\)/u);
   assert.match(requestAgentSource, /createHttpTransportFailure\('OVERSIZE'/u);
   assert.match(requestAgentSource, /task\.on\('progress'/u);
   assert.match(requestAgentSource, /task\.on\('response'/u);
   assert.match(requestAgentSource, /task\.on\('faultOccur'/u);
-  assert.match(requestAgentSource, /request\.agent\.remove\(task\.tid\)/u);
+  assert.match(requestAgentSource, /requestAgent\.remove\(task\.tid\)|request\.agent\.remove\(task\.tid\)/u);
   assert.doesNotMatch(requestAgentSource, /requestSpec\.url.*createHttpTransportFailure|\$\{requestSpec\.url\}/u);
   assert.deepEqual(entryModule.module.requestPermissions, [{ name: 'ohos.permission.INTERNET' }]);
 });

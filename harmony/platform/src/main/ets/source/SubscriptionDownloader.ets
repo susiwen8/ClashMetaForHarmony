@@ -471,6 +471,9 @@ function resolveRedirectUrl(base: NormalizedRemoteUrl, location: string): Normal
   }
 
   const hashIndex: number = trimmed.indexOf('#');
+  if (hashIndex === 0) {
+    return buildResolvedUrl(base.scheme, base.authority, base.path, base.query);
+  }
   const withoutFragment: string = hashIndex >= 0 ? trimmed.substring(0, hashIndex) : trimmed;
   const queryIndex: number = withoutFragment.indexOf('?');
   const pathPart: string = queryIndex >= 0 ? withoutFragment.substring(0, queryIndex) : withoutFragment;

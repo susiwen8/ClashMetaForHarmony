@@ -27,38 +27,92 @@ class HttpTransportResponseRecord implements HttpTransportResponse {
   }
 }
 
+class RequestAgentCreateConfigRecord implements RequestAgentCreateConfig {
+  action: request.agent.Action;
+  url: string;
+  mode: request.agent.Mode;
+  method: string;
+  saveas: string;
+  redirect: boolean;
+
+  constructor(url: string, saveas: string) {
+    this.action = request.agent.Action.DOWNLOAD;
+    this.url = url;
+    this.mode = request.agent.Mode.FOREGROUND;
+    this.method = 'GET';
+    this.saveas = saveas;
+    this.redirect = false;
+  }
+}
+
 export interface RequestAgentRedirectTransportDependencies {
-  context: common.BaseContext;
+  context?: common.BaseContext;
   fileDriver: FileDriver;
   filesDir: string;
   idGenerator: IdGenerator;
+  requestAgent?: RequestAgentModulePort;
+  timer?: RequestAgentTimerPort;
+}
+
+export interface RequestAgentTaskPort {
+  readonly tid: string;
+  on(event: 'progress', callback: (progress: RequestAgentProgressPort) => void): void;
+  on(event: 'response', callback: (response: RequestAgentResponsePort) => void): void;
+  on(event: 'faultOccur', callback: (fault: RequestAgentFaultPort) => void): void;
+  on(event: 'failed', callback: (progress: RequestAgentProgressPort) => void): void;
+  on(event: 'completed', callback: (progress: RequestAgentProgressPort) => void): void;
+  start(): Promise<void>;
+  stop(): Promise<void>;
+}
+
+export interface RequestAgentProgressPort {
+  readonly processed: number;
+}
+
+export interface RequestAgentResponsePort {
+  readonly statusCode: number;
+  readonly headers: Map<string, Array<string>>;
+}
+
+export type RequestAgentFaultPort = number;
+
+export interface RequestAgentCreateConfig extends request.agent.Config {}
+
+export interface RequestAgentModulePort {
+  create(context: common.BaseContext | undefined, config: RequestAgentCreateConfig): Promise<RequestAgentTaskPort>;
+  remove(tid: string): Promise<void>;
+}
+
+export interface RequestAgentTimerPort {
+  setTimeout(callback: () => void, delayMs: number): number;
+  clearTimeout(timerId: number): void;
 }
 
 export class RequestAgentRedirectTransport implements HttpTransport {
-  private readonly context: common.BaseContext;
+  private readonly context?: common.BaseContext;
   private readonly fileDriver: FileDriver;
   private readonly filesDir: string;
   private readonly idGenerator: IdGenerator;
+  private readonly requestAgent: RequestAgentModulePort;
+  private readonly timer: RequestAgentTimerPort;
 
   constructor(dependencies: RequestAgentRedirectTransportDependencies) {
     this.context = dependencies.context;
     this.fileDriver = dependencies.fileDriver;
     this.filesDir = normalizeAbsoluteSandboxRoot(dependencies.filesDir);
     this.idGenerator = dependencies.idGenerator;
+    this.requestAgent = dependencies.requestAgent ?? createSystemRequestAgentModule();
+    this.timer = dependencies.timer ?? createSystemRequestAgentTimer();
   }
 
   async fetch(requestSpec: HttpTransportRequest): Promise<HttpTransportResponse> {
     const tempPath: string = await this.prepareOutputPath();
-    let task: request.agent.Task | undefined = undefined;
+    let task: RequestAgentTaskPort | undefined = undefined;
     try {
-      task = await request.agent.create(this.context, {
-        action: request.agent.Action.DOWNLOAD,
-        url: requestSpec.url,
-        mode: request.agent.Mode.FOREGROUND,
-        method: 'GET',
-        saveas: tempPath,
-        redirect: false
-      });
+      task = await this.requestAgent.create(
+        this.context,
+        new RequestAgentCreateConfigRecord(requestSpec.url, tempPath)
+      );
       return await this.awaitTask(task, tempPath, requestSpec);
     } finally {
       await this.safeRemoveTask(task);
@@ -73,7 +127,7 @@ export class RequestAgentRedirectTransport implements HttpTransport {
   }
 
   private async awaitTask(
-    task: request.agent.Task,
+    task: RequestAgentTaskPort,
     tempPath: string,
     requestSpec: HttpTransportRequest
   ): Promise<HttpTransportResponse> {
@@ -81,17 +135,28 @@ export class RequestAgentRedirectTransport implements HttpTransport {
     let timeoutHandle: number = 0;
     let responseStatusCode: number = 0;
     let responseHeaders = new Map<string, Array<string>>();
+    let stopPromise: Promise<void> | undefined = undefined;
 
     return await new Promise<HttpTransportResponse>((resolve, reject) => {
+      const ensureStop = (): Promise<void> => {
+        if (stopPromise !== undefined) {
+          return stopPromise;
+        }
+        stopPromise = safeStopTask(task);
+        return stopPromise;
+      };
+
       const completeWithFailure = (kind: HttpTransportFailureKind, detail: string): void => {
         if (settled) {
           return;
         }
         settled = true;
         if (timeoutHandle !== 0) {
-          clearTimeout(timeoutHandle);
+          this.timer.clearTimeout(timeoutHandle);
         }
-        reject(createHttpTransportFailure(kind, detail));
+        void ensureStop().finally(() => {
+          reject(createHttpTransportFailure(kind, detail));
+        });
       };
 
       const completeWithSuccess = async (): Promise<void> => {
@@ -100,7 +165,7 @@ export class RequestAgentRedirectTransport implements HttpTransport {
         }
         settled = true;
         if (timeoutHandle !== 0) {
-          clearTimeout(timeoutHandle);
+          this.timer.clearTimeout(timeoutHandle);
         }
         if (isRedirectStatus(responseStatusCode)) {
           resolve(new HttpTransportResponseRecord(responseStatusCode, responseHeaders, new ArrayBuffer(0)));
@@ -118,30 +183,26 @@ export class RequestAgentRedirectTransport implements HttpTransport {
         }
       };
 
-      timeoutHandle = setTimeout(() => {
-        void safeStopTask(task);
+      timeoutHandle = this.timer.setTimeout(() => {
         completeWithFailure('TIMEOUT', 'Request agent timed out.');
-      }, requestSpec.timeoutMs) as number;
+      }, requestSpec.timeoutMs);
 
-      task.on('response', (response: request.agent.HttpResponse) => {
+      task.on('response', (response: RequestAgentResponsePort) => {
         responseStatusCode = response.statusCode;
         responseHeaders = cloneHeaderMap(response.headers);
       });
-      task.on('progress', (progress: request.agent.Progress) => {
+      task.on('progress', (progress: RequestAgentProgressPort) => {
         if (progress.processed > requestSpec.maxResponseBytes) {
-          void safeStopTask(task);
           completeWithFailure('OVERSIZE', 'Request agent exceeded the configured size limit.');
         }
       });
-      task.on('faultOccur', (fault: request.agent.Faults) => {
-        void safeStopTask(task);
+      task.on('faultOccur', (fault: RequestAgentFaultPort) => {
         completeWithFailure(mapFaultKind(fault), 'Request agent fault occurred.');
       });
-      task.on('failed', (_progress: request.agent.Progress) => {
-        void safeStopTask(task);
+      task.on('failed', (_progress: RequestAgentProgressPort) => {
         completeWithFailure('NETWORK', 'Request agent failed.');
       });
-      task.on('completed', (_progress: request.agent.Progress) => {
+      task.on('completed', (_progress: RequestAgentProgressPort) => {
         void completeWithSuccess();
       });
 
@@ -151,12 +212,12 @@ export class RequestAgentRedirectTransport implements HttpTransport {
     });
   }
 
-  private async safeRemoveTask(task?: request.agent.Task): Promise<void> {
+  private async safeRemoveTask(task?: RequestAgentTaskPort): Promise<void> {
     if (task === undefined) {
       return;
     }
     try {
-      await request.agent.remove(task.tid);
+      await this.requestAgent.remove(task.tid);
     } catch (_) {
     }
   }
@@ -253,9 +314,43 @@ function mergeChunks(chunks: Uint8Array[], total: number): ArrayBuffer {
   return output.buffer;
 }
 
-async function safeStopTask(task: request.agent.Task): Promise<void> {
+async function safeStopTask(task: RequestAgentTaskPort): Promise<void> {
   try {
     await task.stop();
   } catch (_) {
   }
+}
+
+class SystemRequestAgentModule implements RequestAgentModulePort {
+  async create(
+    context: common.BaseContext | undefined,
+    config: RequestAgentCreateConfig
+  ): Promise<RequestAgentTaskPort> {
+    if (context === undefined) {
+      throw new Error('Request agent context was missing.');
+    }
+    return await request.agent.create(context, config) as RequestAgentTaskPort;
+  }
+
+  async remove(tid: string): Promise<void> {
+    await request.agent.remove(tid);
+  }
+}
+
+function createSystemRequestAgentModule(): RequestAgentModulePort {
+  return new SystemRequestAgentModule();
+}
+
+class SystemRequestAgentTimer implements RequestAgentTimerPort {
+  setTimeout(callback: () => void, delayMs: number): number {
+    return setTimeout(callback, delayMs) as number;
+  }
+
+  clearTimeout(timerId: number): void {
+    clearTimeout(timerId);
+  }
+}
+
+function createSystemRequestAgentTimer(): RequestAgentTimerPort {
+  return new SystemRequestAgentTimer();
 }

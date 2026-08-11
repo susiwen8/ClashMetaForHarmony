@@ -1,3 +1,4 @@
+import common from '@ohos.app.ability.common';
 import { describe, expect, it } from '@ohos/hypium';
 import type {
   RemoteAcquireCommand,
@@ -14,6 +15,14 @@ import {
   type HttpTransportRequest,
   type HttpTransportResponse
 } from '../main/ets/source/HttpTransport';
+import {
+  RequestAgentRedirectTransport,
+  type RequestAgentCreateConfig,
+  type RequestAgentModulePort,
+  type RequestAgentTaskPort,
+  type RequestAgentTimerPort,
+  type RequestAgentRedirectTransportDependencies
+} from '../main/ets/source/RequestAgentRedirectTransport';
 import {
   FakeFileDriver,
   SequenceClock,
@@ -66,6 +75,215 @@ class ScriptedTransportFailure {
   constructor(kind: HttpTransportFailureKind, detail: string) {
     this.kind = kind;
     this.detail = detail;
+  }
+}
+
+class DeferredVoid {
+  readonly promise: Promise<void>;
+  private readonly resolveFn: () => void;
+
+  constructor() {
+    let resolveRef: (() => void) | undefined = undefined;
+    this.promise = new Promise<void>((resolve) => {
+      resolveRef = resolve;
+    });
+    this.resolveFn = () => {
+      if (resolveRef !== undefined) {
+        resolveRef();
+      }
+    };
+  }
+
+  resolve(): void {
+    this.resolveFn();
+  }
+}
+
+type RequestAgentProgressListener = (progress: RequestAgentProgressRecord) => void;
+type RequestAgentResponseListener = (response: RequestAgentResponseRecord) => void;
+type RequestAgentFaultListener = (fault: number) => void;
+type RequestAgentFailedListener = (progress: RequestAgentProgressRecord) => void;
+type RequestAgentCompletedListener = (progress: RequestAgentProgressRecord) => void;
+
+class RequestAgentProgressRecord {
+  readonly processed: number;
+
+  constructor(processed: number) {
+    this.processed = processed;
+  }
+}
+
+class RequestAgentResponseRecord {
+  readonly statusCode: number;
+  readonly headers: Map<string, Array<string>>;
+
+  constructor(statusCode: number, headers?: Map<string, Array<string>>) {
+    this.statusCode = statusCode;
+    this.headers = headers ?? new Map<string, Array<string>>();
+  }
+}
+
+class FakeRequestAgentTask implements RequestAgentTaskPort {
+  readonly tid: string;
+  readonly log: string[];
+  readonly stopDeferred: DeferredVoid;
+  private progressListener?: RequestAgentProgressListener;
+  private responseListener?: RequestAgentResponseListener;
+  private faultListener?: RequestAgentFaultListener;
+  private failedListener?: RequestAgentFailedListener;
+  private completedListener?: RequestAgentCompletedListener;
+
+  constructor(tid: string, log: string[], stopDeferred?: DeferredVoid) {
+    this.tid = tid;
+    this.log = log;
+    this.stopDeferred = stopDeferred ?? new DeferredVoid();
+  }
+
+  on(event: 'progress', callback: RequestAgentProgressListener): void;
+  on(event: 'response', callback: RequestAgentResponseListener): void;
+  on(event: 'faultOccur', callback: RequestAgentFaultListener): void;
+  on(event: 'failed', callback: RequestAgentFailedListener): void;
+  on(event: 'completed', callback: RequestAgentCompletedListener): void;
+  on(event: string, callback: Object): void {
+    if (event === 'progress') {
+      this.progressListener = callback as RequestAgentProgressListener;
+      return;
+    }
+    if (event === 'response') {
+      this.responseListener = callback as RequestAgentResponseListener;
+      return;
+    }
+    if (event === 'faultOccur') {
+      this.faultListener = callback as RequestAgentFaultListener;
+      return;
+    }
+    if (event === 'failed') {
+      this.failedListener = callback as RequestAgentFailedListener;
+      return;
+    }
+    this.completedListener = callback as RequestAgentCompletedListener;
+  }
+
+  async start(): Promise<void> {
+    this.log.push('start');
+  }
+
+  async stop(): Promise<void> {
+    this.log.push('stop:begin');
+    await this.stopDeferred.promise;
+    this.log.push('stop:end');
+  }
+
+  emitResponse(statusCode: number, headers?: Map<string, Array<string>>): void {
+    this.responseListener?.(new RequestAgentResponseRecord(statusCode, headers));
+  }
+
+  emitProgress(processed: number): void {
+    this.progressListener?.(new RequestAgentProgressRecord(processed));
+  }
+
+  emitCompleted(processed: number = 0): void {
+    this.completedListener?.(new RequestAgentProgressRecord(processed));
+  }
+
+  emitFault(fault: number): void {
+    this.faultListener?.(fault);
+  }
+
+  emitFailed(processed: number = 0): void {
+    this.failedListener?.(new RequestAgentProgressRecord(processed));
+  }
+}
+
+class FakeRequestAgentModule implements RequestAgentModulePort {
+  readonly log: string[];
+  task?: FakeRequestAgentTask;
+
+  constructor(log?: string[]) {
+    this.log = log ?? [];
+  }
+
+  async create(
+    _context: common.BaseContext | undefined,
+    _config: RequestAgentCreateConfig
+  ): Promise<RequestAgentTaskPort> {
+    this.log.push('create');
+    if (this.task === undefined) {
+      throw new Error('Task was not seeded.');
+    }
+    return this.task;
+  }
+
+  async remove(tid: string): Promise<void> {
+    this.log.push(`remove:${tid}`);
+  }
+}
+
+class OrderedFakeFileDriver extends FakeFileDriver {
+  private readonly sharedLog: string[];
+
+  constructor(sharedLog: string[]) {
+    super();
+    this.sharedLog = sharedLog;
+  }
+
+  async unlink(path: string): Promise<void> {
+    this.sharedLog.push(`unlink:${path}`);
+    await super.unlink(path);
+  }
+}
+
+class FakeRequestAgentTimer implements RequestAgentTimerPort {
+  private nextId: number = 1;
+  private readonly callbacks: Map<number, () => void> = new Map<number, () => void>();
+
+  setTimeout(callback: () => void, _delayMs: number): number {
+    const id: number = this.nextId;
+    this.nextId += 1;
+    this.callbacks.set(id, callback);
+    return id;
+  }
+
+  clearTimeout(id: number): void {
+    this.callbacks.delete(id);
+  }
+
+  fire(id: number): void {
+    const callback: (() => void) | undefined = this.callbacks.get(id);
+    if (callback !== undefined) {
+      this.callbacks.delete(id);
+      callback();
+    }
+  }
+
+  firstTimerId(): number {
+    return this.callbacks.keys().next().value as number;
+  }
+
+  hasPendingTimer(): boolean {
+    return this.callbacks.size > 0;
+  }
+}
+
+class RequestAgentDependencyShape implements RequestAgentRedirectTransportDependencies {
+  readonly context?: undefined;
+  readonly fileDriver: FakeFileDriver;
+  readonly filesDir: string;
+  readonly idGenerator: SequenceIdGenerator;
+  readonly requestAgent: RequestAgentModulePort;
+  readonly timer: RequestAgentTimerPort;
+
+  constructor(
+    fileDriver: FakeFileDriver,
+    idGenerator: SequenceIdGenerator,
+    requestAgent: RequestAgentModulePort,
+    timer: RequestAgentTimerPort
+  ) {
+    this.fileDriver = fileDriver;
+    this.filesDir = FILES_DIR;
+    this.idGenerator = idGenerator;
+    this.requestAgent = requestAgent;
+    this.timer = timer;
   }
 }
 
@@ -184,6 +402,42 @@ function buildHeaders(entries: Array<[string, Array<string>]>): Map<string, Arra
     headers.set(entries[index][0], entries[index][1].slice());
   }
   return headers;
+}
+
+function buildRequestAgentTransport(
+  fileDriver: FakeFileDriver,
+  modulePort: FakeRequestAgentModule,
+  timer: FakeRequestAgentTimer,
+  ids: string[] = ['agent-task']
+): RequestAgentRedirectTransport {
+  return new RequestAgentRedirectTransport(
+    new RequestAgentDependencyShape(
+      fileDriver,
+      new SequenceIdGenerator(ids),
+      modulePort,
+      timer
+    )
+  );
+}
+
+async function flushAsyncTurns(count: number = 2): Promise<void> {
+  let remaining: number = count;
+  while (remaining > 0) {
+    await Promise.resolve();
+    remaining -= 1;
+  }
+}
+
+async function waitForCondition(condition: () => boolean, maxTurns: number = 20): Promise<void> {
+  let remaining: number = maxTurns;
+  while (remaining > 0) {
+    if (condition()) {
+      return;
+    }
+    await Promise.resolve();
+    remaining -= 1;
+  }
+  throw new Error('Condition did not become true.');
 }
 
 export default function subscriptionDownloaderTestsuite() {
@@ -472,6 +726,21 @@ export default function subscriptionDownloaderTestsuite() {
       expect(rejectedTransport.requestedUrls.length).assertEqual(6);
     });
 
+    it('treatsFragmentOnlyRedirectsAsCurrentUrlAndRejectsTheLoopWithoutRetrying', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      networkTransport.enqueueResponse(302, new Uint8Array(0), buildHeaders([['location', ['#next']]]));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/a/path/sub.yaml?x=1'));
+      const failure = assertFailureCode(result, 'CMFA_DOWNLOAD_REDIRECT');
+
+      expect(failure.error.retryable).assertFalse();
+      expect(networkTransport.requestedUrls.length).assertEqual(1);
+      expect(networkTransport.requestedUrls[0]).assertEqual('https://profiles.example.com/a/path/sub.yaml?x=1');
+    });
+
     it('failsOnMissingLocationRedirectLoopsAndNonHttpRedirectTargets', 0, async () => {
       const missingLocationTransport = new FakeHttpTransport();
       const requestTransport = new FakeHttpTransport();
@@ -516,6 +785,74 @@ export default function subscriptionDownloaderTestsuite() {
       expect(networkTransport.requestedUrls[0]).assertEqual('https://profiles.example.com/api23.yaml');
       expect(requestTransport.requestedUrls.length).assertEqual(1);
       expect(requestTransport.requestedUrls[0]).assertEqual('https://profiles.example.com/api22.yaml');
+    });
+
+    it('requestAgentWaitsForStopBeforeRemovingTaskAndUnlinkingOnTimeout', 0, async () => {
+      const sharedLog: string[] = [];
+      const fileDriver = new OrderedFakeFileDriver(sharedLog);
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(`${FILES_DIR}/tmp/agent-task.download`, utf8Bytes('still held'));
+      const stopDeferred = new DeferredVoid();
+      const modulePort = new FakeRequestAgentModule(sharedLog);
+      const timer = new FakeRequestAgentTimer();
+      modulePort.task = new FakeRequestAgentTask('tid-timeout', sharedLog, stopDeferred);
+      const transport = buildRequestAgentTransport(fileDriver, modulePort, timer);
+
+      let settled: boolean = false;
+      const fetchPromise = transport.fetch({
+        url: 'https://profiles.example.com/timeout.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES
+      }).then(() => {
+        settled = true;
+      }, () => {
+        settled = true;
+      });
+
+      await waitForCondition(() => sharedLog.join(',') === 'create,start' && timer.hasPendingTimer());
+      timer.fire(timer.firstTimerId());
+      await flushAsyncTurns();
+
+      expect(settled).assertFalse();
+      expect(sharedLog.join(',')).assertEqual('create,start,stop:begin');
+      expect(fileDriver.operationLog.some((entry: string) => entry.startsWith('unlink:'))).assertFalse();
+
+      stopDeferred.resolve();
+      await fetchPromise;
+
+      expect(sharedLog.join(',')).assertEqual(
+        `create,start,stop:begin,stop:end,remove:tid-timeout,unlink:${FILES_DIR}/tmp/agent-task.download`
+      );
+    });
+
+    it('requestAgentReturnsRedirectHeadersWithoutReadingTheDownloadedBody', 0, async () => {
+      const sharedLog: string[] = [];
+      const fileDriver = new OrderedFakeFileDriver(sharedLog);
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(`${FILES_DIR}/tmp/redirect-task.download`, utf8Bytes('must stay unread'));
+      const modulePort = new FakeRequestAgentModule(sharedLog);
+      const timer = new FakeRequestAgentTimer();
+      const stopDeferred = new DeferredVoid();
+      modulePort.task = new FakeRequestAgentTask('tid-redirect', sharedLog, stopDeferred);
+      const transport = buildRequestAgentTransport(fileDriver, modulePort, timer, ['redirect-task']);
+
+      const fetchPromise = transport.fetch({
+        url: 'https://profiles.example.com/redirect.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES
+      });
+      await waitForCondition(() => sharedLog.join(',') === 'create,start' && timer.hasPendingTimer());
+      modulePort.task.emitResponse(302, buildHeaders([['location', ['/next.yaml']]]));
+      modulePort.task.emitCompleted();
+      const response = await fetchPromise;
+
+      expect(response.statusCode).assertEqual(302);
+      expect(response.body.byteLength).assertEqual(0);
+      expect(fileDriver.operationLog.some((entry: string) => entry === `open:${FILES_DIR}/tmp/redirect-task.download:0`)).assertFalse();
+      expect(fileDriver.operationLog.some((entry: string) => entry === `read:${FILES_DIR}/tmp/redirect-task.download`)).assertFalse();
+      expect(modulePort.log.includes('remove:tid-redirect')).assertTrue();
     });
   });
 }
