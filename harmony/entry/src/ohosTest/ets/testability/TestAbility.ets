@@ -269,12 +269,12 @@ export async function removeIfPresent(filePath: string): Promise<void> {
   }
 }
 
-export async function listDirectory(directoryPath: string): Promise<string[]> {
-  try {
-    return await fileIo.listFile(directoryPath);
-  } catch (_) {
+export async function listDirectoryIfPresent(directoryPath: string): Promise<string[]> {
+  const exists: boolean = await fileIo.access(directoryPath);
+  if (!exists) {
     return [];
   }
+  return await fileIo.listFile(directoryPath);
 }
 
 export function sanitizeEvidenceText(rawValue: string): string {

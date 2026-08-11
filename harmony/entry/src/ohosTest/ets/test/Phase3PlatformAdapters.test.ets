@@ -14,7 +14,7 @@ import {
   appendEvidenceTrace,
   flushEvidence,
   getTestAbilityContext,
-  listDirectory,
+  listDirectoryIfPresent,
   readBytesFile,
   readUtf8File,
   removeIfPresent,
@@ -384,11 +384,11 @@ async function assertNoResidualTask14Artifacts(
   profileIds: string[],
   secretIds: string[]
 ): Promise<void> {
-  const residualProfileNames: string[] = await listDirectory(`${context.filesDir}/profiles`);
+  const residualProfileNames: string[] = await listDirectoryIfPresent(`${context.filesDir}/profiles`);
   for (let index: number = 0; index < profileIds.length; index += 1) {
     ensure(!residualProfileNames.includes(profileIds[index]), 'Task 14 cleanup must remove every profile artifact directory.');
   }
-  const residualSecretNames: string[] = await listDirectory(`${context.filesDir}/profile-secrets`);
+  const residualSecretNames: string[] = await listDirectoryIfPresent(`${context.filesDir}/profile-secrets`);
   for (let index: number = 0; index < secretIds.length; index += 1) {
     ensure(!residualSecretNames.includes(`${secretIds[index]}.json`), 'Task 14 cleanup must remove every secret envelope.');
   }
