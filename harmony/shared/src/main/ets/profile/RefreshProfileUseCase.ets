@@ -124,7 +124,12 @@ export class RefreshProfileUseCase {
       const acquireCommand: LocalAcquireCommand = {
         preferredName: existing.name
       };
-    const acquisition: LocalProfileAcquisition = await this.sourceGateway.acquireLocal(acquireCommand);
+    let acquisition: LocalProfileAcquisition;
+    try {
+      acquisition = await this.sourceGateway.acquireLocal(acquireCommand);
+    } catch (error) {
+      return new RefreshProfileFailedResultValue(this.toUnexpectedStageError('IMPORT', error));
+    }
     if (acquisition.kind === 'CANCELLED') {
       return new RefreshProfileCancelledResultValue();
     }
@@ -172,7 +177,12 @@ export class RefreshProfileUseCase {
       profileName: existing.name,
       sourceDisplay: safeSourceDisplay
     };
-    const acquisition: RemoteProfileAcquisition = await this.sourceGateway.acquireRemote(acquireCommand);
+    let acquisition: RemoteProfileAcquisition;
+    try {
+      acquisition = await this.sourceGateway.acquireRemote(acquireCommand);
+    } catch (error) {
+      return new RefreshProfileFailedResultValue(this.toUnexpectedStageError('DOWNLOAD', error));
+    }
     if (acquisition.kind === 'FAILED') {
       return await this.commitRefreshFailure(existing, acquisition.error, null);
     }
@@ -188,7 +198,12 @@ export class RefreshProfileUseCase {
     }
 
     if (validationError === null) {
-      const retainedCurrent: ProfileRevision = await this.contentStore.retain(existing.id, staged, 'CURRENT');
+      let retainedCurrent: ProfileRevision;
+      try {
+        retainedCurrent = await this.contentStore.retain(existing.id, staged, 'CURRENT');
+      } catch (error) {
+        return await this.failOwnedStagePersistence(error, staged);
+      }
       const updatedAt: string = this.clock.now();
       const lastSuccessfulUpdateAt: string = this.clock.now();
       const updatedProfile: Profile = createProfile({
@@ -218,7 +233,12 @@ export class RefreshProfileUseCase {
       return new RefreshProfileUpdatedResultValue(updatedProfile);
     }
 
-    const retainedFailedCandidate: ProfileRevision = await this.contentStore.retain(existing.id, staged, 'FAILED_CANDIDATE');
+    let retainedFailedCandidate: ProfileRevision;
+    try {
+      retainedFailedCandidate = await this.contentStore.retain(existing.id, staged, 'FAILED_CANDIDATE');
+    } catch (error) {
+      return await this.failOwnedStagePersistence(error, staged);
+    }
     return await this.commitRefreshFailure(existing, validationError, retainedFailedCandidate);
   }
 
@@ -271,6 +291,36 @@ export class RefreshProfileUseCase {
     }
     return createAppError('PERSISTENCE', detail, {
       code,
+      retryable: false,
+      timestamp: this.clock.now()
+    });
+  }
+
+  // Refresh owns only the newly staged temp content here; the persisted secret ref belongs
+  // to the existing profile and must survive transient acquire/retain failures.
+  private async failOwnedStagePersistence(
+    error: Object | undefined,
+    staged: StagedSource
+  ): Promise<RefreshProfileFailedResult> {
+    await this.safeDiscardStage(staged);
+    return new RefreshProfileFailedResultValue(toPersistenceError(error, this.clock));
+  }
+
+  private async safeDiscardStage(staged: StagedSource): Promise<void> {
+    try {
+      await this.contentStore.discard(staged);
+    } catch (_) {
+    }
+  }
+
+  private toUnexpectedStageError(
+    stage: 'IMPORT' | 'DOWNLOAD',
+    error: Object | undefined
+  ): AppError {
+    const detail: string = error instanceof Error && error.message.trim().length > 0
+      ? error.message
+      : 'Profile acquisition failed.';
+    return createAppError(stage, detail, {
       retryable: false,
       timestamp: this.clock.now()
     });

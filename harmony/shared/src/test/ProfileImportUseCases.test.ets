@@ -355,6 +355,172 @@ export default function profileImportUseCasesTestsuite() {
       assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=', 'subscription']);
     });
 
+    it('mapsUnexpectedLocalAcquireThrowsToFailedImportResultWithoutPersistingRows', 0, async () => {
+      const repository = new FakeProfileRepository();
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const useCase: ImportProfileUseCase = createImportUseCase(
+        repository,
+        contentStore,
+        gateway,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T00:00:00.000Z']),
+        new FakeIdGenerator(['profile-local-acquire-throw']),
+        createQueue()
+      );
+
+      gateway.scriptedLocalAcquireFailures.push(
+        new ScriptedVoidFailure(true, new Error('local picker failed near /tmp/local-import-source'))
+      );
+
+      const result = await useCase.executeLocal(new LocalImportCommand('Local'));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('IMPORT');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(contentStore.retainedKinds.length).assertEqual(0);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['/tmp/local-import-source']);
+    });
+
+    it('mapsUnexpectedRemoteAcquireThrowsToFailedDownloadResultAndCleansOpaqueSecret', 0, async () => {
+      const repository = new FakeProfileRepository();
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const useCase: ImportProfileUseCase = createImportUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T00:00:00.000Z']),
+        new FakeIdGenerator(['profile-remote-acquire-throw']),
+        createQueue()
+      );
+
+      gateway.scriptedRemoteAcquireFailures.push(
+        new ScriptedVoidFailure(
+          true,
+          new Error('download https://user:secret@remote.example.com/path?token=abc123 failed near /tmp/remote-import')
+        )
+      );
+
+      const result = await useCase.executeRemote(new RemoteImportArgs(
+        'https://user:secret@remote.example.com/path?token=abc123',
+        'Remote Acquire Throw',
+        false
+      ));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('DOWNLOAD');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(secretStore.removedRefs.join(',')).assertEqual('secret-1');
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      expect(snapshot.includes('https://remote.example.com')).assertTrue();
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=', '/tmp/remote-import']);
+    });
+
+    it('mapsUnexpectedCurrentRetainThrowsToFailedImportResultAndDiscardsStagedLocalSource', 0, async () => {
+      const repository = new FakeProfileRepository();
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const useCase: ImportProfileUseCase = createImportUseCase(
+        repository,
+        contentStore,
+        gateway,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T00:00:00.000Z']),
+        new FakeIdGenerator(['profile-local-retain-throw']),
+        createQueue()
+      );
+
+      gateway.localResults.push(new AcquiredLocalSource(
+        'Local Retain Throw',
+        'retain-throw.yaml',
+        buildStagedSource('retain-throw-local', '/sandbox/cache/retain-throw-local.yaml')
+      ));
+      contentStore.scriptedRetainFailures.push(
+        new ScriptedVoidFailure(true, new Error('retain current from /sandbox/cache/retain-throw-local.yaml failed'))
+      );
+
+      const result = await useCase.executeLocal(new LocalImportCommand());
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('PERSISTENCE');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(contentStore.discardedStages.length).assertEqual(1);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['/sandbox/cache/retain-throw-local.yaml']);
+    });
+
+    it('mapsUnexpectedFailedCandidateRetainThrowsToFailedImportResultWhilePreservingPrimaryCleanup', 0, async () => {
+      const repository = new FakeProfileRepository();
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const coreService = new FakeCoreService();
+      const useCase: ImportProfileUseCase = createImportUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        coreService,
+        new FakeClock(['2026-08-07T00:00:00.000Z']),
+        new FakeIdGenerator(['profile-remote-failed-retain-throw']),
+        createQueue()
+      );
+
+      gateway.remoteResults.push(new AcquiredRemoteSource(
+        'Remote Failed Candidate Throw',
+        'https://remote.example.com',
+        buildStagedSource('retain-throw-remote', '/sandbox/cache/retain-throw-remote.yaml')
+      ));
+      coreService.scriptedResults.push(
+        new ScriptedVoidFailure(true, buildCoreError('CMFA_INVALID_ARGUMENT', 'invalid token=hunter2', false))
+      );
+      contentStore.scriptedRetainFailures.push(
+        new ScriptedVoidFailure(
+          true,
+          new Error('retain failed candidate for https://user:secret@remote.example.com/path?token=abc123 failed')
+        )
+      );
+      contentStore.scriptedDiscardFailures.push(
+        new ScriptedVoidFailure(true, new Error('discard /sandbox/cache/retain-throw-remote.yaml also failed'))
+      );
+
+      const result = await useCase.executeRemote(new RemoteImportArgs(
+        'https://user:secret@remote.example.com/path?token=abc123',
+        'Remote Failed Candidate Throw',
+        false
+      ));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('PERSISTENCE');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(contentStore.discardedStages.length).assertEqual(1);
+      expect(secretStore.removedRefs.join(',')).assertEqual('secret-1');
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=']);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['user:secret', 'abc123', '/path', 'token=']);
+    });
+
     it('returnsCancelledWithoutPersistingWhenLocalPickerCancels', 0, async () => {
       const repository = new FakeProfileRepository();
       const contentStore = new FakeProfileContentStore();
@@ -768,6 +934,217 @@ export default function profileImportUseCasesTestsuite() {
       expect(gateway.remoteCommands.length).assertEqual(0);
       const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
       assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=']);
+    });
+
+    it('mapsUnexpectedLocalRefreshAcquireThrowsToFailedImportResultWithoutMutatingExistingRows', 0, async () => {
+      const previousCurrent = buildRevision('profiles/refresh/current.yaml', '2026-08-07T00:00:00.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-refresh-acquire-throw';
+      existingOptions.name = 'Refreshable';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.availability = 'VALID';
+      existingOptions.sourceDisplay = 'refresh.yaml';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-acquire-throw');
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T01:00:00.000Z'])
+      );
+
+      gateway.scriptedLocalAcquireFailures.push(
+        new ScriptedVoidFailure(true, new Error('refresh picker failed near /tmp/refresh-local'))
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-refresh-acquire-throw'));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('IMPORT');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(repository.currentProfile('profile-refresh-acquire-throw')?.currentRevision?.relativePath).assertEqual(
+        previousCurrent.relativePath
+      );
+      assertNoPlaintextLeak(result.error.technicalDetail, ['/tmp/refresh-local']);
+    });
+
+    it('mapsUnexpectedRemoteRefreshAcquireThrowsToFailedDownloadResultWithoutDeletingExistingSecret', 0, async () => {
+      const previousCurrent = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-remote-refresh-acquire-throw';
+      existingOptions.name = 'Remote';
+      existingOptions.sourceKind = 'REMOTE_URL';
+      existingOptions.sourceDisplay = 'https://remote.example.com';
+      existingOptions.sourceSecretRef = 'secret-remote-existing';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.availability = 'VALID';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-remote-refresh-acquire-throw');
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T01:00:00.000Z'])
+      );
+
+      secretStore.scriptedDecryptResults.push(new ScriptedStringFailure(false, 'HTTPS_SUBSCRIPTION_CREDENTIALS'));
+      gateway.scriptedRemoteAcquireFailures.push(
+        new ScriptedVoidFailure(
+          true,
+          new Error('download https://user:secret@remote.example.com/path?token=abc123 failed near /tmp/refresh-remote')
+        )
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-acquire-throw', false));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('DOWNLOAD');
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(secretStore.removedRefs.length).assertEqual(0);
+      expect(repository.currentProfile('profile-remote-refresh-acquire-throw')?.currentRevision?.relativePath).assertEqual(
+        previousCurrent.relativePath
+      );
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=', '/tmp/refresh-remote']);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['user:secret', 'abc123', '/path', 'token=', '/tmp/refresh-remote']);
+    });
+
+    it('mapsUnexpectedRefreshCurrentRetainThrowsToFailedPersistenceResultAndDiscardsStage', 0, async () => {
+      const previousCurrent = buildRevision('profiles/refresh/current.yaml', '2026-08-07T00:00:00.000Z');
+      const previousFailed = buildRevision('profiles/refresh/failed.yaml', '2026-08-07T00:00:10.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-refresh-retain-throw';
+      existingOptions.name = 'Refreshable';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.failedCandidate = previousFailed;
+      existingOptions.availability = 'VALID';
+      existingOptions.sourceDisplay = 'refresh.yaml';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-retain-throw');
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        new FakeClock(['2026-08-07T01:00:00.000Z'])
+      );
+
+      gateway.localResults.push(new AcquiredLocalSource(
+        'Refreshable',
+        'refresh-retain-throw.yaml',
+        buildStagedSource('refresh-retain-throw', '/sandbox/cache/refresh-retain-throw.yaml')
+      ));
+      contentStore.scriptedRetainFailures.push(
+        new ScriptedVoidFailure(true, new Error('retain current refresh from /sandbox/cache/refresh-retain-throw.yaml failed'))
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-refresh-retain-throw'));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('PERSISTENCE');
+      expect(contentStore.discardedStages.length).assertEqual(1);
+      expect(repository.savedProfiles.length).assertEqual(0);
+      const currentProfile = repository.currentProfile('profile-refresh-retain-throw');
+      expect(currentProfile?.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
+      expect(currentProfile?.failedCandidate?.relativePath).assertEqual(previousFailed.relativePath);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['/sandbox/cache/refresh-retain-throw.yaml']);
+    });
+
+    it('mapsUnexpectedRefreshFailedCandidateRetainThrowsToFailedPersistenceResultWithoutDroppingExistingRefs', 0, async () => {
+      const previousCurrent = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      const previousFailed = buildRevision('profiles/remote/failed.yaml', '2026-08-07T00:00:10.000Z');
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-remote-refresh-failed-retain-throw';
+      existingOptions.name = 'Remote';
+      existingOptions.sourceKind = 'REMOTE_URL';
+      existingOptions.sourceDisplay = 'https://remote.example.com';
+      existingOptions.sourceSecretRef = 'secret-remote-existing';
+      existingOptions.currentRevision = previousCurrent;
+      existingOptions.failedCandidate = previousFailed;
+      existingOptions.availability = 'VALID';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const repository = new FakeProfileRepository(
+        [buildProfile(existingOptions)],
+        'profile-remote-refresh-failed-retain-throw'
+      );
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const secretStore = new FakeSubscriptionSecretStore();
+      const coreService = new FakeCoreService();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        secretStore,
+        coreService,
+        new FakeClock(['2026-08-07T01:00:00.000Z'])
+      );
+
+      secretStore.scriptedDecryptResults.push(new ScriptedStringFailure(false, 'HTTPS_SUBSCRIPTION_CREDENTIALS'));
+      gateway.remoteResults.push(new AcquiredRemoteSource(
+        'Remote',
+        'https://remote.example.com',
+        buildStagedSource('refresh-remote-failed-retain', '/sandbox/cache/refresh-remote-failed-retain.yaml')
+      ));
+      coreService.scriptedResults.push(
+        new ScriptedVoidFailure(true, buildCoreError('CMFA_INVALID_ARGUMENT', 'invalid bearer hunter2', false))
+      );
+      contentStore.scriptedRetainFailures.push(
+        new ScriptedVoidFailure(
+          true,
+          new Error('retain failed candidate for https://user:secret@remote.example.com/path?token=abc123 failed')
+        )
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-failed-retain-throw', false));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.stage).assertEqual('PERSISTENCE');
+      expect(contentStore.discardedStages.length).assertEqual(1);
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(secretStore.removedRefs.length).assertEqual(0);
+      const currentProfile = repository.currentProfile('profile-remote-refresh-failed-retain-throw');
+      expect(currentProfile?.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
+      expect(currentProfile?.failedCandidate?.relativePath).assertEqual(previousFailed.relativePath);
+      const snapshot = buildRemoteStateSnapshot(gateway, secretStore, repository);
+      assertNoPlaintextLeak(snapshot, ['user:secret', 'abc123', '/path', 'token=']);
+      assertNoPlaintextLeak(result.error.technicalDetail, ['user:secret', 'abc123', '/path', 'token=']);
     });
 
     it('serializesConcurrentMutationsThroughTheCommandQueue', 0, async () => {

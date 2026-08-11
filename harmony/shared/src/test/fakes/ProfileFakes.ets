@@ -371,6 +371,8 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
   readonly removedProfileIds: string[] = [];
   readonly reconcileCalls: ProfileRevision[][] = [];
   readonly scriptedRetainResults: ProfileRevision[] = [];
+  readonly scriptedRetainFailures: ScriptedVoidFailure[] = [];
+  readonly scriptedDiscardFailures: ScriptedVoidFailure[] = [];
   private readonly timeline?: FakeOperationTimeline;
 
   constructor(timeline?: FakeOperationTimeline) {
@@ -382,6 +384,10 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
     this.timeline?.record('retainRevision');
     this.retainedKinds.push(kind);
     this.retainedStages.push(staged);
+    const failure: ScriptedVoidFailure | undefined = this.scriptedRetainFailures.shift();
+    if (failure !== undefined && failure.shouldReject && failure.error !== undefined) {
+      throw failure.error;
+    }
     const scripted: ProfileRevision | undefined = this.scriptedRetainResults.shift();
     if (scripted !== undefined) {
       return cloneRevision(scripted);
@@ -398,6 +404,10 @@ export class FakeProfileContentStore implements FixtureProfileContentStore {
     this.operationLog.push('discardStage');
     this.timeline?.record('discardStage');
     this.discardedStages.push(staged);
+    const failure: ScriptedVoidFailure | undefined = this.scriptedDiscardFailures.shift();
+    if (failure !== undefined && failure.shouldReject && failure.error !== undefined) {
+      throw failure.error;
+    }
   }
 
   async removeRevision(revision: ProfileRevision): Promise<void> {
@@ -435,6 +445,8 @@ export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
   readonly remoteCommands: SafeRemoteAcquireRecord[] = [];
   readonly localResults: FixtureLocalProfileAcquisition[] = [];
   readonly remoteResults: FixtureRemoteProfileAcquisition[] = [];
+  readonly scriptedLocalAcquireFailures: ScriptedVoidFailure[] = [];
+  readonly scriptedRemoteAcquireFailures: ScriptedVoidFailure[] = [];
   private readonly timeline?: FakeOperationTimeline;
 
   constructor(timeline?: FakeOperationTimeline) {
@@ -445,6 +457,10 @@ export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
     this.operationLog.push('acquire');
     this.timeline?.record('acquire');
     this.localCommands.push(command);
+    const failure: ScriptedVoidFailure | undefined = this.scriptedLocalAcquireFailures.shift();
+    if (failure !== undefined && failure.shouldReject && failure.error !== undefined) {
+      throw failure.error;
+    }
     const next: FixtureLocalProfileAcquisition | undefined = this.localResults.shift();
     if (next === undefined) {
       throw new Error('No scripted local acquisition result.');
@@ -456,6 +472,10 @@ export class FakeProfileSourceGateway implements FixtureProfileSourceGateway {
     this.operationLog.push('acquire');
     this.timeline?.record('acquire');
     this.remoteCommands.push(new SafeRemoteAcquireRecord(redactUrl(command.sourceDisplay), command.allowPlainHttp));
+    const failure: ScriptedVoidFailure | undefined = this.scriptedRemoteAcquireFailures.shift();
+    if (failure !== undefined && failure.shouldReject && failure.error !== undefined) {
+      throw failure.error;
+    }
     const next: FixtureRemoteProfileAcquisition | undefined = this.remoteResults.shift();
     if (next === undefined) {
       throw new Error('No scripted remote acquisition result.');

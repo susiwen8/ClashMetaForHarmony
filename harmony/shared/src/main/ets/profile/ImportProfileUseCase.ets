@@ -155,7 +155,12 @@ export class ImportProfileUseCase {
 
   executeLocal(command: LocalAcquireCommand): Promise<ImportProfileResult> {
     return this.queue.execute(async () => {
-      const acquisition: LocalProfileAcquisition = await this.sourceGateway.acquireLocal(command);
+      let acquisition: LocalProfileAcquisition;
+      try {
+        acquisition = await this.sourceGateway.acquireLocal(command);
+      } catch (error) {
+        return new ImportProfileFailedResultValue(this.toUnexpectedStageError('IMPORT', error));
+      }
       if (acquisition.kind === 'CANCELLED') {
         return new ImportProfileCancelledResultValue();
       }
@@ -202,7 +207,13 @@ export class ImportProfileUseCase {
           profileName: command.name,
           sourceDisplay: safeSourceDisplay
         };
-        const acquisition: RemoteProfileAcquisition = await this.sourceGateway.acquireRemote(acquireCommand);
+        let acquisition: RemoteProfileAcquisition;
+        try {
+          acquisition = await this.sourceGateway.acquireRemote(acquireCommand);
+        } catch (error) {
+          await this.safeRemoveSecret(secretRef);
+          return new ImportProfileFailedResultValue(this.toUnexpectedStageError('DOWNLOAD', error));
+        }
         if (acquisition.kind === 'FAILED') {
           return await this.persistInitialFailure(
             'REMOTE_URL',
@@ -270,7 +281,12 @@ export class ImportProfileUseCase {
     }
 
     if (validationError === null) {
-      const retainedCurrent: ProfileRevision = await this.contentStore.retain(profileId, staged, 'CURRENT');
+      let retainedCurrent: ProfileRevision;
+      try {
+        retainedCurrent = await this.contentStore.retain(profileId, staged, 'CURRENT');
+      } catch (error) {
+        return await this.failOwnedStagePersistence(error, staged, sourceSecretRef);
+      }
       const createdAt: string = this.clock.now();
       const updatedAt: string = this.clock.now();
       const profile: Profile = createInitialProfile(new InitialProfileShape(
@@ -302,7 +318,12 @@ export class ImportProfileUseCase {
       return new ImportProfileCreatedResultValue(profile);
     }
 
-    const failedRevision: ProfileRevision = await this.contentStore.retain(profileId, staged, 'FAILED_CANDIDATE');
+    let failedRevision: ProfileRevision;
+    try {
+      failedRevision = await this.contentStore.retain(profileId, staged, 'FAILED_CANDIDATE');
+    } catch (error) {
+      return await this.failOwnedStagePersistence(error, staged, sourceSecretRef);
+    }
     const createdAt: string = this.clock.now();
     const updatedAt: string = this.clock.now();
     const invalidProfile: Profile = createInitialProfile(new InitialProfileShape(
@@ -404,6 +425,27 @@ export class ImportProfileUseCase {
     }
   }
 
+  // Retain failures happen after the source has been staged locally, so best-effort cleanup
+  // should release the temp stage first and then forget the newly-created remote secret.
+  private async failOwnedStagePersistence(
+    error: Object | undefined,
+    staged: StagedSource,
+    sourceSecretRef?: string
+  ): Promise<ImportProfileFailedResult> {
+    await this.safeDiscardStage(staged);
+    if (sourceSecretRef !== undefined) {
+      await this.safeRemoveSecret(sourceSecretRef);
+    }
+    return new ImportProfileFailedResultValue(toPersistenceError(error, this.clock));
+  }
+
+  private async safeDiscardStage(staged: StagedSource): Promise<void> {
+    try {
+      await this.contentStore.discard(staged);
+    } catch (_) {
+    }
+  }
+
   private async trySaveTransaction(transaction: SaveProfileTransaction): Promise<AppError | null> {
     try {
       await this.commitService.saveProfileTransaction(transaction);
@@ -411,6 +453,19 @@ export class ImportProfileUseCase {
     } catch (error) {
       return toPersistenceError(error, this.clock);
     }
+  }
+
+  private toUnexpectedStageError(
+    stage: 'IMPORT' | 'DOWNLOAD',
+    error: Object | undefined
+  ): AppError {
+    const detail: string = error instanceof Error && error.message.trim().length > 0
+      ? error.message
+      : 'Profile acquisition failed.';
+    return createAppError(stage, detail, {
+      retryable: false,
+      timestamp: this.clock.now()
+    });
   }
 }
 
