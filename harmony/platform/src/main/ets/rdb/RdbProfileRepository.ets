@@ -29,7 +29,6 @@ function toPersistenceFailure(error: Object | undefined, fallback: string): Plat
   }
   return new PlatformPersistenceFailure(createAppError('PERSISTENCE', fallback, {
     code: 'CMFA_PERSISTENCE_FAILED',
-    timestamp: '2026-08-11T00:00:00.000Z',
     retryable: false
   }));
 }
@@ -37,6 +36,7 @@ function toPersistenceFailure(error: Object | undefined, fallback: string): Plat
 export class RdbProfileRepository implements ProfileRepository {
   private readonly driver: RdbDriver;
   private initialized: boolean = false;
+  private initializePromise?: Promise<void>;
   private activeIdValue: string | undefined = undefined;
   private activeIdValidated: boolean = false;
 
@@ -142,6 +142,22 @@ export class RdbProfileRepository implements ProfileRepository {
     if (this.initialized) {
       return;
     }
+    if (this.initializePromise !== undefined) {
+      await this.initializePromise;
+      return;
+    }
+    const initializePromise: Promise<void> = this.runInitialize();
+    this.initializePromise = initializePromise;
+    try {
+      await initializePromise;
+    } finally {
+      if (!this.initialized) {
+        this.initializePromise = undefined;
+      }
+    }
+  }
+
+  private async runInitialize(): Promise<void> {
     try {
       await this.driver.initialize(SCHEMA_VERSION);
       this.initialized = true;

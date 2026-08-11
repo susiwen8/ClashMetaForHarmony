@@ -9,6 +9,39 @@ class ScriptedFailure {
   }
 }
 
+class DeferredValue<T> {
+  readonly promise: Promise<T>;
+  private readonly resolveFn: (value: T) => void;
+  private readonly rejectFn: (error: Error) => void;
+
+  constructor() {
+    let resolveRef: ((value: T) => void) | undefined = undefined;
+    let rejectRef: ((error: Error) => void) | undefined = undefined;
+    this.promise = new Promise<T>((resolve, reject) => {
+      resolveRef = resolve;
+      rejectRef = reject;
+    });
+    this.resolveFn = (value: T) => {
+      if (resolveRef !== undefined) {
+        resolveRef(value);
+      }
+    };
+    this.rejectFn = (error: Error) => {
+      if (rejectRef !== undefined) {
+        rejectRef(error);
+      }
+    };
+  }
+
+  resolve(value: T): void {
+    this.resolveFn(value);
+  }
+
+  reject(error: Error): void {
+    this.rejectFn(error);
+  }
+}
+
 class FixtureAssertionError extends Error {
   constructor(message: string) {
     super(message);
@@ -87,9 +120,14 @@ export function buildProfile(id: string, availability: ProfileAvailability, upda
 export class RecordingRdbDriver implements RdbDriver {
   readonly log: string[] = [];
   readonly committedRows: Map<string, DurableProfileRow> = new Map<string, DurableProfileRow>();
+  initializeCallCount: number = 0;
   private activeIdValue: string | undefined = undefined;
+  private appStatePresent: boolean = true;
   private readonly scriptedFailures: Map<string, ScriptedFailure[]> = new Map<string, ScriptedFailure[]>();
   private readonly listedRows: DurableProfileRow[] = [];
+  private readonly blockedInitializeStarted: DeferredValue<void>[] = [];
+  private readonly blockedInitializeReleased: DeferredValue<void>[] = [];
+  private lastBlockedInitializeStarted?: DeferredValue<void>;
 
   seedRow(row: DurableProfileRow): void {
     this.committedRows.set(row.id, cloneDurableRow(row));
@@ -106,6 +144,33 @@ export class RecordingRdbDriver implements RdbDriver {
     this.activeIdValue = activeId;
   }
 
+  seedMissingAppState(): void {
+    this.appStatePresent = false;
+    this.activeIdValue = undefined;
+  }
+
+  isAppStatePresent(): boolean {
+    return this.appStatePresent;
+  }
+
+  blockNextInitialize(): DeferredValue<void> {
+    const started = new DeferredValue<void>();
+    const released = new DeferredValue<void>();
+    this.blockedInitializeStarted.push(started);
+    this.blockedInitializeReleased.push(released);
+    this.lastBlockedInitializeStarted = started;
+    return released;
+  }
+
+  nextInitializeStarted(): DeferredValue<void> {
+    if (this.lastBlockedInitializeStarted !== undefined) {
+      return this.lastBlockedInitializeStarted;
+    }
+    const started = new DeferredValue<void>();
+    this.blockedInitializeStarted.push(started);
+    return started;
+  }
+
   injectFailure(operation: string, error: Error): void {
     let queue: ScriptedFailure[] | undefined = this.scriptedFailures.get(operation);
     if (queue === undefined) {
@@ -117,6 +182,13 @@ export class RecordingRdbDriver implements RdbDriver {
 
   async initialize(version: number): Promise<void> {
     this.log.push(`initialize:${version}`);
+    this.initializeCallCount += 1;
+    const started: DeferredValue<void> | undefined = this.blockedInitializeStarted.shift();
+    started?.resolve(undefined);
+    const released: DeferredValue<void> | undefined = this.blockedInitializeReleased.shift();
+    if (released !== undefined) {
+      await released.promise;
+    }
     this.failIfScripted('initialize');
   }
 
@@ -156,6 +228,9 @@ export class RecordingRdbDriver implements RdbDriver {
   async readActiveId(): Promise<string | undefined> {
     this.log.push('readActiveId');
     this.failIfScripted('readActiveId');
+    if (!this.appStatePresent) {
+      return undefined;
+    }
     return this.activeIdValue;
   }
 
@@ -212,15 +287,26 @@ export class RecordingRdbDriver implements RdbDriver {
   txSetActiveId(activeId: string | undefined): void {
     this.log.push(`tx.setActiveId:${activeId ?? '<cleared>'}`);
     this.failIfScripted(`tx.setActiveId:${activeId ?? '<cleared>'}`);
+    this.appStatePresent = true;
     this.activeIdValue = activeId;
   }
 
   txClearActiveIfMatching(id: string): void {
     this.log.push(`clearActiveIfMatching:${id}`);
     this.failIfScripted(`clearActiveIfMatching:${id}`);
+    if (!this.appStatePresent) {
+      return;
+    }
     if (this.activeIdValue === id) {
       this.activeIdValue = undefined;
     }
+  }
+
+  txUpsertActiveId(activeId: string | undefined): void {
+    this.log.push(`tx.upsertActiveId:${activeId ?? '<cleared>'}`);
+    this.failIfScripted(`tx.upsertActiveId:${activeId ?? '<cleared>'}`);
+    this.appStatePresent = true;
+    this.activeIdValue = activeId;
   }
 
   txDeleteProfile(id: string): void {
@@ -304,6 +390,18 @@ export function assertAppErrorExactDetail(error: Object, expectedDetail: string)
   }
   if (record.technicalDetail !== expectedDetail) {
     throw new FixtureAssertionError(`Expected detail ${expectedDetail} but received ${record.technicalDetail}`);
+  }
+}
+
+export function assertCanonicalTimestampWithinRange(timestamp: string, earliest: string, latest: string, forbiddenFixed: string): void {
+  if (!/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/u.test(timestamp)) {
+    throw new FixtureAssertionError(`Expected canonical timestamp but received ${timestamp}`);
+  }
+  if (timestamp === forbiddenFixed) {
+    throw new FixtureAssertionError(`Expected non-fixed timestamp but received ${timestamp}`);
+  }
+  if (timestamp < earliest || timestamp > latest) {
+    throw new FixtureAssertionError(`Expected timestamp within [${earliest}, ${latest}] but received ${timestamp}`);
   }
 }
 

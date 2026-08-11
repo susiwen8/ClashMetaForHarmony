@@ -4,6 +4,7 @@ import { RdbProfileRepository } from '../main/ets/rdb/RdbProfileRepository';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import {
   assertAppErrorExactDetail,
+  assertCanonicalTimestampWithinRange,
   RecordingRdbDriver,
   assertAppErrorShape,
   assertNoLeak,
@@ -14,9 +15,11 @@ import {
 
 class PersistenceErrorRecord {
   readonly technicalDetail: string;
+  readonly timestamp: string;
 
-  constructor(technicalDetail: string) {
+  constructor(technicalDetail: string, timestamp: string) {
     this.technicalDetail = technicalDetail;
+    this.timestamp = timestamp;
   }
 }
 
@@ -55,6 +58,80 @@ async function expectSafeFallbackFailure(
 
 export default function rdbProfileRepositoryTestsuite() {
   describe('RdbProfileRepositoryTest', () => {
+    it('memoizesConcurrentFirstUseInitializationAndRetriesAfterFailure', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      const initializeReleased = driver.blockNextInitialize();
+      const initializeStarted = driver.nextInitializeStarted();
+      const repository = new RdbProfileRepository(driver);
+
+      const listPromise: Promise<Profile[]> = repository.list();
+      const getPromise: Promise<Profile | undefined> = repository.get('concurrent-profile');
+      await initializeStarted.promise;
+      await Promise.resolve();
+      await Promise.resolve();
+
+      expect(driver.initializeCallCount).assertEqual(1);
+
+      initializeReleased.resolve(undefined);
+      const listResult: Profile[] = await listPromise;
+      const getResult: Profile | undefined = await getPromise;
+
+      expect(listResult.length).assertEqual(0);
+      expect(getResult).assertUndefined();
+
+      const retryDriver = new RecordingRdbDriver();
+      retryDriver.injectFailure('initialize', new Error('first init failed'));
+      const retryRepository = new RdbProfileRepository(retryDriver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await retryRepository.list();
+        },
+        'Profile persistence initialization failed.',
+        ['first init failed']
+      );
+      expect(retryDriver.initializeCallCount).assertEqual(1);
+
+      const retriedList: Profile[] = await retryRepository.list();
+      expect(retryDriver.initializeCallCount).assertEqual(2);
+      expect(retriedList.length).assertEqual(0);
+    });
+
+    it('recreatesMissingAppStateSingletonWhenSettingAndClearingActiveId', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedMissingAppState();
+      driver.seedRow(encodeProfileRow(buildProfile('local-valid', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/local-valid/current.yaml')));
+      const repository = new RdbProfileRepository(driver);
+
+      await repository.setActiveId('local-valid');
+
+      const rereadRepository = new RdbProfileRepository(driver);
+      expect(await rereadRepository.getActiveId()).assertEqual('local-valid');
+      expect(driver.isAppStatePresent()).assertTrue();
+
+      await rereadRepository.setActiveId(undefined);
+      const clearedRepository = new RdbProfileRepository(driver);
+      expect(await clearedRepository.getActiveId()).assertUndefined();
+      expect(driver.isAppStatePresent()).assertTrue();
+    });
+
+    it('usesNonFixedCurrentTimestampForPersistenceFailures', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.injectFailure('listProfileRows', new Error(buildUnsafePayload('driver list failed')));
+      const repository = new RdbProfileRepository(driver);
+      const earliest: string = new Date().toISOString();
+
+      try {
+        await repository.list();
+        expect(false).assertTrue();
+      } catch (error) {
+        const latest: string = new Date().toISOString();
+        assertAppErrorExactDetail(error as Object, 'Profile list failed.');
+        const record = error as PersistenceErrorRecord;
+        assertCanonicalTimestampWithinRange(record.timestamp, earliest, latest, '2026-08-11T00:00:00.000Z');
+      }
+    });
+
     it('createsListsGetsAndUpsertsProfilesWithDeterministicOrdering', 0, async () => {
       const driver = new RecordingRdbDriver();
       const repository = new RdbProfileRepository(driver);

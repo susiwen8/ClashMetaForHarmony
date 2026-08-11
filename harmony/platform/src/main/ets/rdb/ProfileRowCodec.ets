@@ -280,11 +280,14 @@ function decodeSourceDisplay(sourceKind: ProfileSourceKind, encoded: string): st
   return `${scheme}://${authority}`;
 }
 
-function decodeSecretRef(rawSourceSecretRef: string | null): string | undefined {
+function decodeSecretRef(sourceKind: ProfileSourceKind, rawSourceSecretRef: string | null): string | undefined {
   if (rawSourceSecretRef === null) {
     return undefined;
   }
   if (!rawSourceSecretRef.startsWith(`${UTF16_HEX_ENCODING}:`)) {
+    if (sourceKind === 'REMOTE_URL') {
+      throw new Error('sourceSecretRef must use encoded remote secret storage.');
+    }
     return rawSourceSecretRef;
   }
   return utf16HexToText(rawSourceSecretRef.substring(UTF16_HEX_ENCODING.length + 1), 'sourceSecretRef');
@@ -315,7 +318,7 @@ export function decodeProfileRow(row: DurableProfileRow): Profile {
     name: requireString(row.name as Object, 'name'),
     sourceKind,
     sourceDisplay: decodeSourceDisplay(sourceKind, requireString(row.sourceDisplay as Object, 'sourceDisplay')),
-    sourceSecretRef: decodeSecretRef(requireNullableString(row.sourceSecretRef, 'sourceSecretRef')),
+    sourceSecretRef: decodeSecretRef(sourceKind, requireNullableString(row.sourceSecretRef, 'sourceSecretRef')),
     currentRevision: decodeRevision(requireNullableString(row.currentRevisionJson, 'currentRevisionJson'), 'currentRevisionJson'),
     failedCandidate: decodeRevision(requireNullableString(row.failedCandidateJson, 'failedCandidateJson'), 'failedCandidateJson'),
     availability: decodeAvailability(requireString(row.availability as Object, 'availability')),

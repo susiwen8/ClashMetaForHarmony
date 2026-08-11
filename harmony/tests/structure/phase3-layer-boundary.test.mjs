@@ -11,6 +11,7 @@ const MODULE_TEST_ROOTS = [
   ['platform', path.join(HARMONY_ROOT, 'platform', 'src', 'test')],
   ['entry', path.join(HARMONY_ROOT, 'entry', 'src', 'test')]
 ];
+const HARMONY_DRIVER_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'rdb', 'HarmonyRdbDriver.ets');
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -549,4 +550,22 @@ test('Task 1 module test entrypoint guard rejects missing List.test.ets, unimpor
     ]),
     /List-style entrypoint/u
   );
+});
+
+test('Task 5 Harmony driver source contract keeps durable schema version and public ordering aligned', async () => {
+  const source = await fs.readFile(HARMONY_DRIVER_PATH, 'utf8');
+
+  assert.match(source, /schema_version\s+INTEGER\s+NOT\s+NULL/u);
+  assert.match(source, /PROFILE_COLUMNS\s*=\s*[\s\S]*schema_version/u);
+  assert.match(source, /schemaVersion:\s*require[A-Za-z]+Value\(bucket\.schema_version/u);
+  assert.match(source, /row\.schemaVersion/u);
+  assert.match(source, /SELECT \$\{PROFILE_COLUMNS\} FROM profiles ORDER BY updated_at DESC, id ASC/u);
+});
+
+test('Task 5 Harmony driver source contract recreates app_state and memoizes in-flight store initialization', async () => {
+  const source = await fs.readFile(HARMONY_DRIVER_PATH, 'utf8');
+
+  assert.match(source, /INSERT OR REPLACE INTO app_state \(id, active_profile_id\) VALUES \((1, \?|\?, \?)\)/u);
+  assert.match(source, /private storePromise\?: Promise<relationalStore\.RdbStore>/u);
+  assert.match(source, /private initializePromise\?: Promise<void>/u);
 });

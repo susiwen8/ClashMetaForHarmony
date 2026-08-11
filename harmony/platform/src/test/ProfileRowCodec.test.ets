@@ -167,6 +167,10 @@ export default function profileRowCodecTestsuite() {
       missingRemoteSecret.sourceSecretRef = undefined;
       expectDecodeFailure(missingRemoteSecret, 'source secret reference');
 
+      const rawRemoteSecret: DurableProfileRow = mutateRow(row);
+      rawRemoteSecret.sourceSecretRef = 'secret:plaintext-remote-ref';
+      expectDecodeFailure(rawRemoteSecret, 'sourceSecretRef');
+
       const localWithSecret: DurableProfileRow = mutateRow(encodeProfileRow(createProfile({
         id: 'local-bad',
         name: 'Local Bad',
