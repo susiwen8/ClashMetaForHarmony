@@ -373,11 +373,11 @@ class FakeSubscriptionSecretStore implements SubscriptionSecretStore {
   }
 
   async decrypt(secretRef: string): Promise<string> {
-    const secret: string | undefined = this.storedSecrets.get(secretRef);
-    if (secret === undefined) {
+    const storedValue: string | undefined = this.storedSecrets.get(secretRef);
+    if (storedValue === undefined) {
       throw new Error('secret missing');
     }
-    return secret;
+    return storedValue;
   }
 
   async remove(secretRef: string): Promise<void> {

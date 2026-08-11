@@ -876,6 +876,10 @@ export async function startOriginProcess({ repoRoot, originBodyPath, runId, spaw
   const parser = createOriginStdoutParser(runId);
   let exited = false;
   let exitPayload = { code: null, signal: null };
+  let resolveExit;
+  const exitPromise = new Promise((resolve) => {
+    resolveExit = resolve;
+  });
   child.stdout?.setEncoding('utf8');
   child.stderr?.setEncoding('utf8');
   child.stderr?.on('data', (chunk) => {
@@ -884,6 +888,7 @@ export async function startOriginProcess({ repoRoot, originBodyPath, runId, spaw
   child.once('exit', (code, signal) => {
     exited = true;
     exitPayload = { code, signal };
+    resolveExit({ code, signal });
   });
   const payload = await new Promise((resolve, reject) => {
     let settled = false;
@@ -951,9 +956,7 @@ export async function startOriginProcess({ repoRoot, originBodyPath, runId, spaw
         return;
       }
       child.kill('SIGTERM');
-      await new Promise((resolve) => {
-        child.once('exit', () => resolve());
-      });
+      await exitPromise;
       this.requestObservations = parser.snapshot().requests;
     }
   };

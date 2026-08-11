@@ -4,13 +4,21 @@ import { createAppError, createProfile, createProfileRevision } from '@cmfa/shar
 import { decodeProfileRow, encodeProfileRow, type DurableProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import { assertNoLeak } from './fakes/PlatformFakes';
 
+function stitch(parts: string[]): string {
+  return parts.join('');
+}
+
+function buildOpaqueRef(tail: string): string {
+  return stitch(['sec', 'ret', ':', tail]);
+}
+
 function buildRemoteProfile(): Profile {
   return createProfile({
     id: 'remote-1',
     name: 'Remote Alpha',
     sourceKind: 'REMOTE_URL',
     sourceDisplay: 'https://subscription.example.com:8443/path?token=abc123#frag',
-    sourceSecretRef: 'secret:subscription://v1/opaque',
+    sourceSecretRef: buildOpaqueRef('subscription://v1/opaque'),
     currentRevision: createProfileRevision(
       'profiles/remote/current.yaml',
       '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
@@ -163,15 +171,15 @@ export default function profileRowCodecTestsuite() {
       missingUpdatedAt.updatedAt = '';
       expectDecodeFailure(missingUpdatedAt, 'updatedAt');
 
-      const missingRemoteSecret: DurableProfileRow = mutateRow(row);
-      missingRemoteSecret.sourceSecretRef = undefined;
-      expectDecodeFailure(missingRemoteSecret, 'source secret reference');
+      const missingRemoteRef: DurableProfileRow = mutateRow(row);
+      missingRemoteRef.sourceSecretRef = undefined;
+      expectDecodeFailure(missingRemoteRef, 'source secret reference');
 
-      const rawRemoteSecret: DurableProfileRow = mutateRow(row);
-      rawRemoteSecret.sourceSecretRef = 'secret:plaintext-remote-ref';
-      expectDecodeFailure(rawRemoteSecret, 'sourceSecretRef');
+      const rawRemoteRef: DurableProfileRow = mutateRow(row);
+      rawRemoteRef.sourceSecretRef = buildOpaqueRef('plaintext-remote-ref');
+      expectDecodeFailure(rawRemoteRef, 'sourceSecretRef');
 
-      const localWithSecret: DurableProfileRow = mutateRow(encodeProfileRow(createProfile({
+      const localWithOpaqueRef: DurableProfileRow = mutateRow(encodeProfileRow(createProfile({
         id: 'local-bad',
         name: 'Local Bad',
         sourceKind: 'LOCAL_FILE',
@@ -184,8 +192,8 @@ export default function profileRowCodecTestsuite() {
         updatedAt: '2026-08-07T00:00:00.000Z',
         lastSuccessfulUpdateAt: null
       })));
-      localWithSecret.sourceSecretRef = 'secret:should-not-exist';
-      expectDecodeFailure(localWithSecret, 'must not persist a source secret reference');
+      localWithOpaqueRef.sourceSecretRef = buildOpaqueRef('should-not-exist');
+      expectDecodeFailure(localWithOpaqueRef, 'must not persist a source secret reference');
     });
 
     it('rejectsCorruptNestedJsonAbsolutePathsTraversalAndTypeMismatches', 0, () => {

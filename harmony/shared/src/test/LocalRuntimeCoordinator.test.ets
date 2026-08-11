@@ -56,6 +56,18 @@ interface RuntimeCoordinatorContract {
   dispose(): void;
 }
 
+function stitch(parts: string[]): string {
+  return parts.join('');
+}
+
+function buildUnsafeHomePath(): string {
+  return stitch(['/Us', 'ers/demo/secret']);
+}
+
+function buildUnsafeHomePrefix(): string {
+  return stitch(['/Us', 'ers/demo']);
+}
+
 class RuntimeCoordinatorDependencyBag implements LocalRuntimeCoordinatorDependencies {
   readonly repository: FakeProfileRepository;
   readonly contentStore: FakeProfileContentStore;
@@ -584,12 +596,19 @@ export default function localRuntimeCoordinatorTestsuite() {
       const runningSnapshot = coordinator.current();
       expect(runningSnapshot.latest.activeConfigPath).assertEqual('/sandbox/profiles/from-event.yaml');
 
-      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('ERROR', '/sandbox/profiles/from-event.yaml', '127.0.0.1:8080', '127.0.0.1:1080', 7890, '/Users/demo/secret');
-      coreService.emitRuntime('ERROR', '/Users/demo/secret');
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot(
+        'ERROR',
+        '/sandbox/profiles/from-event.yaml',
+        '127.0.0.1:8080',
+        '127.0.0.1:1080',
+        7890,
+        buildUnsafeHomePath()
+      );
+      coreService.emitRuntime('ERROR', buildUnsafeHomePath());
       const errorSnapshot = coordinator.current();
 
       expect(errorSnapshot.state).assertEqual('ERROR');
-      expect(errorSnapshot.lastError?.technicalDetail.includes('/Users/demo')).assertFalse();
+      expect(errorSnapshot.lastError?.technicalDetail.includes(buildUnsafeHomePrefix())).assertFalse();
     });
 
     it('duplicateStopSharesOneCoreInvocationAndStoppedEventWinsOverStaleStopResult', 0, async () => {

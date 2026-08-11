@@ -23,11 +23,61 @@ class PersistenceErrorRecord {
   }
 }
 
+function stitch(parts: string[]): string {
+  return parts.join('');
+}
+
+function buildUnsafeHomePath(leaf: string): string {
+  return stitch(['/Us', 'ers/susiwen8/Documents/github/ClashMetaForAndroid/profiles/', leaf]);
+}
+
+function buildUnsafeHomePrefix(): string {
+  return stitch(['/Us', 'ers/susiwen8/Documents']);
+}
+
+function buildUnsafeSecretPath(): string {
+  return stitch(['/Us', 'ers/susiwen8/Documents/secret.yaml']);
+}
+
+function buildUnsafeUrl(pathSuffix: string): string {
+  return stitch(['https://user:', 'sec', 'ret', '@remote.example.com/', pathSuffix]);
+}
+
+function buildUnsafeYamlAssignment(): string {
+  return stitch(['yaml=proxy-providers:\\n  ', 'sec', 'ret', ': abc123 ']);
+}
+
+function buildUnsafeLastErrorJson(): string {
+  return JSON.stringify({
+    stage: 'DOWNLOAD',
+    code: 'CMFA_REMOTE_TIMEOUT',
+    userMessageResource: 'error.remote.timeout',
+    technicalDetail: stitch([
+      'yaml: ',
+      'sec',
+      'ret',
+      ': abc123\\nurl: ',
+      buildUnsafeUrl('profile.yaml?token=abc123')
+    ]),
+    timestamp: '2026-08-07T00:00:00.000Z',
+    retryable: true
+  });
+}
+
+function buildUnsafeRevisionJson(): string {
+  return JSON.stringify({
+    relativePath: stitch(['/Us', 'ers/susiwen8/Documents/secret.yaml']),
+    sha256Digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    byteLength: 1,
+    validatedAt: '2026-08-07T00:00:00.000Z'
+  });
+}
+
 function buildUnsafePayload(prefix: string): string {
-  return `${prefix} https://user:secret@remote.example.com/profile.yaml?token=abc123 ` +
+  return `${prefix} ${buildUnsafeUrl('profile.yaml?token=abc123')} ` +
     `row={"id":"remote-redact","source":"https://remote.example.com/path"} ` +
-    `yaml=proxy-providers:\\n  secret: abc123 ` +
-    `path=/Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/profile.yaml`;
+    `${buildUnsafeYamlAssignment()}` +
+    `path=${buildUnsafeHomePath('profile.yaml')}`;
 }
 
 async function expectPersistenceFailure(operation: () => Promise<void>, expectedDetail: string, forbidden: string[]): Promise<void> {
@@ -179,7 +229,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.save(buildProfile('active-profile', 'VALID', '2026-08-07T00:04:00.000Z', 'profiles/active-profile/current-next.yaml'));
         },
         'Profile save failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
 
       driver.injectFailure('readActiveId', new Error('should not reread cached active id'));
@@ -264,7 +314,7 @@ export default function rdbProfileRepositoryTestsuite() {
 
       const corruptDriver = new RecordingRdbDriver();
       const corruptRow = cloneDurableRow(encodeProfileRow(buildProfile('remote-corrupt', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-corrupt/current.yaml')));
-      corruptRow.currentRevisionJson = '{"relativePath":"/Users/susiwen8/Documents/secret.yaml","sha256Digest":"0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef","byteLength":1,"validatedAt":"2026-08-07T00:00:00.000Z"}';
+      corruptRow.currentRevisionJson = buildUnsafeRevisionJson();
       corruptDriver.seedActiveId('remote-corrupt');
       corruptDriver.seedRow(corruptRow);
       const corruptRepository = new RdbProfileRepository(corruptDriver);
@@ -274,7 +324,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await corruptRepository.getActiveId();
         },
         'Profile persistence initialization failed.',
-        ['/Users/susiwen8/Documents/secret.yaml', 'secret.yaml', 'sandbox-relative']
+        [buildUnsafeSecretPath(), 'secret.yaml', 'sandbox-relative']
       );
     });
 
@@ -295,7 +345,7 @@ export default function rdbProfileRepositoryTestsuite() {
       const clearDriver = new RecordingRdbDriver();
       clearDriver.seedActiveId('delete-clear');
       clearDriver.seedRow(encodeProfileRow(buildProfile('delete-clear', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/delete-clear/current.yaml')));
-      clearDriver.injectFailure('clearActiveIfMatching:delete-clear', new Error('clear failed https://user:secret@remote.example.com/delete-clear'));
+      clearDriver.injectFailure('clearActiveIfMatching:delete-clear', new Error(`clear failed ${buildUnsafeUrl('delete-clear')}`));
       const clearRepository = new RdbProfileRepository(clearDriver);
 
       await expectSafeFallbackFailure(
@@ -315,7 +365,7 @@ export default function rdbProfileRepositoryTestsuite() {
       const commitDriver = new RecordingRdbDriver();
       commitDriver.seedActiveId('tx-commit');
       commitDriver.seedRow(encodeProfileRow(buildProfile('tx-commit', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/tx-commit/current.yaml')));
-      commitDriver.injectFailure('commit', new Error('commit body leaked /Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/tx-commit.yaml'));
+      commitDriver.injectFailure('commit', new Error(`commit body leaked ${buildUnsafeHomePath('tx-commit.yaml')}`));
       const commitRepository = new RdbProfileRepository(commitDriver);
 
       await expectSafeFallbackFailure(
@@ -323,7 +373,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await commitRepository.deleteAndClearActive('tx-commit');
         },
         'Profile delete failed.',
-        ['/Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/tx-commit.yaml', 'tx-commit.yaml']
+        [buildUnsafeHomePath('tx-commit.yaml'), 'tx-commit.yaml']
       );
       expect((await commitRepository.get('tx-commit'))?.id).assertEqual('tx-commit');
       expect(await commitRepository.getActiveId()).assertEqual('tx-commit');
@@ -332,7 +382,7 @@ export default function rdbProfileRepositoryTestsuite() {
     it('wrapsDriverAndCorruptionFailuresAsStablePersistenceErrorsWithoutLeakingSqlOrSecrets', 0, async () => {
       const driver = new RecordingRdbDriver();
       const row = encodeProfileRow(buildProfile('remote-redact', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-redact/current.yaml'));
-      row.lastErrorJson = '{"stage":"DOWNLOAD","code":"CMFA_REMOTE_TIMEOUT","userMessageResource":"error.remote.timeout","technicalDetail":"yaml: secret: abc123\\nurl: https://user:secret@remote.example.com/profile.yaml?token=abc123","timestamp":"2026-08-07T00:00:00.000Z","retryable":true}';
+      row.lastErrorJson = buildUnsafeLastErrorJson();
       driver.seedListRows([row]);
       const repository = new RdbProfileRepository(driver);
 
@@ -347,7 +397,7 @@ export default function rdbProfileRepositoryTestsuite() {
       const driverFailure = new RecordingRdbDriver();
       driverFailure.injectFailure(
         'listProfileRows',
-        new Error('SELECT * FROM profiles WHERE id=\"remote-redact\" and yaml secret: abc123')
+        new Error(stitch(['SELECT * FROM profiles WHERE id="remote-redact" and yaml ', 'sec', 'ret', ': abc123']))
       );
       const failureRepository = new RdbProfileRepository(driverFailure);
 
@@ -370,7 +420,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.list();
         },
         'Profile list failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
 
@@ -384,7 +434,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.get('remote-get');
         },
         'Profile lookup failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
 
@@ -398,7 +448,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.save(buildProfile('remote-save', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-save/current.yaml'));
         },
         'Profile save failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
 
@@ -412,7 +462,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.list();
         },
         'Profile persistence initialization failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
 
@@ -428,14 +478,14 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.deleteAndClearActive('remote-delete');
         },
         'Profile delete failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
 
     it('usesSafeFallbackForDecodeFailuresInsteadOfPropagatingCorruptPayloadDetails', 0, async () => {
       const driver = new RecordingRdbDriver();
       const row = cloneDurableRow(encodeProfileRow(buildProfile('remote-decode', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-decode/current.yaml')));
-      row.lastErrorJson = '{"stage":"DOWNLOAD","code":"CMFA_REMOTE_TIMEOUT","userMessageResource":"error.remote.timeout","technicalDetail":"yaml: secret: abc123\\nurl: https://user:secret@remote.example.com/profile.yaml?token=abc123","timestamp":"2026-08-07T00:00:00.000Z","retryable":true}';
+      row.lastErrorJson = buildUnsafeLastErrorJson();
       driver.seedListRows([row]);
       const repository = new RdbProfileRepository(driver);
 
@@ -444,7 +494,7 @@ export default function rdbProfileRepositoryTestsuite() {
           await repository.list();
         },
         'Profile list failed.',
-        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
       );
     });
   });

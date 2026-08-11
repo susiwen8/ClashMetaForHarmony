@@ -554,7 +554,9 @@ test('Phase 2 startOriginProcess forwards the exact runId into the origin CLI ar
       child.stdout.setEncoding = () => {};
       child.stderr.setEncoding = () => {};
       child.kill = () => {
-        setImmediate(() => child.emit('exit', 0, null));
+        child.exitCode = 0;
+        child.signalCode = null;
+        child.emit('exit', 0, null);
       };
       setImmediate(() => {
         child.stdout.emit('data', `${JSON.stringify(originModule.createStartedRecord({
@@ -576,7 +578,11 @@ test('Phase 2 startOriginProcess forwards the exact runId into the origin CLI ar
   assert.equal(observed.command, 'node');
   assert.ok(observed.args.includes('--run-id'));
   assert.equal(observed.args[observed.args.indexOf('--run-id') + 1], EXPECTED_RUN_ID);
-  await handle.stop();
+  const stopOutcome = await Promise.race([
+    handle.stop().then(() => 'stopped'),
+    new Promise((resolve) => setTimeout(() => resolve('timed-out'), 50))
+  ]);
+  assert.equal(stopOutcome, 'stopped');
 });
 
 test('Phase 2 app proof parser accepts canonical writer shape and rejects old probe arrays plus wrong originRunId', async () => {
@@ -1291,22 +1297,29 @@ test('Phase 2 runner always writes a repo-contained incomplete proof when no sig
   await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'phase2-match-direct.yaml'), 'mode: rule\nrules:\n  - MATCH,DIRECT\n', 'utf8');
   await fs.writeFile(path.join(harmonyRoot, 'tests', 'fixtures', 'origin-body.txt'), 'fixture-body', 'utf8');
 
-  const proof = await runner.runPhase2DeviceProof({
-    repoRoot,
-    outputPath,
-    randomUUID: () => EXPECTED_RUN_ID
-  });
-  const persisted = JSON.parse(await fs.readFile(outputPath, 'utf8'));
+  try {
+    const proof = await runner.runPhase2DeviceProof({
+      repoRoot,
+      outputPath,
+      randomUUID: () => EXPECTED_RUN_ID,
+      buildPhase1NativeImpl: async () => {
+        throw new Error('self-test signed HAP unavailable');
+      }
+    });
+    const persisted = JSON.parse(await fs.readFile(outputPath, 'utf8'));
 
-  assert.equal(proof.result, 'incomplete');
-  assert.equal(proof.runId, EXPECTED_RUN_ID);
-  assert.equal(proof.outputPath, 'harmony/artifacts/phase2-device-proof.json');
-  assert.equal(proof.stubDetection.stubDetected, null);
-  assert.equal(proof.device.targetKind, 'host');
-  assert.equal(proof.probes.http.status, 'not-run');
-  assert.equal(proof.probes.socks.status, 'not-run');
-  assert.ok(proof.failures.some((entry) => ['INPUT_HAP_MISSING', 'SIGNING_REQUIRED'].includes(entry.code)));
-  assert.equal(runner.validatePhase2Proof(persisted).valid, true);
+    assert.equal(proof.result, 'incomplete');
+    assert.equal(proof.runId, EXPECTED_RUN_ID);
+    assert.equal(proof.outputPath, 'harmony/artifacts/phase2-device-proof.json');
+    assert.equal(proof.stubDetection.stubDetected, null);
+    assert.equal(proof.device.targetKind, 'host');
+    assert.equal(proof.probes.http.status, 'not-run');
+    assert.equal(proof.probes.socks.status, 'not-run');
+    assert.ok(proof.failures.some((entry) => ['INPUT_HAP_MISSING', 'SIGNING_REQUIRED'].includes(entry.code)));
+    assert.equal(runner.validatePhase2Proof(persisted).valid, true);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
 });
 
 test('inspect-hap exports strict live rehash helpers and rejects fake packaged cores', async () => {
