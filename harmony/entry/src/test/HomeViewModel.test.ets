@@ -77,12 +77,12 @@ export default function homeViewModelTestsuite() {
       expect(viewModel.current().primaryAction).assertEqual('BUSY');
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'ERROR', {
-        runtimeError: createSafeError('CMFA_RUNTIME', 'RUNTIME_START', 'core error at /Users/demo/secrets'),
-        latestRuntimeError: 'fatal at /Users/demo/secrets'
+        runtimeError: createSafeError('CMFA_RUNTIME', 'RUNTIME_START', 'core error at /tmp/cmfa/runtime/secret.log'),
+        latestRuntimeError: 'fatal at /tmp/cmfa/runtime/secret.log'
       }));
       expect(viewModel.current().runtime).assertEqual('ERROR');
       expect(viewModel.current().primaryAction).assertEqual('START');
-      expect(viewModel.current().error?.technicalDetail.includes('/Users/demo')).assertFalse();
+      expect(viewModel.current().error?.technicalDetail.includes('/tmp/cmfa/runtime')).assertFalse();
     });
 
     it('primaryActionUsesRuntimeAddressesAndCoalescesRepeatedClicks', 0, async () => {

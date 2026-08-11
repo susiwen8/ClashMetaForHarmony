@@ -21,7 +21,7 @@ export default function profilesViewModelTestsuite() {
           'READY',
           [
             createProfileSnapshot('zeta', 'Zeta', 'https://zeta.example.com/profile.yaml?secret=1', 'VALID', '2026-08-11T12:32:00.000Z', true),
-            createProfileSnapshot('alpha', 'Alpha', '/Users/demo/Documents/alpha.yaml', 'INVALID', '2026-08-11T12:31:00.000Z', false)
+            createProfileSnapshot('alpha', 'Alpha', '/tmp/cmfa/profiles/alpha.yaml', 'INVALID', '2026-08-11T12:31:00.000Z', false)
           ],
           'alpha',
           'STOPPED'
@@ -46,7 +46,7 @@ export default function profilesViewModelTestsuite() {
           'READY',
           [
             createProfileSnapshot('zeta', 'Zeta', 'https://zeta.example.com/profile.yaml?secret=1', 'VALID', '2026-08-11T12:32:00.000Z', true),
-            createProfileSnapshot('alpha', 'Alpha', '/Users/demo/Documents/alpha.yaml', 'INVALID', '2026-08-11T12:31:00.000Z', false)
+            createProfileSnapshot('alpha', 'Alpha', '/tmp/cmfa/profiles/alpha.yaml', 'INVALID', '2026-08-11T12:31:00.000Z', false)
           ],
           'alpha',
           'RUNNING'
@@ -55,7 +55,7 @@ export default function profilesViewModelTestsuite() {
 
       expect(viewModel.current().profiles[0].actionsLockedByRuntime).assertTrue();
       expect(viewModel.current().profiles[1].actionsLockedByRuntime).assertTrue();
-      expect(serialize(viewModel.current()).includes('/Users/demo')).assertFalse();
+      expect(serialize(viewModel.current()).includes('/tmp/cmfa/profiles')).assertFalse();
       expect(serialize(viewModel.current()).includes('secret=1')).assertFalse();
       expect(serialize(viewModel.current()).includes('CoreEvent')).assertFalse();
     });
