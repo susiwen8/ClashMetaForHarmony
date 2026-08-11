@@ -124,6 +124,34 @@ test('the integrated SDK exposes declarations and executable native tools', asyn
   }
 });
 
+test('the integrated SDK declarations expose the API 20 to API 23 network and request surfaces used by Task 8', async () => {
+  const [networkKit, requestApi, httpApi] = await Promise.all([
+    fs.readFile(path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'kits', '@kit.NetworkKit.d.ts'), 'utf8'),
+    fs.readFile(path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'api', '@ohos.request.d.ts'), 'utf8'),
+    fs.readFile(path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'api', '@ohos.net.http.d.ts'), 'utf8')
+  ]);
+
+  assert.match(networkKit, /import http from '@ohos\.net\.http';/u);
+  assert.match(networkKit, /export \{[^}]*http[^}]*\};/u);
+  assert.match(httpApi, /maxRedirects\?: number;/u);
+  assert.match(httpApi, /connectTimeout\?: number;/u);
+  assert.match(httpApi, /readTimeout\?: number;/u);
+  assert.match(httpApi, /maxLimit\?: number;/u);
+  assert.match(httpApi, /usingCache\?: boolean;/u);
+  assert.match(requestApi, /namespace agent \{/u);
+  assert.match(requestApi, /interface Config \{/u);
+  assert.match(requestApi, /redirect\?: boolean;/u);
+  assert.match(requestApi, /on\(event: 'progress', callback: \(progress: Progress\) => void\): void;/u);
+  assert.match(requestApi, /on\(event: 'response', callback: Callback<HttpResponse>\): void;/u);
+  assert.match(requestApi, /on\(event: 'faultOccur', callback: Callback<Faults>\): void;/u);
+  assert.match(requestApi, /function create\(context: BaseContext, config: Config\): Promise<Task>;/u);
+  assert.match(requestApi, /delete\(\): Promise<boolean>;/u);
+  assert.match(requestApi, /readonly statusCode: number;/u);
+  assert.match(requestApi, /readonly headers: Map<string, Array<string>>;/u);
+  assert.match(requestApi, /readonly processed: number;/u);
+  assert.match(requestApi, /readonly sizes: Array<number>;/u);
+});
+
 test('preflight fallback report normalizes the node version', async () => {
   const source = await fs.readFile(preflightModulePath, 'utf8');
   const tempModulePath = path.join(os.tmpdir(), `preflight-fallback-${Date.now()}.mjs`);

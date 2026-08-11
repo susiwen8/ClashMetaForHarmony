@@ -12,6 +12,10 @@ const MODULE_TEST_ROOTS = [
   ['entry', path.join(HARMONY_ROOT, 'entry', 'src', 'test')]
 ];
 const HARMONY_DRIVER_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'rdb', 'HarmonyRdbDriver.ets');
+const SUBSCRIPTION_DOWNLOADER_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'SubscriptionDownloader.ets');
+const HTTP_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'HttpTransport.ets');
+const NETWORK_KIT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'NetworkKitHttpTransport.ets');
+const REQUEST_AGENT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets');
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -582,4 +586,46 @@ test('Task 5 Harmony driver lifecycle source contract waits for pending acquisit
   assert.match(source, /await this\.initializePromise/u);
   assert.match(source, /if \(this\.closing \|\| this\.closed\)/u);
   assert.match(source, /if \(this\.closed\)/u);
+});
+
+test('Task 8 platform source contract keeps transport selection and manual redirect ownership inside the platform HAR', async () => {
+  const [downloaderSource, httpTransportSource, networkKitSource, requestAgentSource, entryModule] = await Promise.all([
+    fs.readFile(SUBSCRIPTION_DOWNLOADER_PATH, 'utf8'),
+    fs.readFile(HTTP_TRANSPORT_PATH, 'utf8'),
+    fs.readFile(NETWORK_KIT_TRANSPORT_PATH, 'utf8'),
+    fs.readFile(REQUEST_AGENT_TRANSPORT_PATH, 'utf8'),
+    readJson('entry/src/main/module.json5')
+  ]);
+
+  assert.match(downloaderSource, /type RemoteAcquireCommand/u);
+  assert.match(downloaderSource, /type RemoteProfileAcquisition/u);
+  assert.match(downloaderSource, /sdkApiVersion/u);
+  assert.match(downloaderSource, /sdkApiVersion\s*>=\s*23/u);
+  assert.match(downloaderSource, /networkKitTransport/u);
+  assert.match(downloaderSource, /requestAgentTransport/u);
+  assert.match(downloaderSource, /30 \* 1000/u);
+  assert.match(downloaderSource, /16 \* 1024 \* 1024/u);
+  assert.match(downloaderSource, /301|302|303|307|308/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_HTTP_STATUS/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_EMPTY_BODY/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_OVERSIZE/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_TIMEOUT/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_REDIRECT/u);
+  assert.match(downloaderSource, /CMFA_DOWNLOAD_TLS/u);
+  assert.match(httpTransportSource, /interface HttpTransport/u);
+  assert.match(httpTransportSource, /createHttpTransportFailure/u);
+  assert.match(networkKitSource, /from '@kit\.NetworkKit'/u);
+  assert.match(networkKitSource, /maxRedirects:\s*0/u);
+  assert.match(networkKitSource, /maxLimit:\s*16 \* 1024 \* 1024/u);
+  assert.match(networkKitSource, /connectTimeout:\s*30 \* 1000/u);
+  assert.match(networkKitSource, /readTimeout:\s*30 \* 1000/u);
+  assert.match(networkKitSource, /usingCache:\s*false/u);
+  assert.match(requestAgentSource, /from '@kit\.BasicServicesKit'/u);
+  assert.match(requestAgentSource, /request\.agent\.create/u);
+  assert.match(requestAgentSource, /redirect:\s*false/u);
+  assert.match(requestAgentSource, /task\.on\('progress'/u);
+  assert.match(requestAgentSource, /task\.on\('response'/u);
+  assert.match(requestAgentSource, /task\.on\('faultOccur'/u);
+  assert.match(requestAgentSource, /request\.agent\.remove\(task\.tid\)/u);
+  assert.deepEqual(entryModule.module.requestPermissions, [{ name: 'ohos.permission.INTERNET' }]);
 });
