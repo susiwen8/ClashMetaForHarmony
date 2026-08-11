@@ -16,6 +16,7 @@ export default function testsuite(): void {
   Phase3UiFlowTestsuite();
   describe('Task14Finalization', () => {
     it('flushes evidence and releases the Task 14 completion barrier', 0, async () => {
+      let finalizationError: Error | undefined = undefined;
       try {
         if (getEvidence().failures.length === 0) {
           setEvidenceStatus('PASS');
@@ -29,9 +30,20 @@ export default function testsuite(): void {
       } finally {
         try {
           await flushEvidence();
+        } catch (_) {
+          setEvidenceStatus('FAIL');
+          appendEvidenceFailure('Task14Finalization', 'Task 14 final evidence flush failed.');
+          finalizationError = new Error('Task 14 final evidence flush failed.');
+          try {
+            await flushEvidence();
+          } catch (_) {
+          }
         } finally {
           signalTask14Completion();
         }
+      }
+      if (finalizationError !== undefined) {
+        throw finalizationError;
       }
     });
   });

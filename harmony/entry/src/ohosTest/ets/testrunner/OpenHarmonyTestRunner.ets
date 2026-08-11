@@ -8,6 +8,7 @@ import {
   appendEvidenceFailure,
   appendEvidenceTrace,
   flushEvidence,
+  getEvidence,
   setEvidenceStatus,
   TASK14_TEST_ABILITY_NAME,
   TASK14_TEST_MODULE_NAME,
@@ -44,6 +45,10 @@ export default class OpenHarmonyTestRunner implements TestRunner {
       await flushEvidence();
       Hypium.hypiumTest(abilityDelegator, abilityDelegatorArguments, testsuite);
       await waitForTask14CompletionOrTimeout();
+      const evidence = getEvidence();
+      if (evidence.status !== 'PASS' || evidence.failures.length > 0) {
+        throw new Error('Task 14 reported failing evidence.');
+      }
       appendEvidenceTrace('runner.completionObserved');
       await flushEvidence();
     } catch (error) {
@@ -80,13 +85,12 @@ async function waitForTask14CompletionOrTimeout(): Promise<void> {
 }
 
 async function failTask14CompletionTimeout(reject: (error: Error) => void): Promise<void> {
-  let timeoutError: Error = new Error('Task 14 completion barrier timeout.');
+  const timeoutError: Error = new Error('Task 14 completion barrier timeout.');
   try {
     setEvidenceStatus('FAIL');
     appendEvidenceFailure('OpenHarmonyTestRunner', timeoutError.message);
     await flushEvidence();
-  } catch (error) {
-    timeoutError = new Error(`Task 14 completion barrier timeout: ${describeBusinessError(error)}`);
+  } catch (_) {
   } finally {
     reject(timeoutError);
   }

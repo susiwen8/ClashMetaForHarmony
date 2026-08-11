@@ -448,6 +448,15 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(runnerSource, /finally[\s\S]*reject\(/u,
     'OpenHarmonyTestRunner timeout handling must reject from a finally path even if evidence flushing throws'
   );
+  assert.match(runnerSource, /getEvidence\(/u,
+    'OpenHarmonyTestRunner must inspect final evidence after the completion barrier resolves'
+  );
+  assert.match(runnerSource, /status\s*!==\s*['"`]PASS['"`][\s\S]*failures\.length\s*>\s*0/u,
+    'OpenHarmonyTestRunner must reject unless final evidence reports PASS with zero failures'
+  );
+  assert.match(runnerSource, /getEvidence\([\s\S]*completionObserved/iu,
+    'OpenHarmonyTestRunner must check evidence before appending completionObserved'
+  );
   assert.match(testabilitySource, /export\s+async\s+function\s+waitForTask14Completion\(/u,
     'TestAbility must expose a waitForTask14Completion Promise barrier'
   );
@@ -482,6 +491,12 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   );
   assert.match(listSource, /getEvidence\(\)\.failures/u,
     'List.test.ets finalization must inspect accumulated evidence failures'
+  );
+  assert.match(listSource, /catch[\s\S]*setEvidenceStatus\(['"`]FAIL['"`]\)[\s\S]*appendEvidenceFailure\(['"`]Task14Finalization['"`]/u,
+    'List.test.ets must downgrade evidence to FAIL and append a finalization failure before signaling when flush persistence fails'
+  );
+  assert.match(listSource, /appendEvidenceFailure\(['"`]Task14Finalization['"`][\s\S]*signalTask14Completion\(/u,
+    'List.test.ets must append the finalization failure before signaling completion'
   );
   const lastSignalIndex = listSource.lastIndexOf('signalTask14Completion(');
   const lastItIndex = listSource.lastIndexOf('it(');
@@ -583,5 +598,8 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   );
   assert.match(platformSource, /cleanupGraph[\s\S]*try\s*\{[\s\S]*repository\.list\([\s\S]*assertNoResidualTask14Artifacts[\s\S]*\}[\s\S]*finally\s*\{[\s\S]*await\s+cleanupGraph\.close\(/u,
     'Phase3PlatformAdapters must close cleanupGraph from a finally branch even if cleanup assertions fail'
+  );
+  assert.match(platformSource, /appendEvidenceFailure\([\s\S]*cleanup[\s\S]*await\s+flushEvidence\(/u,
+    'Phase3PlatformAdapters must append cleanup failure detail before flushing FAIL evidence'
   );
 });

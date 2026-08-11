@@ -252,8 +252,8 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
 
         if (cleanupError !== undefined) {
           setEvidenceStatus('FAIL');
-          await flushEvidence();
           appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
+          await flushEvidence();
           throw cleanupError;
         }
         if (cleanupVerified) {
