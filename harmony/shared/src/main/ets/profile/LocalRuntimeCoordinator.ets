@@ -35,6 +35,16 @@ export interface LocalRuntimeFailedResult {
 
 export type LocalRuntimeStartResult = LocalRuntimeStartedResult | LocalRuntimeFailedResult;
 export type LocalRuntimeStopResult = LocalRuntimeStoppedResult | LocalRuntimeFailedResult;
+export type LocalRuntimeMutationKind = 'ENABLE' | 'DELETE' | 'REPLACE' | 'REFRESH';
+
+export interface LocalRuntimeMutationLease {
+  release(): void;
+}
+
+export interface LocalRuntimeMutationAdmission {
+  lease?: LocalRuntimeMutationLease;
+  error?: AppError;
+}
 
 class LocalRuntimeStartedResultValue implements LocalRuntimeStartedResult {
   kind: 'STARTED' = 'STARTED';
@@ -65,6 +75,33 @@ class LocalRuntimeFailedResultValue implements LocalRuntimeFailedResult {
   }
 }
 
+class LocalRuntimeMutationLeaseValue implements LocalRuntimeMutationLease {
+  private owner: LocalRuntimeCoordinator;
+  private released: boolean = false;
+
+  constructor(owner: LocalRuntimeCoordinator) {
+    this.owner = owner;
+  }
+
+  release(): void {
+    if (this.released) {
+      return;
+    }
+    this.released = true;
+    this.owner.releaseMutationLease();
+  }
+}
+
+class LocalRuntimeMutationAdmissionValue implements LocalRuntimeMutationAdmission {
+  lease?: LocalRuntimeMutationLease;
+  error?: AppError;
+
+  constructor(lease?: LocalRuntimeMutationLease, error?: AppError) {
+    this.lease = lease;
+    this.error = error;
+  }
+}
+
 export class LocalRuntimeCoordinator {
   private readonly repository: ProfileRepository;
   private readonly contentStore: ProfileContentStore;
@@ -76,6 +113,9 @@ export class LocalRuntimeCoordinator {
   private startPromise?: Promise<LocalRuntimeStartResult>;
   private stopPromise?: Promise<LocalRuntimeStopResult>;
   private disposed: boolean = false;
+  private mutationLeaseHeld: boolean = false;
+  private hasRunningEvidence: boolean = false;
+  private initialized: boolean = false;
 
   constructor(dependencies: LocalRuntimeCoordinatorDependencies) {
     this.repository = dependencies.repository;
@@ -96,16 +136,69 @@ export class LocalRuntimeCoordinator {
     return cloneCoordinatorSnapshot(this.snapshot);
   }
 
-  async start(): Promise<LocalRuntimeStartResult> {
-    await this.initialize();
-    if (this.startPromise !== undefined) {
-      return await this.startPromise;
-    }
-    if (this.stopPromise !== undefined) {
-      return this.failStart(createAppError('RUNTIME_STOP', 'Runtime stop is already in progress.', {
+  isInitialized(): boolean {
+    return this.initialized;
+  }
+
+  acquireMutationLease(kind: LocalRuntimeMutationKind): LocalRuntimeMutationAdmission {
+    if (this.mutationLeaseHeld || this.startPromise !== undefined || this.stopPromise !== undefined) {
+      return new LocalRuntimeMutationAdmissionValue(undefined, createAppError('RUNTIME_STOP', 'Runtime is busy and cannot accept profile mutation.', {
         retryable: false,
         timestamp: this.clock.now()
       }));
+    }
+    const state: RuntimeState = this.snapshot.state;
+    if (kind === 'ENABLE') {
+      if (!(state === 'STOPPED' || this.isRecoverableErrorState())) {
+        return new LocalRuntimeMutationAdmissionValue(undefined, createAppError('RUNTIME_STOP', 'Runtime must be stopped before enabling a profile.', {
+          retryable: false,
+          timestamp: this.clock.now()
+        }));
+      }
+    } else if (state !== 'STOPPED') {
+      return new LocalRuntimeMutationAdmissionValue(undefined, createAppError('RUNTIME_STOP', 'Runtime must be stopped before profile mutation.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+    this.mutationLeaseHeld = true;
+    return new LocalRuntimeMutationAdmissionValue(new LocalRuntimeMutationLeaseValue(this), undefined);
+  }
+
+  async start(): Promise<LocalRuntimeStartResult> {
+    if (!this.initialized) {
+      try {
+        await this.initialize();
+      } catch (error) {
+        return this.failStart(createAppError('RUNTIME_START', resolveErrorMessage(error, 'Runtime initialization failed.'), {
+          retryable: false,
+          timestamp: this.clock.now()
+        }));
+      }
+    }
+    if (this.startPromise !== undefined) {
+      return await this.startPromise;
+    }
+    if (this.mutationLeaseHeld) {
+      return new LocalRuntimeFailedResultValue(createAppError('RUNTIME_START', 'Profile mutation is already in progress.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }), this.current());
+    }
+    if (this.stopPromise !== undefined) {
+      return new LocalRuntimeFailedResultValue(createAppError('RUNTIME_STOP', 'Runtime stop is already in progress.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }), this.current());
+    }
+    if (this.snapshot.state === 'RUNNING') {
+      return new LocalRuntimeStartedResultValue(this.current());
+    }
+    if (this.snapshot.state === 'STARTING' || this.snapshot.state === 'STOPPING') {
+      return new LocalRuntimeFailedResultValue(createAppError('RUNTIME_START', `Runtime is stuck in ${this.snapshot.state}.`, {
+        retryable: false,
+        timestamp: this.clock.now()
+      }), this.current());
     }
     this.snapshot = {
       state: 'STARTING',
@@ -124,13 +217,44 @@ export class LocalRuntimeCoordinator {
   }
 
   async stop(): Promise<LocalRuntimeStopResult> {
-    await this.initialize();
+    if (!this.initialized) {
+      try {
+        await this.initialize();
+      } catch (error) {
+        const appError: AppError = createAppError('RUNTIME_STOP', resolveErrorMessage(error, 'Runtime initialization failed.'), {
+          retryable: false,
+          timestamp: this.clock.now()
+        });
+        return new LocalRuntimeFailedResultValue(appError, this.current());
+      }
+    }
     if (this.stopPromise !== undefined) {
       return await this.stopPromise;
+    }
+    if (this.mutationLeaseHeld) {
+      return new LocalRuntimeFailedResultValue(
+        createAppError('RUNTIME_STOP', 'Profile mutation is already in progress.', {
+          retryable: false,
+          timestamp: this.clock.now()
+        }),
+        this.current()
+      );
     }
     if (this.startPromise !== undefined) {
       return new LocalRuntimeFailedResultValue(
         createAppError('RUNTIME_STOP', 'Runtime start is already in progress.', {
+          retryable: false,
+          timestamp: this.clock.now()
+        }),
+        this.current()
+      );
+    }
+    if (this.snapshot.state === 'STOPPED' && this.snapshot.latest.state === 'STOPPED' && !this.hasRunningEvidence) {
+      return new LocalRuntimeStoppedResultValue(this.current());
+    }
+    if (this.snapshot.state === 'STARTING' || this.snapshot.state === 'STOPPING') {
+      return new LocalRuntimeFailedResultValue(
+        createAppError('RUNTIME_STOP', `Runtime is stuck in ${this.snapshot.state}.`, {
           retryable: false,
           timestamp: this.clock.now()
         }),
@@ -162,6 +286,7 @@ export class LocalRuntimeCoordinator {
         return;
       }
       if (event.state === 'STOPPED') {
+        this.hasRunningEvidence = false;
         this.snapshot = createStoppedSnapshot(this.snapshot.lastError);
         return;
       }
@@ -177,19 +302,32 @@ export class LocalRuntimeCoordinator {
         };
         return;
       }
+      if (event.state === 'RUNNING') {
+        this.hasRunningEvidence = true;
+      }
       this.snapshot = {
-        state: latest.state,
+        state: event.state,
         latest,
         lastError: null
       };
     };
     this.subscriptionId = this.coreService.subscribe(callback);
-    this.coreService.runtimeSnapshot();
+    const initialSnapshot: RuntimeSnapshot = this.coreService.runtimeSnapshot();
+    this.hasRunningEvidence = initialSnapshot.state === 'RUNNING';
     this.snapshot = createStoppedSnapshot(null);
+    this.initialized = true;
   }
 
   private async startInternal(): Promise<LocalRuntimeStartResult> {
-    const activeId: string | undefined = await this.repository.getActiveId();
+    let activeId: string | undefined;
+    try {
+      activeId = await this.repository.getActiveId();
+    } catch (error) {
+      return this.failStart(createAppError('RUNTIME_START', resolveErrorMessage(error, 'Active profile lookup failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
     if (activeId === undefined) {
       return this.failStart(createAppError('RUNTIME_START', 'No active profile selected.', {
         retryable: false,
@@ -197,7 +335,15 @@ export class LocalRuntimeCoordinator {
       }));
     }
 
-    const profile: Profile | undefined = await this.repository.get(activeId);
+    let profile: Profile | undefined;
+    try {
+      profile = await this.repository.get(activeId);
+    } catch (error) {
+      return this.failStart(createAppError('RUNTIME_START', resolveErrorMessage(error, 'Active profile lookup failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
     if (profile === undefined || profile.currentRevision === null || !isProfileEligibleForActivation(profile)) {
       return this.failStart(createAppError('VALIDATION', 'Active profile is not eligible for activation.', {
         retryable: false,
@@ -205,7 +351,15 @@ export class LocalRuntimeCoordinator {
       }));
     }
 
-    const configPath: string = this.contentStore.resolveCorePath(profile.currentRevision);
+    let configPath: string;
+    try {
+      configPath = this.contentStore.resolveCorePath(profile.currentRevision);
+    } catch (error) {
+      return this.failStart(createAppError('RUNTIME_START', resolveErrorMessage(error, 'Config path resolution failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
     try {
       await this.coreService.validateConfiguration(configPath);
     } catch (error) {
@@ -236,6 +390,7 @@ export class LocalRuntimeCoordinator {
     }
 
     const latest: RuntimeSnapshot = this.coreService.runtimeSnapshot();
+    this.hasRunningEvidence = latest.state === 'RUNNING';
     this.snapshot = {
       state: latest.state,
       latest,
@@ -267,8 +422,10 @@ export class LocalRuntimeCoordinator {
 
     const latest: RuntimeSnapshot = this.coreService.runtimeSnapshot();
     if (latest.state === 'STOPPED') {
+      this.hasRunningEvidence = false;
       this.snapshot = createStoppedSnapshot(this.snapshot.lastError);
     } else {
+      this.hasRunningEvidence = latest.state === 'RUNNING';
       this.snapshot = {
         state: latest.state,
         latest,
@@ -285,6 +442,18 @@ export class LocalRuntimeCoordinator {
       lastError: error
     };
     return new LocalRuntimeFailedResultValue(error, this.current());
+  }
+
+  private isRecoverableErrorState(): boolean {
+    if (this.snapshot.state !== 'ERROR') {
+      return false;
+    }
+    const latestState: RuntimeState = this.snapshot.latest.state;
+    return latestState !== 'STARTING' && latestState !== 'RUNNING' && latestState !== 'STOPPING';
+  }
+
+  releaseMutationLease(): void {
+    this.mutationLeaseHeld = false;
   }
 }
 

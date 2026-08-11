@@ -236,6 +236,8 @@ class FakeProfileRepository implements ProfileRepository {
   private activeIdValue: string | undefined;
   saveError?: Error;
   deleteError?: Error;
+  getError?: Error;
+  setActiveIdError?: Error;
 
   constructor(seedProfiles: Profile[], activeId?: string) {
     for (let index = 0; index < seedProfiles.length; index += 1) {
@@ -255,6 +257,9 @@ class FakeProfileRepository implements ProfileRepository {
 
   async get(id: string): Promise<Profile | undefined> {
     this.log.push(`repository.get:${id}`);
+    if (this.getError !== undefined) {
+      throw this.getError;
+    }
     const profile: Profile | undefined = this.profiles.get(id);
     return profile === undefined ? undefined : cloneProfile(profile);
   }
@@ -287,6 +292,9 @@ class FakeProfileRepository implements ProfileRepository {
 
   async setActiveId(id: string | undefined): Promise<void> {
     this.log.push(`repository.setActiveId:${id ?? 'undefined'}`);
+    if (this.setActiveIdError !== undefined) {
+      throw this.setActiveIdError;
+    }
     this.activeIdValue = id;
     this.setActiveIdCalls.push(id);
   }
@@ -306,6 +314,8 @@ class FakeProfileContentStore implements ProfileContentStore {
   readonly resolvedPaths: Map<string, string> = new Map();
   readonly removedProfiles: string[] = [];
   readonly reconciledPaths: string[][] = [];
+  resolveError?: Error;
+  removeProfileError?: Error;
 
   async retain(_profileId: string, _staged: StagedSource, _kind: 'CURRENT' | 'FAILED_CANDIDATE'): Promise<ProfileRevision> {
     throw new Error('retain should stay unused in Task4 management tests');
@@ -319,6 +329,9 @@ class FakeProfileContentStore implements ProfileContentStore {
 
   async removeProfile(profileId: string): Promise<void> {
     this.log.push(`content.removeProfile:${profileId}`);
+    if (this.removeProfileError !== undefined) {
+      throw this.removeProfileError;
+    }
     this.removedProfiles.push(profileId);
   }
 
@@ -333,6 +346,9 @@ class FakeProfileContentStore implements ProfileContentStore {
 
   resolveCorePath(revision: ProfileRevision): string {
     this.log.push(`content.resolveCorePath:${revision.relativePath}`);
+    if (this.resolveError !== undefined) {
+      throw this.resolveError;
+    }
     const resolved: string | undefined = this.resolvedPaths.get(revision.relativePath);
     return resolved ?? `/sandbox/${revision.relativePath}`;
   }
@@ -343,6 +359,8 @@ class FakeSubscriptionSecretStore implements SubscriptionSecretStore {
   readonly removeCalls: string[] = [];
   readonly storedSecrets: Map<string, string> = new Map();
   encryptError?: Error;
+  removeError?: Error;
+  removeErrorSecretRef?: string;
 
   async encrypt(plaintext: string): Promise<string> {
     this.encryptCalls.push(plaintext);
@@ -364,6 +382,10 @@ class FakeSubscriptionSecretStore implements SubscriptionSecretStore {
 
   async remove(secretRef: string): Promise<void> {
     this.removeCalls.push(secretRef);
+    if (this.removeError !== undefined &&
+      (this.removeErrorSecretRef === undefined || this.removeErrorSecretRef === secretRef)) {
+      throw this.removeError;
+    }
     this.storedSecrets.delete(secretRef);
   }
 }
@@ -383,15 +405,35 @@ class DeferredRuntimeSnapshot {
   }
 }
 
+class DeferredVoid {
+  readonly promise: Promise<void>;
+  private resolveRef?: () => void;
+
+  constructor() {
+    this.promise = new Promise<void>((resolve) => {
+      this.resolveRef = resolve;
+    });
+  }
+
+  resolve(): void {
+    this.resolveRef!();
+  }
+}
+
 class FakeCoreService implements CoreService {
   readonly log: string[] = [];
   readonly validateCalls: string[] = [];
   readonly loadCalls: string[] = [];
   readonly startCalls: LocalOptions[] = [];
+  readonly subscribeIds: number[] = [];
+  readonly callbacks: Map<number, (event: CoreEvent) => void> = new Map();
   runtimeSnapshotValue: RuntimeSnapshot = buildRuntimeSnapshot('STOPPED');
   validateError?: Error;
   loadError?: Error;
   startDeferred?: DeferredRuntimeSnapshot;
+  validateDeferred?: DeferredVoid;
+  validateEntered?: DeferredVoid;
+  private nextSubscriptionId: number = 1;
 
   hello(): string {
     return 'hello';
@@ -406,6 +448,12 @@ class FakeCoreService implements CoreService {
     this.validateCalls.push(path);
     if (this.validateError !== undefined) {
       throw this.validateError;
+    }
+    if (this.validateEntered !== undefined) {
+      this.validateEntered.resolve();
+    }
+    if (this.validateDeferred !== undefined) {
+      await this.validateDeferred.promise;
     }
   }
 
@@ -436,12 +484,32 @@ class FakeCoreService implements CoreService {
   }
 
   subscribe(_callback: (event: CoreEvent) => void): number {
-    this.log.push('core.subscribe');
-    return 1;
+    const callback: (event: CoreEvent) => void = _callback;
+    const subscriptionId: number = this.nextSubscriptionId;
+    this.nextSubscriptionId += 1;
+    this.log.push(`core.subscribe:${subscriptionId}`);
+    this.subscribeIds.push(subscriptionId);
+    this.callbacks.set(subscriptionId, callback);
+    return subscriptionId;
   }
 
-  unsubscribe(_subscriptionId: number): void {
-    this.log.push('core.unsubscribe');
+  unsubscribe(subscriptionId: number): void {
+    this.log.push(`core.unsubscribe:${subscriptionId}`);
+    this.callbacks.delete(subscriptionId);
+  }
+
+  emitRuntime(state: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR', message: string): void {
+    const callbacks: Array<(event: CoreEvent) => void> = [];
+    this.callbacks.forEach((callback) => {
+      callbacks.push(callback);
+    });
+    for (let index = 0; index < callbacks.length; index += 1) {
+      callbacks[index]({
+        type: 'runtime',
+        state,
+        message
+      });
+    }
   }
 }
 
@@ -793,6 +861,126 @@ export default function profileManagementTestsuite() {
       expect(coreService.startCalls.length).assertEqual(1);
     });
 
+    it('enableLeaseRejectsConcurrentStartUntilMutationFinishes', 0, async () => {
+      const revision = buildRevision('lease');
+      const profile = buildProfileRecord('lease', 'VALID', 'LOCAL_FILE', revision);
+      const repository = new FakeProfileRepository([profile], undefined);
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/lease.yaml');
+      const coreService = new FakeCoreService();
+      coreService.validateDeferred = new DeferredVoid();
+      coreService.validateEntered = new DeferredVoid();
+      const runtimeCoordinator = createRuntimeCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(29), buildTimestamp(30), buildTimestamp(31), buildTimestamp(32), buildTimestamp(33)]
+      );
+      const management = new ManageProfileUseCases(
+        new ManageProfileUseCasesDependencyBag(
+          repository,
+          contentStore,
+          new FakeSubscriptionSecretStore(),
+          coreService,
+          new FakeClock([buildTimestamp(34), buildTimestamp(35), buildTimestamp(36)]),
+          runtimeCoordinator
+        )
+      );
+
+      await runtimeCoordinator.initialize();
+      const enablePromise = management.enable('lease');
+      await coreService.validateEntered.promise;
+      const startResult = await runtimeCoordinator.start();
+      coreService.validateDeferred.resolve();
+      const enableResult = await enablePromise;
+
+      expect(startResult.kind).assertEqual('FAILED');
+      expect(coreService.startCalls.length).assertEqual(0);
+      expect(enableResult.kind).assertEqual('ENABLED');
+    });
+
+    it('errorPolicyAllowsEnableOnlyForRecoverableErrorAndBlocksOtherMutations', 0, async () => {
+      const revision = buildRevision('error');
+      const profile = buildProfileRecord('error', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const repository = new FakeProfileRepository([profile], 'error');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/error.yaml');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
+      const coreService = new FakeCoreService();
+      const runtimeCoordinator = createRuntimeCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(37), buildTimestamp(38), buildTimestamp(39), buildTimestamp(40)]
+      );
+      const management = new ManageProfileUseCases(
+        new ManageProfileUseCasesDependencyBag(
+          repository,
+          contentStore,
+          secretStore,
+          coreService,
+          new FakeClock([buildTimestamp(41), buildTimestamp(42), buildTimestamp(43), buildTimestamp(44)]),
+          runtimeCoordinator
+        )
+      );
+      const application = createApplicationWithCoordinator(
+        repository,
+        contentStore,
+        secretStore,
+        coreService,
+        runtimeCoordinator
+      );
+
+      await runtimeCoordinator.initialize();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('ERROR');
+      coreService.emitRuntime('ERROR', 'recoverable');
+      const enableResult = await management.enable('error');
+      const deleteResult = await management.delete('error');
+      const replaceResult = await management.replaceSubscriptionUrl('error', 'https://next.example.com/subscription.yaml');
+      const refreshResult = await application.refresh('error');
+
+      expect(enableResult.kind).assertEqual('ENABLED');
+      expect(deleteResult.kind).assertEqual('FAILED');
+      expect(replaceResult.kind).assertEqual('FAILED');
+      expect(refreshResult.kind).assertEqual('FAILED');
+    });
+
+    it('inFlightErrorDoesNotPermitEnableWhileStartPromiseOwnsAdmission', 0, async () => {
+      const revision = buildRevision('blocked');
+      const profile = buildProfileRecord('blocked', 'VALID', 'LOCAL_FILE', revision);
+      const repository = new FakeProfileRepository([profile], 'blocked');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/blocked.yaml');
+      const coreService = new FakeCoreService();
+      coreService.startDeferred = new DeferredRuntimeSnapshot();
+      const runtimeCoordinator = createRuntimeCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(45), buildTimestamp(46), buildTimestamp(47), buildTimestamp(48), buildTimestamp(49)]
+      );
+      const management = new ManageProfileUseCases(
+        new ManageProfileUseCasesDependencyBag(
+          repository,
+          contentStore,
+          new FakeSubscriptionSecretStore(),
+          coreService,
+          new FakeClock([buildTimestamp(50), buildTimestamp(51), buildTimestamp(52)]),
+          runtimeCoordinator
+        )
+      );
+
+      await runtimeCoordinator.initialize();
+      const startPromise = runtimeCoordinator.start();
+      coreService.emitRuntime('ERROR', 'transitional');
+      const enableResult = await management.enable('blocked');
+      coreService.startDeferred.resolve(buildRuntimeSnapshot('ERROR'));
+      await startPromise;
+
+      expect(enableResult.kind).assertEqual('FAILED');
+    });
+
     it('deleteUsesRepositoryTransactionBeforeCleanupAndSkipsCleanupOnRepositoryFailure', 0, async () => {
       const revision = buildRevision('remote');
       const profile = buildProfileRecord('remote', 'VALID', 'REMOTE_URL', revision, 'secret-old');
@@ -851,6 +1039,159 @@ export default function profileManagementTestsuite() {
 
       expect(failed.kind).assertEqual('FAILED');
       expect(failingSecretStore.removeCalls.join('>')).assertEqual('secret-1');
+    });
+
+    it('replaceRejectsLocalProfilesAndEncryptFailuresAsTypedFailures', 0, async () => {
+      const revision = buildRevision('local');
+      const localProfile = buildProfileRecord('local', 'VALID', 'LOCAL_FILE', revision);
+      const localRepository = new FakeProfileRepository([localProfile], 'local');
+      const localSecretStore = new FakeSubscriptionSecretStore();
+      const localResult = await createManagement(
+        localRepository,
+        new FakeProfileContentStore(),
+        localSecretStore,
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('local', 'https://next.example.com/subscription.yaml');
+
+      expect(localResult.kind).assertEqual('FAILED');
+      expect(localSecretStore.encryptCalls.length).assertEqual(0);
+
+      const remoteProfile = buildProfileRecord('remote-encrypt', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const encryptRepository = new FakeProfileRepository([remoteProfile], 'remote-encrypt');
+      const encryptSecretStore = new FakeSubscriptionSecretStore();
+      encryptSecretStore.encryptError = new Error('encrypt failed');
+      const encryptResult = await createManagement(
+        encryptRepository,
+        new FakeProfileContentStore(),
+        encryptSecretStore,
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('remote-encrypt', 'https://next.example.com/subscription.yaml');
+
+      expect(encryptResult.kind).assertEqual('FAILED');
+    });
+
+    it('replaceInvalidUrlAndCleanupFailuresStayTypedAndBestEffort', 0, async () => {
+      const revision = buildRevision('remote-invalid');
+      const profile = buildProfileRecord('remote-invalid', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const repository = new FakeProfileRepository([profile], 'remote-invalid');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
+      const invalidResult = await createManagement(
+        repository,
+        new FakeProfileContentStore(),
+        secretStore,
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('remote-invalid', 'not-a-url');
+
+      expect(invalidResult.kind).assertEqual('FAILED');
+      expect(secretStore.removeCalls.join('>')).assertEqual('secret-1');
+
+      const failingRepository = new FakeProfileRepository([profile], 'remote-invalid');
+      failingRepository.saveError = new Error('save failed');
+      const removeFailSecretStore = new FakeSubscriptionSecretStore();
+      removeFailSecretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
+      removeFailSecretStore.removeError = new Error('cleanup failed');
+      removeFailSecretStore.removeErrorSecretRef = 'secret-1';
+      const failed = await createManagement(
+        failingRepository,
+        new FakeProfileContentStore(),
+        removeFailSecretStore,
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('remote-invalid', 'https://next.example.com/subscription.yaml');
+
+      expect(failed.kind).assertEqual('FAILED');
+      if (failed.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(failed.error.stage).assertEqual('PERSISTENCE');
+
+      const successRepository = new FakeProfileRepository([profile], 'remote-invalid');
+      const oldCleanupFailSecretStore = new FakeSubscriptionSecretStore();
+      oldCleanupFailSecretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
+      oldCleanupFailSecretStore.removeError = new Error('old cleanup failed');
+      oldCleanupFailSecretStore.removeErrorSecretRef = 'secret-old';
+      const replaced = await createManagement(
+        successRepository,
+        new FakeProfileContentStore(),
+        oldCleanupFailSecretStore,
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('remote-invalid', 'https://next.example.com/subscription.yaml');
+
+      expect(replaced.kind).assertEqual('REPLACED');
+    });
+
+    it('deleteCleanupFailuresAndRepositoryThrowsRemainTypedResults', 0, async () => {
+      const revision = buildRevision('delete');
+      const profile = buildProfileRecord('delete', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const cleanupContentStore = new FakeProfileContentStore();
+      cleanupContentStore.removeProfileError = new Error('remove profile failed');
+      const cleanupSecretStore = new FakeSubscriptionSecretStore();
+      cleanupSecretStore.removeError = new Error('remove secret failed');
+      cleanupSecretStore.removeErrorSecretRef = 'secret-old';
+      const deleted = await createManagement(
+        new FakeProfileRepository([profile], 'delete'),
+        cleanupContentStore,
+        cleanupSecretStore,
+        new FakeCoreService()
+      ).delete('delete');
+
+      expect(deleted.kind).assertEqual('DELETED');
+
+      const throwingRepository = new FakeProfileRepository([profile], 'delete');
+      throwingRepository.getError = new Error('get failed');
+      const failed = await createManagement(
+        throwingRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      ).delete('delete');
+
+      expect(failed.kind).assertEqual('FAILED');
+    });
+
+    it('enableAndReplaceUnexpectedThrowsResolveTypedFailuresWithoutRejecting', 0, async () => {
+      const revision = buildRevision('typed');
+      const profile = buildProfileRecord('typed', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const getThrowRepository = new FakeProfileRepository([profile], 'typed');
+      getThrowRepository.getError = new Error('get failed');
+      const getFailed = await createManagement(
+        getThrowRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      ).enable('typed');
+      expect(getFailed.kind).assertEqual('FAILED');
+
+      const resolveThrowStore = new FakeProfileContentStore();
+      resolveThrowStore.resolveError = new Error('resolve failed');
+      const resolveFailed = await createManagement(
+        new FakeProfileRepository([profile], undefined),
+        resolveThrowStore,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      ).enable('typed');
+      expect(resolveFailed.kind).assertEqual('FAILED');
+
+      const setActiveRepository = new FakeProfileRepository([profile], undefined);
+      setActiveRepository.setActiveIdError = new Error('persist failed');
+      const setActiveFailed = await createManagement(
+        setActiveRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      ).enable('typed');
+      expect(setActiveFailed.kind).assertEqual('FAILED');
+
+      const replaceGetThrowRepository = new FakeProfileRepository([profile], 'typed');
+      replaceGetThrowRepository.getError = new Error('get failed');
+      const replaceFailed = await createManagement(
+        replaceGetThrowRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      ).replaceSubscriptionUrl('typed', 'https://next.example.com/subscription.yaml');
+      expect(replaceFailed.kind).assertEqual('FAILED');
     });
 
     it('profileApplicationInitializesReconcileBeforeCoordinatorAndDelegatesWithoutRepositoryExposure', 0, async () => {

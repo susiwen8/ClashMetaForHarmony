@@ -110,6 +110,7 @@ class FakeProfileRepository implements ProfileRepository {
   readonly log: string[] = [];
   private readonly profiles: Map<string, Profile> = new Map();
   private activeIdValue: string | undefined;
+  getError?: Error;
 
   constructor(seedProfiles: Profile[], activeId?: string) {
     for (let index = 0; index < seedProfiles.length; index += 1) {
@@ -128,6 +129,9 @@ class FakeProfileRepository implements ProfileRepository {
 
   async get(id: string): Promise<Profile | undefined> {
     this.log.push(`repository.get:${id}`);
+    if (this.getError !== undefined) {
+      throw this.getError;
+    }
     const profile: Profile | undefined = this.profiles.get(id);
     return profile === undefined ? undefined : cloneProfile(profile);
   }
@@ -156,6 +160,7 @@ class FakeProfileRepository implements ProfileRepository {
 class FakeProfileContentStore implements ProfileContentStore {
   readonly log: string[] = [];
   readonly resolvedPaths: Map<string, string> = new Map();
+  resolveError?: Error;
 
   async retain(_profileId: string, _staged: StagedSource, _kind: 'CURRENT' | 'FAILED_CANDIDATE'): Promise<ProfileRevision> {
     throw new Error('retain should stay unused in runtime tests');
@@ -175,6 +180,9 @@ class FakeProfileContentStore implements ProfileContentStore {
 
   resolveCorePath(revision: ProfileRevision): string {
     this.log.push(`content.resolveCorePath:${revision.relativePath}`);
+    if (this.resolveError !== undefined) {
+      throw this.resolveError;
+    }
     const resolved: string | undefined = this.resolvedPaths.get(revision.relativePath);
     return resolved ?? `/sandbox/${revision.relativePath}`;
   }
@@ -451,6 +459,107 @@ export default function localRuntimeCoordinatorTestsuite() {
       expect(coreService.stopCalls.length).assertEqual(0);
     });
 
+    it('sequentialRunningStartIsIdempotentAndDoesNotRevalidateOrRestart', 0, async () => {
+      const revision = buildRevision('active-idempotent');
+      const repository = new FakeProfileRepository([buildProfileRecord('active-idempotent', revision)], 'active-idempotent');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/active-idempotent.yaml');
+      const coreService = new FakeCoreService();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING', '/sandbox/profiles/active-idempotent.yaml', '127.0.0.1:8080', '127.0.0.1:1080', 7890);
+      const coordinator = createCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(12), buildTimestamp(13), buildTimestamp(14), buildTimestamp(15)]
+      );
+
+      await coordinator.initialize();
+      const first = await coordinator.start();
+      const second = await coordinator.start();
+
+      expect(first.kind).assertEqual('STARTED');
+      expect(second.kind).assertEqual('STARTED');
+      expect(coreService.startCalls.length).assertEqual(1);
+      expect(coreService.log.filter((entry) => entry.startsWith('core.validate:')).length).assertEqual(1);
+      expect(coreService.log.filter((entry) => entry.startsWith('core.load:')).length).assertEqual(1);
+    });
+
+    it('sequentialStoppedStopIsIdempotentAndDoesNotCallCoreAgain', 0, async () => {
+      const revision = buildRevision('active-stop');
+      const repository = new FakeProfileRepository([buildProfileRecord('active-stop', revision)], 'active-stop');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/active-stop.yaml');
+      const coreService = new FakeCoreService();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING', '/sandbox/profiles/active-stop.yaml', '127.0.0.1:8080', '127.0.0.1:1080', 7890);
+      const coordinator = createCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(16), buildTimestamp(17), buildTimestamp(18), buildTimestamp(19), buildTimestamp(20)]
+      );
+
+      await coordinator.initialize();
+      coreService.emitRuntime('RUNNING', 'running');
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED', '', '', '', 0);
+      const first = await coordinator.stop();
+      const second = await coordinator.stop();
+
+      expect(first.kind).assertEqual('STOPPED');
+      expect(second.kind).assertEqual('STOPPED');
+      expect(coreService.stopCalls.length).assertEqual(1);
+    });
+
+    it('stableTransitionalSnapshotsRejectCommandsWithoutExtraCoreCalls', 0, async () => {
+      const revision = buildRevision('transitional');
+      const repository = new FakeProfileRepository([buildProfileRecord('transitional', revision)], 'transitional');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/transitional.yaml');
+      const coreService = new FakeCoreService();
+      const coordinator = createCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(21), buildTimestamp(22), buildTimestamp(23), buildTimestamp(24)]
+      );
+
+      await coordinator.initialize();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STARTING', '/sandbox/profiles/transitional.yaml', '', '', 0);
+      coreService.emitRuntime('STARTING', 'stuck-starting');
+      const startResult = await coordinator.start();
+      const stopResult = await coordinator.stop();
+
+      expect(startResult.kind).assertEqual('FAILED');
+      expect(stopResult.kind).assertEqual('FAILED');
+      expect(coreService.startCalls.length).assertEqual(0);
+      expect(coreService.stopCalls.length).assertEqual(0);
+    });
+
+    it('startReturnsTypedFailedWhenRepositoryGetThrowsOrResolveFails', 0, async () => {
+      const revision = buildRevision('typed-failure');
+      const repositoryError = new FakeProfileRepository([buildProfileRecord('typed-failure', revision)], 'typed-failure');
+      repositoryError.getError = new Error('repository get failed');
+      const repositoryResult = await createCoordinator(
+        repositoryError,
+        new FakeProfileContentStore(),
+        new FakeCoreService(),
+        [buildTimestamp(25), buildTimestamp(26), buildTimestamp(27)]
+      ).start();
+
+      expect(repositoryResult.kind).assertEqual('FAILED');
+
+      const repository = new FakeProfileRepository([buildProfileRecord('typed-failure', revision)], 'typed-failure');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolveError = new Error('resolve failed');
+      const resolveResult = await createCoordinator(
+        repository,
+        contentStore,
+        new FakeCoreService(),
+        [buildTimestamp(28), buildTimestamp(29), buildTimestamp(30)]
+      ).start();
+
+      expect(resolveResult.kind).assertEqual('FAILED');
+    });
+
     it('runtimeSnapshotAddressesBeatStaleCommandResultsAndErrorEventStaysSafe', 0, async () => {
       const revision = buildRevision('active');
       const repository = new FakeProfileRepository([buildProfileRecord('active', revision)], 'active');
@@ -500,6 +609,7 @@ export default function localRuntimeCoordinatorTestsuite() {
 
       await coordinator.initialize();
       coreService.emitRuntime('RUNNING', 'running');
+      expect(coordinator.current().state).assertEqual('RUNNING');
       const first = coordinator.stop();
       const second = coordinator.stop();
       coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED', '', '', '', 0);

@@ -97,15 +97,26 @@ export class ProfileApplication {
   }
 
   async refresh(profileId: string): Promise<RefreshProfileResult> {
-    await this.initialize();
-    if (this.runtimeCoordinator.current().state !== 'STOPPED') {
-      return new RefreshFailedResultValue(createAppError('RUNTIME_START', 'Runtime must be stopped before refresh.', {
+    try {
+      if (!this.runtimeCoordinator.isInitialized()) {
+        await this.initialize();
+      }
+      const admission = this.runtimeCoordinator.acquireMutationLease('REFRESH');
+      if (admission.error !== undefined) {
+        return new RefreshFailedResultValue(admission.error);
+      }
+      try {
+        return await this.refreshUseCase.execute({
+          profileId
+        });
+      } finally {
+        admission.lease?.release();
+      }
+    } catch (error) {
+      return new RefreshFailedResultValue(createAppError('RUNTIME_START', resolveErrorMessage(error, 'Runtime must be stopped before refresh.'), {
         retryable: false
       }));
     }
-    return await this.refreshUseCase.execute({
-      profileId
-    });
   }
 
   enable(profileId: string): Promise<ManageEnableResult> {
@@ -197,4 +208,8 @@ function createProfileApplicationRuntimeLatestSnapshot(
   snapshot.lastError = runtime.latest.lastError;
   snapshot.mixedPort = runtime.latest.mixedPort;
   return snapshot;
+}
+
+function resolveErrorMessage(error: Object | undefined, fallback: string): string {
+  return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
 }
