@@ -136,16 +136,22 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         if (graph !== undefined) {
           try {
             for (let index: number = 0; index < profileIds.length; index += 1) {
-              await graph.repository.deleteAndClearActive(profileIds[index]);
-              await graph.contentStore.removeProfile(profileIds[index]);
+              try {
+                await graph.repository.deleteAndClearActive(profileIds[index]);
+              } catch (error) {
+                cleanupError = captureCleanupError(cleanupError, error);
+              }
+              try {
+                await graph.contentStore.removeProfile(profileIds[index]);
+              } catch (error) {
+                cleanupError = captureCleanupError(cleanupError, error);
+              }
             }
-          } catch (error) {
-            cleanupError = cleanupError ?? toError(error);
           } finally {
             try {
               await graph.close();
             } catch (error) {
-              cleanupError = cleanupError ?? toError(error);
+              cleanupError = captureCleanupError(cleanupError, error);
             }
           }
         }
@@ -277,4 +283,11 @@ function toError(error: Object | undefined): Error {
     return error;
   }
   return new Error(`${error}`);
+}
+
+function captureCleanupError(current: Error | undefined, error: Object | undefined): Error {
+  if (current !== undefined) {
+    return current;
+  }
+  return toError(error);
 }

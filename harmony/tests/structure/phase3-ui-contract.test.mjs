@@ -531,10 +531,11 @@ test('Task 14 isolated Simulator fixture stays canonical and production sources 
 });
 
 test('Task 14 suite sources keep completion, picker cancel, sanitized displays, and non-swallowing cleanup semantics', async () => {
-  const [platformSource, runtimeSource, uiSource] = await Promise.all([
+  const [platformSource, runtimeSource, uiSource, testabilitySource] = await Promise.all([
     readUtf8(OHOS_TEST_PLATFORM_ADAPTERS_PATH),
     readUtf8(OHOS_TEST_RUNTIME_FLOW_PATH),
-    readUtf8(OHOS_TEST_UI_FLOW_PATH)
+    readUtf8(OHOS_TEST_UI_FLOW_PATH),
+    readUtf8(OHOS_TEST_TESTABILITY_PATH)
   ]);
 
   assert.match(uiSource, /ON\.id\(['"`]import\.file['"`]\)[\s\S]*click\(/u,
@@ -590,6 +591,12 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   assert.match(platformSource, /decrypt\(remoteSecretId\)[\s\S]*assertEqual\(REMOTE_URL\)/u,
     'Phase3PlatformAdapters must still prove the raw remote URL survives only through HUKS decrypt'
   );
+  assert.match(platformSource, /contains[A-Za-z]*Subsequence|contains[A-Za-z]*Fragment/u,
+    'Phase3PlatformAdapters must scan raw bytes/text through an explicit subsequence helper instead of sanitized strings'
+  );
+  assert.doesNotMatch(platformSource, /sanitizeEvidenceText\([\s\S]*database|databaseText:\s*string\s*=\s*sanitizeEvidenceText|envelopeText:\s*string\s*=\s*sanitizeEvidenceText/u,
+    'Phase3PlatformAdapters database/envelope leak scans must not sanitize the source before checking sentinels'
+  );
   assert.doesNotMatch(platformSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
     'Phase3PlatformAdapters cleanup must not swallow profile/content/secret deletion failures'
   );
@@ -601,5 +608,26 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   );
   assert.match(platformSource, /appendEvidenceFailure\([\s\S]*cleanup[\s\S]*await\s+flushEvidence\(/u,
     'Phase3PlatformAdapters must append cleanup failure detail before flushing FAIL evidence'
+  );
+  assert.match(platformSource, /captureCleanupError|recordCleanupError/u,
+    'Phase3PlatformAdapters cleanup must accumulate the first cleanup error while continuing later teardown steps'
+  );
+  assert.match(runtimeSource, /captureCleanupError|recordCleanupError/u,
+    'Phase3RuntimeFlow cleanup must accumulate the first cleanup error while continuing later teardown steps'
+  );
+
+  assert.match(testabilitySource, /fsync|fsyncSync/u,
+    'TestAbility.flushEvidence must fsync written evidence before publishing it'
+  );
+  assert.match(testabilitySource, /rename|moveFile/u,
+    'TestAbility.flushEvidence must publish evidence through an atomic temp-to-final rename'
+  );
+  assert.match(testabilitySource, /\.tmp/u,
+    'TestAbility.flushEvidence must write through a unique temporary evidence file'
+  );
+  const flushEvidenceMatch = testabilitySource.match(/export\s+async\s+function\s+flushEvidence\([\s\S]*?\n\}/u);
+  assert.ok(flushEvidenceMatch, 'TestAbility must define flushEvidence');
+  assert.doesNotMatch(flushEvidenceMatch[0], /fileIo\.open\(\s*filePath[\s\S]*OpenMode\.TRUNC/u,
+    'TestAbility.flushEvidence must not truncate the final evidence file in place'
   );
 });

@@ -12,7 +12,6 @@ import {
   appendEvidenceCheck,
   appendEvidenceFailure,
   appendEvidenceTrace,
-  decodeUtf8,
   flushEvidence,
   getTestAbilityContext,
   listDirectory,
@@ -142,18 +141,18 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
         expect(decryptedRemoteUrl).assertEqual(REMOTE_URL);
 
         const databasePath: string = await findSandboxFileByName(context.databaseDir, DATABASE_NAME);
-        const databaseText: string = sanitizeEvidenceText(decodeUtf8(await readBytesFile(databasePath)));
-        ensure(!databaseText.includes(REMOTE_URL), 'RDB bytes must not contain the remote URL plaintext.');
-        ensure(!databaseText.includes(REMOTE_TOKEN_FRAGMENT), 'RDB bytes must not contain the remote token plaintext.');
-        ensure(!databaseText.includes(EXTERNAL_PICKER_URI), 'RDB bytes must not contain the external picker URI.');
-        ensure(!databaseText.includes(YAML_SENTINEL), 'RDB bytes must not contain the YAML body.');
+        const databaseBytes: Uint8Array = await readBytesFile(databasePath);
+        ensure(!containsAsciiSubsequence(databaseBytes, REMOTE_URL), 'RDB bytes must not contain the remote URL plaintext.');
+        ensure(!containsAsciiSubsequence(databaseBytes, REMOTE_TOKEN_FRAGMENT), 'RDB bytes must not contain the remote token plaintext.');
+        ensure(!containsAsciiSubsequence(databaseBytes, EXTERNAL_PICKER_URI), 'RDB bytes must not contain the external picker URI.');
+        ensure(!containsAsciiSubsequence(databaseBytes, YAML_SENTINEL), 'RDB bytes must not contain the YAML body.');
 
         const secretEnvelopePath: string = `${context.filesDir}/profile-secrets/${remoteSecretId}.json`;
-        const envelopeText: string = sanitizeEvidenceText(await readUtf8File(secretEnvelopePath));
-        ensure(!envelopeText.includes(REMOTE_URL), 'Secret envelope bytes must not contain the remote URL plaintext.');
-        ensure(!envelopeText.includes(REMOTE_TOKEN_FRAGMENT), 'Secret envelope bytes must not contain the remote token plaintext.');
-        ensure(!envelopeText.includes(EXTERNAL_PICKER_URI), 'Secret envelope bytes must not contain the external picker URI.');
-        ensure(!envelopeText.includes(YAML_SENTINEL), 'Secret envelope bytes must not contain the YAML body.');
+        const envelopeRawText: string = await readUtf8File(secretEnvelopePath);
+        ensure(!envelopeRawText.includes(REMOTE_URL), 'Secret envelope bytes must not contain the remote URL plaintext.');
+        ensure(!envelopeRawText.includes(REMOTE_TOKEN_FRAGMENT), 'Secret envelope bytes must not contain the remote token plaintext.');
+        ensure(!envelopeRawText.includes(EXTERNAL_PICKER_URI), 'Secret envelope bytes must not contain the external picker URI.');
+        ensure(!envelopeRawText.includes(YAML_SENTINEL), 'Secret envelope bytes must not contain the YAML body.');
 
         const unsupportedSecretId: string = await reopenedGraph.secretStore.encrypt(REMOTE_URL);
         const corruptSecretId: string = await reopenedGraph.secretStore.encrypt(REMOTE_URL);
@@ -212,20 +211,30 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           try {
             for (let index: number = 0; index < profileIds.length; index += 1) {
               const profileId: string = profileIds[index];
-              await finalGraph.repository.deleteAndClearActive(profileId);
-              await finalGraph.contentStore.removeProfile(profileId);
+              try {
+                await finalGraph.repository.deleteAndClearActive(profileId);
+              } catch (error) {
+                cleanupError = captureCleanupError(cleanupError, error);
+              }
+              try {
+                await finalGraph.contentStore.removeProfile(profileId);
+              } catch (error) {
+                cleanupError = captureCleanupError(cleanupError, error);
+              }
             }
             for (let index: number = 0; index < secretIds.length; index += 1) {
-              await finalGraph.secretStore.remove(secretIds[index]);
+              try {
+                await finalGraph.secretStore.remove(secretIds[index]);
+              } catch (error) {
+                cleanupError = captureCleanupError(cleanupError, error);
+              }
             }
-          } catch (error) {
-            cleanupError = cleanupError ?? toError(error);
           } finally {
             try {
               await finalGraph.close();
               await finalGraph.close();
             } catch (error) {
-              cleanupError = cleanupError ?? toError(error);
+              cleanupError = captureCleanupError(cleanupError, error);
             }
           }
         }
@@ -239,13 +248,13 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           await assertNoResidualTask14Artifacts(getTestAbilityContext(), profileIds, secretIds);
           cleanupVerified = true;
         } catch (error) {
-          cleanupError = cleanupError ?? toError(error);
+          cleanupError = captureCleanupError(cleanupError, error);
         } finally {
           if (cleanupGraph !== undefined) {
             try {
               await cleanupGraph.close();
             } catch (error) {
-              cleanupError = cleanupError ?? toError(error);
+              cleanupError = captureCleanupError(cleanupError, error);
             }
           }
         }
@@ -338,6 +347,36 @@ function toError(error: Object | undefined): Error {
     return error;
   }
   return new Error(`${error}`);
+}
+
+function captureCleanupError(current: Error | undefined, error: Object | undefined): Error {
+  if (current !== undefined) {
+    return current;
+  }
+  return toError(error);
+}
+
+function containsAsciiSubsequence(bytes: Uint8Array, fragment: string): boolean {
+  if (fragment.length === 0 || fragment.length > bytes.length) {
+    return false;
+  }
+  const fragmentBytes: number[] = [];
+  for (let index: number = 0; index < fragment.length; index += 1) {
+    fragmentBytes.push(fragment.charCodeAt(index));
+  }
+  for (let start: number = 0; start <= bytes.length - fragmentBytes.length; start += 1) {
+    let matches: boolean = true;
+    for (let offset: number = 0; offset < fragmentBytes.length; offset += 1) {
+      if (bytes[start + offset] !== fragmentBytes[offset]) {
+        matches = false;
+        break;
+      }
+    }
+    if (matches) {
+      return true;
+    }
+  }
+  return false;
 }
 
 async function assertNoResidualTask14Artifacts(

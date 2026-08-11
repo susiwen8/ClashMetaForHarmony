@@ -145,14 +145,40 @@ export async function flushEvidence(): Promise<void> {
     return;
   }
   const filePath: string = evidenceFilePath(sharedContext);
-  const file = await fileIo.open(
-    filePath,
-    fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC
-  );
+  const tempPath: string = `${filePath}.${createScopedId('evidence')}.tmp`;
+  const encoder = util.TextEncoder.create('utf-8');
+  const payload: Uint8Array = encoder.encodeInto(`${JSON.stringify(evidence)}\n`);
+  let file: fileIo.File | undefined = undefined;
   try {
-    await fileIo.write(file.fd, `${JSON.stringify(evidence)}\n`);
-  } finally {
+    file = await fileIo.open(
+      tempPath,
+      fileIo.OpenMode.CREATE | fileIo.OpenMode.WRITE_ONLY | fileIo.OpenMode.TRUNC
+    );
+    let written: number = 0;
+    while (written < payload.length) {
+      const chunk: Uint8Array = payload.slice(written);
+      const wroteNow: number = await fileIo.write(file.fd, chunk.buffer, { length: chunk.length });
+      if (wroteNow <= 0 || wroteNow > chunk.length) {
+        throw new Error('Task 14 evidence write failed.');
+      }
+      written += wroteNow;
+    }
+    await fileIo.fsync(file.fd);
     await fileIo.close(file.fd);
+    file = undefined;
+    await fileIo.rename(tempPath, filePath);
+  } catch (_) {
+    if (file !== undefined) {
+      try {
+        await fileIo.close(file.fd);
+      } catch (_) {
+      }
+    }
+    try {
+      await fileIo.unlink(tempPath);
+    } catch (_) {
+    }
+    throw new Error('Task 14 evidence publish failed.');
   }
 }
 
