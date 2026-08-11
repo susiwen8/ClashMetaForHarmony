@@ -60,3 +60,20 @@ test('Task 10 entry routing keeps production and self-test launches isolated', a
   );
   assert.match(entryTestListSource, /ApplicationComposition\.test/u);
 });
+
+test('Task 10 entry routing serializes navigation around the latest Want and invalidates teardown', async () => {
+  const entryAbilitySource = await fs.readFile(ENTRY_ABILITY_PATH, 'utf8');
+
+  assert.match(entryAbilitySource, /private\s+navigationPromise:\s*Promise<void>\s*=\s*Promise\.resolve\(\)/u);
+  assert.match(entryAbilitySource, /private\s+navigationGeneration:\s*number\s*=\s*0/u);
+  assert.match(entryAbilitySource, /private\s+scheduleNavigation\(\):\s*void/u);
+  assert.match(entryAbilitySource, /const\s+generation:\s*number\s*=\s*\+\+this\.navigationGeneration/u);
+  assert.match(entryAbilitySource, /this\.navigationPromise\s*=\s*this\.navigationPromise[\s\S]*\.then\(\s*async\s*\(\)\s*=>\s*\{/u);
+  assert.match(entryAbilitySource, /if\s*\(\s*generation\s*!==\s*this\.navigationGeneration\s*\)/u);
+  assert.match(entryAbilitySource, /private\s+scheduleTeardown\(\):\s*void/u);
+  assert.match(entryAbilitySource, /const\s+generation:\s*number\s*=\s*\+\+this\.navigationGeneration[\s\S]*this\.windowStage\s*=\s*undefined/u);
+  assert.match(entryAbilitySource, /onNewWant\([\s\S]*this\.scheduleNavigation\(\)/u);
+  assert.match(entryAbilitySource, /onWindowStageCreate\([\s\S]*this\.scheduleNavigation\(\)/u);
+  assert.match(entryAbilitySource, /onDestroy\(\):\s*void\s*\{[\s\S]*this\.scheduleTeardown\(\)/u);
+  assert.match(entryAbilitySource, /onWindowStageDestroy\(\):\s*void\s*\{[\s\S]*this\.scheduleTeardown\(\)/u);
+});

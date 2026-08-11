@@ -16,6 +16,8 @@ const SELF_TEST_ROUTE = 'pages/CoreDebugPage';
 export default class EntryAbility extends UIAbility {
   private windowStage?: window.WindowStage;
   private applicationComposition?: ApplicationComposition;
+  private navigationPromise: Promise<void> = Promise.resolve();
+  private navigationGeneration: number = 0;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     applyPhase1LaunchWant(this.context, want);
@@ -24,23 +26,22 @@ export default class EntryAbility extends UIAbility {
 
   onNewWant(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     applyPhase1LaunchWant(this.context, want);
-    void this.loadTargetPage();
+    this.scheduleNavigation();
   }
 
   onDestroy(): void {
-    void this.closeApplicationComposition();
+    this.scheduleTeardown();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onDestroy');
   }
 
   onWindowStageCreate(windowStage: window.WindowStage): void {
     this.windowStage = windowStage;
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageCreate');
-    void this.loadTargetPage();
+    this.scheduleNavigation();
   }
 
   onWindowStageDestroy(): void {
-    this.windowStage = undefined;
-    void this.closeApplicationComposition();
+    this.scheduleTeardown();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onWindowStageDestroy');
   }
 
@@ -54,7 +55,27 @@ export default class EntryAbility extends UIAbility {
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onBackground');
   }
 
-  private async loadTargetPage(): Promise<void> {
+  private scheduleNavigation(): void {
+    const generation: number = ++this.navigationGeneration;
+    this.navigationPromise = this.navigationPromise.catch(() => {
+    }).then(async () => {
+      await this.loadTargetPage(generation);
+    });
+  }
+
+  private scheduleTeardown(): void {
+    ++this.navigationGeneration;
+    this.windowStage = undefined;
+    this.navigationPromise = this.navigationPromise.catch(() => {
+    }).then(async () => {
+      await this.closeApplicationComposition();
+    });
+  }
+
+  private async loadTargetPage(generation: number): Promise<void> {
+    if (generation !== this.navigationGeneration) {
+      return;
+    }
     const currentWindowStage: window.WindowStage | undefined = this.windowStage;
     if (currentWindowStage === undefined) {
       return;
@@ -62,6 +83,9 @@ export default class EntryAbility extends UIAbility {
     const launchContext = getPhase1LaunchContext();
     if (launchContext.selfTest) {
       await this.closeApplicationComposition();
+      if (generation !== this.navigationGeneration) {
+        return;
+      }
       await this.loadPage(currentWindowStage, SELF_TEST_ROUTE);
       return;
     }
@@ -69,6 +93,9 @@ export default class EntryAbility extends UIAbility {
     this.applicationComposition = applicationComposition;
     void applicationComposition.initialize().catch(() => {
     });
+    if (generation !== this.navigationGeneration) {
+      return;
+    }
     await this.loadPage(currentWindowStage, PRODUCTION_ROUTE);
   }
 
