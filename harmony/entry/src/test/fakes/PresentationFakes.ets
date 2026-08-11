@@ -1,4 +1,7 @@
 import {
+  createAppError,
+  createProfile,
+  createProfileRevision,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
@@ -19,6 +22,10 @@ import {
   type LocalRuntimeStoppedResult,
   type LocalOptions,
   type LocalProfileAcquisition,
+  type ManageDeleteResult,
+  type ManageEnableResult,
+  type ManageReplaceResult,
+  type ImportProfileResult,
   type LocalRuntimeStartResult,
   type LocalRuntimeStopResult,
   type Profile,
@@ -32,11 +39,15 @@ import {
   type ProfileRepository,
   type ProfileRevision,
   type ProfileSourceGateway,
+  type RemoteImportCommand,
+  type ProfileSourceKind,
+  type RefreshProfileResult,
   type RemoteAcquireCommand,
   type RemoteProfileAcquisition,
   type RuntimeSnapshot,
   type StagedSource,
-  type SubscriptionSecretStore
+  type SubscriptionSecretStore,
+  redactUrl
 } from '@cmfa/shared';
 
 interface ApplicationSnapshotOptions {
@@ -45,6 +56,11 @@ interface ApplicationSnapshotOptions {
   runtimeError?: ProfileApplicationErrorSnapshot | null;
   latestRuntimeError?: string;
   error?: ProfileApplicationErrorSnapshot | null;
+}
+
+interface ProfileSnapshotOptions {
+  sourceKind?: ProfileSourceKind;
+  lastError?: ProfileApplicationErrorSnapshot | null;
 }
 
 class DeferredCommand {
@@ -60,6 +76,53 @@ class DeferredCommand {
   resolve(): void {
     this.resolveRef?.();
   }
+}
+
+export class DeferredResult<T> {
+  readonly promise: Promise<T>;
+  private resolveRef?: (value: T) => void;
+
+  constructor() {
+    this.promise = new Promise<T>((resolve) => {
+      this.resolveRef = resolve;
+    });
+  }
+
+  resolve(value: T): void {
+    this.resolveRef?.(value);
+  }
+}
+
+export interface SafeRemoteImportRecord {
+  sourceDisplay: string;
+  allowPlainHttp: boolean;
+  profileName: string;
+}
+
+export interface SafeRefreshRecord {
+  profileId: string;
+  allowPlainHttp: boolean;
+}
+
+export interface SafeReplaceRecord {
+  profileId: string;
+  sourceDisplay: string;
+}
+
+class SafeRemoteImportRecordValue implements SafeRemoteImportRecord {
+  sourceDisplay: string = '';
+  allowPlainHttp: boolean = false;
+  profileName: string = '';
+}
+
+class SafeRefreshRecordValue implements SafeRefreshRecord {
+  profileId: string = '';
+  allowPlainHttp: boolean = false;
+}
+
+class SafeReplaceRecordValue implements SafeReplaceRecord {
+  profileId: string = '';
+  sourceDisplay: string = '';
 }
 
 class FixedClock implements Clock {
@@ -204,9 +267,12 @@ class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfil
   id: string = '';
   name: string = '';
   sourceDisplay: string = '';
+  sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID' = 'INVALID';
   updatedAt: string = '';
   hasCurrentRevision: boolean = false;
+  sourceRepairRequired: boolean = false;
+  lastError: ProfileApplicationErrorSnapshot | null = null;
 }
 
 class ProfileApplicationSnapshotValue implements ProfileApplicationSnapshot {
@@ -235,11 +301,20 @@ class StoppedResultValue implements LocalRuntimeStoppedResult {
 
 export class PresentationTestApplication extends ProfileApplication {
   readonly commandLog: string[] = [];
+  readonly importUrlCommands: SafeRemoteImportRecord[] = [];
+  readonly refreshCommands: SafeRefreshRecord[] = [];
+  readonly replaceCommands: SafeReplaceRecord[] = [];
   private readonly presentationListeners: Map<number, ProfileApplicationListener> = new Map();
   private nextPresentationListenerId: number = 0;
   private currentSnapshot: ProfileApplicationSnapshot;
   private startDeferred?: DeferredCommand;
   private stopDeferred?: DeferredCommand;
+  private readonly importLocalResults: Promise<ImportProfileResult>[] = [];
+  private readonly importUrlResults: Promise<ImportProfileResult>[] = [];
+  private readonly refreshResults: Promise<RefreshProfileResult>[] = [];
+  private readonly enableResults: Promise<ManageEnableResult>[] = [];
+  private readonly deleteResults: Promise<ManageDeleteResult>[] = [];
+  private readonly replaceResults: Promise<ManageReplaceResult>[] = [];
 
   constructor(snapshot?: ProfileApplicationSnapshot) {
     super(createDependencies());
@@ -265,6 +340,30 @@ export class PresentationTestApplication extends ProfileApplication {
 
   listenerCount(): number {
     return this.presentationListeners.size;
+  }
+
+  queueImportLocalResult(result: ImportProfileResult | Promise<ImportProfileResult>): void {
+    this.importLocalResults.push(Promise.resolve(result));
+  }
+
+  queueImportUrlResult(result: ImportProfileResult | Promise<ImportProfileResult>): void {
+    this.importUrlResults.push(Promise.resolve(result));
+  }
+
+  queueRefreshResult(result: RefreshProfileResult | Promise<RefreshProfileResult>): void {
+    this.refreshResults.push(Promise.resolve(result));
+  }
+
+  queueEnableResult(result: ManageEnableResult | Promise<ManageEnableResult>): void {
+    this.enableResults.push(Promise.resolve(result));
+  }
+
+  queueDeleteResult(result: ManageDeleteResult | Promise<ManageDeleteResult>): void {
+    this.deleteResults.push(Promise.resolve(result));
+  }
+
+  queueReplaceResult(result: ManageReplaceResult | Promise<ManageReplaceResult>): void {
+    this.replaceResults.push(Promise.resolve(result));
   }
 
   deferStart(): DeferredCommand {
@@ -297,6 +396,40 @@ export class PresentationTestApplication extends ProfileApplication {
       await deferred.promise;
     }
     return new StoppedResultValue();
+  }
+
+  async importLocal(command: LocalAcquireCommand): Promise<ImportProfileResult> {
+    this.commandLog.push(`importLocal:${command.preferredName?.trim() ?? ''}`);
+    return await shiftOrDefault<ImportProfileResult>(this.importLocalResults, createCancelledImportResult());
+  }
+
+  async importUrl(command: RemoteImportCommand): Promise<ImportProfileResult> {
+    const safeSourceDisplay: string = inferSafeRemoteSourceDisplay(command.sourceUrl);
+    this.commandLog.push(`importUrl:${command.allowPlainHttp ? 'plain' : 'secure'}:${command.name}`);
+    this.importUrlCommands.push(createSafeRemoteImportRecord(safeSourceDisplay, command.allowPlainHttp, command.name));
+    return await shiftOrDefault<ImportProfileResult>(this.importUrlResults, createCancelledImportResult());
+  }
+
+  async refresh(profileId: string, allowPlainHttp?: boolean): Promise<RefreshProfileResult> {
+    this.commandLog.push(`refresh:${profileId}:${allowPlainHttp === true ? 'plain' : 'secure'}`);
+    this.refreshCommands.push(createSafeRefreshRecord(profileId, allowPlainHttp === true));
+    return await shiftOrDefault<RefreshProfileResult>(this.refreshResults, createCancelledRefreshResult());
+  }
+
+  async enable(profileId: string): Promise<ManageEnableResult> {
+    this.commandLog.push(`enable:${profileId}`);
+    return await shiftOrDefault<ManageEnableResult>(this.enableResults, createEnabledResult(profileId));
+  }
+
+  async delete(profileId: string): Promise<ManageDeleteResult> {
+    this.commandLog.push(`delete:${profileId}`);
+    return await shiftOrDefault<ManageDeleteResult>(this.deleteResults, createDeletedResult(profileId));
+  }
+
+  async replaceSubscriptionUrl(profileId: string, sourceUrl: string): Promise<ManageReplaceResult> {
+    this.commandLog.push(`replaceSubscriptionUrl:${profileId}`);
+    this.replaceCommands.push(createSafeReplaceRecord(profileId, redactUrl(sourceUrl)));
+    return await shiftOrDefault<ManageReplaceResult>(this.replaceResults, createReplacedResult(profileId));
   }
 
   dispose(): void {
@@ -343,15 +476,19 @@ export function createProfileSnapshot(
   sourceDisplay: string,
   availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID',
   updatedAt: string,
-  hasCurrentRevision: boolean
+  hasCurrentRevision: boolean,
+  options?: ProfileSnapshotOptions
 ): ProfileApplicationProfileSnapshot {
   const snapshot: ProfileApplicationProfileSnapshotValue = new ProfileApplicationProfileSnapshotValue();
   snapshot.id = id;
   snapshot.name = name;
   snapshot.sourceDisplay = sourceDisplay;
+  snapshot.sourceKind = options?.sourceKind ?? inferSourceKind(sourceDisplay);
   snapshot.availability = availability;
   snapshot.updatedAt = updatedAt;
   snapshot.hasCurrentRevision = hasCurrentRevision;
+  snapshot.lastError = options?.lastError ?? null;
+  snapshot.sourceRepairRequired = resolveSourceRepairRequired(snapshot.sourceKind, snapshot.lastError);
   return snapshot;
 }
 
@@ -507,7 +644,11 @@ function cloneProfiles(profiles: ProfileApplicationProfileSnapshot[]): ProfileAp
         profiles[index].sourceDisplay,
         profiles[index].availability,
         profiles[index].updatedAt,
-        profiles[index].hasCurrentRevision
+        profiles[index].hasCurrentRevision,
+        {
+          sourceKind: (profiles[index] as ProfileApplicationProfileSnapshotValue).sourceKind,
+          lastError: (profiles[index] as ProfileApplicationProfileSnapshotValue).lastError
+        }
       )
     );
   }
@@ -516,4 +657,201 @@ function cloneProfiles(profiles: ProfileApplicationProfileSnapshot[]): ProfileAp
 
 function cloneError(error: ProfileApplicationErrorSnapshot): ProfileApplicationErrorSnapshot {
   return createSafeError(error.code, error.stage, error.technicalDetail);
+}
+
+function inferSourceKind(sourceDisplay: string): ProfileSourceKind {
+  const trimmed: string = sourceDisplay.trim();
+  if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
+    return 'REMOTE_URL';
+  }
+  return 'LOCAL_FILE';
+}
+
+function inferSafeRemoteSourceDisplay(sourceUrl: string): string {
+  const trimmed: string = sourceUrl.trim();
+  const schemeSeparator: number = trimmed.indexOf('://');
+  if (schemeSeparator <= 0) {
+    return '';
+  }
+  const scheme: string = trimmed.substring(0, schemeSeparator);
+  const authorityStart: number = schemeSeparator + 3;
+  let authorityEnd: number = trimmed.length;
+  for (let index: number = authorityStart; index < trimmed.length; index += 1) {
+    const character: string = trimmed[index];
+    if (character === '/' || character === '?' || character === '#') {
+      authorityEnd = index;
+      break;
+    }
+  }
+  const authority: string = trimmed.substring(authorityStart, authorityEnd);
+  return authority.length === 0 ? '' : `${scheme}://${authority}`;
+}
+
+function resolveSourceRepairRequired(
+  sourceKind: ProfileSourceKind,
+  lastError: ProfileApplicationErrorSnapshot | null
+): boolean {
+  if (sourceKind !== 'REMOTE_URL' || lastError === null) {
+    return false;
+  }
+  return lastError.code === 'SOURCE_SECRET_MISSING' || lastError.code === 'SOURCE_DECRYPT_FAILED';
+}
+
+function createProfileRecord(
+  profileId: string,
+  sourceKind: ProfileSourceKind = 'REMOTE_URL',
+  availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID' = 'VALID'
+): Profile {
+  return createProfile({
+    id: profileId,
+    name: `Profile ${profileId}`,
+    sourceKind,
+    sourceDisplay: sourceKind === 'REMOTE_URL'
+      ? `https://${profileId}.example.com/subscription.yaml`
+      : `${profileId}.yaml`,
+    sourceSecretRef: sourceKind === 'REMOTE_URL' ? `secret-${profileId}` : undefined,
+    currentRevision: availability === 'INVALID'
+      ? null
+      : createProfileRevision(`profiles/${profileId}.yaml`, repeatDigest(profileId), 256, '2026-08-11T12:30:00.000Z'),
+    failedCandidate: null,
+    availability,
+    lastError: null,
+    createdAt: '2026-08-11T12:30:00.000Z',
+    updatedAt: '2026-08-11T12:30:00.000Z',
+    lastSuccessfulUpdateAt: availability === 'INVALID' ? null : '2026-08-11T12:30:00.000Z'
+  });
+}
+
+function repeatDigest(seed: string): string {
+  let digest: string = '';
+  while (digest.length < 64) {
+    digest += seed;
+  }
+  return digest.substring(0, 64).replace(/[^0-9a-f]/gi, 'a');
+}
+
+function createSafeRemoteImportRecord(
+  sourceDisplay: string,
+  allowPlainHttp: boolean,
+  profileName: string
+): SafeRemoteImportRecord {
+  const record: SafeRemoteImportRecordValue = new SafeRemoteImportRecordValue();
+  record.sourceDisplay = sourceDisplay;
+  record.allowPlainHttp = allowPlainHttp;
+  record.profileName = profileName;
+  return record;
+}
+
+function createSafeRefreshRecord(profileId: string, allowPlainHttp: boolean): SafeRefreshRecord {
+  const record: SafeRefreshRecordValue = new SafeRefreshRecordValue();
+  record.profileId = profileId;
+  record.allowPlainHttp = allowPlainHttp;
+  return record;
+}
+
+function createSafeReplaceRecord(profileId: string, sourceDisplay: string): SafeReplaceRecord {
+  const record: SafeReplaceRecordValue = new SafeReplaceRecordValue();
+  record.profileId = profileId;
+  record.sourceDisplay = sourceDisplay;
+  return record;
+}
+
+function shiftOrDefault<T>(results: Promise<T>[], fallback: T): Promise<T> {
+  if (results.length === 0) {
+    return Promise.resolve(fallback);
+  }
+  const next: Promise<T> | undefined = results.shift();
+  return next === undefined ? Promise.resolve(fallback) : next;
+}
+
+export function createCancelledImportResult(): ImportProfileResult {
+  return {
+    kind: 'CANCELLED'
+  };
+}
+
+export function createCreatedImportResult(profileId: string, sourceKind: ProfileSourceKind = 'REMOTE_URL'): ImportProfileResult {
+  return {
+    kind: 'CREATED',
+    profile: createProfileRecord(profileId, sourceKind)
+  };
+}
+
+export function createFailedImportResult(
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string
+): ImportProfileResult {
+  return {
+    kind: 'FAILED',
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
+  };
+}
+
+export function createCancelledRefreshResult(): RefreshProfileResult {
+  return {
+    kind: 'CANCELLED'
+  };
+}
+
+export function createUpdatedRefreshResult(profileId: string, sourceKind: ProfileSourceKind = 'REMOTE_URL'): RefreshProfileResult {
+  return {
+    kind: 'UPDATED',
+    profile: createProfileRecord(profileId, sourceKind)
+  };
+}
+
+export function createFailedRefreshResult(
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string
+): RefreshProfileResult {
+  return {
+    kind: 'FAILED',
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
+  };
+}
+
+export function createEnabledResult(profileId: string): ManageEnableResult {
+  return {
+    kind: 'ENABLED',
+    profile: createProfileRecord(profileId, 'REMOTE_URL', 'VALID')
+  };
+}
+
+export function createDeletedResult(profileId: string): ManageDeleteResult {
+  return {
+    kind: 'DELETED',
+    profileId
+  };
+}
+
+export function createReplacedResult(profileId: string): ManageReplaceResult {
+  return {
+    kind: 'REPLACED',
+    profile: createProfileRecord(profileId, 'REMOTE_URL', 'VALID')
+  };
+}
+
+export function createFailedManageResult(
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string
+): ManageEnableResult {
+  return {
+    kind: 'FAILED',
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
+  };
 }

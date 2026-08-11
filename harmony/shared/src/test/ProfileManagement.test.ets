@@ -529,7 +529,8 @@ function buildProfileRecord(
   availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID',
   sourceKind: 'LOCAL_FILE' | 'REMOTE_URL',
   currentRevision: ProfileRevision | null,
-  sourceSecretRef?: string
+  sourceSecretRef?: string,
+  lastError: AppError | null = null
 ): Profile {
   return createProfile({
     id,
@@ -540,7 +541,7 @@ function buildProfileRecord(
     currentRevision,
     failedCandidate: null,
     availability,
-    lastError: null,
+    lastError,
     createdAt: buildTimestamp(2),
     updatedAt: buildTimestamp(3),
     lastSuccessfulUpdateAt: currentRevision === null ? null : buildTimestamp(3)
@@ -641,7 +642,8 @@ function createApplication(
   repository: FakeProfileRepository,
   contentStore: FakeProfileContentStore,
   secretStore: FakeSubscriptionSecretStore,
-  coreService: FakeCoreService
+  coreService: FakeCoreService,
+  sourceGateway?: FakeSourceGateway
 ): ProfileApplication {
   const runtimeCoordinator = createRuntimeCoordinator(
     repository,
@@ -654,7 +656,8 @@ function createApplication(
     contentStore,
     secretStore,
     coreService,
-    runtimeCoordinator
+    runtimeCoordinator,
+    sourceGateway
   );
 }
 
@@ -663,15 +666,16 @@ function createApplicationWithCoordinator(
   contentStore: FakeProfileContentStore,
   secretStore: FakeSubscriptionSecretStore,
   coreService: FakeCoreService,
-  runtimeCoordinator: LocalRuntimeCoordinator
+  runtimeCoordinator: LocalRuntimeCoordinator,
+  sourceGateway?: FakeSourceGateway
 ): ProfileApplication {
-  const sourceGateway = new FakeSourceGateway();
+  const gateway: FakeSourceGateway = sourceGateway ?? new FakeSourceGateway();
   const queue = new SerialCommandQueue();
   const commitService = createCommitService(repository, contentStore);
   const importUseCase = new ImportProfileUseCase({
     repository,
     contentStore,
-    sourceGateway,
+    sourceGateway: gateway,
     secretStore,
     coreService,
     clock: new FakeClock([buildTimestamp(15), buildTimestamp(16)]),
@@ -682,7 +686,7 @@ function createApplicationWithCoordinator(
   const refreshUseCase = new RefreshProfileUseCase({
     repository,
     contentStore,
-    sourceGateway,
+    sourceGateway: gateway,
     secretStore,
     coreService,
     clock: new FakeClock([buildTimestamp(17), buildTimestamp(18), buildTimestamp(19)]),
@@ -1216,6 +1220,69 @@ export default function profileManagementTestsuite() {
       expect(serialized.includes('https://origin.example.com/subscription.yaml')).assertFalse();
       expect(serialized.includes('profiles/alpha.yaml')).assertFalse();
       expect(serialized.includes('technicalDetail')).assertFalse();
+    });
+
+    it('applicationCurrentPublishesSafeSourceKindRepairFlagAndRedactedProfileError', 0, async () => {
+      const revision = buildRevision('repair');
+      const repairError = createAppError('PERSISTENCE', 'decrypt https://repair.example.com/path?token=secret failed near /private/cache', {
+        code: 'SOURCE_DECRYPT_FAILED',
+        retryable: false,
+        timestamp: buildTimestamp(4)
+      });
+      const repair = buildProfileRecord('repair', 'INVALID', 'REMOTE_URL', null, 'secret-repair', repairError);
+      const local = buildProfileRecord('local', 'VALID', 'LOCAL_FILE', revision);
+      const repository = new FakeProfileRepository([local, repair], 'local');
+      const contentStore = new FakeProfileContentStore();
+      const application = createApplication(
+        repository,
+        contentStore,
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService()
+      );
+
+      await application.initialize();
+      const snapshot: ProfileApplicationSnapshot = application.current();
+      const repairSnapshot: ProfileApplicationProfileSnapshot = snapshot.profiles[0].id === 'repair'
+        ? snapshot.profiles[0]
+        : snapshot.profiles[1];
+      const serialized = JSON.stringify(repairSnapshot);
+
+      expect(repairSnapshot.sourceKind).assertEqual('REMOTE_URL');
+      expect(repairSnapshot.sourceRepairRequired).assertTrue();
+      expect(repairSnapshot.lastError?.code).assertEqual('SOURCE_DECRYPT_FAILED');
+      expect(repairSnapshot.lastError?.technicalDetail.includes('https://repair.example.com')).assertTrue();
+      expect(serialized.includes('token=secret')).assertFalse();
+      expect(serialized.includes('/path')).assertFalse();
+      expect(serialized.includes('/private/cache')).assertFalse();
+    });
+
+    it('refreshRequiresPerCallPlainHttpConsentWithoutPersistingApproval', 0, async () => {
+      const revision = buildRevision('plain-http');
+      const profile = buildProfileRecord('plain-http', 'VALID', 'REMOTE_URL', revision, 'secret-plain');
+      const repository = new FakeProfileRepository([profile], 'plain-http');
+      const contentStore = new FakeProfileContentStore();
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-plain', 'http://legacy.example.com/subscription.yaml?token=secret');
+      const gateway = new FakeSourceGateway();
+      const application = createApplication(
+        repository,
+        contentStore,
+        secretStore,
+        new FakeCoreService(),
+        gateway
+      );
+
+      await application.initialize();
+      const first = await application.refresh('plain-http');
+      const second = await application.refresh('plain-http', true);
+      const third = await application.refresh('plain-http');
+
+      expect(first.kind).assertEqual('CANCELLED');
+      expect(second.kind).assertEqual('UPDATED');
+      expect(third.kind).assertEqual('CANCELLED');
+      expect(gateway.remoteCommands.length).assertEqual(1);
+      expect(gateway.remoteCommands[0].allowPlainHttp).assertTrue();
+      expect(gateway.remoteCommands[0].sourceDisplay).assertEqual('http://legacy.example.com');
     });
 
     it('applicationObserversSeeMutationAndRuntimeRefreshWhileCoreKeepsSingleSubscription', 0, async () => {

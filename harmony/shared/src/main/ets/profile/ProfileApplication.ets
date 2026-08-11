@@ -16,7 +16,7 @@ import type {
   RefreshProfileUseCase
 } from './RefreshProfileUseCase';
 import type { LocalAcquireCommand, ProfileRepository } from './ProfilePorts';
-import type { Profile, ProfileAvailability } from './ProfileModels';
+import type { Profile, ProfileAvailability, ProfileSourceKind } from './ProfileModels';
 
 export interface ProfileApplicationDependencies {
   importUseCase: ImportProfileUseCase;
@@ -39,9 +39,12 @@ export interface ProfileApplicationProfileSnapshot {
   id: string;
   name: string;
   sourceDisplay: string;
+  sourceKind: ProfileSourceKind;
   availability: ProfileAvailability;
   updatedAt: string;
   hasCurrentRevision: boolean;
+  sourceRepairRequired: boolean;
+  lastError: ProfileApplicationErrorSnapshot | null;
 }
 
 export interface ProfileApplicationRuntimeSnapshot {
@@ -161,7 +164,7 @@ export class ProfileApplication {
     return result;
   }
 
-  async refresh(profileId: string): Promise<RefreshProfileResult> {
+  async refresh(profileId: string, allowPlainHttp: boolean = false): Promise<RefreshProfileResult> {
     try {
       if (this.snapshot.status !== 'READY') {
         await this.initialize();
@@ -172,7 +175,8 @@ export class ProfileApplication {
       }
       try {
         const result: RefreshProfileResult = await this.refreshUseCase.execute({
-          profileId
+          profileId,
+          allowPlainHttp
         });
         await this.refreshSnapshotFromRepository(undefined);
         return result;
@@ -316,9 +320,12 @@ class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfil
   id: string = '';
   name: string = '';
   sourceDisplay: string = '';
+  sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   availability: ProfileAvailability = 'INVALID';
   updatedAt: string = '';
   hasCurrentRevision: boolean = false;
+  sourceRepairRequired: boolean = false;
+  lastError: ProfileApplicationErrorSnapshot | null = null;
 }
 
 class ProfileApplicationSnapshotValue implements ProfileApplicationSnapshot {
@@ -388,9 +395,12 @@ function createProfileApplicationProfileSnapshot(profile: Profile): ProfileAppli
   snapshot.id = profile.id;
   snapshot.name = profile.name;
   snapshot.sourceDisplay = profile.sourceDisplay;
+  snapshot.sourceKind = profile.sourceKind;
   snapshot.availability = profile.availability;
   snapshot.updatedAt = profile.updatedAt;
   snapshot.hasCurrentRevision = profile.currentRevision !== null;
+  snapshot.sourceRepairRequired = isSourceRepairRequired(profile);
+  snapshot.lastError = profile.lastError === null ? null : createProfileApplicationErrorSnapshot(profile.lastError);
   return snapshot;
 }
 
@@ -428,12 +438,22 @@ function cloneProfileApplicationProfiles(profiles: ProfileApplicationProfileSnap
     snapshot.id = source.id;
     snapshot.name = source.name;
     snapshot.sourceDisplay = source.sourceDisplay;
+    snapshot.sourceKind = source.sourceKind;
     snapshot.availability = source.availability;
     snapshot.updatedAt = source.updatedAt;
     snapshot.hasCurrentRevision = source.hasCurrentRevision;
+    snapshot.sourceRepairRequired = source.sourceRepairRequired;
+    snapshot.lastError = source.lastError === null ? null : cloneProfileApplicationErrorSnapshot(source.lastError);
     cloned.push(snapshot);
   }
   return cloned;
+}
+
+function isSourceRepairRequired(profile: Profile): boolean {
+  if (profile.sourceKind !== 'REMOTE_URL' || profile.lastError === null) {
+    return false;
+  }
+  return profile.lastError.code === 'SOURCE_SECRET_MISSING' || profile.lastError.code === 'SOURCE_DECRYPT_FAILED';
 }
 
 function cloneProfileApplicationRuntimeSnapshot(runtime: ProfileApplicationRuntimeSnapshot): ProfileApplicationRuntimeSnapshot {

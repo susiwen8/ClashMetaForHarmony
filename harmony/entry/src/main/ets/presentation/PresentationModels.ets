@@ -2,7 +2,8 @@ import type {
   AppErrorStage,
   ProfileApplicationErrorSnapshot,
   ProfileApplicationProfileSnapshot,
-  ProfileAvailability
+  ProfileAvailability,
+  ProfileSourceKind
 } from '@cmfa/shared';
 import { redactSensitiveText } from '@cmfa/shared';
 
@@ -48,6 +49,34 @@ export interface ProfilesViewState {
   error?: SafeErrorState;
 }
 
+export type ImportDraftIssue = 'REQUIRED' | 'TOO_LONG' | 'INVALID_URL' | 'INVALID_SCHEME';
+
+export interface ImportProfileViewState {
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR';
+  nameIssue?: 'REQUIRED' | 'TOO_LONG';
+  urlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
+  httpConfirmationHost?: string;
+  error?: SafeErrorState;
+}
+
+export interface ProfileDetailProfileState extends ProfileSummaryState {
+  sourceKind: ProfileSourceKind;
+  sourceRepairRequired: boolean;
+}
+
+export interface ProfileDetailViewState {
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'CONFIRMING_DELETE' | 'SUBMITTING' | 'COMPLETED' | 'ERROR';
+  profile?: ProfileDetailProfileState;
+  canEnable: boolean;
+  canRefresh: boolean;
+  canDelete: boolean;
+  canReplaceSubscriptionUrl: boolean;
+  sourceRepairRequired: boolean;
+  confirmingDelete: boolean;
+  httpConfirmationHost?: string;
+  error?: SafeErrorState;
+}
+
 class SafeErrorStateValue implements SafeErrorState {
   code: string = '';
   stage: AppErrorStage = 'PERSISTENCE';
@@ -87,6 +116,32 @@ class ProfileRowStateValue implements ProfileRowState {
 class ProfilesViewStateValue implements ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   profiles: ProfileRowState[] = [];
+  error?: SafeErrorState;
+}
+
+class ImportProfileViewStateValue implements ImportProfileViewState {
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR' = 'IDLE';
+  nameIssue?: 'REQUIRED' | 'TOO_LONG';
+  urlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
+  httpConfirmationHost?: string;
+  error?: SafeErrorState;
+}
+
+class ProfileDetailProfileStateValue extends ProfileSummaryStateValue implements ProfileDetailProfileState {
+  sourceKind: ProfileSourceKind = 'LOCAL_FILE';
+  sourceRepairRequired: boolean = false;
+}
+
+class ProfileDetailViewStateValue implements ProfileDetailViewState {
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'CONFIRMING_DELETE' | 'SUBMITTING' | 'COMPLETED' | 'ERROR' = 'IDLE';
+  profile?: ProfileDetailProfileState;
+  canEnable: boolean = false;
+  canRefresh: boolean = false;
+  canDelete: boolean = false;
+  canReplaceSubscriptionUrl: boolean = false;
+  sourceRepairRequired: boolean = false;
+  confirmingDelete: boolean = false;
+  httpConfirmationHost?: string;
   error?: SafeErrorState;
 }
 
@@ -219,6 +274,100 @@ export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewSt
   return createProfilesViewState(state.initialization, state.profiles, state.error);
 }
 
+export function createImportProfileViewState(
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR',
+  nameIssue: 'REQUIRED' | 'TOO_LONG' | undefined,
+  urlIssue: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME' | undefined,
+  httpConfirmationHost: string | undefined,
+  error: SafeErrorState | undefined
+): ImportProfileViewState {
+  const state: ImportProfileViewStateValue = new ImportProfileViewStateValue();
+  state.status = status;
+  state.nameIssue = nameIssue;
+  state.urlIssue = urlIssue;
+  state.httpConfirmationHost = httpConfirmationHost;
+  state.error = cloneSafeErrorState(error);
+  return state;
+}
+
+export function cloneImportProfileViewState(state: ImportProfileViewState): ImportProfileViewState {
+  return createImportProfileViewState(
+    state.status,
+    state.nameIssue,
+    state.urlIssue,
+    state.httpConfirmationHost,
+    state.error
+  );
+}
+
+export function createProfileDetailProfileState(profile: ProfileApplicationProfileSnapshot): ProfileDetailProfileState {
+  const state: ProfileDetailProfileStateValue = new ProfileDetailProfileStateValue();
+  state.id = profile.id;
+  state.name = profile.name;
+  state.sourceDisplay = sanitizePresentationSourceDisplay(profile.sourceDisplay);
+  state.availability = profile.availability;
+  state.updatedAt = profile.updatedAt;
+  state.sourceKind = profile.sourceKind;
+  state.sourceRepairRequired = profile.sourceRepairRequired;
+  return state;
+}
+
+export function cloneProfileDetailProfileState(profile: ProfileDetailProfileState | undefined): ProfileDetailProfileState | undefined {
+  if (profile === undefined) {
+    return undefined;
+  }
+  const state: ProfileDetailProfileStateValue = new ProfileDetailProfileStateValue();
+  state.id = profile.id;
+  state.name = profile.name;
+  state.sourceDisplay = profile.sourceDisplay;
+  state.availability = profile.availability;
+  state.updatedAt = profile.updatedAt;
+  state.sourceKind = profile.sourceKind;
+  state.sourceRepairRequired = profile.sourceRepairRequired;
+  return state;
+}
+
+export function createProfileDetailViewState(
+  status: 'IDLE' | 'CONFIRMING_HTTP' | 'CONFIRMING_DELETE' | 'SUBMITTING' | 'COMPLETED' | 'ERROR',
+  profile: ProfileDetailProfileState | undefined,
+  canEnable: boolean,
+  canRefresh: boolean,
+  canDelete: boolean,
+  canReplaceSubscriptionUrl: boolean,
+  sourceRepairRequired: boolean,
+  confirmingDelete: boolean,
+  httpConfirmationHost: string | undefined,
+  error: SafeErrorState | undefined
+): ProfileDetailViewState {
+  const state: ProfileDetailViewStateValue = new ProfileDetailViewStateValue();
+  state.status = status;
+  state.profile = cloneProfileDetailProfileState(profile);
+  state.canEnable = canEnable;
+  state.canRefresh = canRefresh;
+  state.canDelete = canDelete;
+  state.canReplaceSubscriptionUrl = canReplaceSubscriptionUrl;
+  state.sourceRepairRequired = sourceRepairRequired;
+  state.confirmingDelete = confirmingDelete;
+  state.httpConfirmationHost = httpConfirmationHost;
+  state.error = cloneSafeErrorState(error);
+  return state;
+}
+
+export function cloneProfileDetailViewState(state: ProfileDetailViewState): ProfileDetailViewState {
+  return createProfileDetailViewState(
+    state.status,
+    state.profile,
+    state.canEnable,
+    state.canRefresh,
+    state.canDelete,
+    state.canReplaceSubscriptionUrl,
+    state.sourceRepairRequired,
+    state.confirmingDelete,
+    state.httpConfirmationHost,
+    state.error
+  );
+}
+
 export function sanitizePresentationSourceDisplay(sourceDisplay: string): string {
   const trimmed: string = sourceDisplay.trim();
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
@@ -257,4 +406,79 @@ export function areProfileActionsLocked(
   runtime: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR'
 ): boolean {
   return runtime === 'STARTING' || runtime === 'RUNNING' || runtime === 'STOPPING';
+}
+
+export interface ParsedRemoteSourceInput {
+  sourceUrl: string;
+  sourceDisplay: string;
+  host: string;
+  plainHttp: boolean;
+}
+
+class ParsedRemoteSourceInputValue implements ParsedRemoteSourceInput {
+  sourceUrl: string = '';
+  sourceDisplay: string = '';
+  host: string = '';
+  plainHttp: boolean = false;
+}
+
+export function resolveNameIssue(rawName: string, required: boolean): 'REQUIRED' | 'TOO_LONG' | undefined {
+  const trimmed: string = rawName.trim();
+  if (trimmed.length === 0) {
+    return required ? 'REQUIRED' : undefined;
+  }
+  if (trimmed.length > 80) {
+    return 'TOO_LONG';
+  }
+  return undefined;
+}
+
+export function parseRemoteSourceInput(rawUrl: string): ParsedRemoteSourceInput | undefined {
+  const trimmed: string = rawUrl.trim();
+  if (trimmed.length === 0) {
+    return undefined;
+  }
+  const schemeSeparator: number = trimmed.indexOf('://');
+  if (schemeSeparator <= 0) {
+    return undefined;
+  }
+  const scheme: string = trimmed.substring(0, schemeSeparator);
+  if (scheme !== 'http' && scheme !== 'https') {
+    return undefined;
+  }
+  const authorityStart: number = schemeSeparator + 3;
+  let authorityEnd: number = trimmed.length;
+  for (let index: number = authorityStart; index < trimmed.length; index += 1) {
+    const character: string = trimmed[index];
+    if (character === '/' || character === '?' || character === '#') {
+      authorityEnd = index;
+      break;
+    }
+  }
+  const authority: string = trimmed.substring(authorityStart, authorityEnd).trim();
+  if (authority.length === 0 || authority.indexOf(' ') >= 0) {
+    return undefined;
+  }
+  const parsed: ParsedRemoteSourceInputValue = new ParsedRemoteSourceInputValue();
+  parsed.sourceUrl = trimmed;
+  parsed.sourceDisplay = `${scheme}://${authority}`;
+  parsed.host = sanitizePresentationSourceDisplay(parsed.sourceDisplay);
+  parsed.plainHttp = scheme === 'http';
+  return parsed;
+}
+
+export function resolveRemoteUrlIssue(rawUrl: string): 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME' | undefined {
+  const trimmed: string = rawUrl.trim();
+  if (trimmed.length === 0) {
+    return 'REQUIRED';
+  }
+  const schemeSeparator: number = trimmed.indexOf('://');
+  if (schemeSeparator <= 0) {
+    return 'INVALID_URL';
+  }
+  const scheme: string = trimmed.substring(0, schemeSeparator);
+  if (scheme !== 'http' && scheme !== 'https') {
+    return 'INVALID_SCHEME';
+  }
+  return parseRemoteSourceInput(trimmed) === undefined ? 'INVALID_URL' : undefined;
 }
