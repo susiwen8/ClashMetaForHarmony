@@ -208,8 +208,9 @@ export class HuksSubscriptionSecretStore implements SubscriptionSecretStore {
       const buffer = new ArrayBuffer(size);
       let bytesRead: number = 0;
       while (bytesRead < size) {
-        const readNow: number = await this.fileDriver.read(fileToken.fd, buffer, { offset: bytesRead, length: size - bytesRead });
-        if (readNow <= 0) {
+        const remaining: number = size - bytesRead;
+        const readNow: number = await this.fileDriver.read(fileToken.fd, buffer, { offset: bytesRead, length: remaining });
+        if (readNow <= 0 || readNow > remaining) {
           pendingFailure = new SecretStoreFailure('DECRYPT');
           break;
         }

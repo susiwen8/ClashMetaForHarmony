@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import { isSubscriptionSecretError } from '@cmfa/shared';
 import { HarmonyHuksDriver } from '../main/ets/secrets/HarmonyHuksDriver';
 import {
+  type HuksEncryptedPayload,
   type HuksOperations,
   type HuksOptionsContract,
   type HuksParamContract,
@@ -33,6 +34,25 @@ class RecordedUpdateCall {
     this.handle = handle;
     this.inDataLength = inDataLength;
     this.tokenLength = tokenLength;
+  }
+}
+
+class DeferredBox<T> {
+  readonly promise: Promise<T>;
+  private readonly resolveRef: (value: T) => void;
+
+  constructor() {
+    let resolveLocal: ((value: T) => void) | undefined = undefined;
+    this.promise = new Promise<T>((resolve) => {
+      resolveLocal = resolve;
+    });
+    this.resolveRef = (value: T) => {
+      resolveLocal?.(value);
+    };
+  }
+
+  resolve(value: T): void {
+    this.resolveRef(value);
   }
 }
 
@@ -140,6 +160,58 @@ class ScriptedSessionOperations implements HuksOperations {
   }
 }
 
+class KeyLifecycleOperations implements HuksOperations {
+  isKeyItemExistCallCount: number = 0;
+  generateKeyItemCallCount: number = 0;
+  private readonly existenceSequence: boolean[];
+  private readonly generateDeferred?: DeferredBox<void>;
+
+  constructor(existenceSequence: boolean[], generateDeferred?: DeferredBox<void>) {
+    this.existenceSequence = existenceSequence.slice();
+    this.generateDeferred = generateDeferred;
+  }
+
+  async isKeyItemExist(_: string, __: HuksOptionsContract): Promise<boolean> {
+    this.isKeyItemExistCallCount += 1;
+    if (this.existenceSequence.length === 0) {
+      return true;
+    }
+    return this.existenceSequence.shift() ?? true;
+  }
+
+  async generateKeyItem(_: string, __: HuksOptionsContract): Promise<void> {
+    this.generateKeyItemCallCount += 1;
+    if (this.generateDeferred !== undefined) {
+      await this.generateDeferred.promise;
+    }
+  }
+
+  async initSession(_: string, __: HuksOptionsContract): Promise<SessionHandleRecord> {
+    return new SessionHandleRecord(7);
+  }
+
+  async updateSession(_: number, options: HuksOptionsContract, token?: Uint8Array): Promise<ReturnResultRecord> {
+    void token;
+    return new ReturnResultRecord(options.inData);
+  }
+
+  async finishSession(_: number, __: HuksOptionsContract): Promise<ReturnResultRecord> {
+    const ciphertext = utf8Bytes('cipher');
+    const tag = utf8Bytes('tag-16-byte-long');
+    const merged = new Uint8Array(ciphertext.length + tag.length);
+    for (let index = 0; index < ciphertext.length; index += 1) {
+      merged[index] = ciphertext[index];
+    }
+    for (let index = 0; index < tag.length; index += 1) {
+      merged[ciphertext.length + index] = tag[index];
+    }
+    return new ReturnResultRecord(merged);
+  }
+
+  async abortSession(_: number, __: HuksOptionsContract): Promise<void> {
+  }
+}
+
 class ScriptedNonceSource implements HuksRandomSource {
   private readonly nonce: Uint8Array;
 
@@ -202,6 +274,43 @@ export default function huksSubscriptionSecretStoreTestsuite() {
       expect(operations.updateCalls[1].inDataLength).assertEqual(encrypted.ciphertext.length);
       expect(operations.updateCalls[1].tokenLength).assertEqual(0);
       expect(decrypted.length).assertEqual(encrypted.ciphertext.length);
+    });
+
+    it('createsTheMasterKeyOnFirstUseOnlyOnce', 0, async () => {
+      const operations = new KeyLifecycleOperations([false]);
+      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
+
+      await driver.encrypt(utf8Bytes('hello'));
+
+      expect(operations.isKeyItemExistCallCount).assertEqual(1);
+      expect(operations.generateKeyItemCallCount).assertEqual(1);
+    });
+
+    it('reusesAnExistingMasterKeyWithoutGeneratingAnotherOne', 0, async () => {
+      const operations = new KeyLifecycleOperations([true]);
+      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
+
+      await driver.encrypt(utf8Bytes('hello'));
+      await driver.encrypt(utf8Bytes('world'));
+
+      expect(operations.isKeyItemExistCallCount).assertEqual(1);
+      expect(operations.generateKeyItemCallCount).assertEqual(0);
+    });
+
+    it('memoizesConcurrentFirstUseSoGenerateKeyItemRunsOnlyOnce', 0, async () => {
+      const deferred = new DeferredBox<void>();
+      const operations = new KeyLifecycleOperations([false], deferred);
+      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
+
+      const firstEncrypt: Promise<HuksEncryptedPayload> = driver.encrypt(utf8Bytes('hello'));
+      const secondEncrypt: Promise<HuksEncryptedPayload> = driver.encrypt(utf8Bytes('world'));
+      await Promise.resolve();
+      deferred.resolve(undefined);
+      await firstEncrypt;
+      await secondEncrypt;
+
+      expect(operations.isKeyItemExistCallCount).assertEqual(1);
+      expect(operations.generateKeyItemCallCount).assertEqual(1);
     });
   });
 
@@ -293,6 +402,33 @@ export default function huksSubscriptionSecretStoreTestsuite() {
         'SOURCE_SECRET_MISSING',
         ['missing-secret', PLAINTEXT_URL]
       );
+    });
+
+    it('failsClosedWhenReadReportsMoreBytesThanTheRemainingEnvelopeLength', 0, async () => {
+      const driver = new DeterministicHuksDriver();
+      driver.seedNonce(utf8Bytes('nonce-value1'));
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      const store = new HuksSubscriptionSecretStore(
+        driver,
+        fileDriver,
+        FILES_DIR,
+        new SequenceIdGenerator(['secret-alpha', 'tmp-a'])
+      );
+
+      const ref = await store.encrypt(PLAINTEXT_URL);
+      const envelopePath: string = `${SECRETS_DIR}/${ref}.json`;
+      const envelopeSize: number = fileDriver.readFileBytes(envelopePath).length;
+      fileDriver.scriptReadCounts(envelopePath, [envelopeSize + 1]);
+
+      await expectSecretFailure(
+        async () => {
+          await store.decrypt(ref);
+        },
+        'SOURCE_DECRYPT_FAILED',
+        [ref, envelopePath, PLAINTEXT_URL]
+      );
+      expect(fileDriver.countCloses(envelopePath)).assertEqual(1);
     });
 
     it('removeIsIdempotentAndReconcileCleansManagedTempsAndUnreferencedEnvelopesOnly', 0, async () => {

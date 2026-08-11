@@ -579,6 +579,7 @@ export class FakeFileDriver implements FileDriver {
   private readonly entries: Map<string, FakeFileEntry> = new Map<string, FakeFileEntry>();
   private readonly handles: Map<number, FakeOpenHandle> = new Map<number, FakeOpenHandle>();
   private readonly scriptedFailures: Map<string, ScriptedPathFailure[]> = new Map<string, ScriptedPathFailure[]>();
+  private readonly scriptedReadCounts: Map<string, number[]> = new Map<string, number[]>();
   private readonly scriptedWriteCounts: Map<string, number[]> = new Map<string, number[]>();
   private nextFd: number = 10;
 
@@ -635,6 +636,10 @@ export class FakeFileDriver implements FileDriver {
 
   scriptWriteCounts(target: string, counts: number[]): void {
     this.scriptedWriteCounts.set(normalizeFakePath(target), counts.slice());
+  }
+
+  scriptReadCounts(target: string, counts: number[]): void {
+    this.scriptedReadCounts.set(normalizeFakePath(target), counts.slice());
   }
 
   async mkdir(path: string, recursive: boolean): Promise<void> {
@@ -767,9 +772,11 @@ export class FakeFileDriver implements FileDriver {
     const start: number = handle.cursor + offset;
     const requested: number = options?.length ?? buffer.byteLength;
     const available: number = Math.max(0, entry.byteLength - start);
-    const count: number = Math.min(requested, available);
+    const scriptedCount: number | undefined = this.nextScriptedReadCount(handle.path);
+    const count: number = scriptedCount === undefined ? Math.min(requested, available) : scriptedCount;
+    const safeCopyCount: number = Math.min(count, requested, available);
     const target = new Uint8Array(buffer);
-    for (let index = 0; index < count; index += 1) {
+    for (let index = 0; index < safeCopyCount; index += 1) {
       target[index] = entry.bytes[start + index];
     }
     handle.cursor = start + count;
@@ -910,6 +917,18 @@ export class FakeFileDriver implements FileDriver {
     const next: number | undefined = queue.shift();
     if (queue.length === 0) {
       this.scriptedWriteCounts.delete(path);
+    }
+    return next;
+  }
+
+  private nextScriptedReadCount(path: string): number | undefined {
+    const queue: number[] | undefined = this.scriptedReadCounts.get(path);
+    if (queue === undefined || queue.length === 0) {
+      return undefined;
+    }
+    const next: number | undefined = queue.shift();
+    if (queue.length === 0) {
+      this.scriptedReadCounts.delete(path);
     }
     return next;
   }
