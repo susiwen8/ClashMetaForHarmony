@@ -24,6 +24,7 @@ import {
   type LocalProfileAcquisition,
   type ManageDeleteResult,
   type ManageEnableResult,
+  type ManageProfileFailedResult,
   type ManageReplaceResult,
   type ImportProfileResult,
   type LocalRuntimeStartResult,
@@ -828,7 +829,7 @@ export function createFailedManageResult(
   code: string,
   stage: AppErrorStage,
   technicalDetail: string
-): ManageEnableResult {
+): ManageProfileFailedResult {
   return {
     kind: 'FAILED',
     error: createAppError(stage, technicalDetail, {

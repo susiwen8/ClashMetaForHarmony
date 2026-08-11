@@ -368,6 +368,9 @@ function resolveDetailError(
   profile: ProfileApplicationProfileSnapshot | undefined,
   fallbackError: SafeErrorState | undefined
 ): SafeErrorState | undefined {
+  if (fallbackError !== undefined) {
+    return fallbackError;
+  }
   if (snapshot.error !== null) {
     return createSafeErrorState(snapshot.error);
   }

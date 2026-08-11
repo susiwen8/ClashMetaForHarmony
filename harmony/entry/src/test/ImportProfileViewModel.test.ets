@@ -127,6 +127,72 @@ export default function importProfileViewModelTestsuite() {
       assertNoPlaintextLeak(serialize(viewModel.current()));
     });
 
+    it('changingNameCancelsPendingPlainHttpConfirmationUntilResubmitted', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      application.queueImportUrlResult(createCreatedImportResult('updated-name-created'));
+      const viewModel = new ImportProfileViewModel(application);
+      const intents: ImportNavigationIntent[] = [];
+      viewModel.subscribeNavigation((intent: ImportNavigationIntent): void => {
+        intents.push(intent);
+      });
+
+      viewModel.updateNameDraft('Original Name');
+      viewModel.updateUrlDraft('http://legacy.example.com/subscription.yaml');
+      await viewModel.requestImportUrl();
+      expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
+
+      viewModel.updateNameDraft('Updated Name');
+      expect(viewModel.current().status).assertEqual('IDLE');
+      expect(viewModel.current().httpConfirmationHost).assertEqual(undefined);
+      const cancelledState: string = serialize(viewModel.current());
+
+      await viewModel.confirmPlainHttpImport();
+      expect(serialize(viewModel.current())).assertEqual(cancelledState);
+      expect(application.importUrlCommands.length).assertEqual(0);
+      expect(intents.length).assertEqual(0);
+
+      await viewModel.requestImportUrl();
+      expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
+      await viewModel.confirmPlainHttpImport();
+      expect(application.importUrlCommands.length).assertEqual(1);
+      expect(application.importUrlCommands[0].profileName).assertEqual('Updated Name');
+      expect(intents.length).assertEqual(1);
+    });
+
+    it('changingUrlCancelsPendingPlainHttpConfirmationUntilResubmitted', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      application.queueImportUrlResult(createCreatedImportResult('updated-url-created'));
+      const viewModel = new ImportProfileViewModel(application);
+      const intents: ImportNavigationIntent[] = [];
+      viewModel.subscribeNavigation((intent: ImportNavigationIntent): void => {
+        intents.push(intent);
+      });
+
+      viewModel.updateNameDraft('Plain HTTP');
+      viewModel.updateUrlDraft('http://legacy.example.com/subscription.yaml');
+      await viewModel.requestImportUrl();
+      expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com');
+
+      viewModel.updateUrlDraft('http://next.example.com/subscription.yaml');
+      expect(viewModel.current().status).assertEqual('IDLE');
+      expect(viewModel.current().httpConfirmationHost).assertEqual(undefined);
+      const cancelledState: string = serialize(viewModel.current());
+
+      await viewModel.confirmPlainHttpImport();
+      expect(serialize(viewModel.current())).assertEqual(cancelledState);
+      expect(application.importUrlCommands.length).assertEqual(0);
+      expect(intents.length).assertEqual(0);
+
+      await viewModel.requestImportUrl();
+      expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('next.example.com');
+      await viewModel.confirmPlainHttpImport();
+      expect(application.importUrlCommands.length).assertEqual(1);
+      expect(application.importUrlCommands[0].sourceDisplay).assertEqual('http://next.example.com');
+      expect(intents.length).assertEqual(1);
+    });
+
     it('ignoresRepeatedConfirmWhilePlainHttpImportIsInFlight', 0, async () => {
       const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
       const deferred = new DeferredResult<ImportProfileResult>();

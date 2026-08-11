@@ -90,18 +90,30 @@ export class ImportProfileViewModel {
   }
 
   updateNameDraft(value: string): void {
+    const draftChanged: boolean = this.nameDraft !== value;
     this.nameDraft = value;
     this.nameIssue = undefined;
     this.clearIdleError();
+    if (draftChanged && this.pendingHttpImport !== undefined) {
+      this.clearPendingHttpConfirmation();
+      this.publishCurrent('IDLE');
+      return;
+    }
     if (this.state.status !== 'SUBMITTING') {
       this.publishCurrent(this.pendingHttpImport === undefined ? 'IDLE' : 'CONFIRMING_HTTP');
     }
   }
 
   updateUrlDraft(value: string): void {
+    const draftChanged: boolean = this.urlDraft !== value;
     this.urlDraft = value;
     this.urlIssue = undefined;
     this.clearIdleError();
+    if (draftChanged && this.pendingHttpImport !== undefined) {
+      this.clearPendingHttpConfirmation();
+      this.publishCurrent('IDLE');
+      return;
+    }
     if (this.state.status !== 'SUBMITTING') {
       this.publishCurrent(this.pendingHttpImport === undefined ? 'IDLE' : 'CONFIRMING_HTTP');
     }
@@ -160,9 +172,7 @@ export class ImportProfileViewModel {
     if (this.pendingHttpImport === undefined) {
       return;
     }
-    this.pendingHttpImport = undefined;
-    this.pendingHttpName = undefined;
-    this.httpConfirmationHost = undefined;
+    this.clearPendingHttpConfirmation();
     this.urlDraft = '';
     this.error = undefined;
     this.publishCurrent('IDLE');
@@ -239,6 +249,12 @@ export class ImportProfileViewModel {
     this.urlIssue = undefined;
     this.publishCurrent('SUBMITTING');
     return this.commandToken;
+  }
+
+  private clearPendingHttpConfirmation(): void {
+    this.pendingHttpImport = undefined;
+    this.pendingHttpName = undefined;
+    this.httpConfirmationHost = undefined;
   }
 
   private clearIdleError(): void {

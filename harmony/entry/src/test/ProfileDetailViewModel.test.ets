@@ -108,7 +108,7 @@ export default function profileDetailViewModelTestsuite() {
       deferred.resolve(createFailedManageResult('CMFA_CORE_LOAD', 'CORE_LOAD', 'core load failed for opaque://load.example.com'));
       await command;
 
-      expect(viewModel.current().error?.technicalDetail).assertEqual('core load failed for load.example.com');
+      expect(viewModel.current().error?.technicalDetail).assertEqual('core load failed for opaque://load.example.com');
       assertNoUnsafeDetailLeak(serialize(viewModel.current()));
     });
 
@@ -250,6 +250,32 @@ export default function profileDetailViewModelTestsuite() {
       expect(application.replaceCommands[0].profileId).assertEqual('repair');
       expect(application.replaceCommands[0].sourceDisplay.includes('token=secret')).assertFalse();
       expect(viewModel.current().status).assertEqual('COMPLETED');
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
+    });
+
+    it('replaceFailurePrefersCurrentFallbackErrorOverHistoricalRepairError', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('repair', 'Repair', 'https://repair.example.com', 'INVALID', '2026-08-11T12:31:00.000Z', false, {
+              sourceKind: 'REMOTE_URL',
+              lastError: createSafeError('SOURCE_SECRET_MISSING', 'PERSISTENCE', 'historical repair error')
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      application.queueReplaceResult(createFailedManageResult('CMFA_IMPORT', 'IMPORT', 'current replace failed for repair.example.com'));
+      const viewModel = new ProfileDetailViewModel(application, 'repair');
+
+      viewModel.updateReplacementUrlDraft('https://repair.example.com/next.yaml');
+      await viewModel.requestReplaceSubscriptionUrl();
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().error?.technicalDetail).assertEqual('current replace failed for repair.example.com');
+      expect(viewModel.current().error?.technicalDetail === 'historical repair error').assertFalse();
       assertNoUnsafeDetailLeak(serialize(viewModel.current()));
     });
 
