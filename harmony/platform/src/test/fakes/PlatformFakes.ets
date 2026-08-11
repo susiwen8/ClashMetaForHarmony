@@ -294,6 +294,19 @@ export function assertAppErrorShape(error: Object, expectedDetailFragment: strin
   }
 }
 
+export function assertAppErrorExactDetail(error: Object, expectedDetail: string): void {
+  const record = error as PersistenceFailureShape;
+  if (record.stage !== 'PERSISTENCE') {
+    throw new FixtureAssertionError(`Expected PERSISTENCE stage but received ${JSON.stringify(record)}`);
+  }
+  if (record.code !== 'CMFA_PERSISTENCE_FAILED') {
+    throw new FixtureAssertionError(`Expected CMFA_PERSISTENCE_FAILED but received ${JSON.stringify(record)}`);
+  }
+  if (record.technicalDetail !== expectedDetail) {
+    throw new FixtureAssertionError(`Expected detail ${expectedDetail} but received ${record.technicalDetail}`);
+  }
+}
+
 export function assertNoLeak(text: string, forbiddenFragments: string[]): void {
   for (let index = 0; index < forbiddenFragments.length; index += 1) {
     if (text.includes(forbiddenFragments[index])) {

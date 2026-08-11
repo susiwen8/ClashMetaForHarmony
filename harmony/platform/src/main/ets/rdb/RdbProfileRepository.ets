@@ -23,33 +23,11 @@ class PlatformPersistenceFailure extends Error {
 
 const SCHEMA_VERSION = 1;
 
-function extractSqlKeyword(detail: string): string | null {
-  const normalized = detail.trim().toUpperCase();
-  const keywords: string[] = ['SELECT', 'INSERT', 'UPDATE', 'DELETE', 'REPLACE'];
-  for (let index = 0; index < keywords.length; index += 1) {
-    if (normalized.startsWith(keywords[index])) {
-      return keywords[index];
-    }
-  }
-  return null;
-}
-
-function sanitizePersistenceDetail(detail: string): string {
-  const sqlKeyword: string | null = extractSqlKeyword(detail);
-  if (sqlKeyword !== null) {
-    return `${sqlKeyword} statement failed.`;
-  }
-  return detail;
-}
-
 function toPersistenceFailure(error: Object | undefined, fallback: string): PlatformPersistenceFailure {
   if (error instanceof PlatformPersistenceFailure) {
     return error;
   }
-  const detail: string = sanitizePersistenceDetail(
-    error instanceof Error && error.message.trim().length > 0 ? error.message : fallback
-  );
-  return new PlatformPersistenceFailure(createAppError('PERSISTENCE', detail, {
+  return new PlatformPersistenceFailure(createAppError('PERSISTENCE', fallback, {
     code: 'CMFA_PERSISTENCE_FAILED',
     timestamp: '2026-08-11T00:00:00.000Z',
     retryable: false

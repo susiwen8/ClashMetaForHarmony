@@ -3,6 +3,7 @@ import type { Profile } from '@cmfa/shared';
 import { RdbProfileRepository } from '../main/ets/rdb/RdbProfileRepository';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import {
+  assertAppErrorExactDetail,
   RecordingRdbDriver,
   assertAppErrorShape,
   assertNoLeak,
@@ -19,12 +20,34 @@ class PersistenceErrorRecord {
   }
 }
 
+function buildUnsafePayload(prefix: string): string {
+  return `${prefix} https://user:secret@remote.example.com/profile.yaml?token=abc123 ` +
+    `row={"id":"remote-redact","source":"https://remote.example.com/path"} ` +
+    `yaml=proxy-providers:\\n  secret: abc123 ` +
+    `path=/Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/profile.yaml`;
+}
+
 async function expectPersistenceFailure(operation: () => Promise<void>, expectedDetail: string, forbidden: string[]): Promise<void> {
   try {
     await operation();
     expect(false).assertTrue();
   } catch (error) {
     assertAppErrorShape(error as Object, expectedDetail);
+    const detail: string = (error as PersistenceErrorRecord).technicalDetail;
+    assertNoLeak(detail, forbidden);
+  }
+}
+
+async function expectSafeFallbackFailure(
+  operation: () => Promise<void>,
+  expectedDetail: string,
+  forbidden: string[]
+): Promise<void> {
+  try {
+    await operation();
+    expect(false).assertTrue();
+  } catch (error) {
+    assertAppErrorExactDetail(error as Object, expectedDetail);
     const detail: string = (error as PersistenceErrorRecord).technicalDetail;
     assertNoLeak(detail, forbidden);
   }
@@ -114,12 +137,12 @@ export default function rdbProfileRepositoryTestsuite() {
       corruptDriver.seedRow(corruptRow);
       const corruptRepository = new RdbProfileRepository(corruptDriver);
 
-      await expectPersistenceFailure(
+      await expectSafeFallbackFailure(
         async () => {
           await corruptRepository.getActiveId();
         },
-        'sandbox-relative',
-        ['/Users/susiwen8/Documents/secret.yaml', 'secret.yaml']
+        'Profile persistence initialization failed.',
+        ['/Users/susiwen8/Documents/secret.yaml', 'secret.yaml', 'sandbox-relative']
       );
     });
 
@@ -143,11 +166,11 @@ export default function rdbProfileRepositoryTestsuite() {
       clearDriver.injectFailure('clearActiveIfMatching:delete-clear', new Error('clear failed https://user:secret@remote.example.com/delete-clear'));
       const clearRepository = new RdbProfileRepository(clearDriver);
 
-      await expectPersistenceFailure(
+      await expectSafeFallbackFailure(
         async () => {
           await clearRepository.deleteAndClearActive('delete-clear');
         },
-        'clear failed',
+        'Profile delete failed.',
         ['https://user:secret@remote.example.com/delete-clear', 'delete-clear']
       );
       expect((await clearRepository.get('delete-clear'))?.id).assertEqual('delete-clear');
@@ -163,11 +186,11 @@ export default function rdbProfileRepositoryTestsuite() {
       commitDriver.injectFailure('commit', new Error('commit body leaked /Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/tx-commit.yaml'));
       const commitRepository = new RdbProfileRepository(commitDriver);
 
-      await expectPersistenceFailure(
+      await expectSafeFallbackFailure(
         async () => {
           await commitRepository.deleteAndClearActive('tx-commit');
         },
-        'commit body leaked',
+        'Profile delete failed.',
         ['/Users/susiwen8/Documents/github/ClashMetaForAndroid/profiles/tx-commit.yaml', 'tx-commit.yaml']
       );
       expect((await commitRepository.get('tx-commit'))?.id).assertEqual('tx-commit');
@@ -181,12 +204,12 @@ export default function rdbProfileRepositoryTestsuite() {
       driver.seedListRows([row]);
       const repository = new RdbProfileRepository(driver);
 
-      await expectPersistenceFailure(
+      await expectSafeFallbackFailure(
         async () => {
           await repository.list();
         },
-        'yaml',
-        ['abc123', 'https://user:secret@remote.example.com/profile.yaml?token=abc123', 'profile.yaml', 'token=abc123']
+        'Profile list failed.',
+        ['abc123', 'https://user:secret@remote.example.com/profile.yaml?token=abc123', 'profile.yaml', 'token=abc123', 'yaml']
       );
 
       const driverFailure = new RecordingRdbDriver();
@@ -196,12 +219,100 @@ export default function rdbProfileRepositoryTestsuite() {
       );
       const failureRepository = new RdbProfileRepository(driverFailure);
 
-      await expectPersistenceFailure(
+      await expectSafeFallbackFailure(
         async () => {
           await failureRepository.list();
         },
-        'SELECT',
-        ['abc123', 'id="remote-redact"', 'yaml']
+        'Profile list failed.',
+        ['abc123', 'id="remote-redact"', 'yaml', 'SELECT']
+      );
+    });
+
+    it('usesSafeFallbackForDriverListFailuresInsteadOfUntrustedMessages', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.injectFailure('listProfileRows', new Error(buildUnsafePayload('driver list failed')));
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.list();
+        },
+        'Profile list failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+    });
+
+    it('usesSafeFallbackForDriverGetFailuresInsteadOfUntrustedMessages', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.injectFailure('getProfileRow:remote-get', new Error(buildUnsafePayload('driver get failed')));
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.get('remote-get');
+        },
+        'Profile lookup failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+    });
+
+    it('usesSafeFallbackForDriverSaveFailuresInsteadOfUntrustedMessages', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.injectFailure('upsertProfileRow:remote-save', new Error(buildUnsafePayload('driver save failed')));
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.save(buildProfile('remote-save', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-save/current.yaml'));
+        },
+        'Profile save failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+    });
+
+    it('usesSafeFallbackForInitializationFailuresInsteadOfUntrustedMessages', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.injectFailure('initialize', new Error(buildUnsafePayload('driver init failed')));
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.list();
+        },
+        'Profile persistence initialization failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+    });
+
+    it('usesSafeFallbackForTransactionFailuresInsteadOfUntrustedMessages', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedActiveId('remote-delete');
+      driver.seedRow(encodeProfileRow(buildProfile('remote-delete', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-delete/current.yaml')));
+      driver.injectFailure('clearActiveIfMatching:remote-delete', new Error(buildUnsafePayload('driver delete failed')));
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.deleteAndClearActive('remote-delete');
+        },
+        'Profile delete failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+    });
+
+    it('usesSafeFallbackForDecodeFailuresInsteadOfPropagatingCorruptPayloadDetails', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      const row = cloneDurableRow(encodeProfileRow(buildProfile('remote-decode', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/remote-decode/current.yaml')));
+      row.lastErrorJson = '{"stage":"DOWNLOAD","code":"CMFA_REMOTE_TIMEOUT","userMessageResource":"error.remote.timeout","technicalDetail":"yaml: secret: abc123\\nurl: https://user:secret@remote.example.com/profile.yaml?token=abc123","timestamp":"2026-08-07T00:00:00.000Z","retryable":true}';
+      driver.seedListRows([row]);
+      const repository = new RdbProfileRepository(driver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.list();
+        },
+        'Profile list failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
       );
     });
   });

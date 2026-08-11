@@ -112,7 +112,10 @@ export class HarmonyRdbDriver implements RdbDriver {
 
   async listProfileRows(): Promise<DurableProfileRow[]> {
     const store = await this.getStore();
-    return await this.queryRows(store, `SELECT ${PROFILE_COLUMNS} FROM profiles`);
+    return await this.queryRows(
+      store,
+      `SELECT ${PROFILE_COLUMNS} FROM profiles ORDER BY updated_at DESC, id ASC`
+    );
   }
 
   async getProfileRow(_id: string): Promise<DurableProfileRow | undefined> {
