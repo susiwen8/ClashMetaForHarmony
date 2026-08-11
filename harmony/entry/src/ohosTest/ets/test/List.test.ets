@@ -18,7 +18,7 @@ export default function testsuite(): void {
     it('flushes evidence and releases the Task 14 completion barrier', 0, async () => {
       let finalizationError: Error | undefined = undefined;
       try {
-        if (getEvidence().failures.length === 0) {
+        if (getEvidence().failures.length === 0 && getEvidence().cleanup === 'pass') {
           setEvidenceStatus('PASS');
         } else {
           setEvidenceStatus('FAIL');

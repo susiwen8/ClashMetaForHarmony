@@ -19,8 +19,10 @@ import {
   readUtf8File,
   removeIfPresent,
   sanitizeEvidenceText,
+  setEvidenceCleanupStatus,
   setEvidenceStatus,
   stageRawfileToSandbox,
+  TASK14_PLATFORM_ADAPTERS_PASS_CHECK,
   writeUtf8File
 } from '../testability/TestAbility';
 
@@ -199,7 +201,7 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
           'SOURCE_SECRET_MISSING'
         );
 
-        appendEvidenceCheck(`${SUITE_NAME}: persistence/reconcile/redaction pass`);
+        appendEvidenceCheck(TASK14_PLATFORM_ADAPTERS_PASS_CHECK);
       } catch (error) {
         setEvidenceStatus('FAIL');
         appendEvidenceFailure(SUITE_NAME, `${error}`);
@@ -260,12 +262,14 @@ export default function Phase3PlatformAdaptersTestsuite(): void {
         }
 
         if (cleanupError !== undefined) {
+          setEvidenceCleanupStatus('fail');
           setEvidenceStatus('FAIL');
           appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
           await flushEvidence();
           throw cleanupError;
         }
         if (cleanupVerified) {
+          setEvidenceCleanupStatus('pass');
           appendEvidenceTrace(`${SUITE_NAME}.cleanupVerified`);
         }
         await flushEvidence();

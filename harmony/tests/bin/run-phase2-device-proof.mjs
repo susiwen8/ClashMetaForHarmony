@@ -85,7 +85,7 @@ function isWithinRepo(repoRoot, filePath) {
   return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
 }
 
-async function resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option) {
+export async function resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option) {
   const resolved = path.resolve(filePath);
   if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
     throw Object.assign(new Error(`${option} must stay inside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
@@ -100,7 +100,7 @@ async function resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option) 
   return realFilePath;
 }
 
-async function resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath) {
+export async function resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath) {
   const resolved = path.resolve(outputPath);
   if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
     throw Object.assign(new Error('--out must stay inside the repository root.'), { code: 'PATH_OUTSIDE_REPO' });
@@ -125,7 +125,7 @@ async function hashFile(fsApi, filePath) {
   return hashBuffer(await fsApi.readFile(filePath));
 }
 
-async function hashRepoFile(fsApi, repoRoot, filePath, option) {
+export async function hashRepoFile(fsApi, repoRoot, filePath, option) {
   const logicalPath = path.resolve(filePath);
   const resolved = await resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option);
   const digest = await hashFile(fsApi, resolved);
@@ -724,7 +724,7 @@ function parseCliArgumentsPartial(argv = process.argv.slice(2), repoRoot = REPO_
   return { buildManifestPath, fixturePath, outputPath };
 }
 
-async function resolveHdcCommand(toolchainInspectorImpl, repoRoot) {
+export async function resolveHdcCommand(toolchainInspectorImpl, repoRoot) {
   const inspection = await toolchainInspectorImpl({ cwd: repoRoot });
   if (inspection?.report?.result !== 'pass' || !inspection?.resolved?.paths?.hdc) {
     throw Object.assign(new Error('The integrated hdc command is unavailable.'), { code: 'TOOL_MISSING' });
@@ -763,22 +763,22 @@ async function readDeviceFact({ execImpl, hdcCommand, target, candidates, cwd })
   return { value: null, timedOut: false };
 }
 
-function classifyTarget(device) {
+export function classifyHarmonyTarget(device) {
   if (!isNonEmptyString(device.model) || !isNonEmptyString(device.product) || !isNonEmptyString(device.buildVersion) || !isNonEmptyString(device.apiVersion) || !isNonEmptyString(device.abi)) {
     return { kind: 'incomplete', code: 'DEVICE_FACT_MISSING', detail: 'The selected target did not expose all required device facts.' };
   }
   if (/simulator|emulator/iu.test(`${device.model} ${device.product}`)) {
-    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Simulator targets cannot satisfy Phase 2.' };
+    return { kind: 'simulator', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Simulator targets cannot satisfy Phase 2.' };
   }
   if (!/arm64|aarch64/iu.test(device.abi)) {
-    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Only AArch64 physical devices can satisfy Phase 2.' };
+    return { kind: 'unsupported', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Only AArch64 physical devices can satisfy Phase 2.' };
   }
   if (Number.parseInt(device.apiVersion, 10) < 20) {
-    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires API 20 or later.' };
+    return { kind: 'unsupported', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires API 20 or later.' };
   }
   const matchedVersion = device.buildVersion.match(/\b(\d+)(?:\.\d+){0,3}\b/u);
   if (!matchedVersion || matchedVersion[1] !== '6') {
-    return { kind: 'incomplete', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires a HarmonyOS 6 physical device.' };
+    return { kind: 'unsupported', code: 'DEVICE_TARGET_UNSUPPORTED', detail: 'Phase 2 requires a HarmonyOS 6 physical device.' };
   }
   return { kind: 'physical' };
 }
@@ -1443,7 +1443,7 @@ export async function runPhase2DeviceProof({
     proof.device.abi = facts.abi.value;
     proof.device.model = facts.model.value;
     proof.device.product = facts.product.value;
-    const classification = classifyTarget(proof.device);
+    const classification = classifyHarmonyTarget(proof.device);
     if (classification.kind !== 'physical') {
       pushFailure(proof, classification.code, classification.detail, 'target');
       return await finish();

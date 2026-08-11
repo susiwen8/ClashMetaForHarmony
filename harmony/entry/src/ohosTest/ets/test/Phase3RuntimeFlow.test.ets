@@ -24,8 +24,11 @@ import {
   appendEvidenceTrace,
   flushEvidence,
   getTestAbilityContext,
+  setEvidenceCleanupStatus,
+  setEvidenceHomeAddresses,
   stageRawfileToSandbox,
-  setEvidenceStatus
+  setEvidenceStatus,
+  TASK14_RUNTIME_FLOW_PASS_CHECK
 } from '../testability/TestAbility';
 
 const SUITE_NAME: string = 'Phase3RuntimeFlow';
@@ -88,6 +91,12 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         homeViewModel = new HomeViewModel(application);
         expect(homeViewModel.current().httpAddress).assertEqual(latest.httpAddress);
         expect(homeViewModel.current().socksAddress).assertEqual(latest.socksAddress);
+        const homeHttpAddress: string = requireAddress(homeViewModel.current().httpAddress, 'Home httpAddress');
+        const homeSocksAddress: string = requireAddress(homeViewModel.current().socksAddress, 'Home socksAddress');
+        setEvidenceHomeAddresses(
+          formatListenerAddresses(homeHttpAddress, homeSocksAddress),
+          formatListenerAddresses(latest.httpAddress, latest.socksAddress)
+        );
 
         const stopResult = await application.stopLocal();
         ensure(stopResult.kind === 'STOPPED', `stopLocal must succeed: ${JSON.stringify(stopResult)}`);
@@ -107,7 +116,7 @@ export default function Phase3RuntimeFlowTestsuite(): void {
           'stop',
           'STOPPED'
         ]));
-        appendEvidenceCheck(`${SUITE_NAME}: runtime trace pass`);
+        appendEvidenceCheck(TASK14_RUNTIME_FLOW_PASS_CHECK);
       } catch (error) {
         setEvidenceStatus('FAIL');
         appendEvidenceFailure(SUITE_NAME, `${error}`);
@@ -156,11 +165,13 @@ export default function Phase3RuntimeFlowTestsuite(): void {
           }
         }
         if (cleanupError !== undefined) {
+          setEvidenceCleanupStatus('fail');
           setEvidenceStatus('FAIL');
           appendEvidenceFailure(SUITE_NAME, `cleanup: ${cleanupError}`);
           await flushEvidence();
           throw cleanupError;
         }
+        setEvidenceCleanupStatus('pass');
         await flushEvidence();
       }
     });
@@ -290,4 +301,15 @@ function captureCleanupError(current: Error | undefined, error: Object | undefin
     return current;
   }
   return toError(error);
+}
+
+function formatListenerAddresses(httpAddress: string, socksAddress: string): string {
+  return `${httpAddress}|${socksAddress}`;
+}
+
+function requireAddress(value: string | undefined, label: string): string {
+  if (value === undefined) {
+    throw new Error(`${label} must be defined.`);
+  }
+  return value;
 }

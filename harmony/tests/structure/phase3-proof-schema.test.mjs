@@ -13,6 +13,8 @@ const RUNNER_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'run-phase3-simulato
 const SCHEMA_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase3-simulator-proof.schema.json');
 const EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase3-simulator-proof.example.json');
 const FIXTURE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase3-valid.yaml');
+const PHASE3_RUNNER_SOURCE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'run-phase3-simulator-proof.mjs');
+const PHASE2_RUNNER_SOURCE_PATH = path.join(HARMONY_ROOT, 'tests', 'bin', 'run-phase2-device-proof.mjs');
 
 let runner = null;
 try {
@@ -205,7 +207,7 @@ function createSimulatorEvidence({
     suites: ['Phase3PlatformAdapters', 'Phase3RuntimeFlow', 'Phase3UiFlow'],
     checks: [
       'Phase3PlatformAdapters: pass',
-      'Phase3RuntimeFlow: runtime trace pass',
+      'Phase3RuntimeFlow: validate > retain/save > enable.validate > enable.load > start.revalidate > start.load > startLocal(7890) > RUNNING 127.0.0.1:7890 127.0.0.1:7891 > stop > STOPPED',
       'Phase3UiFlow: pass'
     ],
     trace: ['runner.started', 'runner.completionObserved'],
@@ -587,4 +589,180 @@ test('Phase 3 runner rejects run/hap identity drift, persists redacted cleanup f
     phase3ProfileRuntime: 'incomplete'
   });
   assert.deepEqual(successProof.failures, []);
+});
+
+test('Phase 3 provisional-pass rejects misleading suite/check strings, duplicate coverage, and evidence failures', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const repo = await createPhase3TempRepo('phase3-false-positive');
+  const manifest = await createProductionManifest(repo);
+  const inspection = createInspectionPass(manifest);
+  const fixtureDigest = await hashFile(repo.fixturePath);
+  const productionDigest = await hashFile(repo.productionHapPath);
+  const entryTestDigest = await hashFile(repo.entryTestHapPath);
+
+  const baseProof = await runner.runPhase3SimulatorProof({
+    repoRoot: repo.repoRoot,
+    productionManifestPath: repo.manifestPath,
+    entryTestHapPath: repo.entryTestHapPath,
+    fixturePath: repo.fixturePath,
+    outputPath: repo.outputPath,
+    buildPhase1NativeImpl: async () => manifest,
+    inspectHapImpl: async () => inspection,
+    execImpl: createExecPlan(),
+    pullPhase3AppEvidenceImpl: async () => ({
+      ok: true,
+      localPath: path.join(repo.harmonyRoot, 'artifacts', 'phase3-pull', 'phase3-simulator-app-evidence.json'),
+      sha256: digest('evidence'),
+      sizeBytes: 128,
+      proof: createSimulatorEvidence({
+        runId: '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+        productionHapSha256: productionDigest.sha256,
+        entryTestHapSha256: entryTestDigest.sha256,
+        fixtureSha256: fixtureDigest.sha256
+      })
+    }),
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-11T02:00:00.000Z', '2026-08-11T02:00:01.000Z', '2026-08-11T02:00:04.000Z', '2026-08-11T02:00:05.000Z')
+  });
+  assert.equal(baseProof.result, 'provisional-pass');
+
+  const wrongCheck = structuredClone(baseProof);
+  wrongCheck.appEvidence.checks = [
+    'Phase3PlatformAdapters: pass',
+    'Phase3RuntimeFlow: fail',
+    'Phase3UiFlow: pass'
+  ];
+  assert.equal(runner.validatePhase3Proof(wrongCheck).valid, false);
+
+  const duplicateSuite = structuredClone(baseProof);
+  duplicateSuite.appEvidence.suites = [
+    'Phase3PlatformAdapters',
+    'Phase3RuntimeFlow',
+    'Phase3RuntimeFlow'
+  ];
+  assert.equal(runner.validatePhase3Proof(duplicateSuite).valid, false);
+
+  const evidenceFailure = structuredClone(baseProof);
+  evidenceFailure.appEvidence.failureCount = 1;
+  assert.equal(runner.validatePhase3Proof(evidenceFailure).valid, false);
+});
+
+test('Phase 3 failure paths persist cleanup and rebuild results to disk before returning', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const repo = await createPhase3TempRepo('phase3-persisted-cleanup');
+  const manifest = await createProductionManifest(repo);
+  let buildCount = 0;
+
+  await runner.runPhase3SimulatorProof({
+    repoRoot: repo.repoRoot,
+    productionManifestPath: repo.manifestPath,
+    entryTestHapPath: repo.entryTestHapPath,
+    fixturePath: repo.fixturePath,
+    outputPath: repo.outputPath,
+    buildPhase1NativeImpl: async () => {
+      buildCount += 1;
+      return manifest;
+    },
+    inspectHapImpl: async () => createInspectionPass(manifest),
+    execImpl: createExecPlan({
+      installResults: [
+        createExecResult(),
+        createExecResult({ exitCode: 1, stderr: 'entry_test install failed' })
+      ],
+      forceStopResult: createExecResult({ exitCode: 1, stderr: 'force stop failed' }),
+      uninstallResult: createExecResult()
+    }),
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-11T02:00:00.000Z', '2026-08-11T02:00:01.000Z', '2026-08-11T02:00:02.000Z')
+  });
+
+  const persisted = JSON.parse(await fs.readFile(repo.outputPath, 'utf8'));
+  assert.equal(buildCount, 2, 'runner must rebuild the default production lane after a failed simulator attempt');
+  assert.equal(persisted.cleanup.forceStopResult, 'fail');
+  assert.equal(persisted.cleanup.uninstallResult, 'pass');
+  assert.equal(persisted.cleanup.rebuildDefaultProductionLane, 'pass');
+  assert.equal(persisted.cleanup.localPullDirectoryResult, 'pass');
+  assert.ok(persisted.failures.some((entry) => entry.code === 'CLEANUP_FORCE_STOP_FAILED'));
+  await assert.rejects(fs.access(path.join(repo.harmonyRoot, 'artifacts', 'phase3-pull', '980cbe02-b817-4db1-99bc-e8e4e6523daf')));
+});
+
+test('Phase 3 runner source reuses shared helper exports for path guards, target classification, and resolved hdc', async () => {
+  const [phase3RunnerSource, phase2RunnerSource] = await Promise.all([
+    fs.readFile(PHASE3_RUNNER_SOURCE_PATH, 'utf8'),
+    fs.readFile(PHASE2_RUNNER_SOURCE_PATH, 'utf8')
+  ]);
+
+  assert.match(phase2RunnerSource, /export\s+function\s+classifyHarmonyTarget\(/u,
+    'Phase 2 runner must export a reusable Harmony target classifier'
+  );
+  assert.match(phase2RunnerSource, /export\s+async\s+function\s+resolveExistingRepoScopedPath\(/u,
+    'Phase 2 runner must export the repo-scoped existing-path guard'
+  );
+  assert.match(phase2RunnerSource, /export\s+async\s+function\s+resolveRepoScopedOutputPath\(/u,
+    'Phase 2 runner must export the repo-scoped output-path guard'
+  );
+  assert.match(phase2RunnerSource, /export\s+async\s+function\s+hashRepoFile\(/u,
+    'Phase 2 runner must export the repo-scoped file hasher'
+  );
+  assert.match(phase2RunnerSource, /export\s+async\s+function\s+resolveHdcCommand\(/u,
+    'Phase 2 runner must export the resolved hdc command helper'
+  );
+  assert.doesNotMatch(phase3RunnerSource, /function\s+inferTargetKind\(/u,
+    'Phase 3 runner must not keep a local target classifier copy'
+  );
+  assert.doesNotMatch(phase3RunnerSource, /async\s+function\s+resolveExistingRepoScopedPath\(/u,
+    'Phase 3 runner must not keep a local existing-path guard copy'
+  );
+  assert.doesNotMatch(phase3RunnerSource, /async\s+function\s+resolveRepoScopedOutputPath\(/u,
+    'Phase 3 runner must not keep a local output-path guard copy'
+  );
+  assert.doesNotMatch(phase3RunnerSource, /let\s+hdcCommand\s*=\s*['"`]hdc['"`]/u,
+    'Phase 3 runner must not hardcode hdc from PATH'
+  );
+});
+
+test('Phase 3 runner uses the resolved hdc path and aa test string parameters, never an opaque -w payload', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const repo = await createPhase3TempRepo('phase3-resolved-hdc');
+  const manifest = await createProductionManifest(repo);
+  const commands = [];
+
+  const proof = await runner.runPhase3SimulatorProof({
+    repoRoot: repo.repoRoot,
+    productionManifestPath: repo.manifestPath,
+    entryTestHapPath: repo.entryTestHapPath,
+    fixturePath: repo.fixturePath,
+    outputPath: repo.outputPath,
+    buildPhase1NativeImpl: async () => manifest,
+    inspectHapImpl: async () => createInspectionPass(manifest),
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: '/sdk/ohos/bin/hdc' } }
+    }),
+    execImpl: async (command, args) => {
+      commands.push([command, ...args]);
+      if (args[0] === 'list' && args[1] === 'targets') {
+        return createExecResult({ stdout: 'simulator-5554\n' });
+      }
+      if (args.includes('const.product.model')) return createExecResult({ stdout: 'HarmonyOS Simulator\n' });
+      if (args.includes('const.product.name')) return createExecResult({ stdout: 'openharmony-simulator\n' });
+      if (args.includes('const.product.software.version')) return createExecResult({ stdout: 'HarmonyOS 6.0.0\n' });
+      if (args.includes('const.ohos.apiversion')) return createExecResult({ stdout: '20\n' });
+      if (args.includes('const.product.cpu.abilist')) return createExecResult({ stdout: 'arm64-v8a\n' });
+      if (args.includes('install')) return createExecResult();
+      if (args.includes('aa') && args.includes('test')) return createExecResult({ timedOut: true, stderr: 'timeout' });
+      if (args.includes('force-stop') || args.includes('uninstall')) return createExecResult();
+      return createExecResult();
+    },
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-11T02:00:00.000Z', '2026-08-11T02:00:01.000Z', '2026-08-11T02:00:02.000Z', '2026-08-11T02:00:03.000Z')
+  });
+
+  assert.equal(proof.result, 'incomplete');
+  assert.equal(commands[0][0], '/sdk/ohos/bin/hdc');
+  const aaTestCommand = commands.find((entry) => entry.includes('aa') && entry.includes('test'));
+  assert.ok(aaTestCommand, 'runner must invoke aa test');
+  assert.ok(aaTestCommand.includes('-s'));
+  assert.ok(aaTestCommand.includes('cmfa.phase3.runId'));
+  assert.ok(!aaTestCommand.includes('-w'));
 });

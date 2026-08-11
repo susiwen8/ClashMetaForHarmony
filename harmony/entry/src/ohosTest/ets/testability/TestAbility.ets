@@ -19,6 +19,16 @@ export const TASK14_PRODUCTION_MODULE_NAME: string = 'entry';
 export const TASK14_PRODUCTION_ABILITY_NAME: string = 'EntryAbility';
 export const TASK14_TEST_MODULE_NAME: string = 'entry_test';
 export const TASK14_TEST_ABILITY_NAME: string = 'TestAbility';
+export const TASK14_RUN_ID_PARAMETER_KEY: string = 'cmfa.phase3.runId';
+export const TASK14_PRODUCTION_HAP_SHA256_PARAMETER_KEY: string = 'cmfa.phase3.productionHapSha256';
+export const TASK14_ENTRY_TEST_HAP_SHA256_PARAMETER_KEY: string = 'cmfa.phase3.entryTestHapSha256';
+export const TASK14_FIXTURE_SHA256_PARAMETER_KEY: string = 'cmfa.phase3.fixtureSha256';
+export const TASK14_PLATFORM_ADAPTERS_PASS_CHECK: string = 'Phase3PlatformAdapters: pass';
+export const TASK14_RUNTIME_FLOW_PASS_CHECK: string =
+  'Phase3RuntimeFlow: validate > retain/save > enable.validate > enable.load > start.revalidate > start.load > startLocal(7890) > RUNNING 127.0.0.1:7890 127.0.0.1:7891 > stop > STOPPED';
+export const TASK14_UI_FLOW_PASS_CHECK: string = 'Phase3UiFlow: pass';
+
+export type Task14CleanupStatus = 'pass' | 'fail' | 'incomplete';
 
 export interface Task14EvidenceFailure {
   suite: string;
@@ -41,10 +51,17 @@ export interface Task14Evidence {
   task: 14;
   status: 'RUNNING' | 'PASS' | 'FAIL' | 'INCOMPLETE';
   updatedAt: string;
+  runId: string;
+  productionHapSha256: string;
+  entryTestHapSha256: string;
+  fixtureSha256: string;
   suites: string[];
   trace: string[];
   checks: string[];
   failures: Task14EvidenceFailure[];
+  cleanup: Task14CleanupStatus;
+  homeSnapshotAddress: string;
+  homeRuntimeAddress: string;
 }
 
 let sharedContext: common.UIAbilityContext | undefined = undefined;
@@ -125,6 +142,14 @@ export function setEvidenceStatus(status: 'RUNNING' | 'PASS' | 'FAIL' | 'INCOMPL
   evidence.updatedAt = new Date().toISOString();
 }
 
+export function configureEvidenceFromRunnerParameters(parameters: Record<string, Object>): void {
+  evidence.runId = requireRunnerParameter(parameters, TASK14_RUN_ID_PARAMETER_KEY);
+  evidence.productionHapSha256 = requireRunnerParameter(parameters, TASK14_PRODUCTION_HAP_SHA256_PARAMETER_KEY);
+  evidence.entryTestHapSha256 = requireRunnerParameter(parameters, TASK14_ENTRY_TEST_HAP_SHA256_PARAMETER_KEY);
+  evidence.fixtureSha256 = requireRunnerParameter(parameters, TASK14_FIXTURE_SHA256_PARAMETER_KEY);
+  evidence.updatedAt = new Date().toISOString();
+}
+
 export function appendEvidenceTrace(step: string): void {
   evidence.trace.push(sanitizeEvidenceText(step));
   evidence.updatedAt = new Date().toISOString();
@@ -137,6 +162,21 @@ export function appendEvidenceCheck(check: string): void {
 
 export function appendEvidenceFailure(suite: string, detail: string): void {
   evidence.failures.push(new Task14EvidenceFailureRecord(suite, sanitizeEvidenceText(detail)));
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export function setEvidenceCleanupStatus(status: Task14CleanupStatus): void {
+  if (evidence.cleanup === 'fail') {
+    evidence.updatedAt = new Date().toISOString();
+    return;
+  }
+  evidence.cleanup = status;
+  evidence.updatedAt = new Date().toISOString();
+}
+
+export function setEvidenceHomeAddresses(homeSnapshotAddress: string, homeRuntimeAddress: string): void {
+  evidence.homeSnapshotAddress = sanitizeEvidenceText(homeSnapshotAddress);
+  evidence.homeRuntimeAddress = sanitizeEvidenceText(homeRuntimeAddress);
   evidence.updatedAt = new Date().toISOString();
 }
 
@@ -314,10 +354,17 @@ function createInitialEvidence(): Task14Evidence {
     task: 14,
     status: 'RUNNING',
     updatedAt: new Date().toISOString(),
+    runId: '',
+    productionHapSha256: '',
+    entryTestHapSha256: '',
+    fixtureSha256: '',
     suites: ['Phase3PlatformAdapters', 'Phase3RuntimeFlow', 'Phase3UiFlow'],
     trace: [],
     checks: [],
-    failures: []
+    failures: [],
+    cleanup: 'incomplete',
+    homeSnapshotAddress: '',
+    homeRuntimeAddress: ''
   };
 }
 
@@ -333,10 +380,17 @@ function cloneEvidence(source: Task14Evidence): Task14Evidence {
     task: source.task,
     status: source.status,
     updatedAt: source.updatedAt,
+    runId: source.runId,
+    productionHapSha256: source.productionHapSha256,
+    entryTestHapSha256: source.entryTestHapSha256,
+    fixtureSha256: source.fixtureSha256,
     suites: source.suites.slice(),
     trace: source.trace.slice(),
     checks: source.checks.slice(),
-    failures
+    failures,
+    cleanup: source.cleanup,
+    homeSnapshotAddress: source.homeSnapshotAddress,
+    homeRuntimeAddress: source.homeRuntimeAddress
   };
 }
 
@@ -358,4 +412,12 @@ async function hashStage(filePath: string): Promise<string> {
 
 function createScopedId(prefix: string): string {
   return `${prefix}-${Date.now()}-${Math.floor(Math.random() * 1000000)}`;
+}
+
+function requireRunnerParameter(parameters: Record<string, Object>, key: string): string {
+  const value: string = `${parameters[key] ?? ''}`;
+  if (value.length === 0) {
+    throw new Error(`Missing required Task 14 runner parameter: ${key}`);
+  }
+  return sanitizeEvidenceText(value);
 }

@@ -7,9 +7,14 @@ import testsuite from '../test/List.test';
 import {
   appendEvidenceFailure,
   appendEvidenceTrace,
+  configureEvidenceFromRunnerParameters,
   flushEvidence,
   getEvidence,
-  setEvidenceStatus,
+      setEvidenceStatus,
+      TASK14_ENTRY_TEST_HAP_SHA256_PARAMETER_KEY,
+      TASK14_FIXTURE_SHA256_PARAMETER_KEY,
+      TASK14_PRODUCTION_HAP_SHA256_PARAMETER_KEY,
+      TASK14_RUN_ID_PARAMETER_KEY,
   TASK14_TEST_ABILITY_NAME,
   TASK14_TEST_MODULE_NAME,
   waitForTask14Completion,
@@ -30,9 +35,11 @@ export default class OpenHarmonyTestRunner implements TestRunner {
   async onRun(): Promise<void> {
     const abilityDelegator = abilityDelegatorRegistry.getAbilityDelegator();
     const abilityDelegatorArguments = abilityDelegatorRegistry.getArguments();
+    const runnerParameters: Record<string, Object> = abilityDelegatorRegistry.getArguments().parameters ?? {};
     appendEvidenceTrace('runner.onRun');
     await flushEvidence();
     try {
+      configureEvidenceFromRunnerParameters(runnerParameters);
       const want: Want = {
         bundleName: abilityDelegatorArguments.bundleName,
         moduleName: TASK14_TEST_MODULE_NAME,

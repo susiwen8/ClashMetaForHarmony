@@ -470,6 +470,43 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(testabilitySource, /signalTask14Completion/u,
     'TestAbility must expose a single-shot completion signal'
   );
+  assert.match(runnerSource, /abilityDelegatorRegistry\.getArguments\(\)\.parameters/u,
+    'OpenHarmonyTestRunner must read AbilityDelegator string parameters for proof identity handoff'
+  );
+  for (const parameterKey of [
+    ['cmfa.phase3.runId', 'TASK14_RUN_ID_PARAMETER_KEY'],
+    ['cmfa.phase3.productionHapSha256', 'TASK14_PRODUCTION_HAP_SHA256_PARAMETER_KEY'],
+    ['cmfa.phase3.entryTestHapSha256', 'TASK14_ENTRY_TEST_HAP_SHA256_PARAMETER_KEY'],
+    ['cmfa.phase3.fixtureSha256', 'TASK14_FIXTURE_SHA256_PARAMETER_KEY']
+  ]) {
+    assert.match(
+      runnerSource,
+      new RegExp(`${parameterKey[0].replaceAll('.', '\\.')}|${parameterKey[1]}`, 'u'),
+      `OpenHarmonyTestRunner must recognize ${parameterKey[0]}`
+    );
+  }
+  assert.doesNotMatch(runnerSource, /-w\s*[,)]|['"`]-w['"`]/u,
+    'OpenHarmonyTestRunner / Task14 contract must not rely on an opaque -w JSON payload'
+  );
+  assert.match(testabilitySource, /runId:\s*string/u, 'Task14Evidence must persist the runner runId');
+  assert.match(testabilitySource, /productionHapSha256:\s*string/u, 'Task14Evidence must persist the production HAP digest');
+  assert.match(testabilitySource, /entryTestHapSha256:\s*string/u, 'Task14Evidence must persist the entry_test HAP digest');
+  assert.match(testabilitySource, /fixtureSha256:\s*string/u, 'Task14Evidence must persist the fixture digest');
+  assert.match(testabilitySource, /export\s+type\s+Task14CleanupStatus\s*=\s*['"`]pass['"`]\s*\|\s*['"`]fail['"`]\s*\|\s*['"`]incomplete['"`]/u,
+    'Task14Evidence must define the truthful cleanup-status union'
+  );
+  assert.match(testabilitySource, /cleanup:\s*Task14CleanupStatus/u, 'Task14Evidence must persist truthful cleanup status');
+  assert.match(testabilitySource, /homeSnapshotAddress:\s*string/u, 'Task14Evidence must persist the Home snapshot address');
+  assert.match(testabilitySource, /homeRuntimeAddress:\s*string/u, 'Task14Evidence must persist the runtime snapshot address');
+  assert.match(testabilitySource, /export\s+function\s+configureEvidenceFromRunnerParameters\(/u,
+    'TestAbility must expose a runner-parameter configuration seam'
+  );
+  assert.match(testabilitySource, /export\s+function\s+setEvidenceCleanupStatus\(/u,
+    'TestAbility must expose truthful cleanup status updates'
+  );
+  assert.match(testabilitySource, /export\s+function\s+setEvidenceHomeAddresses\(/u,
+    'TestAbility must expose Home/runtime address updates'
+  );
 
   const suiteMentions = [...listSource.matchAll(/from\s+'\.\/([^']+)\.test'/gu)].map((match) => match[1]);
   assert.deepEqual(suiteMentions, REQUIRED_OHOS_TEST_SUITES,
@@ -578,6 +615,15 @@ test('Task 14 suite sources keep completion, picker cancel, sanitized displays, 
   );
   assert.match(runtimeSource, /['"`]retain\/save['"`][\s\S]*['"`]enable\.validate['"`][\s\S]*['"`]enable\.load['"`][\s\S]*['"`]start\.revalidate['"`][\s\S]*['"`]start\.load['"`][\s\S]*['"`]startLocal\(7890\)['"`]/u,
     'Phase3RuntimeFlow trace must acknowledge both enable validate/load and start revalidate/load before startLocal(7890)'
+  );
+  assert.match(runtimeSource, /setEvidenceHomeAddresses\(/u,
+    'Phase3RuntimeFlow must publish Home/runtime addresses into Task14 evidence'
+  );
+  assert.match(runtimeSource, /setEvidenceCleanupStatus\(['"`]pass['"`]\)/u,
+    'Phase3RuntimeFlow must mark cleanup pass only after teardown succeeds'
+  );
+  assert.match(runtimeSource, /setEvidenceCleanupStatus\(['"`](?:fail|incomplete)['"`]\)/u,
+    'Phase3RuntimeFlow must downgrade cleanup status when teardown is not clean'
   );
   assert.doesNotMatch(runtimeSource, /\.catch\(\(\)\s*=>\s*\{\s*\}\)/u,
     'Phase3RuntimeFlow cleanup must not swallow repository/content removal failures'

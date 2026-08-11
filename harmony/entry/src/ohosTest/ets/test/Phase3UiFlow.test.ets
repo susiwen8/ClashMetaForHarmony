@@ -10,7 +10,8 @@ import {
   TASK14_PRODUCTION_ABILITY_NAME,
   TASK14_PRODUCTION_BUNDLE_NAME,
   TASK14_PRODUCTION_MODULE_NAME,
-  setEvidenceStatus
+  setEvidenceStatus,
+  TASK14_UI_FLOW_PASS_CHECK
 } from '../testability/TestAbility';
 
 const SUITE_NAME: string = 'Phase3UiFlow';
@@ -60,7 +61,7 @@ export default function Phase3UiFlowTestsuite(): void {
 
         await driver.waitForComponent(ON.id('profiles.add'), 5000);
         await driver.assertComponentExist(ON.text(PROFILES_EMPTY_TITLE_TEXT));
-        appendEvidenceCheck(`${SUITE_NAME}: navigation/http-cancel pass`);
+        appendEvidenceCheck(TASK14_UI_FLOW_PASS_CHECK);
       } catch (error) {
         setEvidenceStatus('FAIL');
         appendEvidenceFailure(SUITE_NAME, `${error}`);

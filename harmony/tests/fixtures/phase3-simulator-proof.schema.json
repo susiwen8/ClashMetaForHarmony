@@ -167,11 +167,12 @@
     "cleanup": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["forceStopResult", "uninstallResult", "rebuildDefaultProductionLane"],
+      "required": ["forceStopResult", "uninstallResult", "rebuildDefaultProductionLane", "localPullDirectoryResult"],
       "properties": {
         "forceStopResult": { "enum": ["pass", "fail", "incomplete", "not-run"] },
         "uninstallResult": { "enum": ["pass", "fail", "incomplete", "not-run"] },
-        "rebuildDefaultProductionLane": { "enum": ["pass", "fail", "incomplete", "not-run"] }
+        "rebuildDefaultProductionLane": { "enum": ["pass", "fail", "incomplete", "not-run"] },
+        "localPullDirectoryResult": { "enum": ["pass", "fail", "incomplete", "not-run"] }
       }
     },
     "physicalDeviceGates": {

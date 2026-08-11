@@ -6,9 +6,16 @@ import { fileURLToPath } from 'node:url';
 
 import { buildPhase1Native } from './build-phase1-native.mjs';
 import { inspectHap } from './inspect-hap.mjs';
+import {
+  classifyHarmonyTarget,
+  hashRepoFile,
+  resolveExistingRepoScopedPath,
+  resolveHdcCommand,
+  resolveRepoScopedOutputPath
+} from './run-phase2-device-proof.mjs';
 import { analyzeTargetDiscovery, buildTargetedHdcArgs, createMaskedDeviceIdentity, execCommand } from './run-phase0-device-proof.mjs';
 import { createRedactionReplacements, sanitizeForPersistence, sanitizeText } from '../../tools/lib/proof-redaction.mjs';
-import { normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
+import { inspectToolchain, normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
 
 export const PROOF_SCHEMA_VERSION = '1.0.0';
 export const PHASE_NUMBER = 3;
@@ -31,6 +38,12 @@ const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 const STEP_RESULTS = new Set(['pass', 'fail', 'incomplete', 'not-run']);
 const CHECK_RESULTS = new Set(['pass', 'fail', 'incomplete']);
 const TARGET_KINDS = new Set(['host', 'simulator', 'physical', 'unknown']);
+export const REQUIRED_EVIDENCE_SUITES = ['Phase3PlatformAdapters', 'Phase3RuntimeFlow', 'Phase3UiFlow'];
+export const REQUIRED_EVIDENCE_CHECKS = [
+  'Phase3PlatformAdapters: pass',
+  'Phase3RuntimeFlow: validate > retain/save > enable.validate > enable.load > start.revalidate > start.load > startLocal(7890) > RUNNING 127.0.0.1:7890 127.0.0.1:7891 > stop > STOPPED',
+  'Phase3UiFlow: pass'
+];
 
 function isoTimestamp(date = new Date()) {
   return date.toISOString();
@@ -67,56 +80,11 @@ function normalizePathForReport(repoRoot, absolutePath) {
   return path.basename(absolutePath);
 }
 
-function isWithinRepo(repoRoot, filePath) {
-  const relativePath = path.relative(repoRoot, filePath);
-  return relativePath === '' || (!relativePath.startsWith('..') && !path.isAbsolute(relativePath));
-}
-
-async function resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option) {
-  const resolved = path.resolve(filePath);
-  if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
-    throw Object.assign(new Error(`${option} must stay inside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
-  }
-  const [realRepoRoot, realFilePath] = await Promise.all([
-    fsApi.realpath(repoRoot),
-    fsApi.realpath(resolved)
-  ]);
-  if (!isWithinRepo(realRepoRoot, realFilePath) || realFilePath === realRepoRoot) {
-    throw Object.assign(new Error(`${option} resolves outside the repository root.`), { code: 'PATH_OUTSIDE_REPO' });
-  }
-  return realFilePath;
-}
-
-async function resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath) {
-  const resolved = path.resolve(outputPath);
-  if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
-    throw Object.assign(new Error('--out must stay inside the repository root.'), { code: 'PATH_OUTSIDE_REPO' });
-  }
-  const realRepoRoot = await fsApi.realpath(repoRoot);
-  await fsApi.mkdir(path.dirname(resolved), { recursive: true });
-  const realParent = await fsApi.realpath(path.dirname(resolved));
-  if (!isWithinRepo(realRepoRoot, realParent) || realParent === realRepoRoot) {
-    throw Object.assign(new Error('--out resolves outside the repository root.'), { code: 'PATH_OUTSIDE_REPO' });
-  }
-  return path.join(realParent, path.basename(resolved));
-}
-
 async function hashFile(fsApi, filePath) {
   const buffer = await fsApi.readFile(filePath);
   return {
     sha256: crypto.createHash('sha256').update(buffer).digest('hex'),
     sizeBytes: buffer.byteLength
-  };
-}
-
-async function hashRepoFile(fsApi, repoRoot, filePath, option) {
-  const resolved = await resolveExistingRepoScopedPath(fsApi, repoRoot, filePath, option);
-  const digest = await hashFile(fsApi, resolved);
-  return {
-    path: normalizePathForReport(repoRoot, resolved),
-    sha256: digest.sha256,
-    sizeBytes: digest.sizeBytes,
-    absolutePath: resolved
   };
 }
 
@@ -234,7 +202,8 @@ function createBaseProof({ repoRoot, outputPath, runId, startedAt }) {
     cleanup: {
       forceStopResult: 'not-run',
       uninstallResult: 'not-run',
-      rebuildDefaultProductionLane: 'not-run'
+      rebuildDefaultProductionLane: 'not-run',
+      localPullDirectoryResult: 'not-run'
     },
     physicalDeviceGates: {
       phase2Traffic: 'incomplete',
@@ -251,9 +220,10 @@ function pushFailure(proof, code, detail, stage) {
   proof.failures.push(createFailure(code, detail, stage));
 }
 
-function inferTargetKind({ model, product }) {
-  const haystack = `${model ?? ''} ${product ?? ''}`.toLowerCase();
-  return /simulator|emulator/u.test(haystack) ? 'simulator' : 'physical';
+function exactOrderedArrayEqual(actual, expected) {
+  return Array.isArray(actual) &&
+    actual.length === expected.length &&
+    actual.every((entry, index) => entry === expected[index]);
 }
 
 function copyInspectionSummary(target, inspection) {
@@ -265,11 +235,12 @@ function copyInspectionSummary(target, inspection) {
 }
 
 function finalizeChecksFromEvidence(proof, evidence) {
-  const joinedChecks = (evidence.checks ?? []).join('\n');
-  proof.checks.adapterSuite = /Phase3PlatformAdapters/iu.test(joinedChecks) ? 'pass' : 'incomplete';
-  proof.checks.runtimeSuite = /Phase3RuntimeFlow/iu.test(joinedChecks) ? 'pass' : 'incomplete';
-  proof.checks.uiSuite = /Phase3UiFlow/iu.test(joinedChecks) ? 'pass' : 'incomplete';
-  proof.checks.startStop = evidence.status === 'PASS' ? 'pass' : 'incomplete';
+  const exactSuites = exactOrderedArrayEqual(evidence.suites, REQUIRED_EVIDENCE_SUITES);
+  const exactChecks = exactOrderedArrayEqual(evidence.checks, REQUIRED_EVIDENCE_CHECKS);
+  proof.checks.adapterSuite = exactSuites && evidence.checks?.[0] === REQUIRED_EVIDENCE_CHECKS[0] ? 'pass' : 'fail';
+  proof.checks.runtimeSuite = exactSuites && evidence.checks?.[1] === REQUIRED_EVIDENCE_CHECKS[1] ? 'pass' : 'fail';
+  proof.checks.uiSuite = exactSuites && evidence.checks?.[2] === REQUIRED_EVIDENCE_CHECKS[2] ? 'pass' : 'fail';
+  proof.checks.startStop = exactChecks && evidence.status === 'PASS' ? 'pass' : 'fail';
   proof.checks.identitiesMatch = (
     evidence.runId === proof.runId &&
     evidence.productionHapSha256 === proof.haps.production.sha256 &&
@@ -280,7 +251,7 @@ function finalizeChecksFromEvidence(proof, evidence) {
     isNonEmptyString(evidence.homeSnapshotAddress)
     ? 'pass'
     : 'fail';
-  proof.checks.cleanup = evidence.cleanup === 'pass' ? 'pass' : 'incomplete';
+  proof.checks.cleanup = evidence.cleanup === 'pass' ? 'pass' : 'fail';
 }
 
 function allChecksPass(checks) {
@@ -293,10 +264,15 @@ function canProvisionalPass(proof) {
     proof.haps.production.stubDetected === false &&
     proof.physicalDeviceGates.phase2Traffic === 'incomplete' &&
     proof.physicalDeviceGates.phase3ProfileRuntime === 'incomplete' &&
+    proof.appEvidence.status === 'PASS' &&
+    proof.appEvidence.failureCount === 0 &&
+    exactOrderedArrayEqual(proof.appEvidence.suites, REQUIRED_EVIDENCE_SUITES) &&
+    exactOrderedArrayEqual(proof.appEvidence.checks, REQUIRED_EVIDENCE_CHECKS) &&
     allChecksPass(proof.checks) &&
     proof.cleanup.forceStopResult === 'pass' &&
     proof.cleanup.uninstallResult === 'pass' &&
     proof.cleanup.rebuildDefaultProductionLane === 'pass' &&
+    proof.cleanup.localPullDirectoryResult === 'pass' &&
     proof.failures.length === 0;
 }
 
@@ -343,7 +319,7 @@ export function validatePhase3Proof(proof) {
       errors.push(`checks.${key} must be pass, fail, or incomplete.`);
     }
   }
-  for (const key of ['forceStopResult', 'uninstallResult', 'rebuildDefaultProductionLane']) {
+  for (const key of ['forceStopResult', 'uninstallResult', 'rebuildDefaultProductionLane', 'localPullDirectoryResult']) {
     if (!STEP_RESULTS.has(String(proof?.cleanup?.[key] ?? ''))) {
       errors.push(`cleanup.${key} must be pass, fail, incomplete, or not-run.`);
     }
@@ -353,10 +329,24 @@ export function validatePhase3Proof(proof) {
   }
   validateFailureArray(proof?.failures, errors);
   if (proof?.result === 'provisional-pass') {
+    if (proof?.target?.targetKind !== 'simulator') errors.push('provisional-pass requires a simulator target.');
     if (proof?.haps?.production?.stubDetected !== false) errors.push('provisional-pass requires haps.production.stubDetected === false.');
     if (proof?.haps?.production?.architecture !== 'AArch64') errors.push('provisional-pass requires AArch64 production core.');
+    if (proof?.appEvidence?.status !== 'PASS') errors.push('provisional-pass requires appEvidence.status === PASS.');
+    if (proof?.appEvidence?.failureCount !== 0) errors.push('provisional-pass requires appEvidence.failureCount === 0.');
+    if (!exactOrderedArrayEqual(proof?.appEvidence?.suites, REQUIRED_EVIDENCE_SUITES)) errors.push('provisional-pass requires exact suite coverage.');
+    if (!exactOrderedArrayEqual(proof?.appEvidence?.checks, REQUIRED_EVIDENCE_CHECKS)) errors.push('provisional-pass requires exact allowlisted checks.');
+    if (proof?.appEvidence?.runId !== proof?.runId) errors.push('provisional-pass requires appEvidence.runId to match runId.');
+    if (proof?.appEvidence?.productionHapSha256 !== proof?.haps?.production?.sha256 || proof?.appEvidence?.entryTestHapSha256 !== proof?.haps?.entryTest?.sha256) {
+      errors.push('provisional-pass requires appEvidence HAP identities to match the runner inputs.');
+    }
+    if (proof?.appEvidence?.fixtureSha256 !== proof?.fixture?.sha256) errors.push('provisional-pass requires appEvidence.fixtureSha256 to match the runner fixture.');
+    if (proof?.appEvidence?.cleanup !== 'pass') errors.push('provisional-pass requires appEvidence.cleanup === pass.');
+    if (proof?.appEvidence?.homeSnapshotAddress !== proof?.appEvidence?.homeRuntimeAddress) {
+      errors.push('provisional-pass requires matching Home/runtime addresses.');
+    }
     if (!allChecksPass(proof?.checks ?? {})) errors.push('provisional-pass requires all checks to pass.');
-    if (proof?.cleanup?.forceStopResult !== 'pass' || proof?.cleanup?.uninstallResult !== 'pass' || proof?.cleanup?.rebuildDefaultProductionLane !== 'pass') {
+    if (proof?.cleanup?.forceStopResult !== 'pass' || proof?.cleanup?.uninstallResult !== 'pass' || proof?.cleanup?.rebuildDefaultProductionLane !== 'pass' || proof?.cleanup?.localPullDirectoryResult !== 'pass') {
       errors.push('provisional-pass requires cleanup and rebuild to pass.');
     }
     if ((proof?.failures?.length ?? 0) !== 0) errors.push('provisional-pass requires failures to be empty.');
@@ -430,27 +420,15 @@ function buildTestArgs(target, runId, proof) {
     '-b', BUNDLE_NAME,
     '-m', TEST_MODULE_NAME,
     '-s', 'unittest', TEST_RUNNER_NAME,
-    '-w', JSON.stringify({
-      runId,
-      fixtureSha256: proof.fixture.sha256,
-      productionHapSha256: proof.haps.production.sha256,
-      entryTestHapSha256: proof.haps.entryTest.sha256
-    })
+    '-s', 'cmfa.phase3.runId', runId,
+    '-s', 'cmfa.phase3.fixtureSha256', proof.fixture.sha256,
+    '-s', 'cmfa.phase3.productionHapSha256', proof.haps.production.sha256,
+    '-s', 'cmfa.phase3.entryTestHapSha256', proof.haps.entryTest.sha256
   ]);
 }
 
 async function ensureRepoScopedPullPath(fsApi, repoRoot, localPath) {
-  const resolved = path.resolve(localPath);
-  const realRepoRoot = await fsApi.realpath(repoRoot);
-  if (!isWithinRepo(repoRoot, resolved) || resolved === repoRoot) {
-    throw Object.assign(new Error('pull path must stay inside the repository.'), { code: 'APP_EVIDENCE_PATH_OUTSIDE_REPO' });
-  }
-  await fsApi.mkdir(path.dirname(resolved), { recursive: true });
-  const realParent = await fsApi.realpath(path.dirname(resolved));
-  if (!isWithinRepo(realRepoRoot, realParent) || realParent === realRepoRoot) {
-    throw Object.assign(new Error('pull path parent resolves outside the repository.'), { code: 'APP_EVIDENCE_PATH_OUTSIDE_REPO' });
-  }
-  return path.join(realParent, path.basename(resolved));
+  return await resolveRepoScopedOutputPath(fsApi, repoRoot, localPath);
 }
 
 export function parsePhase3AppEvidence(raw) {
@@ -616,6 +594,7 @@ export async function runPhase3SimulatorProof({
   fsApi = fs,
   buildPhase1NativeImpl = buildPhase1Native,
   inspectHapImpl = inspectHap,
+  toolchainInspectorImpl = inspectToolchain,
   execImpl = execCommand,
   runTestImpl = runDefaultSimulatorTest,
   pullPhase3AppEvidenceImpl = pullPhase3AppEvidence,
@@ -627,9 +606,10 @@ export async function runPhase3SimulatorProof({
   const proof = createBaseProof({ repoRoot, outputPath, runId: randomUUID(), startedAt });
   const harmonyRoot = path.join(repoRoot, 'harmony');
   let target = null;
-  let hdcCommand = 'hdc';
+  let hdcCommand = null;
   let installedAny = false;
-  let testAttempted = false;
+  let shouldRebuildDefaultProductionLane = false;
+  const pullDirectoryPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase3-pull', proof.runId);
 
   const finish = async () => {
     proof.timestamps.runnerFinishedAt = isoTimestamp(now());
@@ -644,175 +624,199 @@ export async function runPhase3SimulatorProof({
   };
 
   try {
-    proof.toolchain = await readToolchainVersions(fsApi, harmonyRoot);
-    const fixtureDigest = await hashRepoFile(fsApi, repoRoot, fixturePath, '--fixture');
-    proof.fixture = {
-      path: fixtureDigest.path,
-      sha256: fixtureDigest.sha256,
-      sizeBytes: fixtureDigest.sizeBytes
-    };
+    main: {
+      proof.toolchain = await readToolchainVersions(fsApi, harmonyRoot);
+      const fixtureDigest = await hashRepoFile(fsApi, repoRoot, fixturePath, '--fixture');
+      proof.fixture = {
+        path: fixtureDigest.path,
+        sha256: fixtureDigest.sha256,
+        sizeBytes: fixtureDigest.sizeBytes
+      };
 
-    const builtManifest = await buildPhase1NativeImpl({
-      outputPath: productionManifestPath,
-      phase2SelfTestEnabled: false
-    });
-    const manifest = builtManifest ?? await readJson(fsApi, productionManifestPath, 'BUILD_MANIFEST_INVALID');
-    if (manifest?.signing?.result !== 'pass') {
-      pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
-      return await finish();
-    }
-    const productionIdentity = manifest?.artifacts?.hap?.identity;
-    if (!isNonEmptyString(productionIdentity)) {
-      pushFailure(proof, 'INPUT_HAP_MISSING', 'The production manifest did not expose a signed production HAP identity.', 'build');
-      return await finish();
-    }
-    const productionHapPath = await resolveExistingRepoScopedPath(fsApi, repoRoot, path.join(repoRoot, productionIdentity), '--production-hap');
-    const productionDigest = await hashFile(fsApi, productionHapPath);
-    proof.haps.production.path = normalizePathForReport(repoRoot, productionHapPath);
-    proof.haps.production.sha256 = productionDigest.sha256;
-    proof.haps.production.sizeBytes = productionDigest.sizeBytes;
-    if (/-unsigned\.hap$/iu.test(path.basename(productionHapPath))) {
-      pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned production HAPs cannot enter the simulator proof lane.', 'input');
-      pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
-      return await finish();
-    }
+      const builtManifest = await buildPhase1NativeImpl({
+        outputPath: productionManifestPath,
+        phase2SelfTestEnabled: false
+      });
+      shouldRebuildDefaultProductionLane = true;
+      const manifest = builtManifest ?? await readJson(fsApi, productionManifestPath, 'BUILD_MANIFEST_INVALID');
+      if (manifest?.signing?.result !== 'pass') {
+        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
+        break main;
+      }
 
-    const resolvedEntryTestHapPath = await resolveExistingRepoScopedPath(fsApi, repoRoot, entryTestHapPath, '--entry-test-hap');
-    const entryTestDigest = await hashFile(fsApi, resolvedEntryTestHapPath);
-    proof.haps.entryTest = {
-      path: normalizePathForReport(repoRoot, resolvedEntryTestHapPath),
-      sha256: entryTestDigest.sha256,
-      sizeBytes: entryTestDigest.sizeBytes
-    };
-    if (/-unsigned\.hap$/iu.test(path.basename(resolvedEntryTestHapPath))) {
-      pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned entry_test HAPs cannot enter the simulator proof lane.', 'input');
-      pushFailure(proof, 'SIGNING_REQUIRED', 'A signed entry_test HAP is required before any simulator proof can run.', 'signing');
-      return await finish();
-    }
+      const productionIdentity = manifest?.artifacts?.hap?.identity;
+      if (!isNonEmptyString(productionIdentity)) {
+        pushFailure(proof, 'INPUT_HAP_MISSING', 'The production manifest did not expose a signed production HAP identity.', 'build');
+        break main;
+      }
 
-    const inspection = await inspectHapImpl({
-      hapPath: productionHapPath,
-      manifest,
-      manifestPath: productionManifestPath,
-      buildKind: 'production',
-      repoRoot,
-      fsApi
-    });
-    copyInspectionSummary(proof.haps.production, inspection);
-    for (const failure of inspection.failures ?? []) {
-      pushFailure(proof, failure.code, failure.detail, failure.stage ?? 'archive');
-    }
-    if (inspection.result !== 'pass') {
-      return await finish();
-    }
+      const productionArtifact = await hashRepoFile(fsApi, repoRoot, path.join(repoRoot, productionIdentity), '--production-hap');
+      proof.haps.production.path = productionArtifact.path;
+      proof.haps.production.sha256 = productionArtifact.sha256;
+      proof.haps.production.sizeBytes = productionArtifact.sizeBytes;
+      if (/-unsigned\.hap$/iu.test(path.basename(productionArtifact.absolutePath))) {
+        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned production HAPs cannot enter the simulator proof lane.', 'input');
+        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
+        break main;
+      }
 
-    const targetResult = await execImpl(hdcCommand, ['list', 'targets'], { cwd: repoRoot });
-    const targetAnalysis = analyzeTargetDiscovery(targetResult);
-    if (targetAnalysis.kind === 'missing') {
-      pushFailure(proof, 'DEVICE_TARGET_MISSING', 'No HarmonyOS simulator target is available for Phase 3.', 'target');
-      return await finish();
-    }
-    if (targetAnalysis.kind === 'ambiguous') {
-      pushFailure(proof, 'DEVICE_TARGET_AMBIGUOUS', 'Phase 3 requires exactly one selected HarmonyOS simulator target.', 'target');
-      return await finish();
-    }
+      const entryTestArtifact = await hashRepoFile(fsApi, repoRoot, entryTestHapPath, '--entry-test-hap');
+      proof.haps.entryTest = {
+        path: entryTestArtifact.path,
+        sha256: entryTestArtifact.sha256,
+        sizeBytes: entryTestArtifact.sizeBytes
+      };
+      if (/-unsigned\.hap$/iu.test(path.basename(entryTestArtifact.absolutePath))) {
+        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned entry_test HAPs cannot enter the simulator proof lane.', 'input');
+        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed entry_test HAP is required before any simulator proof can run.', 'signing');
+        break main;
+      }
 
-    target = targetAnalysis.targets[0];
-    proof.target.identityMasked = createMaskedDeviceIdentity(target);
-    proof.target.buildVersion = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.software.version'], cwd: repoRoot });
-    proof.target.apiVersion = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.ohos.apiversion', 'const.product.apiversion'], cwd: repoRoot });
-    proof.target.abi = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.cpu.abilist'], cwd: repoRoot });
-    proof.target.model = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.model'], cwd: repoRoot });
-    proof.target.product = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.name', 'const.product.device'], cwd: repoRoot });
-    proof.target.targetKind = inferTargetKind(proof.target);
-    if (proof.target.targetKind !== 'simulator') {
-      pushFailure(proof, 'SIMULATOR_TARGET_REQUIRED', 'Phase 3 simulator proof must never classify a physical-only target as sufficient evidence.', 'target');
-      return await finish();
-    }
+      const inspection = await inspectHapImpl({
+        hapPath: productionArtifact.absolutePath,
+        manifest,
+        manifestPath: productionManifestPath,
+        buildKind: 'production',
+        repoRoot,
+        fsApi
+      });
+      copyInspectionSummary(proof.haps.production, inspection);
+      for (const failure of inspection.failures ?? []) {
+        pushFailure(proof, failure.code, failure.detail, failure.stage ?? 'archive');
+      }
+      if (inspection.result !== 'pass') {
+        break main;
+      }
 
-    const productionInstall = await installHap({ execImpl, hdcCommand, target, hapPath: productionHapPath, cwd: repoRoot });
-    if (productionInstall?.error || productionInstall?.exitCode !== 0 || productionInstall?.timedOut) {
-      pushFailure(proof, 'HDC_INSTALL_FAILED', sanitizeText(productionInstall?.stderr ?? 'Failed to install the production HAP on the simulator.', replacements), 'install');
-      return await finish();
-    }
-    installedAny = true;
-    const entryTestInstall = await installHap({ execImpl, hdcCommand, target, hapPath: resolvedEntryTestHapPath, cwd: repoRoot });
-    if (entryTestInstall?.error || entryTestInstall?.exitCode !== 0 || entryTestInstall?.timedOut) {
-      pushFailure(proof, 'HDC_INSTALL_FAILED', sanitizeText(entryTestInstall?.stderr ?? 'Failed to install the entry_test HAP on the simulator.', replacements), 'install');
-      return await finish();
-    }
+      hdcCommand = await resolveHdcCommand(toolchainInspectorImpl, repoRoot);
+      const targetResult = await execImpl(hdcCommand, ['list', 'targets'], { cwd: repoRoot });
+      const targetAnalysis = analyzeTargetDiscovery(targetResult);
+      if (targetAnalysis.kind === 'missing') {
+        pushFailure(proof, 'DEVICE_TARGET_MISSING', 'No HarmonyOS simulator target is available for Phase 3.', 'target');
+        break main;
+      }
+      if (targetAnalysis.kind === 'ambiguous') {
+        pushFailure(proof, 'DEVICE_TARGET_AMBIGUOUS', 'Phase 3 requires exactly one selected HarmonyOS simulator target.', 'target');
+        break main;
+      }
 
-    proof.timestamps.testStartedAt = isoTimestamp(now());
-    testAttempted = true;
-    const testResult = await runTestImpl({ execImpl, hdcCommand, target, proof, cwd: repoRoot });
-    if (testResult?.timedOut) {
-      pushFailure(proof, 'SIMULATOR_TEST_TIMEOUT', sanitizeText(testResult?.stderr ?? 'The simulator test runner timed out.', replacements), 'test');
-      return await finish();
-    }
-    if (testResult?.error || testResult?.exitCode !== 0) {
-      pushFailure(proof, 'SIMULATOR_TEST_FAILED', sanitizeText(testResult?.stderr ?? 'The simulator test runner failed.', replacements), 'test');
-      return await finish();
-    }
+      target = targetAnalysis.targets[0];
+      proof.target.identityMasked = createMaskedDeviceIdentity(target);
+      proof.target.buildVersion = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.software.version'], cwd: repoRoot });
+      proof.target.apiVersion = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.ohos.apiversion', 'const.product.apiversion'], cwd: repoRoot });
+      proof.target.abi = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.cpu.abilist'], cwd: repoRoot });
+      proof.target.model = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.model'], cwd: repoRoot });
+      proof.target.product = await readTargetFact({ execImpl, hdcCommand, target, keys: ['const.product.name', 'const.product.device'], cwd: repoRoot });
+      const classification = classifyHarmonyTarget(proof.target);
+      if (classification.kind === 'physical') {
+        proof.target.targetKind = 'physical';
+        pushFailure(proof, 'SIMULATOR_TARGET_REQUIRED', 'Phase 3 simulator proof must never classify a physical-only target as sufficient evidence.', 'target');
+        break main;
+      }
+      if (classification.kind !== 'simulator') {
+        proof.target.targetKind = 'unknown';
+        pushFailure(proof, classification.code, classification.detail, 'target');
+        break main;
+      }
+      proof.target.targetKind = 'simulator';
 
-    const pulled = await pullPhase3AppEvidenceImpl({
-      fsApi,
-      execImpl,
-      hdcCommand,
-      target,
-      localPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase3-pull', proof.runId, 'phase3-simulator-app-evidence.json'),
-      cwd: repoRoot,
-      expectedRunId: proof.runId,
-      expectedProductionHapSha256: proof.haps.production.sha256,
-      expectedEntryTestHapSha256: proof.haps.entryTest.sha256,
-      expectedFixtureSha256: proof.fixture.sha256,
-      startedAt
-    });
-    if (!pulled?.ok) {
-      const failure = pulled?.invalid ?? createFailure('APP_EVIDENCE_MISSING', 'The simulator did not produce a usable app evidence file.', 'app-proof');
-      pushFailure(proof, failure.code, sanitizeText(failure.detail, replacements), failure.stage);
-      return await finish();
-    }
+      const productionInstall = await installHap({ execImpl, hdcCommand, target, hapPath: productionArtifact.absolutePath, cwd: repoRoot });
+      if (productionInstall?.error || productionInstall?.exitCode !== 0 || productionInstall?.timedOut) {
+        pushFailure(proof, 'HDC_INSTALL_FAILED', sanitizeText(productionInstall?.stderr ?? 'Failed to install the production HAP on the simulator.', replacements), 'install');
+        break main;
+      }
+      installedAny = true;
 
-    const evidence = pulled.proof;
-    proof.timestamps.proofAt = isoTimestamp(now());
-    proof.appEvidence = {
-      path: normalizePathForReport(repoRoot, pulled.localPath),
-      sha256: pulled.sha256 ?? null,
-      sizeBytes: pulled.sizeBytes ?? null,
-      runId: evidence.runId,
-      productionHapSha256: evidence.productionHapSha256,
-      entryTestHapSha256: evidence.entryTestHapSha256,
-      fixtureSha256: evidence.fixtureSha256,
-      status: evidence.status,
-      suites: evidence.suites,
-      checks: evidence.checks,
-      trace: evidence.trace,
-      failureCount: evidence.failures.length,
-      homeSnapshotAddress: evidence.homeSnapshotAddress,
-      homeRuntimeAddress: evidence.homeRuntimeAddress,
-      cleanup: evidence.cleanup
-    };
-    finalizeChecksFromEvidence(proof, evidence);
-    if (evidence.runId !== proof.runId) {
-      pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'App evidence runId did not match the runner runId.', 'app-proof');
-      return await finish();
-    }
-    if (evidence.productionHapSha256 !== proof.haps.production.sha256 || evidence.entryTestHapSha256 !== proof.haps.entryTest.sha256) {
-      pushFailure(proof, 'APP_EVIDENCE_HAP_MISMATCH', 'App evidence HAP identities did not match the runner inputs.', 'app-proof');
-      return await finish();
-    }
-    if (evidence.fixtureSha256 !== proof.fixture.sha256) {
-      pushFailure(proof, 'APP_EVIDENCE_FIXTURE_MISMATCH', 'App evidence fixture identity did not match the runner input.', 'app-proof');
-      return await finish();
-    }
-    if (evidence.status !== 'PASS' || evidence.failures.length > 0) {
-      pushFailure(proof, 'SIMULATOR_EVIDENCE_NOT_PASSING', 'Simulator evidence did not report PASS with zero failures.', 'app-proof');
-    }
-    if (proof.checks.homeAddressesMatch !== 'pass') {
-      pushFailure(proof, 'HOME_ADDRESS_MISMATCH', 'Home addresses must match the captured runtime snapshot.', 'app-proof');
-    }
-    if (proof.checks.identitiesMatch !== 'pass') {
-      pushFailure(proof, 'APP_EVIDENCE_IDENTITY_MISMATCH', 'Simulator evidence identities did not match the runner inputs.', 'app-proof');
+      const entryTestInstall = await installHap({ execImpl, hdcCommand, target, hapPath: entryTestArtifact.absolutePath, cwd: repoRoot });
+      if (entryTestInstall?.error || entryTestInstall?.exitCode !== 0 || entryTestInstall?.timedOut) {
+        pushFailure(proof, 'HDC_INSTALL_FAILED', sanitizeText(entryTestInstall?.stderr ?? 'Failed to install the entry_test HAP on the simulator.', replacements), 'install');
+        break main;
+      }
+
+      proof.timestamps.testStartedAt = isoTimestamp(now());
+      const testResult = await runTestImpl({ execImpl, hdcCommand, target, proof, cwd: repoRoot });
+      if (testResult?.timedOut) {
+        pushFailure(proof, 'SIMULATOR_TEST_TIMEOUT', sanitizeText(testResult?.stderr ?? 'The simulator test runner timed out.', replacements), 'test');
+        break main;
+      }
+      if (testResult?.error || testResult?.exitCode !== 0) {
+        pushFailure(proof, 'SIMULATOR_TEST_FAILED', sanitizeText(testResult?.stderr ?? 'The simulator test runner failed.', replacements), 'test');
+        break main;
+      }
+
+      const pulled = await pullPhase3AppEvidenceImpl({
+        fsApi,
+        execImpl,
+        hdcCommand,
+        target,
+        localPath: path.join(pullDirectoryPath, 'phase3-simulator-app-evidence.json'),
+        cwd: repoRoot,
+        expectedRunId: proof.runId,
+        expectedProductionHapSha256: proof.haps.production.sha256,
+        expectedEntryTestHapSha256: proof.haps.entryTest.sha256,
+        expectedFixtureSha256: proof.fixture.sha256,
+        startedAt
+      });
+      if (!pulled?.ok) {
+        const failure = pulled?.invalid ?? createFailure('APP_EVIDENCE_MISSING', 'The simulator did not produce a usable app evidence file.', 'app-proof');
+        pushFailure(proof, failure.code, sanitizeText(failure.detail, replacements), failure.stage);
+        break main;
+      }
+
+      const evidence = pulled.proof;
+      proof.timestamps.proofAt = isoTimestamp(now());
+      proof.appEvidence = {
+        path: normalizePathForReport(repoRoot, pulled.localPath),
+        sha256: pulled.sha256 ?? null,
+        sizeBytes: pulled.sizeBytes ?? null,
+        runId: evidence.runId,
+        productionHapSha256: evidence.productionHapSha256,
+        entryTestHapSha256: evidence.entryTestHapSha256,
+        fixtureSha256: evidence.fixtureSha256,
+        status: evidence.status,
+        suites: evidence.suites,
+        checks: evidence.checks,
+        trace: evidence.trace,
+        failureCount: evidence.failures.length,
+        homeSnapshotAddress: evidence.homeSnapshotAddress,
+        homeRuntimeAddress: evidence.homeRuntimeAddress,
+        cleanup: evidence.cleanup
+      };
+      finalizeChecksFromEvidence(proof, evidence);
+
+      if (evidence.runId !== proof.runId) {
+        pushFailure(proof, 'APP_EVIDENCE_RUN_ID_MISMATCH', 'App evidence runId did not match the runner runId.', 'app-proof');
+      }
+      if (evidence.productionHapSha256 !== proof.haps.production.sha256 || evidence.entryTestHapSha256 !== proof.haps.entryTest.sha256) {
+        pushFailure(proof, 'APP_EVIDENCE_HAP_MISMATCH', 'App evidence HAP identities did not match the runner inputs.', 'app-proof');
+      }
+      if (evidence.fixtureSha256 !== proof.fixture.sha256) {
+        pushFailure(proof, 'APP_EVIDENCE_FIXTURE_MISMATCH', 'App evidence fixture identity did not match the runner input.', 'app-proof');
+      }
+      if (evidence.status !== 'PASS') {
+        pushFailure(proof, 'SIMULATOR_EVIDENCE_NOT_PASSING', 'Simulator evidence did not report PASS.', 'app-proof');
+      }
+      if (evidence.failures.length > 0) {
+        pushFailure(proof, 'APP_EVIDENCE_FAILURES_PRESENT', 'Simulator evidence must report zero failures.', 'app-proof');
+      }
+      if (!exactOrderedArrayEqual(evidence.suites, REQUIRED_EVIDENCE_SUITES)) {
+        pushFailure(proof, 'APP_EVIDENCE_SUITES_INVALID', 'Simulator evidence suite coverage must match the exact allowlist.', 'app-proof');
+      }
+      if (!exactOrderedArrayEqual(evidence.checks, REQUIRED_EVIDENCE_CHECKS)) {
+        pushFailure(proof, 'APP_EVIDENCE_CHECKS_INVALID', 'Simulator evidence checks must match the exact allowlist.', 'app-proof');
+      }
+      if (proof.checks.homeAddressesMatch !== 'pass') {
+        pushFailure(proof, 'HOME_ADDRESS_MISMATCH', 'Home addresses must match the captured runtime snapshot.', 'app-proof');
+      }
+      if (proof.checks.identitiesMatch !== 'pass') {
+        pushFailure(proof, 'APP_EVIDENCE_IDENTITY_MISMATCH', 'App evidence identities did not match the runner inputs.', 'app-proof');
+      }
+      if (proof.checks.cleanup !== 'pass') {
+        pushFailure(proof, 'APP_EVIDENCE_CLEANUP_INVALID', 'App evidence cleanup status must be pass.', 'app-proof');
+      }
+      if (proof.checks.startStop !== 'pass') {
+        pushFailure(proof, 'APP_EVIDENCE_RUNTIME_TRACE_INVALID', 'Simulator evidence must include the exact runtime start/stop check.', 'app-proof');
+      }
     }
   } catch (error) {
     pushFailure(proof, error?.code ?? 'UNEXPECTED_ERROR', sanitizeText(error?.message ?? String(error), replacements), 'runner');
@@ -841,7 +845,19 @@ export async function runPhase3SimulatorProof({
       }
     }
 
-    if (testAttempted) {
+    try {
+      await fsApi.rm(pullDirectoryPath, { recursive: true });
+      proof.cleanup.localPullDirectoryResult = 'pass';
+    } catch (error) {
+      if (error?.code === 'ENOENT') {
+        proof.cleanup.localPullDirectoryResult = 'pass';
+      } else {
+        proof.cleanup.localPullDirectoryResult = 'fail';
+        pushFailure(proof, 'LOCAL_PULL_CLEANUP_FAILED', sanitizeText(error?.message ?? 'Failed to remove local simulator pull artifacts.', replacements), 'cleanup');
+      }
+    }
+
+    if (shouldRebuildDefaultProductionLane) {
       try {
         await buildPhase1NativeImpl({
           outputPath: productionManifestPath,
@@ -880,6 +896,7 @@ export async function runCli({
   now = () => new Date(),
   buildPhase1NativeImpl = buildPhase1Native,
   inspectHapImpl = inspectHap,
+  toolchainInspectorImpl = inspectToolchain,
   execImpl = execCommand,
   runTestImpl = runDefaultSimulatorTest,
   pullPhase3AppEvidenceImpl = pullPhase3AppEvidence
@@ -905,6 +922,7 @@ export async function runCli({
     fsApi,
     buildPhase1NativeImpl,
     inspectHapImpl,
+    toolchainInspectorImpl,
     execImpl,
     runTestImpl,
     pullPhase3AppEvidenceImpl,

@@ -80,7 +80,8 @@
   "cleanup": {
     "forceStopResult": "not-run",
     "uninstallResult": "not-run",
-    "rebuildDefaultProductionLane": "not-run"
+    "rebuildDefaultProductionLane": "not-run",
+    "localPullDirectoryResult": "not-run"
   },
   "physicalDeviceGates": {
     "phase2Traffic": "incomplete",
