@@ -1,4 +1,5 @@
 import type {
+  AppError,
   AppErrorStage,
   ProfileApplicationErrorSnapshot,
   ProfileApplicationProfileSnapshot,
@@ -145,7 +146,7 @@ class ProfileDetailViewStateValue implements ProfileDetailViewState {
   error?: SafeErrorState;
 }
 
-export function createSafeErrorState(error: ProfileApplicationErrorSnapshot | null): SafeErrorState | undefined {
+export function createSafeErrorState(error: ProfileApplicationErrorSnapshot | AppError | null): SafeErrorState | undefined {
   if (error === null) {
     return undefined;
   }
@@ -371,17 +372,7 @@ export function cloneProfileDetailViewState(state: ProfileDetailViewState): Prof
 export function sanitizePresentationSourceDisplay(sourceDisplay: string): string {
   const trimmed: string = sourceDisplay.trim();
   if (trimmed.startsWith('http://') || trimmed.startsWith('https://')) {
-    const schemeSeparator: number = trimmed.indexOf('://');
-    const authorityStart: number = schemeSeparator + 3;
-    let authorityEnd: number = trimmed.length;
-    for (let index: number = authorityStart; index < trimmed.length; index += 1) {
-      const character: string = trimmed[index];
-      if (character === '/' || character === '?' || character === '#') {
-        authorityEnd = index;
-        break;
-      }
-    }
-    return trimmed.substring(authorityStart, authorityEnd);
+    return safeRemoteHostFromUrl(trimmed) ?? '';
   }
 
   const normalized: string = trimmed.replace(/\\/g, '/');
@@ -422,6 +413,11 @@ class ParsedRemoteSourceInputValue implements ParsedRemoteSourceInput {
   plainHttp: boolean = false;
 }
 
+class SafeRemoteAuthorityValue {
+  sourceDisplay: string = '';
+  host: string = '';
+}
+
 export function resolveNameIssue(rawName: string, required: boolean): 'REQUIRED' | 'TOO_LONG' | undefined {
   const trimmed: string = rawName.trim();
   if (trimmed.length === 0) {
@@ -446,23 +442,14 @@ export function parseRemoteSourceInput(rawUrl: string): ParsedRemoteSourceInput 
   if (scheme !== 'http' && scheme !== 'https') {
     return undefined;
   }
-  const authorityStart: number = schemeSeparator + 3;
-  let authorityEnd: number = trimmed.length;
-  for (let index: number = authorityStart; index < trimmed.length; index += 1) {
-    const character: string = trimmed[index];
-    if (character === '/' || character === '?' || character === '#') {
-      authorityEnd = index;
-      break;
-    }
-  }
-  const authority: string = trimmed.substring(authorityStart, authorityEnd).trim();
-  if (authority.length === 0 || authority.indexOf(' ') >= 0) {
+  const authority: SafeRemoteAuthorityValue | undefined = safeRemoteAuthorityFromUrl(trimmed);
+  if (authority === undefined) {
     return undefined;
   }
   const parsed: ParsedRemoteSourceInputValue = new ParsedRemoteSourceInputValue();
   parsed.sourceUrl = trimmed;
-  parsed.sourceDisplay = `${scheme}://${authority}`;
-  parsed.host = sanitizePresentationSourceDisplay(parsed.sourceDisplay);
+  parsed.sourceDisplay = authority.sourceDisplay;
+  parsed.host = authority.host;
   parsed.plainHttp = scheme === 'http';
   return parsed;
 }
@@ -481,4 +468,126 @@ export function resolveRemoteUrlIssue(rawUrl: string): 'REQUIRED' | 'INVALID_URL
     return 'INVALID_SCHEME';
   }
   return parseRemoteSourceInput(trimmed) === undefined ? 'INVALID_URL' : undefined;
+}
+
+export function safeRemoteSourceDisplayFromUrl(rawUrl: string): string | undefined {
+  return safeRemoteAuthorityFromUrl(rawUrl)?.sourceDisplay;
+}
+
+export function safeRemoteHostFromUrl(rawUrl: string): string | undefined {
+  return safeRemoteAuthorityFromUrl(rawUrl)?.host;
+}
+
+function safeRemoteAuthorityFromUrl(rawUrl: string): SafeRemoteAuthorityValue | undefined {
+  const trimmed: string = rawUrl.trim();
+  const schemeSeparator: number = trimmed.indexOf('://');
+  if (schemeSeparator <= 0) {
+    return undefined;
+  }
+  const scheme: string = trimmed.substring(0, schemeSeparator);
+  const authorityStart: number = schemeSeparator + 3;
+  let authorityEnd: number = trimmed.length;
+  for (let index: number = authorityStart; index < trimmed.length; index += 1) {
+    const character: string = trimmed[index];
+    if (character === '/' || character === '?' || character === '#') {
+      authorityEnd = index;
+      break;
+    }
+  }
+  const rawAuthority: string = trimmed.substring(authorityStart, authorityEnd).trim();
+  const host: string | undefined = normalizeRemoteHostPort(rawAuthority);
+  if (host === undefined) {
+    return undefined;
+  }
+  const safe: SafeRemoteAuthorityValue = new SafeRemoteAuthorityValue();
+  safe.sourceDisplay = `${scheme}://${host}`;
+  safe.host = host;
+  return safe;
+}
+
+function normalizeRemoteHostPort(rawAuthority: string): string | undefined {
+  if (rawAuthority.length === 0 || hasControlOrWhitespace(rawAuthority)) {
+    return undefined;
+  }
+  const atIndex: number = rawAuthority.lastIndexOf('@');
+  const hostPort: string = atIndex >= 0 ? rawAuthority.substring(atIndex + 1) : rawAuthority;
+  if (hostPort.length === 0 || hasControlOrWhitespace(hostPort)) {
+    return undefined;
+  }
+  if (hostPort.startsWith('[')) {
+    return normalizeBracketedIpv6HostPort(hostPort);
+  }
+  return normalizeStandardHostPort(hostPort);
+}
+
+function hasControlOrWhitespace(value: string): boolean {
+  for (let index: number = 0; index < value.length; index += 1) {
+    const code: number = value.charCodeAt(index);
+    if (code <= 32 || code === 127) {
+      return true;
+    }
+  }
+  return false;
+}
+
+function normalizeBracketedIpv6HostPort(hostPort: string): string | undefined {
+  const closingBracketIndex: number = hostPort.indexOf(']');
+  if (closingBracketIndex <= 1 || hostPort.lastIndexOf(']') !== closingBracketIndex) {
+    return undefined;
+  }
+  const host: string = hostPort.substring(0, closingBracketIndex + 1);
+  const suffix: string = hostPort.substring(closingBracketIndex + 1);
+  if (suffix.length === 0) {
+    return host;
+  }
+  if (!suffix.startsWith(':') || !isNumericPort(suffix.substring(1))) {
+    return undefined;
+  }
+  return `${host}:${suffix.substring(1)}`;
+}
+
+function normalizeStandardHostPort(hostPort: string): string | undefined {
+  const firstColonIndex: number = hostPort.indexOf(':');
+  const lastColonIndex: number = hostPort.lastIndexOf(':');
+  if (firstColonIndex >= 0 && firstColonIndex !== lastColonIndex) {
+    return undefined;
+  }
+  let host: string = hostPort;
+  let port: string = '';
+  if (lastColonIndex >= 0) {
+    host = hostPort.substring(0, lastColonIndex);
+    port = hostPort.substring(lastColonIndex + 1);
+  }
+  if (host.length === 0 || !isSimpleHost(host)) {
+    return undefined;
+  }
+  if (port.length === 0) {
+    return host;
+  }
+  return isNumericPort(port) ? `${host}:${port}` : undefined;
+}
+
+function isSimpleHost(host: string): boolean {
+  for (let index: number = 0; index < host.length; index += 1) {
+    const character: string = host[index];
+    const code: number = character.charCodeAt(0);
+    const isAlphaNumeric: boolean = (code >= 48 && code <= 57) || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
+    if (!isAlphaNumeric && character !== '.' && character !== '-') {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isNumericPort(port: string): boolean {
+  if (port.length === 0) {
+    return false;
+  }
+  for (let index: number = 0; index < port.length; index += 1) {
+    const code: number = port.charCodeAt(index);
+    if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+  return true;
 }

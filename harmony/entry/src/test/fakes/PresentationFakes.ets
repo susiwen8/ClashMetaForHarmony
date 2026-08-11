@@ -49,6 +49,7 @@ import {
   type SubscriptionSecretStore,
   redactUrl
 } from '@cmfa/shared';
+import { safeRemoteSourceDisplayFromUrl } from '../../main/ets/presentation/PresentationModels';
 
 interface ApplicationSnapshotOptions {
   httpAddress?: string;
@@ -404,7 +405,7 @@ export class PresentationTestApplication extends ProfileApplication {
   }
 
   async importUrl(command: RemoteImportCommand): Promise<ImportProfileResult> {
-    const safeSourceDisplay: string = inferSafeRemoteSourceDisplay(command.sourceUrl);
+    const safeSourceDisplay: string = safeRemoteSourceDisplayFromUrl(command.sourceUrl) ?? '';
     this.commandLog.push(`importUrl:${command.allowPlainHttp ? 'plain' : 'secure'}:${command.name}`);
     this.importUrlCommands.push(createSafeRemoteImportRecord(safeSourceDisplay, command.allowPlainHttp, command.name));
     return await shiftOrDefault<ImportProfileResult>(this.importUrlResults, createCancelledImportResult());
@@ -667,26 +668,6 @@ function inferSourceKind(sourceDisplay: string): ProfileSourceKind {
   return 'LOCAL_FILE';
 }
 
-function inferSafeRemoteSourceDisplay(sourceUrl: string): string {
-  const trimmed: string = sourceUrl.trim();
-  const schemeSeparator: number = trimmed.indexOf('://');
-  if (schemeSeparator <= 0) {
-    return '';
-  }
-  const scheme: string = trimmed.substring(0, schemeSeparator);
-  const authorityStart: number = schemeSeparator + 3;
-  let authorityEnd: number = trimmed.length;
-  for (let index: number = authorityStart; index < trimmed.length; index += 1) {
-    const character: string = trimmed[index];
-    if (character === '/' || character === '?' || character === '#') {
-      authorityEnd = index;
-      break;
-    }
-  }
-  const authority: string = trimmed.substring(authorityStart, authorityEnd);
-  return authority.length === 0 ? '' : `${scheme}://${authority}`;
-}
-
 function resolveSourceRepairRequired(
   sourceKind: ProfileSourceKind,
   lastError: ProfileApplicationErrorSnapshot | null
@@ -694,7 +675,9 @@ function resolveSourceRepairRequired(
   if (sourceKind !== 'REMOTE_URL' || lastError === null) {
     return false;
   }
-  return lastError.code === 'SOURCE_SECRET_MISSING' || lastError.code === 'SOURCE_DECRYPT_FAILED';
+  return lastError.code === 'SOURCE_SECRET_MISSING' ||
+    lastError.code === 'SOURCE_DECRYPT_FAILED' ||
+    lastError.code === 'SOURCE_SECRET_VERSION_UNSUPPORTED';
 }
 
 function createProfileRecord(

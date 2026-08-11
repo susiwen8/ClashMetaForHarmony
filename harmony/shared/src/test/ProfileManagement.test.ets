@@ -1225,13 +1225,13 @@ export default function profileManagementTestsuite() {
     it('applicationCurrentPublishesSafeSourceKindRepairFlagAndRedactedProfileError', 0, async () => {
       const revision = buildRevision('repair');
       const repairError = createAppError('PERSISTENCE', 'decrypt https://repair.example.com/path?token=secret failed near /private/cache', {
-        code: 'SOURCE_DECRYPT_FAILED',
+        code: 'SOURCE_SECRET_VERSION_UNSUPPORTED',
         retryable: false,
         timestamp: buildTimestamp(4)
       });
       const repair = buildProfileRecord('repair', 'INVALID', 'REMOTE_URL', null, 'secret-repair', repairError);
-      const local = buildProfileRecord('local', 'VALID', 'LOCAL_FILE', revision);
-      const repository = new FakeProfileRepository([local, repair], 'local');
+      const localRepair = buildProfileRecord('local', 'INVALID', 'LOCAL_FILE', null, undefined, repairError);
+      const repository = new FakeProfileRepository([localRepair, repair], 'local');
       const contentStore = new FakeProfileContentStore();
       const application = createApplication(
         repository,
@@ -1245,11 +1245,16 @@ export default function profileManagementTestsuite() {
       const repairSnapshot: ProfileApplicationProfileSnapshot = snapshot.profiles[0].id === 'repair'
         ? snapshot.profiles[0]
         : snapshot.profiles[1];
+      const localSnapshot: ProfileApplicationProfileSnapshot = snapshot.profiles[0].id === 'local'
+        ? snapshot.profiles[0]
+        : snapshot.profiles[1];
       const serialized = JSON.stringify(repairSnapshot);
 
       expect(repairSnapshot.sourceKind).assertEqual('REMOTE_URL');
       expect(repairSnapshot.sourceRepairRequired).assertTrue();
-      expect(repairSnapshot.lastError?.code).assertEqual('SOURCE_DECRYPT_FAILED');
+      expect(repairSnapshot.lastError?.code).assertEqual('SOURCE_SECRET_VERSION_UNSUPPORTED');
+      expect(localSnapshot.sourceKind).assertEqual('LOCAL_FILE');
+      expect(localSnapshot.sourceRepairRequired).assertFalse();
       expect(repairSnapshot.lastError?.technicalDetail.includes('https://repair.example.com')).assertTrue();
       expect(serialized.includes('token=secret')).assertFalse();
       expect(serialized.includes('/path')).assertFalse();

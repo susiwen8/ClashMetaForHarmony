@@ -86,11 +86,11 @@ export default function importProfileViewModelTestsuite() {
       const viewModel = new ImportProfileViewModel(application);
 
       viewModel.updateNameDraft('Plain HTTP');
-      viewModel.updateUrlDraft('http://legacy.example.com/deep/path.yaml?token=secret');
+      viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
       await viewModel.requestImportUrl();
 
       expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
-      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com:8080');
       expect(application.importUrlCommands.length).assertEqual(0);
 
       viewModel.cancelPlainHttpConfirmation();
@@ -103,22 +103,43 @@ export default function importProfileViewModelTestsuite() {
       expect(application.importUrlCommands.length).assertEqual(0);
       expect(viewModel.current().urlIssue).assertEqual('REQUIRED');
 
-      viewModel.updateUrlDraft('http://legacy.example.com/deep/path.yaml?token=secret');
+      viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
       await viewModel.requestImportUrl();
-      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com:8080');
       expect(application.importUrlCommands.length).assertEqual(0);
 
       await viewModel.confirmPlainHttpImport();
       expect(application.importUrlCommands.length).assertEqual(1);
       expect(application.importUrlCommands[0].allowPlainHttp).assertTrue();
-      expect(application.importUrlCommands[0].sourceDisplay).assertEqual('http://legacy.example.com');
+      expect(application.importUrlCommands[0].sourceDisplay).assertEqual('http://legacy.example.com:8080');
       expect(viewModel.current().httpConfirmationHost).assertEqual(undefined);
 
-      viewModel.updateUrlDraft('http://legacy.example.com/deep/path.yaml?token=secret');
+      viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
       await viewModel.requestImportUrl();
       expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
       expect(application.importUrlCommands.length).assertEqual(1);
       assertNoPlaintextLeak(serialize(viewModel.current()));
+    });
+
+    it('ignoresRepeatedConfirmWhilePlainHttpImportIsInFlight', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      const deferred = new DeferredResult<ImportProfileResult>();
+      application.queueImportUrlResult(deferred.promise);
+      const viewModel = new ImportProfileViewModel(application);
+
+      viewModel.updateNameDraft('Plain HTTP');
+      viewModel.updateUrlDraft('http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment');
+      await viewModel.requestImportUrl();
+      const firstConfirm = viewModel.confirmPlainHttpImport();
+      await viewModel.confirmPlainHttpImport();
+
+      expect(application.importUrlCommands.length).assertEqual(1);
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      expect(viewModel.current().urlIssue).assertEqual(undefined);
+
+      deferred.resolve(createCreatedImportResult('plain-created'));
+      await firstConfirm;
+      expect(viewModel.current().status).assertEqual('COMPLETED');
     });
 
     it('reopensLocalPickerAfterCancellationAndNavigatesToRetainedInvalidLocalProfile', 0, async () => {
@@ -223,6 +244,43 @@ export default function importProfileViewModelTestsuite() {
       expect(intents.length).assertEqual(1);
       expect(intents[0].profileId).assertEqual('retained-invalid');
       expect(viewModel.current().status).assertEqual('COMPLETED');
+      assertNoPlaintextLeak(serialize(viewModel.current()));
+    });
+
+    it('preservesFailedImportErrorWithoutSnapshotErrorAndIgnoresDisposeCompletion', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      const deferred = new DeferredResult<ImportProfileResult>();
+      application.queueImportUrlResult(deferred.promise);
+      const viewModel = new ImportProfileViewModel(application);
+      const intents: ImportNavigationIntent[] = [];
+      viewModel.subscribeNavigation((intent: ImportNavigationIntent): void => {
+        intents.push(intent);
+      });
+
+      viewModel.updateNameDraft('Broken Remote');
+      viewModel.updateUrlDraft('https://broken.example.com/deep/path.yaml?token=secret');
+      const command = viewModel.requestImportUrl();
+
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      deferred.resolve(createFailedImportResult('CMFA_IMPORT', 'IMPORT', 'download failed for https://broken.example.com/deep/path.yaml?token=secret'));
+      await command;
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().error?.technicalDetail).assertEqual('download failed for https://broken.example.com');
+      expect(intents.length).assertEqual(0);
+
+      const disposedDeferred = new DeferredResult<ImportProfileResult>();
+      application.queueImportUrlResult(disposedDeferred.promise);
+      viewModel.updateUrlDraft('https://created.example.com/deep/path.yaml?token=secret');
+      const disposedCommand = viewModel.requestImportUrl();
+      viewModel.dispose();
+      disposedDeferred.resolve(createCreatedImportResult('disposed-created'));
+      await disposedCommand;
+
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      expect(intents.length).assertEqual(0);
+      expect(application.importUrlCommands.length).assertEqual(2);
+      expect(application.commandLog.filter((entry: string): boolean => entry.startsWith('importUrl:')).length).assertEqual(2);
       assertNoPlaintextLeak(serialize(viewModel.current()));
     });
   });

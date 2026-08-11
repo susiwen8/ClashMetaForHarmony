@@ -17,6 +17,7 @@ import {
   isProfileStartEligible,
   parseRemoteSourceInput,
   resolveRemoteUrlIssue,
+  safeRemoteHostFromUrl,
   type ParsedRemoteSourceInput,
   type ProfileDetailProfileState,
   type ProfileDetailViewState,
@@ -64,6 +65,7 @@ export class ProfileDetailViewModel {
   private httpConfirmationHost?: string;
   private pendingPlainHttpRefresh: boolean = false;
   private replacementUrlDraft: string = '';
+  private fallbackError?: SafeErrorState;
 
   constructor(application: ProfileApplication, profileId: string) {
     this.application = application;
@@ -118,7 +120,11 @@ export class ProfileDetailViewModel {
     }
     const token: number = this.beginCommand();
     const result: ManageEnableResult = await this.application.enable(this.profileId);
-    this.completeCommand(token, result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED');
+    this.completeCommand(
+      token,
+      resolveManageStatus(result),
+      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
+    );
   }
 
   async requestRefresh(): Promise<void> {
@@ -138,7 +144,11 @@ export class ProfileDetailViewModel {
     }
     const token: number = this.beginCommand();
     const result: RefreshProfileResult = await this.application.refresh(this.profileId);
-    this.completeCommand(token, resolveRefreshStatus(result));
+    this.completeCommand(
+      token,
+      resolveRefreshStatus(result),
+      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
+    );
   }
 
   cancelPlainHttpConfirmation(): void {
@@ -159,7 +169,11 @@ export class ProfileDetailViewModel {
     this.httpConfirmationHost = undefined;
     const token: number = this.beginCommand();
     const result: RefreshProfileResult = await this.application.refresh(this.profileId, true);
-    this.completeCommand(token, resolveRefreshStatus(result));
+    this.completeCommand(
+      token,
+      resolveRefreshStatus(result),
+      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
+    );
   }
 
   updateReplacementUrlDraft(value: string): void {
@@ -181,7 +195,11 @@ export class ProfileDetailViewModel {
     this.replacementUrlDraft = '';
     const token: number = this.beginCommand();
     const result: ManageReplaceResult = await this.application.replaceSubscriptionUrl(this.profileId, parsed.sourceUrl);
-    this.completeCommand(token, result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED');
+    this.completeCommand(
+      token,
+      resolveManageStatus(result),
+      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
+    );
   }
 
   requestDelete(): void {
@@ -204,11 +222,13 @@ export class ProfileDetailViewModel {
       return;
     }
     if (result.kind === 'DELETED') {
+      this.fallbackError = undefined;
       this.status = 'COMPLETED';
       this.publish(this.buildState());
       this.publishNavigation(new ProfileDetailNavigationIntentValue());
       return;
     }
+    this.fallbackError = createSafeErrorState(result.error);
     this.status = 'ERROR';
     this.publish(this.buildState());
   }
@@ -235,6 +255,7 @@ export class ProfileDetailViewModel {
       return;
     }
     this.disposed = true;
+    this.commandToken += 1;
     this.application.unsubscribe(this.subscriptionId);
     this.listeners.clear();
     this.navigationListeners.clear();
@@ -246,6 +267,7 @@ export class ProfileDetailViewModel {
     this.confirmingDelete = false;
     this.pendingPlainHttpRefresh = false;
     this.httpConfirmationHost = undefined;
+    this.fallbackError = undefined;
     this.status = 'SUBMITTING';
     this.publish(this.buildState());
     return this.commandToken;
@@ -253,11 +275,13 @@ export class ProfileDetailViewModel {
 
   private completeCommand(
     token: number,
-    status: 'IDLE' | 'COMPLETED' | 'ERROR'
+    status: 'IDLE' | 'COMPLETED' | 'ERROR',
+    fallbackError: SafeErrorState | undefined
   ): void {
     if (token !== this.commandToken) {
       return;
     }
+    this.fallbackError = fallbackError;
     this.status = status;
     this.publish(this.buildState());
   }
@@ -274,7 +298,7 @@ export class ProfileDetailViewModel {
     const canRefresh: boolean = !actionsLocked && profile !== undefined && !sourceRepairRequired;
     const canDelete: boolean = !actionsLocked && profile !== undefined;
     const canReplaceSubscriptionUrl: boolean = !actionsLocked && sourceRepairRequired;
-    const error: SafeErrorState | undefined = resolveDetailError(snapshot, profile);
+    const error: SafeErrorState | undefined = resolveDetailError(snapshot, profile, this.fallbackError);
     return createProfileDetailViewState(
       this.status,
       profileState,
@@ -341,7 +365,8 @@ export class ProfileDetailViewModel {
 
 function resolveDetailError(
   snapshot: ProfileApplicationSnapshot,
-  profile: ProfileApplicationProfileSnapshot | undefined
+  profile: ProfileApplicationProfileSnapshot | undefined,
+  fallbackError: SafeErrorState | undefined
 ): SafeErrorState | undefined {
   if (snapshot.error !== null) {
     return createSafeErrorState(snapshot.error);
@@ -349,12 +374,11 @@ function resolveDetailError(
   if (profile?.lastError !== null && profile?.lastError !== undefined) {
     return createSafeErrorState(profile.lastError);
   }
-  return undefined;
+  return fallbackError;
 }
 
 function sanitizeRefreshHost(sourceDisplay: string): string {
-  const schemeSeparator: number = sourceDisplay.indexOf('://');
-  return schemeSeparator >= 0 ? sourceDisplay.substring(schemeSeparator + 3) : sourceDisplay;
+  return safeRemoteHostFromUrl(sourceDisplay) ?? sourceDisplay;
 }
 
 function createCopyEffect(value: string): ProfileDetailEffect {
@@ -380,5 +404,9 @@ function resolveRefreshStatus(result: RefreshProfileResult): 'IDLE' | 'COMPLETED
   if (result.kind === 'CANCELLED') {
     return 'IDLE';
   }
+  return result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED';
+}
+
+function resolveManageStatus(result: ManageEnableResult | ManageReplaceResult | ManageDeleteResult): 'COMPLETED' | 'ERROR' {
   return result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED';
 }

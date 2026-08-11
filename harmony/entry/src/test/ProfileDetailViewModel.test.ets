@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@ohos/hypium';
-import type { ManageEnableResult } from '@cmfa/shared';
+import type { ManageDeleteResult, ManageEnableResult } from '@cmfa/shared';
 import {
   ProfileDetailViewModel,
   type ProfileDetailEffect,
@@ -142,7 +142,7 @@ export default function profileDetailViewModelTestsuite() {
         createApplicationSnapshot(
           'READY',
           [
-            createProfileSnapshot('plain-remote', 'Plain Remote', 'http://legacy.example.com', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+            createProfileSnapshot('plain-remote', 'Plain Remote', 'http://user:pass@legacy.example.com:8080/deep/path.yaml?token=secret#fragment', 'VALID', '2026-08-11T12:31:00.000Z', true, {
               sourceKind: 'REMOTE_URL'
             })
           ],
@@ -155,7 +155,7 @@ export default function profileDetailViewModelTestsuite() {
 
       await viewModel.requestRefresh();
       expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
-      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com:8080');
       expect(application.refreshCommands.length).assertEqual(0);
 
       viewModel.cancelPlainHttpConfirmation();
@@ -166,7 +166,7 @@ export default function profileDetailViewModelTestsuite() {
       expect(application.refreshCommands.length).assertEqual(0);
 
       await viewModel.requestRefresh();
-      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('legacy.example.com:8080');
       await viewModel.confirmPlainHttpRefresh();
       expect(application.refreshCommands.length).assertEqual(1);
       expect(application.refreshCommands[0].allowPlainHttp).assertTrue();
@@ -174,6 +174,53 @@ export default function profileDetailViewModelTestsuite() {
       await viewModel.requestRefresh();
       expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
       expect(application.refreshCommands.length).assertEqual(1);
+    });
+
+    it('keepsFacadeFailureErrorAndIgnoresDisposeCompletion', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('load-fail', 'Load Fail', 'https://load.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const failedDeferred = new DeferredResult<ManageEnableResult>();
+      application.queueEnableResult(failedDeferred.promise);
+      const viewModel = new ProfileDetailViewModel(application, 'load-fail');
+      const effects: ProfileDetailEffect[] = [];
+      viewModel.subscribeEffect((effect: ProfileDetailEffect): void => {
+        effects.push(effect);
+      });
+
+      const failedCommand = viewModel.requestEnable();
+      failedDeferred.resolve(createFailedManageResult('CMFA_CORE_LOAD', 'CORE_LOAD', 'core load failed for opaque://load.example.com'));
+      await failedCommand;
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().error?.technicalDetail).assertEqual('core load failed for opaque://load.example.com');
+
+      const deleteDeferred = new DeferredResult<ManageDeleteResult>();
+      application.queueDeleteResult(deleteDeferred.promise);
+      const intents: ProfileDetailNavigationIntent[] = [];
+      viewModel.subscribeNavigation((intent: ProfileDetailNavigationIntent): void => {
+        intents.push(intent);
+      });
+      viewModel.requestDelete();
+      const deleteCommand = viewModel.confirmDelete();
+      viewModel.dispose();
+      deleteDeferred.resolve(createDeletedResult('load-fail'));
+      await deleteCommand;
+
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      expect(intents.length).assertEqual(0);
+      expect(effects.length).assertEqual(0);
+      expect(application.commandLog.filter((entry: string): boolean => entry.startsWith('delete:')).length).assertEqual(1);
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
     });
 
     it('allowsRepairingCorruptRemoteSecretsThroughReplacementUrl', 0, async () => {

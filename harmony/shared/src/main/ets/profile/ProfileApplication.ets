@@ -453,7 +453,9 @@ function isSourceRepairRequired(profile: Profile): boolean {
   if (profile.sourceKind !== 'REMOTE_URL' || profile.lastError === null) {
     return false;
   }
-  return profile.lastError.code === 'SOURCE_SECRET_MISSING' || profile.lastError.code === 'SOURCE_DECRYPT_FAILED';
+  return profile.lastError.code === 'SOURCE_SECRET_MISSING' ||
+    profile.lastError.code === 'SOURCE_DECRYPT_FAILED' ||
+    profile.lastError.code === 'SOURCE_SECRET_VERSION_UNSUPPORTED';
 }
 
 function cloneProfileApplicationRuntimeSnapshot(runtime: ProfileApplicationRuntimeSnapshot): ProfileApplicationRuntimeSnapshot {

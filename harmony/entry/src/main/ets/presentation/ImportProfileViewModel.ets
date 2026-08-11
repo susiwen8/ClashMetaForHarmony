@@ -169,6 +169,9 @@ export class ImportProfileViewModel {
   }
 
   async confirmPlainHttpImport(): Promise<void> {
+    if (this.state.status === 'SUBMITTING') {
+      return;
+    }
     const pendingImport: ParsedRemoteSourceInput | undefined = this.pendingHttpImport;
     const pendingName: string | undefined = this.pendingHttpName;
     this.pendingHttpImport = undefined;
@@ -189,6 +192,7 @@ export class ImportProfileViewModel {
       return;
     }
     this.disposed = true;
+    this.commandToken += 1;
     this.application.unsubscribe(this.subscriptionId);
     this.listeners.clear();
     this.navigationListeners.clear();
@@ -211,7 +215,11 @@ export class ImportProfileViewModel {
       return;
     }
     const snapshot: ProfileApplicationSnapshot = this.application.current();
-    this.error = snapshot.error === null ? undefined : createSafeErrorState(snapshot.error);
+    this.error = snapshot.error !== null
+      ? createSafeErrorState(snapshot.error)
+      : result.kind === 'FAILED'
+        ? createSafeErrorState(result.error)
+        : undefined;
     const profileId: string | undefined = resolveImportedProfileId(result, snapshot, profileIdsBefore);
     if (profileId !== undefined) {
       this.publishNavigation(createNavigationIntent(profileId));
