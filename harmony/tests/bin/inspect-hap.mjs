@@ -16,6 +16,8 @@ const RAW_CORE_IDENTITY = 'harmony/artifacts/libcmfa_mihomo.so';
 const PREPACKAGE_CORE_IDENTITY = 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so';
 const PREPACKAGE_ADDON_IDENTITY = 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so';
 const HAP_IDENTITY_PATTERN = /^harmony\/entry\/build\/default\/outputs\/default\/[^/]+\.hap$/u;
+const DEFAULT_BUILD_KIND = 'phase2-self-test';
+const ALLOWED_BUILD_KINDS = new Set([DEFAULT_BUILD_KIND, 'production']);
 
 function isoTimestamp(date = new Date()) {
   return date.toISOString();
@@ -187,14 +189,60 @@ function isExactIdentity(actual, expected) {
   return typeof actual === 'string' && actual === expected;
 }
 
+function normalizeBuildInfoForComparison(value) {
+  if (typeof value === 'string') {
+    try {
+      return JSON.parse(value);
+    } catch {
+      return value;
+    }
+  }
+  if (value && typeof value === 'object' && !Array.isArray(value)) {
+    const embedded = typeof value.buildInfo === 'string'
+      ? normalizeBuildInfoForComparison(value.buildInfo)
+      : {};
+    return {
+      ...embedded,
+      version: value.version ?? embedded.version ?? null,
+      upstreamCommit: value.upstreamCommit ?? value.commit ?? embedded.upstreamCommit ?? null,
+      abiVersion: value.abiVersion ?? embedded.abiVersion ?? null,
+      buildId: value.buildId ?? embedded.buildId ?? null
+    };
+  }
+  return value ?? null;
+}
+
 function isBuildInfoEqual(left, right) {
-  return JSON.stringify(left ?? null) === JSON.stringify(right ?? null);
+  return JSON.stringify(normalizeBuildInfoForComparison(left)) === JSON.stringify(normalizeBuildInfoForComparison(right));
+}
+
+function expectedPhase2SelfTestTuple(buildKind) {
+  if (buildKind === 'production') {
+    return {
+      enabled: false,
+      purpose: 'production',
+      releaseStatus: 'releasable'
+    };
+  }
+
+  return {
+    enabled: true,
+    purpose: 'test-only',
+    releaseStatus: 'not-releasable'
+  };
+}
+
+function matchesPhase2SelfTestTuple(actual, expected) {
+  return actual?.enabled === expected.enabled &&
+    actual?.purpose === expected.purpose &&
+    actual?.releaseStatus === expected.releaseStatus;
 }
 
 export async function inspectHap({
   hapPath,
   manifest,
   manifestPath = DEFAULT_MANIFEST_PATH,
+  buildKind = DEFAULT_BUILD_KIND,
   repoRoot = REPO_ROOT,
   fsApi = fs,
   hashFileImpl = (filePath) => hashFile(filePath, fsApi),
@@ -204,6 +252,9 @@ export async function inspectHap({
 } = {}) {
   if (!hapPath) {
     throw Object.assign(new Error('--hap is required'), { code: 'HAP_PATH_REQUIRED' });
+  }
+  if (!ALLOWED_BUILD_KINDS.has(buildKind)) {
+    throw Object.assign(new Error(`Unsupported build kind: ${buildKind}`), { code: 'ARGUMENT_INVALID' });
   }
 
   const [resolvedHapPath, resolvedManifestPath] = await Promise.all([
@@ -258,8 +309,13 @@ export async function inspectHap({
   if (loadedManifest?.nativeBuildResult !== 'pass') {
     report.failures.push(createFailure('NATIVE_BUILD_RESULT_INVALID', 'Phase 2 inspection requires nativeBuildResult pass.'));
   }
-  if (loadedManifest?.phase2SelfTest?.enabled !== true) {
-    report.failures.push(createFailure('PHASE2_SELF_TEST_REQUIRED', 'Phase 2 inspection requires an explicit self-test build manifest.'));
+  const expectedSelfTestTuple = expectedPhase2SelfTestTuple(buildKind);
+  if (!matchesPhase2SelfTestTuple(loadedManifest?.phase2SelfTest, expectedSelfTestTuple)) {
+    report.failures.push(createFailure(
+      'PHASE2_SELF_TEST_BUILD_KIND_MISMATCH',
+      `Manifest phase2SelfTest tuple does not match the ${buildKind} inspection lane.`,
+      'manifest'
+    ));
   }
 
   const liveRepoArtifacts = [
@@ -375,6 +431,7 @@ function requireValue(argv, index, option) {
 export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
   let hapPath = null;
   let manifestPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json');
+  let buildKind = DEFAULT_BUILD_KIND;
 
   for (let index = 0; index < argv.length; index += 1) {
     const option = argv[index];
@@ -388,6 +445,17 @@ export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_
       index += 1;
       continue;
     }
+    if (option === '--build-kind') {
+      buildKind = requireValue(argv, index, option);
+      if (!ALLOWED_BUILD_KINDS.has(buildKind)) {
+        throw Object.assign(
+          new Error(`--build-kind must be one of ${[...ALLOWED_BUILD_KINDS].join(', ')}`),
+          { code: 'ARGUMENT_INVALID' }
+        );
+      }
+      index += 1;
+      continue;
+    }
     throw Object.assign(new Error(`Unknown argument: ${option}`), { code: 'ARGUMENT_INVALID' });
   }
 
@@ -395,7 +463,7 @@ export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_
     throw Object.assign(new Error('--hap is required'), { code: 'HAP_PATH_REQUIRED' });
   }
 
-  return { hapPath, manifestPath };
+  return { hapPath, manifestPath, buildKind };
 }
 
 export async function runCli({ argv = process.argv.slice(2), inspectHapImpl = inspectHap } = {}) {

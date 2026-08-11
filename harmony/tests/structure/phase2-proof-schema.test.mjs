@@ -1435,7 +1435,127 @@ test('inspect-hap exports strict live rehash helpers and rejects fake packaged c
   });
 
   assert.equal(provenanceReport.result, 'fail');
-  assert.ok(provenanceReport.failures.some((entry) => /PHASE2_SELF_TEST_REQUIRED|PREPACKAGE_CORE|RAW_CORE/u.test(entry.code)));
+  assert.ok(provenanceReport.failures.some((entry) => /PHASE2_SELF_TEST_BUILD_KIND_MISMATCH|PREPACKAGE_CORE|RAW_CORE/u.test(entry.code)));
+});
+
+test('inspect-hap supports explicit production build kind without relaxing native provenance checks', async () => {
+  assert.ok(inspectHapModule, 'inspect-hap module must exist');
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase2-inspect-hap-production-'));
+  const repoRoot = path.join(tempRoot, 'repo');
+  const hapPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  const rawCorePath = path.join(repoRoot, 'harmony', 'artifacts', 'libcmfa_mihomo.so');
+  const prePackageCorePath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
+  const prePackageAddonPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+
+  await fs.mkdir(path.dirname(hapPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(prePackageCorePath), { recursive: true });
+  await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
+  await fs.writeFile(rawCorePath, 'raw-core', 'utf8');
+  await fs.writeFile(prePackageCorePath, 'pre-core', 'utf8');
+  await fs.writeFile(prePackageAddonPath, 'pre-addon', 'utf8');
+
+  const productionManifest = {
+    result: 'pass',
+    nativeBuildResult: 'pass',
+    phase2SelfTest: {
+      enabled: false,
+      activation: 'default',
+      purpose: 'production',
+      releaseStatus: 'releasable'
+    },
+    artifacts: {
+      hap: { identity: 'harmony/entry/build/default/outputs/default/entry-default-signed.hap', sha256: digest('a'), sizeBytes: 64 },
+      rawCore: { identity: 'harmony/artifacts/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 64 },
+      prePackageCore: { identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 64 },
+      prePackageAddon: { identity: 'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so', sha256: digest('c'), sizeBytes: 64 },
+      hapCore: { identity: 'libs/arm64-v8a/libcmfa_mihomo.so', sha256: digest('b'), sizeBytes: 64 },
+      hapAddon: { identity: 'libs/arm64-v8a/libentry.so', sha256: digest('c'), sizeBytes: 64 }
+    },
+    provenance: {
+      upstream: {
+        version: CORE_VERSION,
+        commit: CORE_COMMIT,
+        buildInfo: BUILD_INFO_JSON,
+        buildId: '0123456789abcdef'
+      }
+    }
+  };
+
+  const hashFileImpl = async (filePath) => ({
+    sha256: filePath.endsWith('.hap') ? digest('a') : (filePath.endsWith('libentry.so') ? digest('c') : digest('b')),
+    sizeBytes: 64
+  });
+  const inspectNativeLibraryImpl = async ({ component }) => ({
+    schemaVersion: '1.0.0',
+    result: 'pass',
+    component,
+    architecture: 'AArch64',
+    exportedSymbols: [],
+    requiredExports: [],
+    buildInfo: component === 'mihomoCore'
+      ? {
+        version: CORE_VERSION,
+        upstreamCommit: CORE_COMMIT,
+        abiVersion: 'cmfa-harmony-v1',
+        buildId: '0123456789abcdef'
+      }
+      : null,
+    failures: []
+  });
+
+  assert.deepEqual(
+    inspectHapModule.parseCliArguments(['--hap', 'harmony/entry/build/default/outputs/default/entry-default-signed.hap', '--build-kind', 'production'], repoRoot),
+    {
+      hapPath,
+      manifestPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase1-native-provenance.json'),
+      buildKind: 'production'
+    }
+  );
+
+  const productionReport = await inspectHapModule.inspectHap({
+    hapPath,
+    repoRoot,
+    buildKind: 'production',
+    manifest: productionManifest,
+    listHapEntriesImpl: async () => ['libs/arm64-v8a/libcmfa_mihomo.so', 'libs/arm64-v8a/libentry.so'],
+    hashFileImpl,
+    inspectNativeLibraryImpl
+  });
+
+  assert.equal(productionReport.result, 'pass');
+  assert.equal(productionReport.stubDetected, false);
+
+  const defaultKindReport = await inspectHapModule.inspectHap({
+    hapPath,
+    repoRoot,
+    manifest: productionManifest,
+    listHapEntriesImpl: async () => ['libs/arm64-v8a/libcmfa_mihomo.so', 'libs/arm64-v8a/libentry.so'],
+    hashFileImpl,
+    inspectNativeLibraryImpl
+  });
+  assert.equal(defaultKindReport.result, 'fail');
+  assert.ok(defaultKindReport.failures.some((entry) => entry.code === 'PHASE2_SELF_TEST_BUILD_KIND_MISMATCH'));
+
+  const wrongProductionTupleReport = await inspectHapModule.inspectHap({
+    hapPath,
+    repoRoot,
+    buildKind: 'production',
+    manifest: {
+      ...productionManifest,
+      phase2SelfTest: {
+        enabled: true,
+        activation: 'explicit',
+        purpose: 'test-only',
+        releaseStatus: 'not-releasable'
+      }
+    },
+    listHapEntriesImpl: async () => ['libs/arm64-v8a/libcmfa_mihomo.so', 'libs/arm64-v8a/libentry.so'],
+    hashFileImpl,
+    inspectNativeLibraryImpl
+  });
+  assert.equal(wrongProductionTupleReport.result, 'fail');
+  assert.ok(wrongProductionTupleReport.failures.some((entry) => entry.code === 'PHASE2_SELF_TEST_BUILD_KIND_MISMATCH'));
 });
 
 test('inspect-native-lib and CoreDebugPage enforce real-core-only Phase 2 evidence lanes', async () => {

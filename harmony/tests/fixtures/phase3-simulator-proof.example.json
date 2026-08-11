@@ -1,0 +1,96 @@
+{
+  "schemaVersion": "1.0.0",
+  "phase": 3,
+  "result": "incomplete",
+  "runId": "980cbe02-b817-4db1-99bc-e8e4e6523daf",
+  "outputPath": "harmony/artifacts/phase3-simulator-proof.json",
+  "bundle": "com.github.kr328.clash.harmony",
+  "productionAbility": "EntryAbility",
+  "testModule": "entry_test",
+  "testRunner": "OpenHarmonyTestRunner",
+  "timestamps": {
+    "runnerStartedAt": "2026-08-11T02:00:00.000Z",
+    "testStartedAt": null,
+    "proofAt": null,
+    "runnerFinishedAt": "2026-08-11T02:00:01.000Z"
+  },
+  "toolchain": {
+    "devecoVersion": "6.1.0.860",
+    "sdkVersion": "6.1.0.105",
+    "ndkVersion": "6.1.0.105",
+    "hvigorVersion": "6.23.7",
+    "nodeVersion": "22.17.0",
+    "hdcVersion": "6.1.0.105"
+  },
+  "target": {
+    "targetKind": "host",
+    "identityMasked": null,
+    "model": null,
+    "product": null,
+    "buildVersion": null,
+    "apiVersion": null,
+    "abi": null
+  },
+  "fixture": {
+    "path": "harmony/tests/fixtures/phase3-valid.yaml",
+    "sha256": "e28153dc33f5844ee8c8f5ad459d08cd83309f057e7f84dbce0b98bce5ff1b8f",
+    "sizeBytes": 35
+  },
+  "haps": {
+    "production": {
+      "path": "harmony/entry/build/default/outputs/default/entry-default-unsigned.hap",
+      "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "sizeBytes": 0,
+      "buildKind": "production",
+      "stubDetected": null,
+      "architecture": null
+    },
+    "entryTest": {
+      "path": "harmony/entry/build/default/outputs/ohosTest/entry-ohosTest-unsigned.hap",
+      "sha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+      "sizeBytes": 0
+    }
+  },
+  "appEvidence": {
+    "path": null,
+    "sha256": null,
+    "sizeBytes": null,
+    "runId": null,
+    "productionHapSha256": null,
+    "entryTestHapSha256": null,
+    "fixtureSha256": null,
+    "status": null,
+    "suites": [],
+    "checks": [],
+    "trace": [],
+    "failureCount": 0,
+    "homeSnapshotAddress": null,
+    "homeRuntimeAddress": null,
+    "cleanup": null
+  },
+  "checks": {
+    "adapterSuite": "incomplete",
+    "runtimeSuite": "incomplete",
+    "uiSuite": "incomplete",
+    "startStop": "incomplete",
+    "identitiesMatch": "incomplete",
+    "homeAddressesMatch": "incomplete",
+    "cleanup": "incomplete"
+  },
+  "cleanup": {
+    "forceStopResult": "not-run",
+    "uninstallResult": "not-run",
+    "rebuildDefaultProductionLane": "not-run"
+  },
+  "physicalDeviceGates": {
+    "phase2Traffic": "incomplete",
+    "phase3ProfileRuntime": "incomplete"
+  },
+  "failures": [
+    {
+      "code": "SIGNING_REQUIRED",
+      "detail": "Example only: unsigned simulator artifacts must remain incomplete until a signed lane exists.",
+      "stage": "signing"
+    }
+  ]
+}

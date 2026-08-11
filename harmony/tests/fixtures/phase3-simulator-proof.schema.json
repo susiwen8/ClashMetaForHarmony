@@ -1,0 +1,200 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "schemaVersion": "1.0.0",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "result",
+    "runId",
+    "outputPath",
+    "bundle",
+    "productionAbility",
+    "testModule",
+    "testRunner",
+    "timestamps",
+    "toolchain",
+    "target",
+    "fixture",
+    "haps",
+    "appEvidence",
+    "checks",
+    "cleanup",
+    "physicalDeviceGates",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "phase": { "const": 3 },
+    "result": { "enum": ["provisional-pass", "incomplete"] },
+    "runId": { "type": "string", "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$" },
+    "outputPath": { "type": "string", "minLength": 1 },
+    "bundle": { "const": "com.github.kr328.clash.harmony" },
+    "productionAbility": { "const": "EntryAbility" },
+    "testModule": { "const": "entry_test" },
+    "testRunner": { "const": "OpenHarmonyTestRunner" },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["runnerStartedAt", "testStartedAt", "proofAt", "runnerFinishedAt"],
+      "properties": {
+        "runnerStartedAt": { "type": "string", "format": "date-time" },
+        "testStartedAt": { "type": ["string", "null"], "format": "date-time" },
+        "proofAt": { "type": ["string", "null"], "format": "date-time" },
+        "runnerFinishedAt": { "type": "string", "format": "date-time" }
+      }
+    },
+    "toolchain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["devecoVersion", "sdkVersion", "ndkVersion", "hvigorVersion", "nodeVersion", "hdcVersion"],
+      "properties": {
+        "devecoVersion": { "type": ["string", "null"] },
+        "sdkVersion": { "type": ["string", "null"] },
+        "ndkVersion": { "type": ["string", "null"] },
+        "hvigorVersion": { "type": ["string", "null"] },
+        "nodeVersion": { "type": "string", "minLength": 1 },
+        "hdcVersion": { "type": ["string", "null"] }
+      }
+    },
+    "target": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetKind", "identityMasked", "model", "product", "buildVersion", "apiVersion", "abi"],
+      "properties": {
+        "targetKind": { "enum": ["host", "simulator", "physical", "unknown"] },
+        "identityMasked": { "type": ["string", "null"] },
+        "model": { "type": ["string", "null"] },
+        "product": { "type": ["string", "null"] },
+        "buildVersion": { "type": ["string", "null"] },
+        "apiVersion": { "type": ["string", "null"] },
+        "abi": { "type": ["string", "null"] }
+      }
+    },
+    "fixture": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["path", "sha256", "sizeBytes"],
+      "properties": {
+        "path": { "type": "string", "minLength": 1 },
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "haps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["production", "entryTest"],
+      "properties": {
+        "production": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "sizeBytes", "buildKind", "stubDetected", "architecture"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "sizeBytes": { "type": "integer", "minimum": 0 },
+            "buildKind": { "const": "production" },
+            "stubDetected": { "type": ["boolean", "null"] },
+            "architecture": { "type": ["string", "null"] }
+          }
+        },
+        "entryTest": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["path", "sha256", "sizeBytes"],
+          "properties": {
+            "path": { "type": "string", "minLength": 1 },
+            "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            "sizeBytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "appEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "path",
+        "sha256",
+        "sizeBytes",
+        "runId",
+        "productionHapSha256",
+        "entryTestHapSha256",
+        "fixtureSha256",
+        "status",
+        "suites",
+        "checks",
+        "trace",
+        "failureCount",
+        "homeSnapshotAddress",
+        "homeRuntimeAddress",
+        "cleanup"
+      ],
+      "properties": {
+        "path": { "type": ["string", "null"] },
+        "sha256": { "type": ["string", "null"], "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": ["integer", "null"], "minimum": 0 },
+        "runId": { "type": ["string", "null"] },
+        "productionHapSha256": { "type": ["string", "null"] },
+        "entryTestHapSha256": { "type": ["string", "null"] },
+        "fixtureSha256": { "type": ["string", "null"] },
+        "status": { "type": ["string", "null"] },
+        "suites": { "type": "array", "items": { "type": "string" } },
+        "checks": { "type": "array", "items": { "type": "string" } },
+        "trace": { "type": "array", "items": { "type": "string" } },
+        "failureCount": { "type": "integer", "minimum": 0 },
+        "homeSnapshotAddress": { "type": ["string", "null"] },
+        "homeRuntimeAddress": { "type": ["string", "null"] },
+        "cleanup": { "type": ["string", "null"] }
+      }
+    },
+    "checks": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["adapterSuite", "runtimeSuite", "uiSuite", "startStop", "identitiesMatch", "homeAddressesMatch", "cleanup"],
+      "properties": {
+        "adapterSuite": { "enum": ["pass", "fail", "incomplete"] },
+        "runtimeSuite": { "enum": ["pass", "fail", "incomplete"] },
+        "uiSuite": { "enum": ["pass", "fail", "incomplete"] },
+        "startStop": { "enum": ["pass", "fail", "incomplete"] },
+        "identitiesMatch": { "enum": ["pass", "fail", "incomplete"] },
+        "homeAddressesMatch": { "enum": ["pass", "fail", "incomplete"] },
+        "cleanup": { "enum": ["pass", "fail", "incomplete"] }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["forceStopResult", "uninstallResult", "rebuildDefaultProductionLane"],
+      "properties": {
+        "forceStopResult": { "enum": ["pass", "fail", "incomplete", "not-run"] },
+        "uninstallResult": { "enum": ["pass", "fail", "incomplete", "not-run"] },
+        "rebuildDefaultProductionLane": { "enum": ["pass", "fail", "incomplete", "not-run"] }
+      }
+    },
+    "physicalDeviceGates": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase2Traffic", "phase3ProfileRuntime"],
+      "properties": {
+        "phase2Traffic": { "const": "incomplete" },
+        "phase3ProfileRuntime": { "const": "incomplete" }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "detail", "stage"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string", "minLength": 1 },
+          "stage": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  }
+}
