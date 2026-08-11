@@ -261,21 +261,34 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private async closeInternal(): Promise<void> {
     await this.initializePromise?.catch(() => {
     });
-    await this.closeResources();
+    const cleanupError: AppError | null = await this.closeResources();
     this.initializePromise = undefined;
+    if (cleanupError !== null) {
+      throw cleanupError;
+    }
   }
 
-  private async closeResources(): Promise<void> {
+  private async closeResources(): Promise<AppError | null> {
     const application: ProfileApplication | undefined = this.application;
     const graph: PlatformGraph | undefined = this.graph;
     this.application = undefined;
     this.graph = undefined;
+    let cleanupError: AppError | null = null;
     if (application !== undefined) {
-      application.dispose();
+      try {
+        application.dispose();
+      } catch (_) {
+        cleanupError = createCleanupError();
+      }
     }
     if (graph !== undefined) {
-      await graph.close();
+      try {
+        await graph.close();
+      } catch (_) {
+        cleanupError = cleanupError ?? createCleanupError();
+      }
     }
+    return cleanupError;
   }
 
   private createPlatformGraph(context: common.UIAbilityContext): Promise<PlatformGraph> {
@@ -363,4 +376,10 @@ function createPhase1LaunchContext(context: common.UIAbilityContext, want: Want)
     probeFixturePath: `${parameters[PROBE_FIXTURE_PATH_KEY] ?? ''}`,
     probeFixtureSha256: `${parameters[PROBE_FIXTURE_SHA256_KEY] ?? ''}`
   };
+}
+
+function createCleanupError(): AppError {
+  return createAppError('PERSISTENCE', 'Application composition cleanup failed.', {
+    retryable: true
+  });
 }

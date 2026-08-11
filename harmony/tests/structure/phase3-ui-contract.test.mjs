@@ -77,3 +77,17 @@ test('Task 10 entry routing serializes navigation around the latest Want and inv
   assert.match(entryAbilitySource, /onDestroy\(\):\s*void\s*\{[\s\S]*this\.scheduleTeardown\(\)/u);
   assert.match(entryAbilitySource, /onWindowStageDestroy\(\):\s*void\s*\{[\s\S]*this\.scheduleTeardown\(\)/u);
 });
+
+test('Task 10 composition cleanup always attempts graph teardown and keeps initialize failures sanitized', async () => {
+  const coreCompositionSource = await fs.readFile(CORE_COMPOSITION_PATH, 'utf8');
+
+  assert.match(coreCompositionSource, /private\s+async\s+closeResources\(\):\s*Promise<AppError \| null>/u);
+  assert.match(coreCompositionSource, /if\s*\(\s*application\s*!==\s*undefined\s*\)\s*\{[\s\S]*try\s*\{[\s\S]*application\.dispose\(\)/u);
+  assert.match(coreCompositionSource, /if\s*\(\s*graph\s*!==\s*undefined\s*\)\s*\{[\s\S]*try\s*\{[\s\S]*await\s+graph\.close\(\)/u);
+  assert.match(coreCompositionSource, /catch\s*\(_error\)\s*\{[\s\S]*await\s+this\.closeResources\(\)[\s\S]*createAppError\('PERSISTENCE'/u);
+  assert.doesNotMatch(
+    coreCompositionSource,
+    /await\s+this\.closeResources\(\);\s*throw\s+error/u,
+    'initialize failure path must not leak raw cleanup exceptions'
+  );
+});

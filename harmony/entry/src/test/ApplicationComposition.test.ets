@@ -154,6 +154,7 @@ class RecordingPlatformGraph implements PlatformGraph {
   readonly clock: Clock;
   readonly idGenerator: IdGenerator;
   closeCallCount: number = 0;
+  closeError?: Error;
 
   constructor(
     repository?: ProfileRepository,
@@ -171,6 +172,9 @@ class RecordingPlatformGraph implements PlatformGraph {
 
   async close(): Promise<void> {
     this.closeCallCount += 1;
+    if (this.closeError !== undefined) {
+      throw this.closeError;
+    }
   }
 }
 
@@ -178,6 +182,7 @@ class RecordingApplication {
   initializeCallCount: number = 0;
   disposeCallCount: number = 0;
   initializeError?: Error;
+  disposeError?: Error;
 
   async initialize(): Promise<void> {
     this.initializeCallCount += 1;
@@ -188,6 +193,9 @@ class RecordingApplication {
 
   dispose(): void {
     this.disposeCallCount += 1;
+    if (this.disposeError !== undefined) {
+      throw this.disposeError;
+    }
   }
 }
 
@@ -460,6 +468,83 @@ export default function applicationCompositionTestsuite() {
 
       expect(coreService.unsubscribeIds.length).assertEqual(1);
       expect(graph.closeCallCount).assertEqual(1);
+    });
+
+    it('sanitizeInitializeFailureWhenDisposeThrowsAndStillClosesGraph', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      graph.closeError = new Error('close should not win');
+      const application = new RecordingApplication();
+      application.initializeError = new Error('initialize failed');
+      application.disposeError = new Error('dispose leaked https://profiles.example.com/raw?token=secret-value');
+      const states: ApplicationCompositionState[] = [];
+      const composition = createComposition({
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        },
+        createProfileApplication: (): ProfileApplication => {
+          return application as ProfileApplication;
+        }
+      });
+      composition.subscribe((state: ApplicationCompositionState): void => {
+        states.push(state);
+      });
+
+      let thrownError: AppError | undefined = undefined;
+      try {
+        await composition.initialize();
+      } catch (error) {
+        thrownError = error as AppError;
+      }
+
+      expect(application.disposeCallCount).assertEqual(1);
+      expect(graph.closeCallCount).assertEqual(1);
+      expect(collectStatuses(states)).assertEqual('LOADING>ERROR');
+      expect(composition.state().status).assertEqual('ERROR');
+      expect(thrownError !== undefined).assertTrue();
+      if (thrownError === undefined) {
+        return;
+      }
+      expect(thrownError.stage).assertEqual('PERSISTENCE');
+      expect(thrownError.technicalDetail.includes('profiles.example.com')).assertFalse();
+      expect(thrownError.technicalDetail.includes('secret-value')).assertFalse();
+    });
+
+    it('sanitizeInitializeFailureWhenGraphCloseThrows', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      graph.closeError = new Error('close leaked https://profiles.example.com/close?token=secret-close');
+      const application = new RecordingApplication();
+      application.initializeError = new Error('initialize failed');
+      const states: ApplicationCompositionState[] = [];
+      const composition = createComposition({
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        },
+        createProfileApplication: (): ProfileApplication => {
+          return application as ProfileApplication;
+        }
+      });
+      composition.subscribe((state: ApplicationCompositionState): void => {
+        states.push(state);
+      });
+
+      let thrownError: AppError | undefined = undefined;
+      try {
+        await composition.initialize();
+      } catch (error) {
+        thrownError = error as AppError;
+      }
+
+      expect(application.disposeCallCount).assertEqual(1);
+      expect(graph.closeCallCount).assertEqual(1);
+      expect(collectStatuses(states)).assertEqual('LOADING>ERROR');
+      expect(composition.state().status).assertEqual('ERROR');
+      expect(thrownError !== undefined).assertTrue();
+      if (thrownError === undefined) {
+        return;
+      }
+      expect(thrownError.stage).assertEqual('PERSISTENCE');
+      expect(thrownError.technicalDetail.includes('profiles.example.com')).assertFalse();
+      expect(thrownError.technicalDetail.includes('secret-close')).assertFalse();
     });
   });
 }
