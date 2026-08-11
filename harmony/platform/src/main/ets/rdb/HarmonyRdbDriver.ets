@@ -113,6 +113,68 @@ function upsertActiveIdBindArgs(activeId: string | undefined): Array<RelationalV
   return values;
 }
 
+async function querySqlWithSafeFallback(
+  store: relationalStore.RdbStore,
+  sql: string,
+  bindArgs: Array<RelationalValueType> | undefined,
+  fallback: string
+): Promise<relationalStore.ResultSet> {
+  try {
+    return await store.querySql(sql, bindArgs);
+  } catch (error) {
+    return await Promise.reject(toDriverError(error, fallback));
+  }
+}
+
+async function executeSqlWithSafeFallback(
+  store: relationalStore.RdbStore,
+  sql: string,
+  bindArgs: Array<RelationalValueType> | undefined,
+  fallback: string
+): Promise<void> {
+  try {
+    await store.executeSql(sql, bindArgs);
+  } catch (error) {
+    return await Promise.reject(toDriverError(error, fallback));
+  }
+}
+
+function advanceResultSetWithSafeFallback(
+  resultSet: relationalStore.ResultSet,
+  fallback: string
+): boolean {
+  try {
+    return resultSet.goToNextRow();
+  } catch (error) {
+    throw toDriverError(error, fallback);
+  }
+}
+
+function readResultSetRowWithSafeFallback(
+  resultSet: relationalStore.ResultSet,
+  fallback: string
+): RelationalValuesBucket {
+  try {
+    return resultSet.getRow();
+  } catch (error) {
+    throw toDriverError(error, fallback);
+  }
+}
+
+function closeResultSetWithSafeFallback(
+  resultSet: relationalStore.ResultSet,
+  primaryError: Error | undefined,
+  fallback: string
+): void {
+  try {
+    resultSet.close();
+  } catch (error) {
+    if (primaryError === undefined) {
+      throw toDriverError(error, fallback);
+    }
+  }
+}
+
 export class HarmonyRdbDriver implements RdbDriver {
   private readonly context: common.BaseContext;
   private readonly databaseName: string;
@@ -239,10 +301,15 @@ export class HarmonyRdbDriver implements RdbDriver {
     if (this.storePromise !== undefined) {
       return await this.storePromise;
     }
-    const acquisition: Promise<relationalStore.RdbStore> = relationalStore.getRdbStore(this.context, {
-      name: this.databaseName,
-      securityLevel: relationalStore.SecurityLevel.S1
-    });
+    let acquisition: Promise<relationalStore.RdbStore>;
+    try {
+      acquisition = relationalStore.getRdbStore(this.context, {
+        name: this.databaseName,
+        securityLevel: relationalStore.SecurityLevel.S1
+      });
+    } catch (error) {
+      return await Promise.reject(toDriverError(error, 'Database open failed.'));
+    }
     this.storePromise = acquisition;
     try {
       const store = await acquisition;
@@ -374,11 +441,7 @@ export class HarmonyRdbDriver implements RdbDriver {
     sql: string,
     bindArgs?: Array<RelationalValueType>
   ): Promise<relationalStore.ResultSet> {
-    try {
-      return await store.querySql(sql, bindArgs);
-    } catch (error) {
-      throw toDriverError(error, 'Query execution failed.');
-    }
+    return await querySqlWithSafeFallback(store, sql, bindArgs, 'Query execution failed.');
   }
 
   private async executeSql(
@@ -386,11 +449,7 @@ export class HarmonyRdbDriver implements RdbDriver {
     sql: string,
     bindArgs?: Array<RelationalValueType>
   ): Promise<void> {
-    try {
-      await store.executeSql(sql, bindArgs);
-    } catch (error) {
-      throw toDriverError(error, 'Statement execution failed.');
-    }
+    await executeSqlWithSafeFallback(store, sql, bindArgs, 'Statement execution failed.');
   }
 
   private beginTransaction(store: relationalStore.RdbStore): void {
@@ -452,38 +511,50 @@ class HarmonyRdbTransaction implements RdbTransaction {
   }
 
   async getProfileRow(id: string): Promise<DurableProfileRow | undefined> {
-    const resultSet = await this.store.querySql(
+    const resultSet = await querySqlWithSafeFallback(
+      this.store,
       `SELECT ${PROFILE_COLUMNS} FROM profiles WHERE id = ?`,
-      toBindValues([id])
+      toBindValues([id]),
+      'Transaction profile lookup failed.'
     );
+    let primaryError: Error | undefined = undefined;
     try {
-      if (!resultSet.goToNextRow()) {
+      if (!advanceResultSetWithSafeFallback(resultSet, 'Transaction profile lookup failed.')) {
         return undefined;
       }
-      return rowFromBucket(resultSet.getRow());
+      return rowFromBucket(readResultSetRowWithSafeFallback(resultSet, 'Transaction profile lookup failed.'));
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
     } finally {
-      resultSet.close();
+      closeResultSetWithSafeFallback(resultSet, primaryError, 'Transaction result set close failed.');
     }
   }
 
   async setActiveId(activeId: string | undefined): Promise<void> {
-    await this.store.executeSql(
+    await executeSqlWithSafeFallback(
+      this.store,
       'INSERT OR REPLACE INTO app_state (id, active_profile_id) VALUES (?, ?)',
-      upsertActiveIdBindArgs(activeId)
+      upsertActiveIdBindArgs(activeId),
+      'Transaction active-id write failed.'
     );
   }
 
   async clearActiveIfMatching(id: string): Promise<void> {
-    await this.store.executeSql(
+    await executeSqlWithSafeFallback(
+      this.store,
       'UPDATE app_state SET active_profile_id = NULL WHERE id = 1 AND active_profile_id = ?',
-      toBindValues([id])
+      toBindValues([id]),
+      'Transaction active-id clear failed.'
     );
   }
 
   async deleteProfile(id: string): Promise<void> {
-    await this.store.executeSql(
+    await executeSqlWithSafeFallback(
+      this.store,
       'DELETE FROM profiles WHERE id = ?',
-      toBindValues([id])
+      toBindValues([id]),
+      'Transaction profile delete failed.'
     );
   }
 }
