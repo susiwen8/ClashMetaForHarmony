@@ -120,6 +120,9 @@ export class HarmonyRdbDriver implements RdbDriver {
   private storePromise?: Promise<relationalStore.RdbStore>;
   private initializedVersion?: number;
   private initializePromise?: Promise<void>;
+  private closePromise?: Promise<void>;
+  private closing: boolean = false;
+  private closed: boolean = false;
 
   constructor(context: common.BaseContext, databaseName: string = 'cmfa_profiles.db') {
     this.context = context;
@@ -127,6 +130,7 @@ export class HarmonyRdbDriver implements RdbDriver {
   }
 
   async initialize(_version: number): Promise<void> {
+    this.throwIfClosingOrClosed();
     if (this.initializedVersion === _version) {
       return;
     }
@@ -214,18 +218,21 @@ export class HarmonyRdbDriver implements RdbDriver {
   }
 
   async close(): Promise<void> {
-    if (this.store === undefined) {
+    if (this.closePromise !== undefined) {
+      await this.closePromise;
       return;
     }
-    const store = this.store;
-    this.store = undefined;
-    this.storePromise = undefined;
-    this.initializedVersion = undefined;
-    this.initializePromise = undefined;
-    await this.closeStore(store);
+    if (this.closed) {
+      return;
+    }
+    this.closing = true;
+    const closePromise = this.runClose();
+    this.closePromise = closePromise;
+    await closePromise;
   }
 
   private async getStore(): Promise<relationalStore.RdbStore> {
+    this.throwIfClosingOrClosed();
     if (this.store !== undefined) {
       return this.store;
     }
@@ -239,6 +246,9 @@ export class HarmonyRdbDriver implements RdbDriver {
     this.storePromise = acquisition;
     try {
       const store = await acquisition;
+      if (this.closing || this.closed) {
+        throw toDriverError(undefined, 'Driver is closing.');
+      }
       if (this.storePromise === acquisition) {
         this.store = store;
       }
@@ -290,6 +300,49 @@ export class HarmonyRdbDriver implements RdbDriver {
       this.initializePromise = undefined;
       this.initializedVersion = undefined;
       throw toDriverError(error, 'Database initialization failed.');
+    }
+  }
+
+  private async runClose(): Promise<void> {
+    let primaryError: Error | undefined = undefined;
+    const pendingInitialize: Promise<void> | undefined = this.initializePromise;
+    const pendingStore: Promise<relationalStore.RdbStore> | undefined = this.storePromise;
+    let acquiredStore: relationalStore.RdbStore | undefined = undefined;
+    try {
+      if (pendingInitialize !== undefined) {
+        try {
+          await pendingInitialize;
+        } catch (_) {
+        }
+      }
+      if (pendingStore !== undefined) {
+        try {
+          acquiredStore = await pendingStore;
+        } catch (_) {
+        }
+      }
+
+      const storeToClose: relationalStore.RdbStore | undefined = this.store ?? acquiredStore;
+      this.store = undefined;
+      this.storePromise = undefined;
+      this.initializePromise = undefined;
+      this.initializedVersion = undefined;
+      if (storeToClose !== undefined) {
+        await this.closeStore(storeToClose);
+      }
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
+    } finally {
+      this.store = undefined;
+      this.storePromise = undefined;
+      this.initializePromise = undefined;
+      this.initializedVersion = undefined;
+      this.closing = false;
+      this.closed = true;
+      if (primaryError === undefined) {
+        this.closePromise = Promise.resolve();
+      }
     }
   }
 
@@ -381,6 +434,12 @@ export class HarmonyRdbDriver implements RdbDriver {
       await store.close();
     } catch (error) {
       throw toDriverError(error, 'Database close failed.');
+    }
+  }
+
+  private throwIfClosingOrClosed(): void {
+    if (this.closing || this.closed) {
+      throw toDriverError(undefined, this.closed ? 'Driver is closed.' : 'Driver is closing.');
     }
   }
 }

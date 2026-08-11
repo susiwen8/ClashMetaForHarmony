@@ -87,6 +87,7 @@ export class RdbProfileRepository implements ProfileRepository {
     await this.ensureInitialized();
     try {
       await this.driver.upsertProfileRow(encodeProfileRow(profile));
+      this.activeIdValidated = false;
     } catch (error) {
       throw toPersistenceFailure(error, 'Profile save failed.');
     }

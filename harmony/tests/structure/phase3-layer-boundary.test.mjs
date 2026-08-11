@@ -568,4 +568,18 @@ test('Task 5 Harmony driver source contract recreates app_state and memoizes in-
   assert.match(source, /INSERT OR REPLACE INTO app_state \(id, active_profile_id\) VALUES \((1, \?|\?, \?)\)/u);
   assert.match(source, /private storePromise\?: Promise<relationalStore\.RdbStore>/u);
   assert.match(source, /private initializePromise\?: Promise<void>/u);
+  assert.equal((source.match(/APP_STATE_SEED_SQL/g) ?? []).length, 2, 'driver should declare and execute APP_STATE_SEED_SQL exactly once');
+});
+
+test('Task 5 Harmony driver lifecycle source contract waits for pending acquisition and blocks reactivation after close', async () => {
+  const source = await fs.readFile(HARMONY_DRIVER_PATH, 'utf8');
+
+  assert.match(source, /private closePromise\?: Promise<void>/u);
+  assert.match(source, /private closing:\s*boolean/u);
+  assert.match(source, /private closed:\s*boolean/u);
+  assert.match(source, /if \(this\.closePromise !== undefined\)/u);
+  assert.match(source, /await this\.storePromise/u);
+  assert.match(source, /await this\.initializePromise/u);
+  assert.match(source, /if \(this\.closing \|\| this\.closed\)/u);
+  assert.match(source, /if \(this\.closed\)/u);
 });

@@ -132,6 +132,61 @@ export default function rdbProfileRepositoryTestsuite() {
       }
     });
 
+    it('revalidatesCachedActiveIdAfterSuccessfulSaveMutatesTheActiveProfile', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedActiveId('active-profile');
+      driver.seedRow(encodeProfileRow(buildProfile('active-profile', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/active-profile/current.yaml')));
+      const repository = new RdbProfileRepository(driver);
+
+      expect(await repository.getActiveId()).assertEqual('active-profile');
+      driver.log.length = 0;
+
+      await repository.save(buildProfile('active-profile', 'INVALID', '2026-08-07T00:03:00.000Z'));
+
+      expect(await repository.getActiveId()).assertUndefined();
+      expect(driver.currentActiveId()).assertUndefined();
+      expect(driver.log.join('>')).assertContain('upsertProfileRow:active-profile>readActiveId>getProfileRow:active-profile>begin>tx.setActiveId:<cleared>>commit');
+    });
+
+    it('revalidatesCachedActiveIdAfterSuccessfulSaveKeepsStillValidActiveProfile', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedActiveId('active-profile');
+      driver.seedRow(encodeProfileRow(buildProfile('active-profile', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/active-profile/current.yaml')));
+      const repository = new RdbProfileRepository(driver);
+
+      expect(await repository.getActiveId()).assertEqual('active-profile');
+      driver.log.length = 0;
+
+      await repository.save(buildProfile('active-profile', 'VALID', '2026-08-07T00:03:00.000Z', 'profiles/active-profile/current-next.yaml'));
+
+      expect(await repository.getActiveId()).assertEqual('active-profile');
+      expect(driver.currentActiveId()).assertEqual('active-profile');
+      expect(driver.log.join('>')).assertContain('upsertProfileRow:active-profile>readActiveId>getProfileRow:active-profile');
+    });
+
+    it('keepsCachedActiveIdWhenSaveFailsBeforeMutatingDriverState', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedActiveId('active-profile');
+      driver.seedRow(encodeProfileRow(buildProfile('active-profile', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/active-profile/current.yaml')));
+      const repository = new RdbProfileRepository(driver);
+
+      expect(await repository.getActiveId()).assertEqual('active-profile');
+      driver.log.length = 0;
+      driver.injectFailure('upsertProfileRow:active-profile', new Error(buildUnsafePayload('driver save failed')));
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await repository.save(buildProfile('active-profile', 'VALID', '2026-08-07T00:04:00.000Z', 'profiles/active-profile/current-next.yaml'));
+        },
+        'Profile save failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', '/Users/susiwen8/Documents']
+      );
+
+      driver.injectFailure('readActiveId', new Error('should not reread cached active id'));
+      expect(await repository.getActiveId()).assertEqual('active-profile');
+      expect(driver.log.join('>')).assertContain('upsertProfileRow:active-profile');
+    });
+
     it('createsListsGetsAndUpsertsProfilesWithDeterministicOrdering', 0, async () => {
       const driver = new RecordingRdbDriver();
       const repository = new RdbProfileRepository(driver);
