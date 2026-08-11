@@ -431,6 +431,29 @@ export default function huksSubscriptionSecretStoreTestsuite() {
       expect(fileDriver.countCloses(envelopePath)).assertEqual(1);
     });
 
+    it('roundTripsWhenTheEnvelopeIsReadAcrossTwoLegalPositiveShortReads', 0, async () => {
+      const driver = new DeterministicHuksDriver();
+      driver.seedNonce(utf8Bytes('nonce-value1'));
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      const store = new HuksSubscriptionSecretStore(
+        driver,
+        fileDriver,
+        FILES_DIR,
+        new SequenceIdGenerator(['secret-alpha', 'tmp-a'])
+      );
+
+      const ref = await store.encrypt(PLAINTEXT_URL);
+      const envelopePath: string = `${SECRETS_DIR}/${ref}.json`;
+      const envelopeSize: number = fileDriver.readFileBytes(envelopePath).length;
+      fileDriver.scriptReadCounts(envelopePath, [5, envelopeSize - 5]);
+
+      const decrypted: string = await store.decrypt(ref);
+
+      expect(decrypted).assertEqual(PLAINTEXT_URL);
+      expect(fileDriver.countCloses(envelopePath)).assertEqual(1);
+    });
+
     it('removeIsIdempotentAndReconcileCleansManagedTempsAndUnreferencedEnvelopesOnly', 0, async () => {
       const driver = new DeterministicHuksDriver();
       driver.seedNonce(utf8Bytes('nonce-value1'));

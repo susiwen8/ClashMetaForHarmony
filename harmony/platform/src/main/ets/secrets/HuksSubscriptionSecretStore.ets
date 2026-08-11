@@ -205,21 +205,26 @@ export class HuksSubscriptionSecretStore implements SubscriptionSecretStore {
     let decodedText: string | undefined = undefined;
     try {
       fileToken = await this.fileDriver.open(path, 0);
-      const buffer = new ArrayBuffer(size);
+      const buffer = new Uint8Array(size);
       let bytesRead: number = 0;
       while (bytesRead < size) {
         const remaining: number = size - bytesRead;
-        const readNow: number = await this.fileDriver.read(fileToken.fd, buffer, { offset: bytesRead, length: remaining });
+        const chunkBuffer = new ArrayBuffer(remaining);
+        const readNow: number = await this.fileDriver.read(fileToken.fd, chunkBuffer, { length: remaining });
         if (readNow <= 0 || readNow > remaining) {
           pendingFailure = new SecretStoreFailure('DECRYPT');
           break;
+        }
+        const chunkBytes = new Uint8Array(chunkBuffer);
+        for (let index = 0; index < readNow; index += 1) {
+          buffer[bytesRead + index] = chunkBytes[index];
         }
         bytesRead += readNow;
       }
       if (pendingFailure !== undefined) {
         throw pendingFailure;
       }
-      decodedText = decodeUtf8(new Uint8Array(buffer));
+      decodedText = decodeUtf8(buffer);
     } catch (error) {
       if (isSecretStoreFailure(error)) {
         pendingFailure = error as SecretStoreFailure;
