@@ -137,6 +137,10 @@
       "value": "支持从文件或订阅地址导入，敏感地址不会显示在配置列表和错误详情中。"
     },
     {
+      "name": "home_info_indicator",
+      "value": "i"
+    },
+    {
       "name": "home_runtime_indicator",
       "value": "●"
     },

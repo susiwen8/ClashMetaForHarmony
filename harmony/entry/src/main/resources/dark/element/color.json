@@ -46,7 +46,11 @@
     },
     {
       "name": "color_action_primary_disabled",
-      "value": "#385173"
+      "value": "#3B4451"
+    },
+    {
+      "name": "color_action_disabled_text",
+      "value": "#96A0AF"
     },
     {
       "name": "color_status_success",

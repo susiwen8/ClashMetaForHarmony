@@ -65,6 +65,7 @@ const REQUIRED_STRING_KEYS = [
   'home_runtime_boundary_note',
   'home_info_title',
   'home_info_body',
+  'home_info_indicator',
   'profiles_title',
   'profiles_add',
   'profiles_empty_title',
@@ -131,7 +132,8 @@ const REQUIRED_BASE_COLOR_KEYS = [
   'color_status_success',
   'color_status_warning',
   'color_status_danger',
-  'color_status_info'
+  'color_status_info',
+  'color_action_disabled_text'
 ];
 
 const REQUIRED_FLOAT_KEYS = [
@@ -149,7 +151,8 @@ const REQUIRED_FLOAT_KEYS = [
   'type_headline',
   'touch_target_min',
   'page_padding_compact',
-  'page_padding_regular'
+  'page_padding_regular',
+  'space_2xl'
 ];
 
 const REQUIRED_SEMANTIC_IDS = [
@@ -278,12 +281,20 @@ test('Task 13 native UI files expose semantic ids, safe layouts, and resource-ba
   assert.match(homePageSource, /\.width\('100%'\)[\s\S]*\.height\('100%'\)/u, 'HomePage root must fill the parent stack');
   assert.match(homePageSource, /justifyContent\(FlexAlign\.Start\)|align\(Alignment\.TopStart\)/u, 'HomePage root must start from the top');
   assert.match(homePageSource, /backgroundColor\(\$r\('app\.color\.color_surface_background'\)\)/u, 'HomePage must use the semantic page background');
+  assert.match(homePageSource, /scrollBar\(BarState\.Off\)/u, 'HomePage scroll view must hide the visible scroll bar');
   assert.match(homePageSource, /\$r\('app\.string\.home_subtitle'\)/u, 'HomePage must show the resource-backed subtitle');
   assert.match(homePageSource, /\$r\('app\.string\.home_profile_empty_detail'\)/u, 'HomePage must show the empty profile helper copy');
   assert.match(homePageSource, /\$r\('app\.string\.home_profile_manage_trailing'\)/u, 'HomePage must render the trailing manage affordance through resources');
   assert.match(homePageSource, /\$r\('app\.string\.home_info_title'\)/u, 'HomePage must render the bottom info panel title');
   assert.match(homePageSource, /\$r\('app\.string\.home_info_body'\)/u, 'HomePage must render the bottom info panel body');
+  assert.match(homePageSource, /\$r\('app\.string\.home_info_indicator'\)/u, 'HomePage must render the info indicator through resources');
+  assert.match(homePageSource, /Text\(\$r\('app\.string\.home_profile_title'\)\)[\s\S]*\.fontSize\(\$r\('app\.float\.type_caption'\)\)[\s\S]*\.fontColor\(\$r\('app\.color\.color_text_secondary'\)\)[\s\S]*\.width\('100%'\)[\s\S]*\.textAlign\(TextAlign\.Start\)/u,
+    'home_profile_title must stay a left-aligned secondary caption'
+  );
+  assert.match(homePageSource, /\.padding\(\$r\('app\.float\.page_padding_compact'\)\)/u, 'HomePage should use the compact 16vp page padding for the visual baseline');
   assert.match(homePageSource, /\.id\('home\.runtime\.primary'\)/u, 'HomePage must own the primary runtime action');
+  assert.match(homePageSource, /primaryActionBackground\(this\.state\.primaryAction\)/u, 'HomePage must keep the primary action background stateful');
+  assert.match(homePageSource, /primaryActionForeground\(this\.state\.primaryAction\)/u, 'HomePage must keep the primary action text color stateful');
   assert.doesNotMatch(runtimeStatusCardSource, /\.id\('home\.runtime\.primary'\)/u, 'RuntimeStatusCard must no longer own the primary action');
   assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_http_label'\)/u, 'RuntimeStatusCard must always render the HTTP listener row');
   assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_socks_label'\)/u, 'RuntimeStatusCard must always render the SOCKS listener row');
@@ -293,6 +304,7 @@ test('Task 13 native UI files expose semantic ids, safe layouts, and resource-ba
     'RuntimeStatusCard must render a resource-backed status detail'
   );
   assert.match(runtimeStatusCardSource, /Divider\(/u, 'RuntimeStatusCard must use dividers to separate status, listener rows, and boundary note');
+  assert.match(runtimeStatusCardSource, /\.padding\(\$r\('app\.float\.space_md'\)\)/u, 'RuntimeStatusCard should use the denser card padding for the 360x780 baseline');
 
   for (const [filePath, source] of sources) {
     assertNoVisibleLiterals(source, path.relative(HARMONY_ROOT, filePath));

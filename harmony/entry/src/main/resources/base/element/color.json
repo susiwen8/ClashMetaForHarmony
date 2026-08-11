@@ -46,7 +46,11 @@
     },
     {
       "name": "color_action_primary_disabled",
-      "value": "#AFC6F0"
+      "value": "#D8DCE3"
+    },
+    {
+      "name": "color_action_disabled_text",
+      "value": "#8A94A3"
     },
     {
       "name": "color_status_success",

@@ -15,7 +15,7 @@ export struct HomePage {
     Column() {
       Scroll() {
         Column({ space: $r('app.float.space_lg') }) {
-          Column({ space: $r('app.float.space_sm') }) {
+          Column({ space: $r('app.float.space_xs') }) {
             Text($r('app.string.home_title'))
               .fontSize($r('app.float.type_headline'))
               .fontWeight(FontWeight.Bold)
@@ -24,7 +24,7 @@ export struct HomePage {
               .textAlign(TextAlign.Start)
 
             Text($r('app.string.home_subtitle'))
-              .fontSize($r('app.float.type_body'))
+              .fontSize($r('app.float.type_caption'))
               .fontColor($r('app.color.color_text_secondary'))
               .width('100%')
               .textAlign(TextAlign.Start)
@@ -36,6 +36,8 @@ export struct HomePage {
               .fontSize($r('app.float.type_caption'))
               .fontWeight(FontWeight.Medium)
               .fontColor($r('app.color.color_text_secondary'))
+              .width('100%')
+              .textAlign(TextAlign.Start)
 
             if (this.state.activeProfile !== undefined) {
               Text(this.state.activeProfile.name)
@@ -59,7 +61,7 @@ export struct HomePage {
                 .textAlign(TextAlign.Start)
 
               Text($r('app.string.home_profile_empty_detail'))
-                .fontSize($r('app.float.type_body'))
+                .fontSize($r('app.float.type_caption'))
                 .fontColor($r('app.color.color_text_secondary'))
                 .width('100%')
                 .textAlign(TextAlign.Start)
@@ -88,7 +90,7 @@ export struct HomePage {
             })
           }
           .width('100%')
-          .padding($r('app.float.space_lg'))
+          .padding($r('app.float.space_md'))
           .borderRadius($r('app.float.radius_card'))
           .backgroundColor($r('app.color.color_surface_card'))
           .border({
@@ -115,26 +117,46 @@ export struct HomePage {
             SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
           }
 
-          Column({ space: $r('app.float.space_sm') }) {
-            Text($r('app.string.home_info_title'))
+          Row({ space: $r('app.float.space_sm') }) {
+            Text($r('app.string.home_info_indicator'))
+              .width($r('app.float.touch_target_min'))
+              .height($r('app.float.touch_target_min'))
+              .textAlign(TextAlign.Center)
               .fontSize($r('app.float.type_body'))
               .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.color_action_primary'))
+              .fontColor($r('app.color.color_text_inverse'))
+              .backgroundColor($r('app.color.color_action_primary'))
+              .borderRadius($r('app.float.radius_chip'))
 
-            Text($r('app.string.home_info_body'))
-              .fontSize($r('app.float.type_body'))
-              .fontColor($r('app.color.color_text_secondary'))
-              .maxLines(3)
+            Column({ space: $r('app.float.space_xs') }) {
+              Text($r('app.string.home_info_title'))
+                .fontSize($r('app.float.type_body'))
+                .fontWeight(FontWeight.Medium)
+                .fontColor($r('app.color.color_action_primary'))
+                .width('100%')
+                .textAlign(TextAlign.Start)
+
+              Text($r('app.string.home_info_body'))
+                .fontSize($r('app.float.type_caption'))
+                .fontColor($r('app.color.color_text_secondary'))
+                .width('100%')
+                .textAlign(TextAlign.Start)
+                .maxLines(3)
+            }
+            .layoutWeight(1)
+            .alignItems(HorizontalAlign.Start)
           }
           .width('100%')
-          .padding($r('app.float.space_lg'))
+          .alignItems(VerticalAlign.Top)
+          .padding($r('app.float.space_md'))
           .borderRadius($r('app.float.radius_card'))
           .backgroundColor($r('app.color.color_surface_info_panel'))
         }
         .width('100%')
-        .padding(this.compactLayout ? $r('app.float.page_padding_compact') : $r('app.float.page_padding_regular'))
+        .padding($r('app.float.page_padding_compact'))
         .alignItems(HorizontalAlign.Start)
       }
+      .scrollBar(BarState.Off)
       .width('100%')
       .height('100%')
     }
@@ -171,7 +193,7 @@ function primaryActionBackground(action: 'DISABLED' | 'START' | 'STOP' | 'BUSY')
 
 function primaryActionForeground(action: 'DISABLED' | 'START' | 'STOP' | 'BUSY') {
   if (action === 'DISABLED' || action === 'BUSY') {
-    return $r('app.color.color_text_secondary');
+    return $r('app.color.color_action_disabled_text');
   }
   return $r('app.color.color_text_inverse');
 }

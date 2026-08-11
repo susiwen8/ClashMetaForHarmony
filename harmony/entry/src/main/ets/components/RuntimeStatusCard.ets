@@ -5,7 +5,7 @@ export struct RuntimeStatusCard {
   @Prop state: HomeViewState;
 
   build() {
-    Column({ space: $r('app.float.space_lg') }) {
+    Column({ space: $r('app.float.space_md') }) {
       Row({ space: $r('app.float.space_md') }) {
         Text($r('app.string.home_runtime_indicator'))
           .fontSize($r('app.float.type_title'))
@@ -43,7 +43,7 @@ export struct RuntimeStatusCard {
         .maxLines(2)
     }
     .width('100%')
-    .padding($r('app.float.space_lg'))
+    .padding($r('app.float.space_md'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
     .border({
