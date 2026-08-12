@@ -685,10 +685,6 @@ export async function runPhase3SimulatorProof({
         phase2SelfTestEnabled: false
       });
       const manifest = builtManifest ?? await readJson(fsApi, productionManifestPath, 'BUILD_MANIFEST_INVALID');
-      if (manifest?.signing?.result !== 'pass') {
-        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
-        break main;
-      }
 
       const productionIdentity = manifest?.artifacts?.hap?.identity;
       if (!isNonEmptyString(productionIdentity)) {
@@ -700,11 +696,6 @@ export async function runPhase3SimulatorProof({
       proof.haps.production.path = productionArtifact.path;
       proof.haps.production.sha256 = productionArtifact.sha256;
       proof.haps.production.sizeBytes = productionArtifact.sizeBytes;
-      if (/-unsigned\.hap$/iu.test(path.basename(productionArtifact.absolutePath))) {
-        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned production HAPs cannot enter the simulator proof lane.', 'input');
-        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
-        break main;
-      }
 
       const entryTestArtifact = await hashRepoFile(fsApi, repoRoot, entryTestHapPath, '--entry-test-hap');
       proof.haps.entryTest = {
@@ -712,9 +703,17 @@ export async function runPhase3SimulatorProof({
         sha256: entryTestArtifact.sha256,
         sizeBytes: entryTestArtifact.sizeBytes
       };
-      if (/-unsigned\.hap$/iu.test(path.basename(entryTestArtifact.absolutePath))) {
-        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned entry_test HAPs cannot enter the simulator proof lane.', 'input');
-        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed entry_test HAP is required before any simulator proof can run.', 'signing');
+
+      let unsignedBlocker = false;
+      if (/-unsigned\.hap$/iu.test(path.basename(productionArtifact.absolutePath)) || /-unsigned\.hap$/iu.test(path.basename(entryTestArtifact.absolutePath))) {
+        pushFailure(proof, 'INPUT_HAP_UNSIGNED', 'Unsigned simulator proof HAPs cannot enter the install/test lane.', 'input');
+        unsignedBlocker = true;
+      }
+      if (manifest?.signing?.result !== 'pass') {
+        pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
+        break main;
+      }
+      if (unsignedBlocker) {
         break main;
       }
 

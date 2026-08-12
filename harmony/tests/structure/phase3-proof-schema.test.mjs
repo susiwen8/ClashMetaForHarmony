@@ -447,6 +447,82 @@ test('Phase 3 runner refuses unsigned artifacts and failed install or timed-out 
   assert.ok(timeoutProof.failures.some((entry) => entry.code === 'SIMULATOR_TEST_TIMEOUT'));
 });
 
+test('Phase 3 runner records real unsigned artifacts before stopping at the signing gate', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const repo = await createPhase3TempRepo('phase3-unsigned-safe-real-shape');
+  const unsignedProductionPath = repo.productionHapPath.replace('-signed.hap', '-unsigned.hap');
+  const unsignedEntryTestPath = repo.entryTestHapPath.replace('-signed.hap', '-unsigned.hap');
+  await fs.rename(repo.productionHapPath, unsignedProductionPath);
+  await fs.rename(repo.entryTestHapPath, unsignedEntryTestPath);
+
+  const manifest = await createProductionManifest({
+    ...repo,
+    productionHapPath: unsignedProductionPath
+  });
+  manifest.result = 'incomplete';
+  manifest.signing = { result: 'incomplete' };
+  manifest.artifacts.hap = {
+    identity: 'harmony/entry/build/default/outputs/default/entry-default-unsigned.hap',
+    ...(await hashFile(unsignedProductionPath))
+  };
+
+  const calls = {
+    inspect: 0,
+    exec: 0,
+    runTest: 0
+  };
+
+  const proof = await runner.runPhase3SimulatorProof({
+    repoRoot: repo.repoRoot,
+    productionManifestPath: repo.manifestPath,
+    entryTestHapPath: unsignedEntryTestPath,
+    fixturePath: repo.fixturePath,
+    outputPath: repo.outputPath,
+    buildPhase1NativeImpl: async () => manifest,
+    inspectHapImpl: async () => {
+      calls.inspect += 1;
+      throw new Error('inspect should not run for unsigned-safe early exit');
+    },
+    execImpl: async () => {
+      calls.exec += 1;
+      throw new Error('hdc should not run for unsigned-safe early exit');
+    },
+    runTestImpl: async () => {
+      calls.runTest += 1;
+      throw new Error('aa test should not run for unsigned-safe early exit');
+    },
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-12T03:00:00.000Z', '2026-08-12T03:00:01.000Z')
+  });
+
+  assert.equal(proof.result, 'incomplete');
+  assert.deepEqual(calls, { inspect: 0, exec: 0, runTest: 0 });
+  assert.deepEqual(proof.physicalDeviceGates, {
+    phase2Traffic: 'incomplete',
+    phase3ProfileRuntime: 'incomplete'
+  });
+  assert.equal(proof.cleanup.forceStopResult, 'not-run');
+  assert.equal(proof.cleanup.uninstallResult, 'not-run');
+  assert.equal(proof.cleanup.rebuildDefaultProductionLane, 'not-run');
+  assert.equal(proof.cleanup.localPullDirectoryResult, 'pass');
+  assert.equal(proof.haps.production.path, 'harmony/entry/build/default/outputs/default/entry-default-unsigned.hap');
+  assert.deepEqual(
+    { sha256: proof.haps.production.sha256, sizeBytes: proof.haps.production.sizeBytes },
+    await hashFile(unsignedProductionPath)
+  );
+  assert.equal(proof.haps.entryTest.path, 'harmony/entry/build/default/outputs/ohosTest/entry-ohosTest-unsigned.hap');
+  assert.deepEqual(
+    { sha256: proof.haps.entryTest.sha256, sizeBytes: proof.haps.entryTest.sizeBytes },
+    await hashFile(unsignedEntryTestPath)
+  );
+  assert.equal(runner.validatePhase3Proof(proof).valid, true);
+  assert.deepEqual(
+    proof.failures.map((entry) => entry.code),
+    ['INPUT_HAP_UNSIGNED', 'SIGNING_REQUIRED']
+  );
+  assert.ok(!proof.failures.some((entry) => entry.code === 'PHASE3_SIMULATOR_PROOF_INVALID'));
+});
+
 test('Phase 3 pull helper rejects oversized or stale evidence before the runner can claim success', async () => {
   assert.ok(runner, 'Phase 3 runner module must exist');
   const repo = await createPhase3TempRepo('phase3-pull-helper');
