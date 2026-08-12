@@ -318,6 +318,23 @@ test('Phase 3 CLI defaults stay repo-scoped and parse optional production/test i
   });
 });
 
+test('Phase 3 CLI parse errors write the proof to a previously parsed custom --out path', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const repo = await createPhase3TempRepo('phase3-cli-custom-out');
+  const customOutputPath = path.join(repo.harmonyRoot, 'artifacts', 'custom-phase3-proof.json');
+
+  const exitCode = await runner.runCli({
+    argv: ['--out', 'harmony/artifacts/custom-phase3-proof.json', '--bogus'],
+    repoRoot: repo.repoRoot,
+    fsApi: await import('node:fs/promises').then((module) => module.default)
+  });
+
+  assert.equal(exitCode, 1);
+  const persisted = JSON.parse(await fs.readFile(customOutputPath, 'utf8'));
+  assert.equal(persisted.outputPath, 'harmony/artifacts/custom-phase3-proof.json');
+  await assert.rejects(fs.access(repo.outputPath));
+});
+
 test('Phase 3 runner marks missing, ambiguous, and physical-only targets as incomplete simulator gates', async () => {
   assert.ok(runner, 'Phase 3 runner module must exist');
   const cases = [
@@ -677,13 +694,61 @@ test('Phase 3 failure paths persist cleanup and rebuild results to disk before r
   });
 
   const persisted = JSON.parse(await fs.readFile(repo.outputPath, 'utf8'));
-  assert.equal(buildCount, 2, 'runner must rebuild the default production lane after a failed simulator attempt');
+  assert.equal(buildCount, 1, 'entry_test install failure happens before test execution and must not trigger a restore build');
   assert.equal(persisted.cleanup.forceStopResult, 'fail');
   assert.equal(persisted.cleanup.uninstallResult, 'pass');
-  assert.equal(persisted.cleanup.rebuildDefaultProductionLane, 'pass');
+  assert.equal(persisted.cleanup.rebuildDefaultProductionLane, 'not-run');
   assert.equal(persisted.cleanup.localPullDirectoryResult, 'pass');
   assert.ok(persisted.failures.some((entry) => entry.code === 'CLEANUP_FORCE_STOP_FAILED'));
   await assert.rejects(fs.access(path.join(repo.harmonyRoot, 'artifacts', 'phase3-pull', '980cbe02-b817-4db1-99bc-e8e4e6523daf')));
+});
+
+test('Phase 3 rebuilds the default production lane only after test execution has actually started', async () => {
+  assert.ok(runner, 'Phase 3 runner module must exist');
+  const earlyRepo = await createPhase3TempRepo('phase3-rebuild-early');
+  const earlyManifest = await createProductionManifest(earlyRepo);
+  let earlyBuildCount = 0;
+
+  await runner.runPhase3SimulatorProof({
+    repoRoot: earlyRepo.repoRoot,
+    productionManifestPath: earlyRepo.manifestPath,
+    entryTestHapPath: earlyRepo.entryTestHapPath,
+    fixturePath: earlyRepo.fixturePath,
+    outputPath: earlyRepo.outputPath,
+    buildPhase1NativeImpl: async () => {
+      earlyBuildCount += 1;
+      return earlyManifest;
+    },
+    inspectHapImpl: async () => createInspectionPass(earlyManifest),
+    execImpl: createExecPlan({ installResults: [createExecResult({ exitCode: 1, stderr: 'prod install failed' })] }),
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-12T02:00:00.000Z', '2026-08-12T02:00:01.000Z', '2026-08-12T02:00:02.000Z')
+  });
+
+  assert.equal(earlyBuildCount, 1, 'install failure before test run must not trigger a restore build');
+
+  const timeoutRepo = await createPhase3TempRepo('phase3-rebuild-timeout');
+  const timeoutManifest = await createProductionManifest(timeoutRepo);
+  let timeoutBuildCount = 0;
+
+  await runner.runPhase3SimulatorProof({
+    repoRoot: timeoutRepo.repoRoot,
+    productionManifestPath: timeoutRepo.manifestPath,
+    entryTestHapPath: timeoutRepo.entryTestHapPath,
+    fixturePath: timeoutRepo.fixturePath,
+    outputPath: timeoutRepo.outputPath,
+    buildPhase1NativeImpl: async () => {
+      timeoutBuildCount += 1;
+      return timeoutManifest;
+    },
+    inspectHapImpl: async () => createInspectionPass(timeoutManifest),
+    execImpl: createExecPlan(),
+    runTestImpl: async () => createExecResult({ timedOut: true, stderr: 'timeout while running aa test' }),
+    randomUUID: () => '980cbe02-b817-4db1-99bc-e8e4e6523daf',
+    now: createIsoSequence('2026-08-12T02:00:00.000Z', '2026-08-12T02:00:01.000Z', '2026-08-12T02:00:02.000Z', '2026-08-12T02:00:03.000Z')
+  });
+
+  assert.equal(timeoutBuildCount, 2, 'once test execution starts, timeout paths must restore the default production lane');
 });
 
 test('Phase 3 runner source reuses shared helper exports for path guards, target classification, and resolved hdc', async () => {

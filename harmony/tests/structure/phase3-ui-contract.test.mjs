@@ -470,8 +470,11 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
   assert.match(testabilitySource, /signalTask14Completion/u,
     'TestAbility must expose a single-shot completion signal'
   );
-  assert.match(runnerSource, /abilityDelegatorRegistry\.getArguments\(\)\.parameters/u,
+  assert.match(runnerSource, /abilityDelegatorRegistry\.getArguments\(\)\.parameters|abilityDelegatorArguments\.parameters/u,
     'OpenHarmonyTestRunner must read AbilityDelegator string parameters for proof identity handoff'
+  );
+  assert.match(runnerSource, /configureEvidenceFromRunnerParameters\(runnerParameters\)/u,
+    'OpenHarmonyTestRunner must pass the raw delegator parameters into the evidence configurator'
   );
   for (const parameterKey of [
     ['cmfa.phase3.runId', 'TASK14_RUN_ID_PARAMETER_KEY'],
@@ -480,9 +483,9 @@ test('Task 14 isolated Simulator test bundle registers an entry_test runner with
     ['cmfa.phase3.fixtureSha256', 'TASK14_FIXTURE_SHA256_PARAMETER_KEY']
   ]) {
     assert.match(
-      runnerSource,
+      testabilitySource,
       new RegExp(`${parameterKey[0].replaceAll('.', '\\.')}|${parameterKey[1]}`, 'u'),
-      `OpenHarmonyTestRunner must recognize ${parameterKey[0]}`
+      `Task14 evidence configuration must recognize ${parameterKey[0]}`
     );
   }
   assert.doesNotMatch(runnerSource, /-w\s*[,)]|['"`]-w['"`]/u,

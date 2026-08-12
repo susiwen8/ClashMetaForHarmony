@@ -1,5 +1,4 @@
 import { Want } from '@kit.AbilityKit';
-import { BusinessError } from '@kit.BasicServicesKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { abilityDelegatorRegistry, TestRunner } from '@kit.TestKit';
 import { Hypium } from '@ohos/hypium';
@@ -10,11 +9,7 @@ import {
   configureEvidenceFromRunnerParameters,
   flushEvidence,
   getEvidence,
-      setEvidenceStatus,
-      TASK14_ENTRY_TEST_HAP_SHA256_PARAMETER_KEY,
-      TASK14_FIXTURE_SHA256_PARAMETER_KEY,
-      TASK14_PRODUCTION_HAP_SHA256_PARAMETER_KEY,
-      TASK14_RUN_ID_PARAMETER_KEY,
+  setEvidenceStatus,
   TASK14_TEST_ABILITY_NAME,
   TASK14_TEST_MODULE_NAME,
   waitForTask14Completion,
@@ -35,7 +30,7 @@ export default class OpenHarmonyTestRunner implements TestRunner {
   async onRun(): Promise<void> {
     const abilityDelegator = abilityDelegatorRegistry.getAbilityDelegator();
     const abilityDelegatorArguments = abilityDelegatorRegistry.getArguments();
-    const runnerParameters: Record<string, Object> = abilityDelegatorRegistry.getArguments().parameters ?? {};
+    const runnerParameters: Record<string, Object> = abilityDelegatorArguments.parameters ?? {};
     appendEvidenceTrace('runner.onRun');
     await flushEvidence();
     try {
@@ -68,14 +63,6 @@ export default class OpenHarmonyTestRunner implements TestRunner {
       throw toError(error);
     }
   }
-}
-
-function describeBusinessError(error: Object | undefined): string {
-  const record = error as BusinessError;
-  if (record !== undefined && typeof record.message === 'string' && record.message.length > 0) {
-    return record.message;
-  }
-  return `${error}`;
 }
 
 async function waitForTask14CompletionOrTimeout(): Promise<void> {

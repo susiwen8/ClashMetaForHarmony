@@ -401,6 +401,53 @@ export function parseCliArguments(argv = process.argv.slice(2), repoRoot = REPO_
   };
 }
 
+function parseCliArgumentsPartial(argv = process.argv.slice(2), repoRoot = REPO_ROOT) {
+  let outputPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase3-simulator-proof.json');
+  let productionManifestPath = path.join(repoRoot, 'harmony', 'artifacts', 'phase3-build-manifest.json');
+  let entryTestHapPath = path.join(repoRoot, 'harmony', 'entry', 'build', 'default', 'outputs', 'ohosTest', 'entry-ohosTest-unsigned.hap');
+  let fixturePath = path.join(repoRoot, 'harmony', 'tests', 'fixtures', 'phase3-valid.yaml');
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const option = argv[index];
+    if (option === '--out') {
+      outputPath = path.resolve(repoRoot, requireValue(argv, index, option));
+      index += 1;
+      continue;
+    }
+    if (option === '--production-manifest') {
+      productionManifestPath = path.resolve(repoRoot, requireValue(argv, index, option));
+      index += 1;
+      continue;
+    }
+    if (option === '--entry-test-hap') {
+      entryTestHapPath = path.resolve(repoRoot, requireValue(argv, index, option));
+      index += 1;
+      continue;
+    }
+    if (option === '--fixture') {
+      fixturePath = path.resolve(repoRoot, requireValue(argv, index, option));
+      index += 1;
+      continue;
+    }
+    throw Object.assign(new Error(`Unknown argument: ${option}`), {
+      code: 'ARGUMENT_INVALID',
+      partial: {
+        outputPath,
+        productionManifestPath,
+        entryTestHapPath,
+        fixturePath
+      }
+    });
+  }
+
+  return {
+    outputPath,
+    productionManifestPath,
+    entryTestHapPath,
+    fixturePath
+  };
+}
+
 async function writeProof(proof, outputPath, fsApi = fs, repoRoot = REPO_ROOT) {
   const resolvedOutputPath = await resolveRepoScopedOutputPath(fsApi, repoRoot, outputPath);
   await fsApi.writeFile(resolvedOutputPath, `${JSON.stringify(proof, null, 2)}\n`, 'utf8');
@@ -637,7 +684,6 @@ export async function runPhase3SimulatorProof({
         outputPath: productionManifestPath,
         phase2SelfTestEnabled: false
       });
-      shouldRebuildDefaultProductionLane = true;
       const manifest = builtManifest ?? await readJson(fsApi, productionManifestPath, 'BUILD_MANIFEST_INVALID');
       if (manifest?.signing?.result !== 'pass') {
         pushFailure(proof, 'SIGNING_REQUIRED', 'A signed production HAP is required before any simulator proof can run.', 'signing');
@@ -734,6 +780,7 @@ export async function runPhase3SimulatorProof({
       }
 
       proof.timestamps.testStartedAt = isoTimestamp(now());
+      shouldRebuildDefaultProductionLane = true;
       const testResult = await runTestImpl({ execImpl, hdcCommand, target, proof, cwd: repoRoot });
       if (testResult?.timedOut) {
         pushFailure(proof, 'SIMULATOR_TEST_TIMEOUT', sanitizeText(testResult?.stderr ?? 'The simulator test runner timed out.', replacements), 'test');
@@ -903,10 +950,11 @@ export async function runCli({
 } = {}) {
   let parsed;
   try {
-    parsed = parseCliArguments(argv, repoRoot);
+    parsed = parseCliArgumentsPartial(argv, repoRoot);
+    parseCliArguments(argv, repoRoot);
   } catch (error) {
     await writeArgumentErrorProof({
-      outputPath: path.join(repoRoot, 'harmony', 'artifacts', 'phase3-simulator-proof.json'),
+      outputPath: error?.partial?.outputPath ?? path.join(repoRoot, 'harmony', 'artifacts', 'phase3-simulator-proof.json'),
       repoRoot,
       fsApi,
       randomUUID,
