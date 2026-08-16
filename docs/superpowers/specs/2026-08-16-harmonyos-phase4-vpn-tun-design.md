@@ -107,6 +107,24 @@ extension, not a page or view model, owns the active VPN session. Closing or
 recreating a page does not invoke stop. A future move to a separate process
 requires a separately reviewed IPC design and is outside this phase.
 
+Concrete HarmonyOS orchestration lives under `entry/src/main/ets/vpn/`:
+
+- `HarmonyVpnController` implements the UI-facing `VpnControllerPort` and is
+  the only application class that calls `startVpnExtensionAbility()` or
+  `stopVpnExtensionAbility()`.
+- `CmfaVpnExtensionAbility` creates the extension-owned
+  `VpnRuntimeCoordinator` and forwards `onCreate()` and `onDestroy()` into it.
+- `HarmonyVpnConnectionDriver` implements `VpnPlatformSessionPort` with the
+  extension context and is the only class that creates, protects, or destroys
+  a `VpnConnection`.
+- `VpnSessionRegistry` is a process-local, live-state event registry used by
+  the controller and UI. It is not durable proof that a session survived
+  process death.
+
+`entry` orchestrates the notification lifecycle through the platform adapter;
+it does not call background-task or notification APIs from a page or view
+model.
+
 ### 4.2 `shared`
 
 The shared module adds platform-neutral contracts for:
@@ -121,6 +139,21 @@ The shared module adds platform-neutral contracts for:
 
 The shared layer never imports NetworkKit, ability classes, N-API, or fd APIs.
 
+The minimum cross-module contracts are fixed as follows:
+
+| Port | Implemented by | Required calls/events |
+| --- | --- | --- |
+| `VpnControllerPort` | `entry/HarmonyVpnController` | `start(profileId, versionId, sessionId)`, `stop(sessionId?)`, `snapshot()`, `subscribe(listener)` |
+| `VpnPlatformSessionPort` | `entry/HarmonyVpnConnectionDriver` | `create(config) -> TunHandle`, `protectProcess()`, `protectSocket(fd)`, `destroy(vpnId)` |
+| `TunRuntimePort` | `core/CoreTunRuntime` | `start(handle, options) -> TunRuntimeSnapshot`, `stop()`, `snapshot()`, `subscribe(listener)` |
+| `NetworkRecoveryPort` | `platform/HarmonyNetworkMonitor` | `currentNetwork()`, `subscribeUsableNetwork(listener)` |
+| `ContinuousNotificationPort` | `platform/HarmonyVpnNotificationDriver` | `start(sessionId)`, `stop(sessionId)`, `subscribeCancellation(listener)` |
+
+`TunHandle` contains only `fd`, `vpnId`, and a session correlation ID. Shared
+code treats the integer as an opaque borrowed value; ownership is transferred
+only inside `CoreTunRuntime.start()`. All events include the session ID so a
+late callback from an earlier start cannot update the current session.
+
 ### 4.3 `core`
 
 The core boundary adds TUN operations without exposing HarmonyOS objects:
@@ -134,6 +167,17 @@ The core boundary adds TUN operations without exposing HarmonyOS objects:
 New C ABI fields are appended behind existing `struct_size` checks. Existing
 callers with the older structure size remain valid. No Android JNI types,
 `VpnService`, content URIs, or `/proc` UID lookups cross into `harmony/`.
+
+`core/CoreTunRuntime` is the sole `TunRuntimePort` implementation. It converts
+the shared options to Node-API values, calls the native addon, and maps native
+events back to shared snapshots. It never starts or stops an extension,
+creates a `VpnConnection`, or publishes a notification.
+
+`platform/HarmonyNetworkMonitor` and
+`platform/HarmonyVpnNotificationDriver` are the only new platform adapters.
+They contain NetworkKit/background-notification calls but no fd or native-core
+logic. This keeps network recovery and notification behavior independently
+fakeable in shared coordinator tests.
 
 ### 4.4 Go/mihomo data plane
 
@@ -186,29 +230,39 @@ Switching from local-only mode to VPN mode performs a controlled core restart.
 This closes outbound sockets created before socket protection was installed.
 VPN mode then starts the same local listeners plus TUN capture.
 
+If the application process dies or the phone reboots, this phase treats the
+session as stopped and requires a manual user start. It does not register
+auto-start, recreate the VPN silently, or restore a persisted `Running` state.
+
 ## 6. Start and Data Flow
 
 ### 6.1 Start sequence
 
-1. The UI submits the selected profile ID to `VpnRuntimeCoordinator`.
-2. The coordinator verifies that a committed active profile exists and that no
-   start or stop command is in flight.
-3. `startVpnExtensionAbility()` triggers the system trust UI if required.
-4. `VpnExtensionAbility.onCreate()` resolves the profile from application
-   storage. Secrets are not placed in Want parameters.
-5. The extension creates a `VpnConnection` and, on API 20+, generates a VPN ID.
-6. The extension prepares outbound escape before creating any new core
+1. The UI resolves the selected committed profile and immutable version, then
+   generates a fresh non-secret session ID.
+2. `HarmonyVpnController` records `AwaitingConsent(sessionId)` in the live
+   registry and rejects another pending or active start.
+3. The controller places exactly three non-secret lookup keys in the Want:
+   `profileId`, `versionId`, and `sessionId`. It never places configuration
+   content, subscription URLs, node data, or credentials in the Want.
+4. `startVpnExtensionAbility()` triggers the system trust UI if required.
+5. `VpnExtensionAbility.onCreate()` reads the three keys, rejects a duplicate
+   or stale session ID, and resolves that exact committed profile version from
+   application storage. A deleted, superseded, or uncommitted version fails
+   closed instead of silently switching profiles.
+6. The extension creates a `VpnConnection` and, on API 20+, generates a VPN ID.
+7. The extension prepares outbound escape before creating any new core
    connection.
-7. The extension calls `VpnConnection.create()` with the validated config.
-8. Native code validates the returned fd and immediately calls `dup()`. The
+8. The extension calls `VpnConnection.create()` with the validated config.
+9. Native code validates the returned fd and immediately calls `dup()`. The
    duplicate becomes the sole native/Go-owned descriptor. The platform
    connection retains its original handle until `destroy()`.
-9. The core loads the committed mihomo configuration and starts its local
+10. The core loads the committed mihomo configuration and starts its local
    listeners.
-10. `sing-tun` starts on the duplicated fd and attaches to mihomo's tunnel.
-11. The core emits readiness with the session correlation ID and non-secret
+11. `sing-tun` starts on the duplicated fd and attaches to mihomo's tunnel.
+12. The core emits readiness with the session correlation ID and non-secret
     listener/TUN metadata.
-12. The extension starts its ongoing notification and the coordinator enters
+13. The extension starts its ongoing notification and the coordinator enters
     `Running`.
 
 If any step fails, rollback executes in reverse ownership order.
@@ -226,9 +280,12 @@ The initial full-capture configuration uses:
 - IPv4 and IPv6 accepted;
 - the VPN application's own bundle in the block list.
 
-No user application allowlist or bypass list is part of this phase. All other
-applications are captured. Per-application routing remains a later feature and
-must preserve the self-exclusion invariant.
+No user application allowlist or bypass list is part of this phase. All
+ordinary application traffic that HarmonyOS exposes to a third-party VPN is
+captured. The VPN application itself and any OS-reserved control, emergency,
+or system traffic that HarmonyOS legally excludes are not claimed as captured.
+Per-application routing remains a later feature and must preserve the
+self-exclusion invariant.
 
 ### 6.3 Outbound loop prevention
 
@@ -242,6 +299,11 @@ The VPN application's own bundle is excluded by `VpnConfig`. In addition:
 
 Protection failure fails the affected connection closed. It never silently
 dials through the TUN and never falls back to an unreported direct path.
+On API 22+, failure of the initial `protectProcessNet()` call aborts and rolls
+back the entire VPN start. On API 20 and 21, a later per-socket protection
+failure rejects that connection, emits `VPN_SOCKET_PROTECT_FAILED`, and keeps
+the session live only if the packet loop and other protected connections are
+still healthy.
 
 ### 6.4 Packet paths
 
@@ -373,6 +435,18 @@ The production AArch64 build must show:
 - a signed, installable production HAP;
 - recorded hashes for the HAP and packaged native libraries.
 
+The traffic probe is a separate standard test-only HAP with its own bundle
+name and only `ohos.permission.INTERNET`. It must be independently signed for
+the connected development device, independently installed, and launchable
+without the production bundle. The proof runner records and compares both
+bundle names and both HAP hashes.
+
+The device proof is invalid when the probe is unsigned, cannot be installed or
+launched, shares the production bundle name, is excluded by the VPN config, or
+appears anywhere inside the production HAP. Production package inspection
+rejects the probe bundle name, resources, native code, or test-control entry
+points. The probe HAP is never a release deliverable.
+
 ### 9.5 Independent physical-phone proof
 
 A test-only traffic-probe HAP uses a different bundle name and is never
@@ -392,9 +466,23 @@ The probe produces correlated, non-secret checks for:
 - Wi-Fi loss/recovery and, when safely available, Wi-Fi/cellular transition;
 - stop cleanup and ordinary-network restoration.
 
-The proof is accepted only when the external probe result, TUN packet/byte
-counters, and mihomo session events share the same generated correlation ID.
-An in-app request from the excluded VPN bundle cannot satisfy this gate.
+The probe does not configure an HTTP, SOCKS, PAC, application, or Wi-Fi proxy;
+its global-capture checks use direct NetworkKit/socket calls. Each TCP and UDP
+flow carries a generated probe flow ID to a controlled origin. DNS uses a
+generated query label whose SHA-256 is recorded instead of the clear query.
+
+At TUN ingress, the data plane emits a redacted trace containing
+`ingress: "tun"`, protocol, session ID, probe flow ID or DNS query hash, and a
+hashed flow tuple. The corresponding mihomo connection/DNS event carries the
+same ingress trace ID. Local HTTP and SOCKS listeners instead emit
+`ingress: "local-http"` or `ingress: "local-socks"` and cannot satisfy a TUN
+capture assertion.
+
+The proof is accepted only when the external probe result, a matching
+`ingress: "tun"` trace, the linked mihomo event, and TUN packet/byte counters
+share the same session and flow correlation. A counter increase by itself, a
+local-listener event, or an in-app request from the excluded VPN bundle cannot
+satisfy this gate.
 
 The runner writes `harmony/artifacts/phase4-device-proof.json` containing:
 
@@ -404,7 +492,7 @@ The runner writes `harmony/artifacts/phase4-device-proof.json` containing:
 - native library hashes and core version;
 - route/DNS/MTU feature assertions;
 - TCP, UDP, DNS, IPv4, optional IPv6, local HTTP, and SOCKS results;
-- TUN counters and correlated mihomo events;
+- ingress-discriminated TUN traces, counters, and correlated mihomo events;
 - lifecycle, recovery, notification, and stop-cleanup results;
 - `stubDetected: false`.
 
@@ -419,7 +507,9 @@ Phase 4 is complete only when all of the following are true:
    HarmonyOS 6.1 phone without system or enterprise permissions.
 2. `VpnConnection.create()` returns a usable TUN fd and ownership tests show no
    descriptor leak or double close.
-3. The independent probe's TCP, UDP, and DNS traffic crosses TUN and mihomo.
+3. The independently signed and installed probe's TCP, UDP, and DNS flows each
+   have a matching `ingress: "tun"` trace and linked mihomo event; local proxy
+   ingress cannot satisfy this criterion.
 4. IPv4 is captured; IPv6 is captured whenever the network offers IPv6 and
    cannot leak outside the configured `::/0` policy.
 5. Core outbound connections do not loop back into TUN.
@@ -446,7 +536,7 @@ replace the independent physical-phone traffic proof.
 | IPv6 bypasses IPv4-only capture | Configure `::/0`, virtual IPv6 DNS, and explicit leak checks |
 | Background policy stops the process | Ongoing notification, continuous task, lifecycle observation, and screen-off proof |
 | Partial startup appears successful | Reverse-order rollback and event-confirmed state only |
-| A self-generated probe gives false confidence | Use a separate test-only bundle and correlated TUN/core evidence |
+| A self-generated or local-proxy probe gives false confidence | Use a separately signed test-only bundle plus ingress-discriminated TUN/core evidence |
 | Local proxy is mistaken for an OS global proxy | Use precise product text and prohibit unsupported claims in tests |
 
 ## 12. Reviewed Platform References
@@ -463,4 +553,3 @@ replace the independent physical-phone traffic proof.
   `ets/api/@ohos.enterprise.networkManager.d.ts`
 - [OpenHarmony third-party VPN guide, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/network/net-vpnExtension.md)
 - [OpenHarmony VPN Extension API, reviewed snapshot](https://github.com/openharmony/docs/blob/f41b9345badd47c7ab0c263344cd7f4b5a549afb/zh-cn/application-dev/reference/apis-network-kit/js-apis-net-vpnExtension.md)
-
