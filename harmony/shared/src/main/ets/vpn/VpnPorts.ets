@@ -15,6 +15,7 @@ import type {
 import { createTunRuntimeFailure, createVpnFailure } from './VpnModels';
 
 export type VpnPlatformErrorCode =
+  | 'ALREADY_ACTIVE'
   | 'CONSENT_DENIED'
   | 'PLATFORM_CREATE_FAILED'
   | 'PROCESS_PROTECT_FAILED'

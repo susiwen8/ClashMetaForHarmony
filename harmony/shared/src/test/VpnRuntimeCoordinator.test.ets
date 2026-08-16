@@ -423,6 +423,10 @@ function buildPlatformError(code: VpnPlatformErrorCode, detail: string): Error {
   return new VpnPlatformPortError(code, detail);
 }
 
+function buildAlreadyActivePlatformError(detail: string): Error {
+  return new VpnPlatformPortError('ALREADY_ACTIVE' as VpnPlatformErrorCode, detail);
+}
+
 function buildNotificationStopError(code: ContinuousNotificationStopErrorCode, detail: string): Error {
   return new ContinuousNotificationPortError(code, detail);
 }
@@ -797,6 +801,35 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
       expect(notification.stopCalls.length).assertEqual(0);
       expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('mapsAlreadyActivePlatformErrorsToVpnAlreadyActiveFailures', 0, async () => {
+      const platform = new FakePlatform();
+      platform.createError = buildAlreadyActivePlatformError('raw active secret 55');
+      const tunRuntime = new FakeTunRuntime();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [63, 64, 65, 66]
+      );
+
+      const result: VpnControllerStartResult = await coordinator.start('profile-1', 'version-1', 'session-1');
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind === 'FAILED') {
+        expect(result.failure.code).assertEqual('VPN_ALREADY_ACTIVE');
+        expect(result.failure.detail.includes('raw active secret 55')).assertFalse();
+      }
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+      expect(coordinator.snapshot().lastFailure?.code ?? '').assertEqual('VPN_ALREADY_ACTIVE');
     });
 
     it('ignoresLateEventsFromOldSessions', 0, async () => {

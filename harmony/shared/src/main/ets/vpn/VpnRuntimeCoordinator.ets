@@ -389,7 +389,9 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
           snapshot: this.snapshot()
         };
       }
-      const failure: VpnFailure = createVpnFailure('VPN_CREATE_FAILED', this.describeError(error, 'Platform session creation failed.'));
+      const failure: VpnFailure = error instanceof VpnPlatformPortError && error.code === 'ALREADY_ACTIVE'
+        ? createVpnFailure('VPN_ALREADY_ACTIVE', 'Platform session is already active.')
+        : createVpnFailure('VPN_CREATE_FAILED', this.describeError(error, 'Platform session creation failed.'));
       await this.failStartAndCleanup(active, failure);
       return buildFailedResult(this.snapshotValue, failure);
     }
