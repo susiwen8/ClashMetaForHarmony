@@ -16,6 +16,10 @@ cmfa_status cmfa_start_local(const cmfa_local_options *options,
                              cmfa_error *error);
 cmfa_status cmfa_stop(cmfa_error *error);
 cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_error *error);
+cmfa_status cmfa_tun_start(const cmfa_tun_options *options, cmfa_tun_snapshot *snapshot, cmfa_error *error);
+cmfa_status cmfa_tun_stop(cmfa_error *error);
+cmfa_status cmfa_tun_runtime_state(cmfa_tun_snapshot *snapshot, cmfa_error *error);
+cmfa_status cmfa_tun_copy_traces(cmfa_tun_trace_collection *traces, cmfa_error *error);
 #if defined(CMFA_TEST_BUILD_ABI)
 cmfa_status cmfa_probe_https(const cmfa_probe_request *request,
                              cmfa_probe_result **result,

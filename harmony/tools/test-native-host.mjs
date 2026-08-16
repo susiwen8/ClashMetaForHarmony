@@ -8,6 +8,7 @@ const HARMONY_ROOT = fileURLToPath(new URL('..', import.meta.url));
 const INCLUDE_DIR = path.join(HARMONY_ROOT, 'core', 'abi', 'include');
 const CONTRACT_SOURCE = path.join(HARMONY_ROOT, 'core', 'abi', 'src', 'cmfa_contract.cpp');
 const CONTRACT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_contract_test.cpp');
+const TUN_CONTRACT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_tun_contract_test.cpp');
 const MIHOMO_BACKEND_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'cmfa_mihomo_backend.cpp');
 const MIHOMO_BACKEND_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_mihomo_backend_test.cpp');
 const NAPI_ENVIRONMENT_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'napi_environment.cpp');
@@ -148,8 +149,8 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
 
   const publicFunctions = [...stripTestBuildAbiSections(coreHeader).matchAll(/^cmfa_status\s+(cmfa_[a-z0-9_]+)\s*\(/gmu)]
       .map((entry) => entry[1]);
-  if (publicFunctions.length !== 8) {
-    throw new Error(`Expected exactly 8 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
+  if (publicFunctions.length !== 12) {
+    throw new Error(`Expected exactly 12 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
   }
   const expectedFunctions = [
     'cmfa_initialize',
@@ -159,6 +160,10 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
     'cmfa_start_local',
     'cmfa_stop',
     'cmfa_runtime_state',
+    'cmfa_tun_start',
+    'cmfa_tun_stop',
+    'cmfa_tun_runtime_state',
+    'cmfa_tun_copy_traces',
     'cmfa_shutdown',
   ];
   if (publicFunctions.join('\n') !== expectedFunctions.join('\n')) {
@@ -260,6 +265,12 @@ const CASES = new Map([
     beforeCompile: verifyContractPreflight,
     outputName: 'cmfa_contract_test',
   }],
+  ['tun-contract', {
+    sources: [CONTRACT_SOURCE, TUN_CONTRACT_TEST_SOURCE],
+    defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_CONTRACT_TESTING=1', 'CMFA_TEST_BUILD_ABI=1'],
+    prefix: 'cmfa-tun-contract-test-',
+    outputName: 'cmfa_tun_contract_test',
+  }],
   ['mihomo-backend', {
     sources: [CONTRACT_SOURCE, MIHOMO_BACKEND_SOURCE, MIHOMO_BACKEND_TEST_SOURCE],
     defines: ['CMFA_INTERNAL_BACKEND_API=1', 'CMFA_BACKEND_TESTING=1', 'CMFA_TEST_BUILD_ABI=1'],
@@ -351,8 +362,22 @@ async function compileAndRunCase(caseConfig) {
   }
 }
 
+async function runDefaultCases() {
+  const defaultCaseNames = ['contract', 'tun-contract'];
+  for (const caseName of defaultCaseNames) {
+    const exitCode = await compileAndRunCase(CASES.get(caseName));
+    if (exitCode !== 0) {
+      return exitCode;
+    }
+  }
+  return 0;
+}
+
 export async function runCli(argv = process.argv.slice(2)) {
   try {
+    if (argv.length === 0) {
+      return await runDefaultCases();
+    }
     const { caseName } = parseCliArguments(argv);
     return await compileAndRunCase(CASES.get(caseName));
   } catch (error) {

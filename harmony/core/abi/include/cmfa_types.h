@@ -16,6 +16,15 @@ extern "C" {
 #define CMFA_MAX_PROBE_KIND_BYTES ((size_t)64)
 #define CMFA_MAX_PROBE_ERROR_BYTES ((size_t)1024)
 #define CMFA_MAX_PROBE_PEM_BYTES ((size_t)16384)
+#define CMFA_MAX_TUN_SESSION_ID_BYTES ((size_t)128)
+#define CMFA_MAX_TUN_TRACE_ID_BYTES ((size_t)128)
+#define CMFA_MAX_TUN_ADDRESS_BYTES ((size_t)256)
+#define CMFA_MAX_TUN_PROTOCOL_BYTES ((size_t)32)
+#define CMFA_MAX_TUN_INGRESS_BYTES ((size_t)32)
+#define CMFA_MAX_TUN_HASH_BYTES ((size_t)65)
+#define CMFA_MAX_TUN_FAILURE_CODE_BYTES ((size_t)64)
+#define CMFA_MAX_TUN_FAILURE_DETAIL_BYTES ((size_t)1024)
+#define CMFA_MAX_TUN_TRACE_COUNT ((size_t)16)
 
 typedef enum cmfa_probe_protocol {
   CMFA_PROBE_PROTOCOL_UNSPECIFIED = 0,
@@ -34,7 +43,8 @@ typedef enum cmfa_status {
   CMFA_INVALID_STATE = 7,
   CMFA_BUSY = 8,
   CMFA_CORE_UNAVAILABLE = 9,
-  CMFA_BACKEND_ERROR = 10
+  CMFA_BACKEND_ERROR = 10,
+  CMFA_SOCKET_PROTECT_FAILED = 11
 } cmfa_status;
 
 typedef enum cmfa_runtime_state_value {
@@ -51,6 +61,14 @@ typedef enum cmfa_log_level {
   CMFA_LOG_WARN = 2,
   CMFA_LOG_ERROR = 3
 } cmfa_log_level;
+
+typedef enum cmfa_tun_state_value {
+  CMFA_TUN_IDLE = 0,
+  CMFA_TUN_STARTING = 1,
+  CMFA_TUN_READY = 2,
+  CMFA_TUN_STOPPED = 3,
+  CMFA_TUN_ERROR = 4
+} cmfa_tun_state_value;
 
 typedef struct cmfa_error {
   cmfa_status code;
@@ -119,6 +137,52 @@ typedef struct cmfa_probe_result {
   cmfa_probe_tracker_record tracker;
   cmfa_probe_error error;
 } cmfa_probe_result;
+
+typedef struct cmfa_tun_options {
+  uint32_t struct_size;
+  int32_t tun_fd;
+  char session_id[CMFA_MAX_TUN_SESSION_ID_BYTES];
+} cmfa_tun_options;
+
+typedef struct cmfa_tun_counters {
+  uint32_t struct_size;
+  uint64_t tx_packets;
+  uint64_t tx_bytes;
+  uint64_t rx_packets;
+  uint64_t rx_bytes;
+} cmfa_tun_counters;
+
+typedef struct cmfa_tun_failure {
+  uint32_t struct_size;
+  char code[CMFA_MAX_TUN_FAILURE_CODE_BYTES];
+  char detail[CMFA_MAX_TUN_FAILURE_DETAIL_BYTES];
+} cmfa_tun_failure;
+
+typedef struct cmfa_tun_trace {
+  uint32_t struct_size;
+  char session_id[CMFA_MAX_TUN_SESSION_ID_BYTES];
+  char trace_id[CMFA_MAX_TUN_TRACE_ID_BYTES];
+  char ingress[CMFA_MAX_TUN_INGRESS_BYTES];
+  char protocol[CMFA_MAX_TUN_PROTOCOL_BYTES];
+  char source_address[CMFA_MAX_TUN_ADDRESS_BYTES];
+  char destination_address[CMFA_MAX_TUN_ADDRESS_BYTES];
+  char hashed_tuple[CMFA_MAX_TUN_HASH_BYTES];
+  char correlation_hash[CMFA_MAX_TUN_HASH_BYTES];
+} cmfa_tun_trace;
+
+typedef struct cmfa_tun_trace_collection {
+  uint32_t struct_size;
+  uint32_t trace_count;
+  cmfa_tun_trace traces[CMFA_MAX_TUN_TRACE_COUNT];
+} cmfa_tun_trace_collection;
+
+typedef struct cmfa_tun_snapshot {
+  uint32_t struct_size;
+  cmfa_tun_state_value state;
+  char session_id[CMFA_MAX_TUN_SESSION_ID_BYTES];
+  cmfa_tun_counters counters;
+  cmfa_tun_failure failure;
+} cmfa_tun_snapshot;
 
 #ifdef __cplusplus
 }

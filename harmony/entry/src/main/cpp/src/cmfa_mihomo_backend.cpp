@@ -13,6 +13,14 @@
 #include <mutex>
 #include <string>
 
+#if defined(__APPLE__)
+#define CMFA_OPTIONAL_SYMBOL __attribute__((weak_import))
+#elif defined(__GNUC__) || defined(__clang__)
+#define CMFA_OPTIONAL_SYMBOL __attribute__((weak))
+#else
+#define CMFA_OPTIONAL_SYMBOL
+#endif
+
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void);
 struct cmfa_mihomo_runtime_log_record_v1 {
   uint32_t struct_size;
@@ -30,6 +38,14 @@ extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *requ
                                                   cmfa_probe_result *result,
                                                   cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_start_tun_v1(const cmfa_tun_options *options,
+                                                cmfa_tun_snapshot *snapshot,
+                                                cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
+extern "C" cmfa_status cmfa_mihomo_stop_tun_v1(cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
+extern "C" cmfa_status cmfa_mihomo_tun_runtime_state_v1(cmfa_tun_snapshot *snapshot,
+                                                        cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
+extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection *traces,
+                                                      cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
 
 namespace {
 
@@ -83,6 +99,28 @@ void reset_runtime_snapshot(cmfa_runtime_snapshot *snapshot) {
   snapshot->socks_address[0] = '\0';
   snapshot->last_error[0] = '\0';
   snapshot->mixed_port = 0;
+}
+
+void reset_tun_snapshot(cmfa_tun_snapshot *snapshot) {
+  if (snapshot == nullptr) {
+    return;
+  }
+  std::memset(snapshot, 0, sizeof(*snapshot));
+  snapshot->struct_size = sizeof(cmfa_tun_snapshot);
+  snapshot->state = CMFA_TUN_IDLE;
+  snapshot->counters.struct_size = sizeof(cmfa_tun_counters);
+  snapshot->failure.struct_size = sizeof(cmfa_tun_failure);
+}
+
+void reset_tun_traces(cmfa_tun_trace_collection *traces) {
+  if (traces == nullptr) {
+    return;
+  }
+  std::memset(traces, 0, sizeof(*traces));
+  traces->struct_size = sizeof(cmfa_tun_trace_collection);
+  for (size_t index = 0; index < CMFA_MAX_TUN_TRACE_COUNT; ++index) {
+    traces->traces[index].struct_size = sizeof(cmfa_tun_trace);
+  }
 }
 
 bool host_ready_locked() {
@@ -253,6 +291,46 @@ cmfa_status probe_https(void *, const cmfa_probe_request *request, cmfa_probe_re
   return cmfa_mihomo_probe_https_v1(request, result, error);
 }
 
+cmfa_status start_tun(void *, const cmfa_tun_options *options, cmfa_tun_snapshot *snapshot, cmfa_error *error) {
+  if (options == nullptr || snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun options and snapshot must not be null");
+  }
+  reset_tun_snapshot(snapshot);
+  if (cmfa_mihomo_start_tun_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support start_tun");
+  }
+  return cmfa_mihomo_start_tun_v1(options, snapshot, error);
+}
+
+cmfa_status stop_tun(void *, cmfa_error *error) {
+  if (cmfa_mihomo_stop_tun_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support stop_tun");
+  }
+  return cmfa_mihomo_stop_tun_v1(error);
+}
+
+cmfa_status tun_runtime_state(void *, cmfa_tun_snapshot *snapshot, cmfa_error *error) {
+  if (snapshot == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun snapshot must not be null");
+  }
+  reset_tun_snapshot(snapshot);
+  if (cmfa_mihomo_tun_runtime_state_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support tun_runtime_state");
+  }
+  return cmfa_mihomo_tun_runtime_state_v1(snapshot, error);
+}
+
+cmfa_status tun_copy_traces(void *, cmfa_tun_trace_collection *traces, cmfa_error *error) {
+  if (traces == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun traces must not be null");
+  }
+  reset_tun_traces(traces);
+  if (cmfa_mihomo_tun_copy_traces_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support tun_copy_traces");
+  }
+  return cmfa_mihomo_tun_copy_traces_v1(traces, error);
+}
+
 cmfa_status shutdown(void *, cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_backend_state.mutex);
   g_backend_state.host = {};
@@ -273,6 +351,10 @@ cmfa_backend_api make_backend_api() {
   api.stop = stop;
   api.runtime_state = runtime_state;
   api.probe_https = probe_https;
+  api.start_tun = start_tun;
+  api.stop_tun = stop_tun;
+  api.tun_runtime_state = tun_runtime_state;
+  api.tun_copy_traces = tun_copy_traces;
   api.shutdown = shutdown;
   return api;
 }
@@ -285,9 +367,33 @@ extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_lo
                                                                    cmfa_error *error) {
   return start_local(nullptr, options, snapshot, error);
 }
+
+extern "C" cmfa_status cmfa_mihomo_start_tun_v1(const cmfa_tun_options *, cmfa_tun_snapshot *, cmfa_error *error) {
+  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support start_tun");
+}
+
+extern "C" cmfa_status cmfa_mihomo_stop_tun_v1(cmfa_error *error) {
+  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support stop_tun");
+}
+
+extern "C" cmfa_status cmfa_mihomo_tun_runtime_state_v1(cmfa_tun_snapshot *, cmfa_error *error) {
+  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support tun_runtime_state");
+}
+
+extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection *, cmfa_error *error) {
+  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support tun_copy_traces");
+}
 #endif
 
 namespace cmfa {
+
+cmfa_status protect_socket_for_mihomo_backend(int fd, uint32_t timeout_ms, cmfa_error *error) {
+  std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+  if (!g_backend_state.attached || g_backend_state.host.host_protect_socket == nullptr) {
+    return fail(error, CMFA_SOCKET_PROTECT_FAILED, "host protect_socket callback is unavailable");
+  }
+  return g_backend_state.host.host_protect_socket(g_backend_state.host.context, fd, timeout_ms, error);
+}
 
 cmfa_status register_mihomo_backend(cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_backend_state.mutex);

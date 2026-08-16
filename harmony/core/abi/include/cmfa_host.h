@@ -21,12 +21,15 @@ typedef struct cmfa_runtime_event {
 
 typedef void (*cmfa_log_sink_fn)(void *context, const cmfa_log_message *message);
 typedef void (*cmfa_runtime_event_sink_fn)(void *context, const cmfa_runtime_event *event);
+/* Host implementations must return synchronously within timeout_ms. */
+typedef cmfa_status (*cmfa_socket_protect_fn)(void *context, int fd, uint32_t timeout_ms);
 
 typedef struct cmfa_host_callbacks {
   uint32_t struct_size;
   void *context;
   cmfa_log_sink_fn log_sink;
   cmfa_runtime_event_sink_fn event_sink;
+  cmfa_socket_protect_fn protect_socket;
 } cmfa_host_callbacks;
 
 #if defined(CMFA_INTERNAL_BACKEND_API)
@@ -41,6 +44,7 @@ typedef struct cmfa_backend_host {
   void *context;
   cmfa_status (*host_emit_log)(void *context, const cmfa_log_message *message, cmfa_error *error);
   cmfa_status (*host_emit_event)(void *context, const cmfa_runtime_event *event, cmfa_error *error);
+  cmfa_status (*host_protect_socket)(void *context, int fd, uint32_t timeout_ms, cmfa_error *error);
 } cmfa_backend_host;
 
 typedef struct cmfa_backend_api {
@@ -60,6 +64,13 @@ typedef struct cmfa_backend_api {
                              const cmfa_probe_request *request,
                              cmfa_probe_result *result,
                              cmfa_error *error);
+  cmfa_status (*start_tun)(void *context,
+                           const cmfa_tun_options *options,
+                           cmfa_tun_snapshot *snapshot,
+                           cmfa_error *error);
+  cmfa_status (*stop_tun)(void *context, cmfa_error *error);
+  cmfa_status (*tun_runtime_state)(void *context, cmfa_tun_snapshot *snapshot, cmfa_error *error);
+  cmfa_status (*tun_copy_traces)(void *context, cmfa_tun_trace_collection *traces, cmfa_error *error);
   cmfa_status (*shutdown)(void *context, cmfa_error *error);
 } cmfa_backend_api;
 
