@@ -380,6 +380,16 @@ function buildNotificationStopError(code: ContinuousNotificationStopErrorCode, d
   return new ContinuousNotificationPortError(code, detail);
 }
 
+async function waitForCondition(predicate: () => boolean, maxTurns: number = 12): Promise<void> {
+  for (let turn = 0; turn < maxTurns; turn += 1) {
+    if (predicate()) {
+      return;
+    }
+    await Promise.resolve();
+  }
+  throw new Error('Condition was not satisfied within bounded microtask turns.');
+}
+
 export default function vpnRuntimeCoordinatorTestsuite() {
   describe('VpnRuntimeCoordinatorTest', () => {
     it('startsInHappyPathOrderAndProtectsProcessBeforeCreateAndTunStart', 0, async () => {
@@ -426,6 +436,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1');
 
       expect(coordinator.snapshot().state).assertEqual('STARTING');
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
       tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
       const result: VpnControllerStartResult = await startPromise;
 
@@ -449,6 +460,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
 
       const first: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1');
       const second: VpnControllerStartResult = await coordinator.start('profile-1', 'version-2', 'session-2');
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
       tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
       const firstResult: VpnControllerStartResult = await first;
 
@@ -474,6 +486,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       );
 
       const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1');
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
       const firstStop: Promise<VpnControllerStopResult> = coordinator.stop();
       tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
       const started: VpnControllerStartResult = await startPromise;

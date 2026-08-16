@@ -33,7 +33,7 @@ interface ActiveSession {
   config: VpnCaptureConfig;
   handle?: TunHandle;
   tunSnapshot?: TunRuntimeSnapshot;
-  notificationStarted: boolean;
+  notificationOwned: boolean;
   tunStarted: boolean;
   tunReady: boolean;
 }
@@ -88,6 +88,46 @@ function buildStoppedSnapshot(lastFailure: VpnFailure | null): VpnRuntimeSnapsho
     recoveryAttempt: 0,
     scheduledRetryDelayMs: null,
     lastFailure
+  });
+}
+
+function buildStartingSnapshot(
+  request: import('./VpnModels').VpnStartRequest,
+  config: VpnCaptureConfig | null,
+  handle: TunHandle | null,
+  tunSnapshot: TunRuntimeSnapshot | null,
+  notificationActive: boolean
+): VpnRuntimeSnapshot {
+  return createVpnRuntimeSnapshot({
+    state: 'STARTING',
+    activeRequest: request,
+    activeHandle: handle,
+    captureConfig: config,
+    tunSnapshot,
+    notificationActive,
+    recoveryAttempt: 0,
+    scheduledRetryDelayMs: null,
+    lastFailure: null
+  });
+}
+
+function buildRecoveringSnapshot(
+  request: import('./VpnModels').VpnStartRequest,
+  config: VpnCaptureConfig,
+  recoveryAttempt: number,
+  scheduledRetryDelayMs: number | null,
+  failure: VpnFailure
+): VpnRuntimeSnapshot {
+  return createVpnRuntimeSnapshot({
+    state: 'RECOVERING',
+    activeRequest: request,
+    activeHandle: null,
+    captureConfig: config,
+    tunSnapshot: null,
+    notificationActive: false,
+    recoveryAttempt,
+    scheduledRetryDelayMs,
+    lastFailure: failure
   });
 }
 
@@ -164,6 +204,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
   private readonly listeners: Map<number, (event: VpnRuntimeEvent) => void> = new Map();
   private nextListenerId: number = 1;
   private snapshotValue: VpnRuntimeSnapshot = buildStoppedSnapshot(null);
+  private ownedRequest?: import('./VpnModels').VpnStartRequest;
   private activeSession?: ActiveSession;
   private recovery?: RecoveryContext;
   private readyWaiter?: ReadyWaiter;
@@ -184,16 +225,25 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
   }
 
   async start(profileId: string, versionId: string, sessionId: string): Promise<VpnControllerStartResult> {
+    const request = createVpnStartRequest(profileId, versionId, sessionId);
+    if (this.ownedRequest !== undefined || this.activeSession !== undefined || this.recovery !== undefined) {
+      return buildRejectedResult(this.snapshotValue, createVpnFailure('ALREADY_ACTIVE', 'Vpn runtime already owns a live or recovering session.'));
+    }
+    this.ownedRequest = request;
+    this.publish(buildStartingSnapshot(request, null, null, null, false), 'STATE_CHANGED');
     return await this.queue.execute(async () => {
-      return await this.startInternal(profileId, versionId, sessionId);
+      return await this.startInternal(request);
     });
   }
 
   async stop(sessionId?: string): Promise<VpnControllerStopResult> {
-    if (this.activeSession !== undefined) {
-      this.requestedStopSessionId = sessionId ?? this.activeSession.request.sessionId;
-    } else if (this.recovery !== undefined) {
-      this.requestedStopSessionId = sessionId ?? this.recovery.request.sessionId;
+    const visibleSessionId: string | undefined =
+      sessionId
+      ?? this.activeSession?.request.sessionId
+      ?? this.recovery?.request.sessionId
+      ?? this.ownedRequest?.sessionId;
+    if (visibleSessionId !== undefined) {
+      this.requestedStopSessionId = visibleSessionId;
     }
     return await this.queue.execute(async () => {
       return await this.stopInternal(sessionId);
@@ -221,17 +271,13 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     return subscriptionId;
   }
 
-  private async startInternal(profileId: string, versionId: string, sessionId: string): Promise<VpnControllerStartResult> {
-    if (this.activeSession !== undefined || this.recovery !== undefined) {
-      return buildRejectedResult(this.snapshotValue, createVpnFailure('ALREADY_ACTIVE', 'Vpn runtime already owns a live or recovering session.'));
-    }
-
-    const request = createVpnStartRequest(profileId, versionId, sessionId);
+  private async startInternal(request: import('./VpnModels').VpnStartRequest): Promise<VpnControllerStartResult> {
     let config: VpnCaptureConfig;
     try {
       config = await this.dependencies.resolver.resolve(request.profileId, request.versionId);
     } catch (error) {
       const failure: VpnFailure = createVpnFailure('RESOLVE_FAILED', this.describeError(error, 'Profile resolution failed.'));
+      this.ownedRequest = undefined;
       this.publish(buildStoppedSnapshot(failure), 'FAILED');
       return buildFailedResult(this.snapshotValue, failure);
     }
@@ -239,22 +285,24 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     const active: ActiveSession = {
       request,
       config: cloneCaptureConfig(config),
-      notificationStarted: false,
+      notificationOwned: false,
       tunStarted: false,
       tunReady: false
     };
     this.activeSession = active;
-    this.publish(createVpnRuntimeSnapshot({
-      state: 'AWAITING_CONSENT',
-      activeRequest: active.request,
-      activeHandle: null,
-      captureConfig: active.config,
-      tunSnapshot: null,
-      notificationActive: false,
-      recoveryAttempt: 0,
-      scheduledRetryDelayMs: null,
-      lastFailure: null
-    }), 'STATE_CHANGED');
+    this.publish(buildStartingSnapshot(active.request, active.config, null, null, false), 'STATE_CHANGED');
+
+    if (this.isStopRequested(active.request.sessionId)) {
+      await this.cleanupActiveSession(active);
+      this.activeSession = undefined;
+      this.ownedRequest = undefined;
+      this.clearStopRequest(active.request.sessionId);
+      this.publish(buildStoppedSnapshot(null), 'STOPPED');
+      return {
+        kind: 'STOPPED',
+        snapshot: this.snapshot()
+      };
+    }
 
     try {
       await this.dependencies.platform.protectProcess();
@@ -270,6 +318,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
       if (error instanceof VpnPlatformPortError && error.code === 'CONSENT_DENIED') {
         await this.cleanupActiveSession(active);
         this.activeSession = undefined;
+        this.ownedRequest = undefined;
         this.publish(buildStoppedSnapshot(null), 'STOPPED');
         return {
           kind: 'STOPPED',
@@ -282,11 +331,11 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     }
 
     try {
+      active.tunStarted = true;
       active.tunSnapshot = await this.dependencies.tunRuntime.start(
         active.handle,
         createTunStartOptions(active.config, active.config.dnsServers)
       );
-      active.tunStarted = true;
       active.tunReady = active.tunSnapshot.state === 'READY';
     } catch (error) {
       const failure: VpnFailure = this.resolveTunFailure(error, 'Tun runtime start failed.', 'TUN_START_FAILED');
@@ -294,21 +343,17 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
       return buildFailedResult(this.snapshotValue, failure);
     }
 
-    this.publish(createVpnRuntimeSnapshot({
-      state: 'STARTING',
-      activeRequest: active.request,
-      activeHandle: active.handle,
-      captureConfig: active.config,
-      tunSnapshot: active.tunSnapshot ?? null,
-      notificationActive: false,
-      recoveryAttempt: 0,
-      scheduledRetryDelayMs: null,
-      lastFailure: null
-    }), 'STATE_CHANGED');
+    this.publish(buildStartingSnapshot(
+      active.request,
+      active.config,
+      active.handle,
+      active.tunSnapshot ?? null,
+      false
+    ), 'STATE_CHANGED');
 
     try {
+      active.notificationOwned = true;
       await this.dependencies.notification.start(active.request.sessionId);
-      active.notificationStarted = true;
     } catch (error) {
       const failure: VpnFailure = createVpnFailure('NOTIFICATION_START_FAILED', this.describeError(error, 'Notification start failed.'));
       await this.failStartAndCleanup(active, failure);
@@ -318,6 +363,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     if (this.isStopRequested(active.request.sessionId)) {
       await this.cleanupActiveSession(active);
       this.activeSession = undefined;
+      this.ownedRequest = undefined;
       this.clearStopRequest(active.request.sessionId);
       this.publish(buildStoppedSnapshot(null), 'STOPPED');
       return {
@@ -339,6 +385,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     if (this.isStopRequested(active.request.sessionId)) {
       await this.cleanupActiveSession(active);
       this.activeSession = undefined;
+      this.ownedRequest = undefined;
       this.clearStopRequest(active.request.sessionId);
       this.publish(buildStoppedSnapshot(null), 'STOPPED');
       return {
@@ -371,6 +418,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
       this.recovery = undefined;
     }
     if (this.activeSession === undefined) {
+      this.ownedRequest = undefined;
       this.clearStopRequest(expectedSessionId);
       this.publish(buildStoppedSnapshot(this.snapshotValue.lastFailure), 'STOPPED');
       return {
@@ -381,6 +429,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     const active: ActiveSession = this.activeSession;
     const cleanupErrors: string[] = await this.cleanupActiveSession(active);
     this.activeSession = undefined;
+    this.ownedRequest = undefined;
     this.clearStopRequest(active.request.sessionId);
     if (cleanupErrors.length > 0) {
       const failure: VpnFailure = createVpnFailure('STOP_FAILED', cleanupErrors.join(' | '));
@@ -417,7 +466,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
           activeHandle: this.activeSession.handle ?? null,
           captureConfig: this.activeSession.config,
           tunSnapshot: this.activeSession.tunSnapshot,
-          notificationActive: this.activeSession.notificationStarted,
+          notificationActive: this.activeSession.notificationOwned,
           recoveryAttempt: 0,
           scheduledRetryDelayMs: null,
           lastFailure: null
@@ -452,7 +501,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
       activeHandle: this.activeSession.handle ?? null,
       captureConfig: this.activeSession.config,
       tunSnapshot: this.activeSession.tunSnapshot,
-      notificationActive: this.activeSession.notificationStarted,
+      notificationActive: this.activeSession.notificationOwned,
       recoveryAttempt: 0,
       scheduledRetryDelayMs: null,
       lastFailure: failure
@@ -493,17 +542,13 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
         await this.runRecoveryRetry(requestSessionId);
       });
     });
-    this.publish(createVpnRuntimeSnapshot({
-      state: 'RECOVERING',
-      activeRequest: this.recovery.request,
-      activeHandle: null,
-      captureConfig: this.recovery.config,
-      tunSnapshot: null,
-      notificationActive: false,
-      recoveryAttempt: this.recovery.retryCount,
-      scheduledRetryDelayMs: delayMs,
-      lastFailure: this.snapshotValue.lastFailure
-    }), 'RECOVERY_SCHEDULED');
+    this.publish(buildRecoveringSnapshot(
+      this.recovery.request,
+      this.recovery.config,
+      this.recovery.retryCount,
+      delayMs,
+      this.snapshotValue.lastFailure ?? createVpnFailure('NETWORK_LOST', 'Vpn recovery is waiting for a usable network.')
+    ), 'RECOVERY_SCHEDULED');
   }
 
   private async runRecoveryRetry(sessionId: string): Promise<void> {
@@ -518,13 +563,9 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     }
     const retryContext: RecoveryContext = this.recovery;
     retryContext.scheduledRetry = undefined;
-    const result: VpnControllerStartResult = await this.startInternal(
-      retryContext.request.profileId,
-      retryContext.request.versionId,
-      retryContext.request.sessionId
-    );
+    this.recovery = undefined;
+    const result: VpnControllerStartResult = await this.startInternal(retryContext.request);
     if (result.kind === 'STARTED') {
-      this.recovery = undefined;
       return;
     }
     if (result.kind === 'FAILED' && result.failure.code === 'NETWORK_LOST') {
@@ -545,47 +586,40 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
         }), 'FAILED');
       } else {
         this.recovery = retryContext;
-        this.publish(createVpnRuntimeSnapshot({
-          state: 'RECOVERING',
-          activeRequest: retryContext.request,
-          activeHandle: null,
-          captureConfig: retryContext.config,
-          tunSnapshot: null,
-          notificationActive: false,
-          recoveryAttempt: retryContext.retryCount,
-          scheduledRetryDelayMs: null,
-          lastFailure: result.failure
-        }), 'STATE_CHANGED');
+        this.publish(buildRecoveringSnapshot(
+          retryContext.request,
+          retryContext.config,
+          retryContext.retryCount,
+          null,
+          result.failure
+        ), 'STATE_CHANGED');
       }
       return;
     }
-    this.recovery = undefined;
+    this.ownedRequest = undefined;
   }
 
   private async enterRecovery(failure: VpnFailure): Promise<void> {
     if (this.activeSession === undefined) {
       return;
     }
-    const request = this.activeSession.request;
-    const config = this.activeSession.config;
-    await this.cleanupActiveSession(this.activeSession);
+    const active: ActiveSession = this.activeSession;
+    const request = active.request;
+    const config = active.config;
     this.activeSession = undefined;
     this.recovery = {
       request: createVpnStartRequest(request.profileId, request.versionId, request.sessionId),
       config: cloneCaptureConfig(config),
       retryCount: 0
     };
-    this.publish(createVpnRuntimeSnapshot({
-      state: 'RECOVERING',
-      activeRequest: this.recovery.request,
-      activeHandle: null,
-      captureConfig: this.recovery.config,
-      tunSnapshot: null,
-      notificationActive: false,
-      recoveryAttempt: 0,
-      scheduledRetryDelayMs: null,
-      lastFailure: failure
-    }), 'STATE_CHANGED');
+    this.publish(buildRecoveringSnapshot(
+      this.recovery.request,
+      this.recovery.config,
+      0,
+      null,
+      failure
+    ), 'STATE_CHANGED');
+    await this.cleanupActiveSession(active);
   }
 
   private async failStartAndCleanup(active: ActiveSession, failure: VpnFailure): Promise<void> {
@@ -600,19 +634,16 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
         config: cloneCaptureConfig(active.config),
         retryCount: this.recovery?.retryCount ?? 0
       };
-      this.publish(createVpnRuntimeSnapshot({
-        state: 'RECOVERING',
-        activeRequest: this.recovery.request,
-        activeHandle: null,
-        captureConfig: this.recovery.config,
-        tunSnapshot: null,
-        notificationActive: false,
-        recoveryAttempt: this.recovery.retryCount,
-        scheduledRetryDelayMs: null,
-        lastFailure: finalFailure
-      }), 'FAILED');
+      this.publish(buildRecoveringSnapshot(
+        this.recovery.request,
+        this.recovery.config,
+        this.recovery.retryCount,
+        null,
+        finalFailure
+      ), 'FAILED');
       return;
     }
+    this.ownedRequest = undefined;
     this.publish(buildStoppedSnapshot(finalFailure), 'FAILED');
   }
 
@@ -632,7 +663,7 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
         cleanupErrors.push(this.describeError(error, 'Platform destroy failed.'));
       }
     }
-    if (active.notificationStarted) {
+    if (active.notificationOwned) {
       try {
         await this.dependencies.notification.stop(active.request.sessionId);
       } catch (error) {
