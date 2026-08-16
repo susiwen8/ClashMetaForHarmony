@@ -100,6 +100,11 @@ napi_status define_core_module(napi_env env, napi_value exports, AddonState *sta
       {"startLocal", nullptr, start_local, nullptr, nullptr, nullptr, napi_default, state},
       {"stopRuntime", nullptr, stop_runtime, nullptr, nullptr, nullptr, napi_default, state},
       {"runtimeSnapshot", nullptr, runtime_snapshot, nullptr, nullptr, nullptr, napi_default, state},
+      {"startTun", nullptr, start_tun, nullptr, nullptr, nullptr, napi_default, state},
+      {"stopTun", nullptr, stop_tun, nullptr, nullptr, nullptr, napi_default, state},
+      {"closeStaleOutboundConnections", nullptr, close_stale_outbound_connections, nullptr, nullptr, nullptr, napi_default, state},
+      {"tunSnapshot", nullptr, tun_snapshot, nullptr, nullptr, nullptr, napi_default, state},
+      {"readTunTraces", nullptr, read_tun_traces, nullptr, nullptr, nullptr, napi_default, state},
       {"subscribe", nullptr, subscribe, nullptr, nullptr, nullptr, napi_default, state},
       {"unsubscribe", nullptr, unsubscribe, nullptr, nullptr, nullptr, napi_default, state},
   };

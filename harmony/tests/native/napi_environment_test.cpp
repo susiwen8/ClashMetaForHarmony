@@ -898,6 +898,28 @@ void test_cleanup_before_activate_drains_partial_initialization() {
                "partial-init reference should release once");
 }
 
+void test_cleanup_releases_subscription_like_reference_handles() {
+  OperationLog log;
+  LifecycleContext lifecycle{&log};
+  DeliveryResource delivery{&log};
+  ReferenceResource reference{&log};
+  NapiEnvironmentOwner owner(make_lifecycle(&lifecycle));
+
+  expect(owner.activate(), "activate should succeed");
+  expect(owner.try_add_delivery(make_delivery_registration(&delivery)), "delivery registration should succeed");
+  expect(owner.try_add_reference(make_reference_registration(&reference)), "reference registration should succeed");
+
+  const CleanupResult cleanup = owner.cleanup();
+
+  expect_cleanup_status(cleanup, false, CMFA_OK, CMFA_OK, "subscription-like cleanup");
+  expect_strings(log.snapshot(),
+                 {"delivery.abort", "delivery.release", "reference.release", "core.shutdown", "backend.unregister"},
+                 "subscription-like cleanup should release reference handles before lifecycle teardown");
+  expect_equal(delivery.abort_count.load(std::memory_order_relaxed), 1, "delivery abort should run once");
+  expect_equal(delivery.release_count.load(std::memory_order_relaxed), 1, "delivery release should run once");
+  expect_equal(reference.release_count.load(std::memory_order_relaxed), 1, "reference release should run once");
+}
+
 void test_destructor_uses_cleanup_path_exactly_once() {
   OperationLog explicit_log;
   LifecycleContext explicit_lifecycle{&explicit_log};
@@ -1050,6 +1072,8 @@ int main() {
        test_cleanup_maps_unregister_exception_to_backend_error},
       {"cleanup_before_activate_drains_partial_initialization",
        test_cleanup_before_activate_drains_partial_initialization},
+      {"cleanup_releases_subscription_like_reference_handles",
+       test_cleanup_releases_subscription_like_reference_handles},
       {"destructor_uses_cleanup_path_exactly_once", test_destructor_uses_cleanup_path_exactly_once},
       {"destructor_swallows_callback_exceptions", test_destructor_swallows_callback_exceptions},
   };

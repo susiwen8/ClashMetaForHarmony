@@ -13,7 +13,15 @@ const MIHOMO_BACKEND_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'c
 const MIHOMO_BACKEND_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'cmfa_mihomo_backend_test.cpp');
 const NAPI_ENVIRONMENT_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'napi_environment.cpp');
 const NAPI_ENVIRONMENT_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'napi_environment_test.cpp');
+const JS_ERRORS_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_errors.cpp');
+const JS_CODEC_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_codec.cpp');
+const JS_ASYNC_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_async.cpp');
+const JS_EVENTS_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_events.cpp');
+const JS_CORE_MODULE_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_core_module.cpp');
+const JS_TUN_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_tun.cpp');
+const JS_TUN_NAPI_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'js_tun_napi_test.cpp');
 const ENTRY_INCLUDE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'include');
+const NAPI_SHIM_INCLUDE_DIR = path.join(HARMONY_ROOT, 'tests', 'native', 'shim');
 const CORE_HEADER = path.join(INCLUDE_DIR, 'cmfa_core.h');
 const HOST_HEADER = path.join(INCLUDE_DIR, 'cmfa_host.h');
 const TYPES_HEADER = path.join(INCLUDE_DIR, 'cmfa_types.h');
@@ -25,6 +33,7 @@ const USAGE_LINES = [
   '  node harmony/tools/test-native-host.mjs --case contract',
   '  node harmony/tools/test-native-host.mjs --case mihomo-backend',
   '  node harmony/tools/test-native-host.mjs --case napi-environment',
+  '  node harmony/tools/test-native-host.mjs --case napi-tun',
 ];
 
 function formatUsage() {
@@ -285,6 +294,22 @@ const CASES = new Map([
     prefix: 'napi-environment-test-',
     includeDirs: [ENTRY_INCLUDE_DIR],
     outputName: 'napi_environment_test',
+  }],
+  ['napi-tun', {
+    sources: [
+      NAPI_ENVIRONMENT_SOURCE,
+      JS_ERRORS_SOURCE,
+      JS_CODEC_SOURCE,
+      JS_ASYNC_SOURCE,
+      JS_EVENTS_SOURCE,
+      JS_CORE_MODULE_SOURCE,
+      JS_TUN_SOURCE,
+      JS_TUN_NAPI_TEST_SOURCE,
+    ],
+    defines: [],
+    prefix: 'napi-tun-test-',
+    includeDirs: [NAPI_SHIM_INCLUDE_DIR, ENTRY_INCLUDE_DIR],
+    outputName: 'js_tun_napi_test',
   }],
 ]);
 

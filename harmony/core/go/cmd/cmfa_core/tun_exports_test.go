@@ -8,7 +8,7 @@ import (
 
 	adapterinbound "github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
-	C "github.com/metacubex/mihomo/constant"
+	constantpkg "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
 	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 )
@@ -62,7 +62,7 @@ func TestTunStartUsesApiModeToControlPerSocketHook(t *testing.T) {
 		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
 			return &testListener{address: "127.0.0.1:19090"}, nil
 		},
-		TunFactory: func(options LC.Tun, tunnel C.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
+		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
 			return &testTunListener{address: "CMFA-TUN"}, nil
 		},
 	})
@@ -96,7 +96,7 @@ func TestBackendHostEventSinkPublishesTraceFields(t *testing.T) {
 	}
 	t.Cleanup(func() { hostRuntimeEventBridge = previous })
 
-	var wrappedTunnel C.Tunnel
+	var wrappedTunnel constantpkg.Tunnel
 	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
 		Prepare:     func(string) error { return nil },
 		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
@@ -104,7 +104,7 @@ func TestBackendHostEventSinkPublishesTraceFields(t *testing.T) {
 			return &testListener{address: "127.0.0.1:19090"}, nil
 		},
 		Events: backendHostEventSink{},
-		TunFactory: func(options LC.Tun, tunnel C.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
+		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
 			wrappedTunnel = tunnel
 			return &testTunListener{address: "CMFA-TUN"}, nil
 		},
@@ -122,9 +122,9 @@ func TestBackendHostEventSinkPublishesTraceFields(t *testing.T) {
 		_, _ = right.Write([]byte("GET / HTTP/1.1\r\nHost: controlled.invalid\r\nX-CMFA-Flow: cmfa-flow-1\r\n\r\n"))
 		_ = right.Close()
 	}()
-	wrappedTunnel.HandleTCPConn(left, &C.Metadata{
-		Type:    C.TUN,
-		NetWork: C.TCP,
+	wrappedTunnel.HandleTCPConn(left, &constantpkg.Metadata{
+		Type:    constantpkg.TUN,
+		NetWork: constantpkg.TCP,
 		SrcIP:   netip.MustParseAddr("10.111.222.2"),
 		SrcPort: 40000,
 		DstIP:   netip.MustParseAddr("1.1.1.1"),
@@ -171,5 +171,114 @@ func TestBackendHostEventSinkPublishesProtectFailureWithoutTraceID(t *testing.T)
 	}
 	if captured.TraceID != "" {
 		t.Fatalf("traceID = %q want empty", captured.TraceID)
+	}
+}
+
+func TestCloseStaleTunConnectionsExportUsesLocalProxyWithoutStoppingTun(t *testing.T) {
+	var order []string
+	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
+		Prepare:     func(string) error { return nil },
+		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
+		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
+			return &testListener{address: "127.0.0.1:19090"}, nil
+		},
+		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
+			return &testTunListener{address: "CMFA-TUN"}, nil
+		},
+		CloseConnections: func() error {
+			order = append(order, "connections.close")
+			return nil
+		},
+		Shutdown: func() error {
+			order = append(order, "executor.shutdown")
+			return nil
+		},
+	})
+
+	if _, err := localProxy.StartTun(buildTunStartOptions("configs/phase4.yaml", 7890, "session-1", 42, 23, true)); err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+
+	status := callCloseStaleTunConnectionsForTest("session-1")
+	if status != closeStaleTunStatusOK() {
+		t.Fatalf("close stale status = %d", status)
+	}
+	if len(order) != 1 || order[0] != "connections.close" {
+		t.Fatalf("order = %#v want only connections.close", order)
+	}
+	if localProxy.TunSnapshot().State != runtimepkg.TunStateReady {
+		t.Fatalf("tun state = %v want ready", localProxy.TunSnapshot().State)
+	}
+}
+
+func TestCloseStaleTunConnectionsExportRejectsStaleSessionID(t *testing.T) {
+	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
+		Prepare:     func(string) error { return nil },
+		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
+		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
+			return &testListener{address: "127.0.0.1:19090"}, nil
+		},
+		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
+			return &testTunListener{address: "CMFA-TUN"}, nil
+		},
+	})
+
+	if _, err := localProxy.StartTun(buildTunStartOptions("configs/phase4.yaml", 7890, "session-1", 42, 23, true)); err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+
+	status := callCloseStaleTunConnectionsForTest("session-2")
+	if status != closeStaleTunStatusBackendError() {
+		t.Fatalf("close stale status = %d want backend error", status)
+	}
+}
+
+func TestCloseStaleTunConnectionsExportMapsEmptySessionToInvalidArgument(t *testing.T) {
+	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{})
+
+	status := callCloseStaleTunConnectionsForTest("")
+	if status != closeStaleTunStatusInvalidArgument() {
+		t.Fatalf("close stale status = %d want invalid argument", status)
+	}
+}
+
+func TestCloseStaleTunConnectionsExportMapsBusyWhenCleanupAlreadyInFlight(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
+		Prepare: func(string) error { return nil },
+		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
+		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
+			return &testListener{address: "127.0.0.1:19090"}, nil
+		},
+		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
+			return &testTunListener{address: "CMFA-TUN"}, nil
+		},
+		CloseConnections: func() error {
+			close(blocked)
+			<-release
+			return nil
+		},
+	})
+
+	if _, err := localProxy.StartTun(buildTunStartOptions("configs/phase4.yaml", 7890, "session-1", 42, 23, true)); err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+
+	done := make(chan int, 1)
+	go func() {
+		done <- callCloseStaleTunConnectionsForTest("session-1")
+	}()
+	<-blocked
+
+	status := callCloseStaleTunConnectionsForTest("session-1")
+	if status != closeStaleTunStatusBusy() {
+		t.Fatalf("close stale status = %d want busy", status)
+	}
+
+	close(release)
+	firstStatus := <-done
+	if firstStatus != closeStaleTunStatusOK() {
+		t.Fatalf("first close stale status = %d want ok", firstStatus)
 	}
 }

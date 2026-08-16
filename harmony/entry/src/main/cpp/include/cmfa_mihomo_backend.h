@@ -30,6 +30,8 @@ namespace cmfa {
 CMFA_MIHOMO_BACKEND_HIDDEN cmfa_status register_mihomo_backend(cmfa_error *error);
 CMFA_MIHOMO_BACKEND_HIDDEN cmfa_status unregister_mihomo_backend(cmfa_error *error);
 CMFA_MIHOMO_BACKEND_HIDDEN cmfa_status cancel_mihomo_probe(const char *probe_run_id, cmfa_error *error);
+CMFA_MIHOMO_BACKEND_HIDDEN cmfa_status close_stale_tun_connections_for_mihomo_backend(const char *session_id,
+                                                                                       cmfa_error *error);
 CMFA_MIHOMO_BACKEND_HIDDEN cmfa_status protect_socket_for_mihomo_backend(int fd,
                                                                          uint32_t timeout_ms,
                                                                          cmfa_error *error);

@@ -25,6 +25,7 @@ const expectedUsage = [
   '  node harmony/tools/test-native-host.mjs --case contract',
   '  node harmony/tools/test-native-host.mjs --case mihomo-backend',
   '  node harmony/tools/test-native-host.mjs --case napi-environment',
+  '  node harmony/tools/test-native-host.mjs --case napi-tun',
 ].join('\n');
 const typedSourceNames = [
   'addon_init.cpp',
@@ -32,7 +33,8 @@ const typedSourceNames = [
   'js_codec.cpp',
   'js_core_module.cpp',
   'js_errors.cpp',
-  'js_events.cpp'
+  'js_events.cpp',
+  'js_tun.cpp'
 ];
 const typedValueExports = [
   'hello',
@@ -42,6 +44,11 @@ const typedValueExports = [
   'startLocal',
   'stopRuntime',
   'runtimeSnapshot',
+  'startTun',
+  'stopTun',
+  'closeStaleOutboundConnections',
+  'tunSnapshot',
+  'readTunTraces',
   'subscribe',
   'unsubscribe'
 ];
@@ -50,6 +57,12 @@ const typedTypeExports = [
   'LogLevel',
   'LocalOptions',
   'RuntimeSnapshot',
+  'TunStartCaptureConfig',
+  'TunStartOptions',
+  'TunCounters',
+  'TunFailure',
+  'TunSnapshot',
+  'TunTrace',
   'CoreEvent',
   'CoreErrorContext',
   'CoreError'
@@ -211,6 +224,7 @@ test('Task 7 host runner accepts only explicit native cases', async () => {
   assert.deepEqual(runnerModule.parseCliArguments(['--case', 'contract']), { caseName: 'contract' });
   assert.deepEqual(runnerModule.parseCliArguments(['--case', 'mihomo-backend']), { caseName: 'mihomo-backend' });
   assert.deepEqual(runnerModule.parseCliArguments(['--case', 'napi-environment']), { caseName: 'napi-environment' });
+  assert.deepEqual(runnerModule.parseCliArguments(['--case', 'napi-tun']), { caseName: 'napi-tun' });
 
   expectArgumentInvalid(runnerModule.parseCliArguments, ['--case'], 'missing case value should fail');
   expectArgumentInvalid(runnerModule.parseCliArguments, ['--case', 'unknown'], 'unknown case should fail');
@@ -271,6 +285,7 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   const jsAsyncBody = sourceBodies.find(({ fileName }) => fileName === 'js_async.cpp').body;
   const jsErrorsBody = sourceBodies.find(({ fileName }) => fileName === 'js_errors.cpp').body;
   const jsEventsBody = sourceBodies.find(({ fileName }) => fileName === 'js_events.cpp').body;
+  const jsTunBody = sourceBodies.find(({ fileName }) => fileName === 'js_tun.cpp').body;
   const addonInitBody = sourceBodies.find(({ fileName }) => fileName === 'addon_init.cpp').body;
   const asyncFinalizerBody = extractFunctionBody(jsAsyncBody, 'tsfn_finalize_async');
   const asyncWorkerBody = extractFunctionBody(jsAsyncBody, 'run_async_worker');
@@ -333,6 +348,7 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(jsAsyncBody, /\btry\s*\{[\s\S]*\}\s*catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*throw_napi_failure/u, 'exported async callbacks should have catch-all JS boundaries');
   assert.match(jsAsyncBody, /\bqueue_failure_status\b/u, 'async job should record unexpected TSFN queue failure status');
   assert.match(jsAsyncBody, /\bqueue_failed\b/u, 'async job should record that queue failure settlement is pending');
+  assert.doesNotMatch(asyncWorkerBody, /\bnapi_value\b/u, 'async worker should never touch napi_value off the completion thread');
   assert.match(asyncWorkerBody, /if\s*\(status\s*!=\s*napi_ok\s*&&\s*status\s*!=\s*napi_closing\)[\s\S]*queue_failed/u, 'unexpected queue failure must be captured instead of silently leaking');
   assert.match(asyncFinalizerBody, /reject_deferred_with_napi_failure/u, 'TSFN finalizer should settle queue-failed promises on env thread');
   assert.doesNotMatch(asyncFinalizerBody, /\bjob->addon\b/u, 'TSFN finalizer must not access AddonState after env cleanup');
@@ -345,6 +361,11 @@ test('Task 7 typed facade files, exports, and source contracts are present', asy
   assert.match(jsAsyncBody, /catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*if\s*\(promise\s*!=\s*nullptr\)[\s\S]*return promise/u, 'post-promise catch must return the original promise instead of undefined');
   assert.match(jsEventsBody, /\btry\s*\{[\s\S]*\}\s*catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*throw_napi_failure/u, 'subscribe\/unsubscribe should have catch-all JS boundaries');
   assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_core_module.cpp').body, /\btry\s*\{[\s\S]*\}\s*catch\s*\(\s*\.\.\.\s*\)\s*\{[\s\S]*throw_napi_failure/u, 'sync exported callbacks should have catch-all JS boundaries');
+  assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_core_module.cpp').body, /"startTun"[\s\S]*"stopTun"[\s\S]*"closeStaleOutboundConnections"[\s\S]*"tunSnapshot"[\s\S]*"readTunTraces"/u, 'core module should export tun promise surfaces including closeStaleOutboundConnections');
+  assert.match(jsTunBody, /\bvalidate_exact_own_keys\b/u, 'js_tun should enforce exact own-property whitelists');
+  assert.match(jsTunBody, /\bkStartTunOptionKeys\b/u, 'js_tun should keep a fixed top-level whitelist');
+  assert.match(jsTunBody, /\bkCaptureConfigKeys\b/u, 'js_tun should keep a fixed captureConfig whitelist');
+  assert.match(jsTunBody, /\bstart_async_operation\(env,\s*addon,\s*input\)/u, 'js_tun promise exports should queue through the shared async helper');
   assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_codec.cpp').body, /\bemit_log_event\s*\([^)]*\)\s*noexcept/u, 'log sink must be noexcept');
   assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_codec.cpp').body + jsEventsBody, /\bemit_log_event[\s\S]*catch\s*\(\s*\.\.\.\s*\)/u, 'log sink must catch all exceptions');
   assert.match(sourceBodies.find(({ fileName }) => fileName === 'js_codec.cpp').body + jsEventsBody, /\bemit_runtime_event[\s\S]*catch\s*\(\s*\.\.\.\s*\)/u, 'runtime sink must catch all exceptions');

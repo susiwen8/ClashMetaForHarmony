@@ -15,6 +15,11 @@ constexpr std::string_view kRuntimeStarting = "STARTING";
 constexpr std::string_view kRuntimeRunning = "RUNNING";
 constexpr std::string_view kRuntimeStopping = "STOPPING";
 constexpr std::string_view kRuntimeError = "ERROR";
+constexpr std::string_view kTunIdle = "IDLE";
+constexpr std::string_view kTunStarting = "STARTING";
+constexpr std::string_view kTunReady = "READY";
+constexpr std::string_view kTunStopped = "STOPPED";
+constexpr std::string_view kTunError = "ERROR";
 constexpr std::string_view kLogDebug = "DEBUG";
 constexpr std::string_view kLogInfo = "INFO";
 constexpr std::string_view kLogWarn = "WARN";
@@ -38,8 +43,7 @@ napi_status set_named_uint32(napi_env env, napi_value object, const char *name, 
   return napi_set_named_property(env, object, name, js_value);
 }
 
-#if defined(CMFA_ENABLE_PHASE2_SELFTEST)
-napi_status set_named_int32(napi_env env, napi_value object, const char *name, int32_t value) {
+[[maybe_unused]] napi_status set_named_int32(napi_env env, napi_value object, const char *name, int32_t value) {
   napi_value js_value = nullptr;
   napi_status status = napi_create_int32(env, value, &js_value);
   if (status != napi_ok) {
@@ -57,7 +61,7 @@ napi_status set_named_int64(napi_env env, napi_value object, const char *name, i
   return napi_set_named_property(env, object, name, js_value);
 }
 
-napi_status set_named_bool(napi_env env, napi_value object, const char *name, bool value) {
+[[maybe_unused]] napi_status set_named_bool(napi_env env, napi_value object, const char *name, bool value) {
   napi_value js_value = nullptr;
   napi_status status = napi_get_boolean(env, value, &js_value);
   if (status != napi_ok) {
@@ -65,7 +69,23 @@ napi_status set_named_bool(napi_env env, napi_value object, const char *name, bo
   }
   return napi_set_named_property(env, object, name, js_value);
 }
-#endif
+
+const char *tun_state_name(cmfa_tun_state_value state) {
+  switch (state) {
+    case CMFA_TUN_IDLE:
+      return kTunIdle.data();
+    case CMFA_TUN_STARTING:
+      return kTunStarting.data();
+    case CMFA_TUN_READY:
+      return kTunReady.data();
+    case CMFA_TUN_STOPPED:
+      return kTunStopped.data();
+    case CMFA_TUN_ERROR:
+      return kTunError.data();
+    default:
+      return nullptr;
+  }
+}
 
 bool get_named_property(napi_env env, napi_value object, const char *name, napi_value *result, CoreErrorData *error) {
   napi_status status = napi_get_named_property(env, object, name, result);
@@ -173,6 +193,16 @@ const char *async_operation_name(AsyncOp op) {
       return "startLocal";
     case AsyncOp::STOP_RUNTIME:
       return "stopRuntime";
+    case AsyncOp::START_TUN:
+      return "startTun";
+    case AsyncOp::STOP_TUN:
+      return "stopTun";
+    case AsyncOp::CLOSE_STALE_OUTBOUND_CONNECTIONS:
+      return "closeStaleOutboundConnections";
+    case AsyncOp::TUN_SNAPSHOT:
+      return "tunSnapshot";
+    case AsyncOp::READ_TUN_TRACES:
+      return "readTunTraces";
     default:
       return "unknown";
   }
@@ -455,6 +485,120 @@ bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, na
   return true;
 }
 
+bool tun_snapshot_to_owned(const cmfa_tun_snapshot &snapshot,
+                           OwnedTunSnapshot *out,
+                           CoreErrorData *error,
+                           const char *operation) {
+  const char *state_name = tun_state_name(snapshot.state);
+  if (state_name == nullptr) {
+    *error = make_core_error(CMFA_BACKEND_ERROR, operation);
+    return false;
+  }
+
+  out->session_id.assign(snapshot.session_id, strnlen(snapshot.session_id, sizeof(snapshot.session_id)));
+  out->state = state_name;
+  out->counters.tx_packets = snapshot.counters.tx_packets;
+  out->counters.tx_bytes = snapshot.counters.tx_bytes;
+  out->counters.rx_packets = snapshot.counters.rx_packets;
+  out->counters.rx_bytes = snapshot.counters.rx_bytes;
+
+  const std::string failure_code(snapshot.failure.code, strnlen(snapshot.failure.code, sizeof(snapshot.failure.code)));
+  const std::string failure_detail(
+      snapshot.failure.detail, strnlen(snapshot.failure.detail, sizeof(snapshot.failure.detail)));
+  if (!failure_code.empty() || !failure_detail.empty()) {
+    out->failure = OwnedTunFailure{failure_code, failure_detail};
+  } else {
+    out->failure.reset();
+  }
+  return true;
+}
+
+bool owned_tun_snapshot_to_js(napi_env env, const OwnedTunSnapshot &snapshot, napi_value *result, CoreErrorData *error) {
+  napi_value object = nullptr;
+  napi_status status = napi_create_object(env, &object);
+  if (status != napi_ok) {
+    *error = make_napi_failure("tunSnapshot", status);
+    return false;
+  }
+
+  napi_value counters = nullptr;
+  status = napi_create_object(env, &counters);
+  if (status != napi_ok) {
+    *error = make_napi_failure("tunSnapshot", status);
+    return false;
+  }
+
+  napi_value failure = nullptr;
+  if (snapshot.failure.has_value()) {
+    status = napi_create_object(env, &failure);
+    if (status != napi_ok) {
+      *error = make_napi_failure("tunSnapshot", status);
+      return false;
+    }
+    if (set_named_string(env, failure, "code", snapshot.failure->code) != napi_ok ||
+        set_named_string(env, failure, "detail", snapshot.failure->detail) != napi_ok) {
+      *error = make_napi_failure("tunSnapshot", napi_generic_failure);
+      return false;
+    }
+  } else if (napi_get_null(env, &failure) != napi_ok) {
+    *error = make_napi_failure("tunSnapshot", napi_generic_failure);
+    return false;
+  }
+
+  if (set_named_string(env, object, "sessionId", snapshot.session_id) != napi_ok ||
+      set_named_string(env, object, "state", snapshot.state) != napi_ok ||
+      set_named_int64(env, counters, "txPackets", static_cast<int64_t>(snapshot.counters.tx_packets)) != napi_ok ||
+      set_named_int64(env, counters, "txBytes", static_cast<int64_t>(snapshot.counters.tx_bytes)) != napi_ok ||
+      set_named_int64(env, counters, "rxPackets", static_cast<int64_t>(snapshot.counters.rx_packets)) != napi_ok ||
+      set_named_int64(env, counters, "rxBytes", static_cast<int64_t>(snapshot.counters.rx_bytes)) != napi_ok ||
+      napi_set_named_property(env, object, "counters", counters) != napi_ok ||
+      napi_set_named_property(env, object, "failure", failure) != napi_ok) {
+    *error = make_napi_failure("tunSnapshot", napi_generic_failure);
+    return false;
+  }
+
+  *result = object;
+  return true;
+}
+
+bool owned_tun_traces_to_js(napi_env env, const std::vector<OwnedTunTrace> &traces, napi_value *result, CoreErrorData *error) {
+  napi_value array = nullptr;
+  napi_status status = napi_create_array_with_length(env, traces.size(), &array);
+  if (status != napi_ok) {
+    *error = make_napi_failure("readTunTraces", status);
+    return false;
+  }
+
+  for (size_t index = 0; index < traces.size(); index += 1) {
+    if (traces[index].sequence > kMaxJsSafeInteger) {
+      *error = make_core_error(CMFA_OUT_OF_RANGE, "readTunTraces");
+      return false;
+    }
+    napi_value trace = nullptr;
+    status = napi_create_object(env, &trace);
+    if (status != napi_ok) {
+      *error = make_napi_failure("readTunTraces", status);
+      return false;
+    }
+    if (set_named_int64(env, trace, "sequence", static_cast<int64_t>(traces[index].sequence)) != napi_ok ||
+        set_named_string(env, trace, "sessionId", traces[index].session_id) != napi_ok ||
+        set_named_string(env, trace, "traceId", traces[index].trace_id) != napi_ok ||
+        set_named_string(env, trace, "ingress", traces[index].ingress) != napi_ok ||
+        set_named_string(env, trace, "protocol", traces[index].protocol) != napi_ok ||
+        set_named_string(env, trace, "sourceAddress", traces[index].source_address) != napi_ok ||
+        set_named_string(env, trace, "destinationAddress", traces[index].destination_address) != napi_ok ||
+        set_named_string(env, trace, "hashedTuple", traces[index].hashed_tuple) != napi_ok ||
+        set_named_string(env, trace, "correlationHash", traces[index].correlation_hash) != napi_ok ||
+        napi_set_element(env, array, index, trace) != napi_ok) {
+      *error = make_napi_failure("readTunTraces", napi_generic_failure);
+      return false;
+    }
+  }
+
+  *result = array;
+  return true;
+}
+
 #if defined(CMFA_ENABLE_PHASE2_SELFTEST)
 bool owned_probe_result_to_js(napi_env env, const OwnedProbeResult &result, napi_value *value, CoreErrorData *error) {
   napi_value object = nullptr;
@@ -543,6 +687,14 @@ bool owned_event_to_js(napi_env env, const OwnedCoreEvent &event, napi_value *re
       *error = make_napi_failure("eventDelivery", status);
       return false;
     }
+    if (set_named_string(env, object, "code", event.code) != napi_ok ||
+        set_named_string(env, object, "sessionId", event.session_id) != napi_ok ||
+        set_named_string(env, object, "traceId", event.trace_id) != napi_ok ||
+        set_named_string(env, object, "ingress", event.ingress) != napi_ok ||
+        set_named_string(env, object, "protocol", event.protocol) != napi_ok) {
+      *error = make_napi_failure("eventDelivery", napi_generic_failure);
+      return false;
+    }
   } else {
     status = set_named_string(env, object, "type", "log");
     if (status != napi_ok) {
@@ -574,6 +726,21 @@ OwnedCoreEvent copy_runtime_event(const cmfa_runtime_event &event) {
   }
   if (event.message != nullptr) {
     copy.message.assign(event.message, strnlen(event.message, kMaxEventMessageBytes));
+  }
+  if (event.code != nullptr) {
+    copy.code.assign(event.code, strnlen(event.code, kMaxEventMessageBytes));
+  }
+  if (event.session_id != nullptr) {
+    copy.session_id.assign(event.session_id, strnlen(event.session_id, CMFA_MAX_TUN_SESSION_ID_BYTES));
+  }
+  if (event.trace_id != nullptr) {
+    copy.trace_id.assign(event.trace_id, strnlen(event.trace_id, CMFA_MAX_TUN_TRACE_ID_BYTES));
+  }
+  if (event.ingress != nullptr) {
+    copy.ingress.assign(event.ingress, strnlen(event.ingress, CMFA_MAX_TUN_INGRESS_BYTES));
+  }
+  if (event.protocol != nullptr) {
+    copy.protocol.assign(event.protocol, strnlen(event.protocol, CMFA_MAX_TUN_PROTOCOL_BYTES));
   }
   return copy;
 }

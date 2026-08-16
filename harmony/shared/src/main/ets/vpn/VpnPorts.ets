@@ -42,11 +42,13 @@ export class ContinuousNotificationPortError extends Error {
 
 export class TunRuntimePortError extends Error {
   failure: TunRuntimeFailure;
+  nativeCode: string;
 
-  constructor(code: TunRuntimeFailureCode, detail: string) {
+  constructor(code: TunRuntimeFailureCode, detail: string, nativeCode: string = code) {
     const failure: TunRuntimeFailure = createTunRuntimeFailure(code, detail);
     super(failure.detail);
     this.failure = failure;
+    this.nativeCode = nativeCode.trim().length > 0 ? nativeCode : code;
   }
 }
 

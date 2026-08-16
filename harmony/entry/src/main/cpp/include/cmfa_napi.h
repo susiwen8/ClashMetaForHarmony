@@ -21,6 +21,7 @@
 namespace cmfa::nodeaddon {
 
 constexpr size_t kMaxEventMessageBytes = 4096;
+constexpr uint64_t kMaxJsSafeInteger = 9007199254740991ULL;
 
 struct CoreErrorContextData {
   std::string operation;
@@ -92,6 +93,37 @@ struct OwnedRuntimeSnapshot {
   uint32_t mixed_port = 0;
 };
 
+struct OwnedTunCounters {
+  uint64_t tx_packets = 0;
+  uint64_t tx_bytes = 0;
+  uint64_t rx_packets = 0;
+  uint64_t rx_bytes = 0;
+};
+
+struct OwnedTunFailure {
+  std::string code;
+  std::string detail;
+};
+
+struct OwnedTunTrace {
+  uint64_t sequence = 0;
+  std::string session_id;
+  std::string trace_id;
+  std::string ingress;
+  std::string protocol;
+  std::string source_address;
+  std::string destination_address;
+  std::string hashed_tuple;
+  std::string correlation_hash;
+};
+
+struct OwnedTunSnapshot {
+  std::string session_id;
+  std::string state;
+  OwnedTunCounters counters;
+  std::optional<OwnedTunFailure> failure;
+};
+
 struct OwnedCoreEvent {
   enum class Kind {
     RUNTIME,
@@ -102,6 +134,11 @@ struct OwnedCoreEvent {
   std::string state;
   std::string level;
   std::string message;
+  std::string code;
+  std::string session_id;
+  std::string trace_id;
+  std::string ingress;
+  std::string protocol;
 };
 
 enum class AsyncOp {
@@ -111,6 +148,11 @@ enum class AsyncOp {
   PROBE_HTTPS,
   START_LOCAL,
   STOP_RUNTIME,
+  START_TUN,
+  STOP_TUN,
+  CLOSE_STALE_OUTBOUND_CONNECTIONS,
+  TUN_SNAPSHOT,
+  READ_TUN_TRACES,
 };
 
 struct AsyncInput {
@@ -118,6 +160,14 @@ struct AsyncInput {
   std::string path;
   OwnedLocalOptions local_options;
   OwnedProbeRequest probe_request;
+  int32_t tun_fd = -1;
+  std::string tun_vpn_id;
+  std::string tun_session_id;
+  std::string tun_config_path;
+  uint32_t tun_mixed_port = 0;
+  uint32_t tun_platform_api_level = 0;
+  bool tun_process_protected = false;
+  uint64_t tun_after_sequence = 0;
 };
 
 struct AsyncResult {
@@ -126,6 +176,8 @@ struct AsyncResult {
   std::string string_value;
   OwnedProbeResult probe_result;
   OwnedRuntimeSnapshot snapshot;
+  OwnedTunSnapshot tun_snapshot;
+  std::vector<OwnedTunTrace> tun_traces;
   CoreErrorData error;
 };
 
@@ -150,6 +202,10 @@ struct AddonState {
   std::mutex subscriptions_mutex;
   std::unordered_map<uint32_t, std::shared_ptr<Subscription>> subscriptions;
   std::atomic<uint32_t> next_subscription_id;
+  std::mutex tun_trace_mutex;
+  std::string tun_trace_session_id;
+  uint64_t next_tun_trace_sequence = 1;
+  std::unordered_map<std::string, uint64_t> tun_trace_sequences;
 };
 
 struct AsyncDelivery {
@@ -223,16 +279,25 @@ bool probe_result_to_owned(const cmfa_probe_result &result, OwnedProbeResult *ou
 bool owned_probe_result_to_js(napi_env env, const OwnedProbeResult &result, napi_value *value, CoreErrorData *error);
 bool snapshot_to_owned(const cmfa_runtime_snapshot &snapshot, OwnedRuntimeSnapshot *out, CoreErrorData *error, const char *operation);
 bool owned_snapshot_to_js(napi_env env, const OwnedRuntimeSnapshot &snapshot, napi_value *result, CoreErrorData *error);
+bool tun_snapshot_to_owned(const cmfa_tun_snapshot &snapshot, OwnedTunSnapshot *out, CoreErrorData *error, const char *operation);
+bool owned_tun_snapshot_to_js(napi_env env, const OwnedTunSnapshot &snapshot, napi_value *result, CoreErrorData *error);
+bool owned_tun_traces_to_js(napi_env env, const std::vector<OwnedTunTrace> &traces, napi_value *result, CoreErrorData *error);
 bool owned_event_to_js(napi_env env, const OwnedCoreEvent &event, napi_value *result, CoreErrorData *error);
 OwnedCoreEvent copy_runtime_event(const cmfa_runtime_event &event);
 OwnedCoreEvent copy_log_event(const cmfa_log_message &message);
 
+napi_value start_async_operation(napi_env env, AddonState *addon, const AsyncInput &input);
 napi_value core_version(napi_env env, napi_callback_info info);
 napi_value validate_configuration(napi_env env, napi_callback_info info);
 napi_value load_configuration(napi_env env, napi_callback_info info);
 napi_value probe_https(napi_env env, napi_callback_info info);
 napi_value start_local(napi_env env, napi_callback_info info);
 napi_value stop_runtime(napi_env env, napi_callback_info info);
+napi_value start_tun(napi_env env, napi_callback_info info);
+napi_value stop_tun(napi_env env, napi_callback_info info);
+napi_value close_stale_outbound_connections(napi_env env, napi_callback_info info);
+napi_value tun_snapshot(napi_env env, napi_callback_info info);
+napi_value read_tun_traces(napi_env env, napi_callback_info info);
 napi_value subscribe(napi_env env, napi_callback_info info);
 napi_value unsubscribe(napi_env env, napi_callback_info info);
 

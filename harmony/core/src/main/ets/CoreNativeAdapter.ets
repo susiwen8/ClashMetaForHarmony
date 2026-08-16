@@ -59,7 +59,98 @@ interface InternalProbeNativeModule {
   probeHttps?: (request: InternalProbeRequest) => Promise<InternalProbeResult>;
 }
 
+export interface InternalNativeRuntimeEvent {
+  type: 'runtime' | 'log';
+  state?: string;
+  level?: string;
+  message: string;
+  code?: string;
+  sessionId?: string;
+  traceId?: string;
+  ingress?: string;
+  protocol?: string;
+}
+
+export interface InternalTunNativeFailure {
+  code: string;
+  detail: string;
+}
+
+export interface InternalTunNativeCounters {
+  txPackets: number;
+  txBytes: number;
+  rxPackets: number;
+  rxBytes: number;
+}
+
+export interface InternalTunNativeSnapshot {
+  sessionId: string;
+  state: 'IDLE' | 'STARTING' | 'READY' | 'STOPPED' | 'ERROR';
+  counters: InternalTunNativeCounters;
+  failure: InternalTunNativeFailure | null;
+}
+
+export interface InternalTunNativeTrace {
+  sequence: number;
+  sessionId: string;
+  traceId: string;
+  ingress: string;
+  protocol: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  hashedTuple: string;
+  correlationHash: string;
+}
+
+export interface InternalTunNativeCaptureConfig {
+  addresses: string[];
+  routes: string[];
+  dnsServers: string[];
+  mtu: number;
+  ipv4: boolean;
+  ipv6: boolean;
+  isBlocking: boolean;
+  blockedApplications: string[];
+  trustedApplications: string[];
+}
+
+export interface InternalTunNativeStartOptions {
+  fd: number;
+  vpnId: string;
+  sessionId: string;
+  configPath: string;
+  mixedPort: number;
+  platformApiLevel: number;
+  processProtected: boolean;
+  captureConfig: InternalTunNativeCaptureConfig;
+  dnsServers: string[];
+}
+
+export interface InternalTunNativeModule extends InternalProbeNativeModule {
+  subscribe?: (callback: (event: InternalNativeRuntimeEvent) => void) => number;
+  unsubscribe?: (subscriptionId: number) => void;
+  startTun?: (options: InternalTunNativeStartOptions) => Promise<InternalTunNativeSnapshot>;
+  stopTun?: () => Promise<InternalTunNativeSnapshot>;
+  closeStaleOutboundConnections?: (sessionId: string) => Promise<void>;
+  tunSnapshot?: () => Promise<InternalTunNativeSnapshot>;
+  readTunTraces?: (afterSequence: number) => Promise<InternalTunNativeTrace[]>;
+}
+
 export const CORE_BRIDGE_VERSION: string = '1.0.0';
+
+export function getInternalNativeModule(): InternalTunNativeModule {
+  return nativeEntry as InternalTunNativeModule;
+}
+
+export function wrapNativeAsync<T>(operation: string, invoke: () => Promise<T>): Promise<T> {
+  try {
+    return invoke().catch((error: CoreError | Error | Object | undefined) => {
+      return Promise.reject(normalizeCoreError(operation, error));
+    });
+  } catch (error) {
+    return Promise.reject(normalizeCoreError(operation, error as Object | Error | undefined));
+  }
+}
 
 class CoreNativeAdapter implements CoreService {
   hello(): string {
@@ -71,23 +162,23 @@ class CoreNativeAdapter implements CoreService {
   }
 
   coreVersion(): Promise<string> {
-    return this.wrapAsync<string>('coreVersion', (): Promise<string> => nativeCoreVersion());
+    return wrapNativeAsync<string>('coreVersion', (): Promise<string> => nativeCoreVersion());
   }
 
   validateConfiguration(configPath: string): Promise<void> {
-    return this.wrapAsync<void>('validateConfiguration', (): Promise<void> => nativeValidateConfiguration(configPath));
+    return wrapNativeAsync<void>('validateConfiguration', (): Promise<void> => nativeValidateConfiguration(configPath));
   }
 
   loadConfiguration(configPath: string): Promise<void> {
-    return this.wrapAsync<void>('loadConfiguration', (): Promise<void> => nativeLoadConfiguration(configPath));
+    return wrapNativeAsync<void>('loadConfiguration', (): Promise<void> => nativeLoadConfiguration(configPath));
   }
 
   startLocal(options: LocalOptions): Promise<RuntimeSnapshot> {
-    return this.wrapAsync<RuntimeSnapshot>('startLocal', (): Promise<RuntimeSnapshot> => nativeStartLocal(options));
+    return wrapNativeAsync<RuntimeSnapshot>('startLocal', (): Promise<RuntimeSnapshot> => nativeStartLocal(options));
   }
 
   stopRuntime(): Promise<RuntimeSnapshot> {
-    return this.wrapAsync<RuntimeSnapshot>('stopRuntime', (): Promise<RuntimeSnapshot> => nativeStopRuntime());
+    return wrapNativeAsync<RuntimeSnapshot>('stopRuntime', (): Promise<RuntimeSnapshot> => nativeStopRuntime());
   }
 
   runtimeSnapshot(): RuntimeSnapshot {
@@ -115,21 +206,11 @@ class CoreNativeAdapter implements CoreService {
   }
 
   probeHttpsForSelfTest(request: InternalProbeRequest): Promise<InternalProbeResult> {
-    const probeModule: InternalProbeNativeModule = nativeEntry as InternalProbeNativeModule;
+    const probeModule: InternalProbeNativeModule = getInternalNativeModule();
     if (typeof probeModule.probeHttps !== 'function') {
       return Promise.reject(normalizeCoreError('probeHttps', new Error('Self-test probe surface is disabled in this build.')));
     }
-    return this.wrapAsync<InternalProbeResult>('probeHttps', (): Promise<InternalProbeResult> => probeModule.probeHttps!(request));
-  }
-
-  private wrapAsync<T>(operation: string, invoke: () => Promise<T>): Promise<T> {
-    try {
-      return invoke().catch((error: CoreError | Error | Object | undefined) => {
-        return Promise.reject(normalizeCoreError(operation, error));
-      });
-    } catch (error) {
-      return Promise.reject(normalizeCoreError(operation, error as Object | Error | undefined));
-    }
+    return wrapNativeAsync<InternalProbeResult>('probeHttps', (): Promise<InternalProbeResult> => probeModule.probeHttps!(request));
   }
 }
 

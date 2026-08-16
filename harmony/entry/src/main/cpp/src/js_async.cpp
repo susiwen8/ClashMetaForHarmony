@@ -2,6 +2,7 @@
 #include "cmfa_mihomo_backend.h"
 
 #include <array>
+#include <cstring>
 #include <new>
 #include <utility>
 
@@ -126,12 +127,66 @@ bool build_async_result_value(napi_env env, const AsyncResult &result, napi_valu
     case AsyncOp::START_LOCAL:
     case AsyncOp::STOP_RUNTIME:
       return owned_snapshot_to_js(env, result.snapshot, value, &error);
+    case AsyncOp::START_TUN:
+    case AsyncOp::STOP_TUN:
+    case AsyncOp::TUN_SNAPSHOT:
+      return owned_tun_snapshot_to_js(env, result.tun_snapshot, value, &error);
+    case AsyncOp::CLOSE_STALE_OUTBOUND_CONNECTIONS:
+      return napi_get_undefined(env, value) == napi_ok;
+    case AsyncOp::READ_TUN_TRACES:
+      return owned_tun_traces_to_js(env, result.tun_traces, value, &error);
     default:
       return false;
   }
 }
 
-AsyncResult run_async_operation(const AsyncInput &input, const std::atomic<bool> &cancel_requested) {
+std::string copy_fixed_text(const char *buffer, size_t capacity) {
+  return std::string(buffer, strnlen(buffer, capacity));
+}
+
+void reset_tun_trace_tracking(AddonState *addon, const std::string &session_id) {
+  if (addon == nullptr) {
+    return;
+  }
+  std::lock_guard<std::mutex> lock(addon->tun_trace_mutex);
+  addon->tun_trace_session_id = session_id;
+  addon->next_tun_trace_sequence = 1;
+  addon->tun_trace_sequences.clear();
+}
+
+uint64_t assign_tun_trace_sequence(AddonState *addon, const OwnedTunTrace &trace) {
+  if (addon == nullptr) {
+    return trace.sequence;
+  }
+
+  std::lock_guard<std::mutex> lock(addon->tun_trace_mutex);
+  if (!trace.session_id.empty() && addon->tun_trace_session_id != trace.session_id) {
+    addon->tun_trace_session_id = trace.session_id;
+    addon->next_tun_trace_sequence = 1;
+    addon->tun_trace_sequences.clear();
+  }
+
+  const std::string key = trace.trace_id.empty() ? std::to_string(addon->next_tun_trace_sequence) : trace.trace_id;
+  const auto found = addon->tun_trace_sequences.find(key);
+  if (found != addon->tun_trace_sequences.end()) {
+    return found->second;
+  }
+
+  const uint64_t assigned = addon->next_tun_trace_sequence;
+  addon->next_tun_trace_sequence += 1;
+  addon->tun_trace_sequences.emplace(key, assigned);
+  return assigned;
+}
+
+bool validate_js_safe_trace_sequence(uint64_t sequence, AsyncResult *result, AsyncOp op) {
+  if (sequence > kMaxJsSafeInteger) {
+    result->error = make_core_error(CMFA_OUT_OF_RANGE, async_operation_name(op));
+    return false;
+  }
+  return true;
+}
+
+AsyncResult run_async_operation(AddonState *addon, const AsyncInput &input, const std::atomic<bool> &cancel_requested) {
   AsyncResult result;
   result.op = input.op;
 
@@ -257,6 +312,113 @@ AsyncResult run_async_operation(const AsyncInput &input, const std::atomic<bool>
       result.ok = true;
       return result;
     }
+    case AsyncOp::START_TUN: {
+      cmfa_tun_options options{};
+      options.struct_size = sizeof(options);
+      options.tun_fd = input.tun_fd;
+      std::strncpy(options.session_id, input.tun_session_id.c_str(), sizeof(options.session_id) - 1);
+      options.config_path = input.tun_config_path.c_str();
+      options.mixed_port = input.tun_mixed_port;
+      options.platform_api_level = input.tun_platform_api_level;
+      options.process_protected = input.tun_process_protected ? 1U : 0U;
+
+      cmfa_tun_snapshot snapshot{};
+      snapshot.struct_size = sizeof(snapshot);
+      const cmfa_status status = cmfa_tun_start(&options, &snapshot, &error);
+      if (status != CMFA_OK) {
+        result.error = make_core_error(status, async_operation_name(input.op));
+        return result;
+      }
+      CoreErrorData snapshot_error;
+      if (!tun_snapshot_to_owned(snapshot, &result.tun_snapshot, &snapshot_error, async_operation_name(input.op))) {
+        result.error = snapshot_error;
+        return result;
+      }
+      result.ok = true;
+      return result;
+    }
+    case AsyncOp::STOP_TUN: {
+      const cmfa_status stop_status = cmfa_tun_stop(&error);
+      if (stop_status != CMFA_OK) {
+        result.error = make_core_error(stop_status, async_operation_name(input.op));
+        return result;
+      }
+
+      cmfa_tun_snapshot snapshot{};
+      snapshot.struct_size = sizeof(snapshot);
+      const cmfa_status snapshot_status = cmfa_tun_runtime_state(&snapshot, &error);
+      if (snapshot_status != CMFA_OK) {
+        result.error = make_core_error(snapshot_status, async_operation_name(input.op));
+        return result;
+      }
+      CoreErrorData snapshot_error;
+      if (!tun_snapshot_to_owned(snapshot, &result.tun_snapshot, &snapshot_error, async_operation_name(input.op))) {
+        result.error = snapshot_error;
+        return result;
+      }
+      reset_tun_trace_tracking(addon, result.tun_snapshot.session_id);
+      result.ok = true;
+      return result;
+    }
+    case AsyncOp::CLOSE_STALE_OUTBOUND_CONNECTIONS: {
+      const cmfa_status status =
+          cmfa::close_stale_tun_connections_for_mihomo_backend(input.tun_session_id.c_str(), &error);
+      if (status != CMFA_OK) {
+        result.error = make_core_error(status, async_operation_name(input.op));
+        return result;
+      }
+      result.ok = true;
+      return result;
+    }
+    case AsyncOp::TUN_SNAPSHOT: {
+      cmfa_tun_snapshot snapshot{};
+      snapshot.struct_size = sizeof(snapshot);
+      const cmfa_status status = cmfa_tun_runtime_state(&snapshot, &error);
+      if (status != CMFA_OK) {
+        result.error = make_core_error(status, async_operation_name(input.op));
+        return result;
+      }
+      CoreErrorData snapshot_error;
+      if (!tun_snapshot_to_owned(snapshot, &result.tun_snapshot, &snapshot_error, async_operation_name(input.op))) {
+        result.error = snapshot_error;
+        return result;
+      }
+      result.ok = true;
+      return result;
+    }
+    case AsyncOp::READ_TUN_TRACES: {
+      cmfa_tun_trace_ring traces{};
+      traces.struct_size = sizeof(traces);
+      const cmfa_status status = cmfa_tun_copy_traces_ring(&traces, &error);
+      if (status != CMFA_OK) {
+        result.error = make_core_error(status, async_operation_name(input.op));
+        return result;
+      }
+
+      result.tun_traces.clear();
+      result.tun_traces.reserve(traces.trace_count);
+      for (uint32_t index = 0; index < traces.trace_count; index += 1) {
+        const cmfa_tun_trace &trace = traces.traces[index];
+        OwnedTunTrace owned_trace;
+        owned_trace.session_id = copy_fixed_text(trace.session_id, sizeof(trace.session_id));
+        owned_trace.trace_id = copy_fixed_text(trace.trace_id, sizeof(trace.trace_id));
+        owned_trace.ingress = copy_fixed_text(trace.ingress, sizeof(trace.ingress));
+        owned_trace.protocol = copy_fixed_text(trace.protocol, sizeof(trace.protocol));
+        owned_trace.source_address = copy_fixed_text(trace.source_address, sizeof(trace.source_address));
+        owned_trace.destination_address = copy_fixed_text(trace.destination_address, sizeof(trace.destination_address));
+        owned_trace.hashed_tuple = copy_fixed_text(trace.hashed_tuple, sizeof(trace.hashed_tuple));
+        owned_trace.correlation_hash = copy_fixed_text(trace.correlation_hash, sizeof(trace.correlation_hash));
+        owned_trace.sequence = assign_tun_trace_sequence(addon, owned_trace);
+        if (!validate_js_safe_trace_sequence(owned_trace.sequence, &result, input.op)) {
+          return result;
+        }
+        if (owned_trace.sequence > input.tun_after_sequence) {
+          result.tun_traces.push_back(std::move(owned_trace));
+        }
+      }
+      result.ok = true;
+      return result;
+    }
     default:
       result.error = make_napi_failure("asyncOperation", napi_generic_failure);
       return result;
@@ -296,7 +458,7 @@ struct DecodedAsyncCall {
 };
 
 void run_async_worker(AsyncPromiseJob *job) {
-  AsyncResult result = run_async_operation(job->input, job->async_handle->cancel_requested);
+  AsyncResult result = run_async_operation(job->addon, job->input, job->async_handle->cancel_requested);
   AsyncCompletionPayload *payload = job->completion_payload;
   if (payload == nullptr) {
     return;
@@ -497,7 +659,7 @@ napi_value core_version(napi_env env, napi_callback_info info) {
     DecodedAsyncCall decoded;
     decoded.addon = static_cast<AddonState *>(data);
     decoded.input.op = AsyncOp::CORE_VERSION;
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "coreVersion", napi_generic_failure);
     return nullptr;
@@ -526,7 +688,7 @@ napi_value validate_configuration(napi_env env, napi_callback_info info) {
       throw_core_error(env, error);
       return nullptr;
     }
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "validateConfiguration", napi_generic_failure);
     return nullptr;
@@ -555,7 +717,7 @@ napi_value load_configuration(napi_env env, napi_callback_info info) {
       throw_core_error(env, error);
       return nullptr;
     }
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "loadConfiguration", napi_generic_failure);
     return nullptr;
@@ -584,7 +746,7 @@ napi_value start_local(napi_env env, napi_callback_info info) {
       throw_core_error(env, error);
       return nullptr;
     }
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "startLocal", napi_generic_failure);
     return nullptr;
@@ -618,7 +780,7 @@ napi_value probe_https(napi_env env, napi_callback_info info) {
       throw_core_error(env, error);
       return nullptr;
     }
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "probeHttps", napi_generic_failure);
     return nullptr;
@@ -642,11 +804,18 @@ napi_value stop_runtime(napi_env env, napi_callback_info info) {
     DecodedAsyncCall decoded;
     decoded.addon = static_cast<AddonState *>(data);
     decoded.input.op = AsyncOp::STOP_RUNTIME;
-    return start_async_operation(env, decoded);
+    return start_async_operation(env, decoded.addon, decoded.input);
   } catch (...) {
     throw_napi_failure(env, "stopRuntime", napi_generic_failure);
     return nullptr;
   }
+}
+
+napi_value start_async_operation(napi_env env, AddonState *addon, const AsyncInput &input) {
+  DecodedAsyncCall decoded;
+  decoded.addon = addon;
+  decoded.input = input;
+  return start_async_operation(env, decoded);
 }
 
 } // namespace cmfa::nodeaddon

@@ -86,6 +86,14 @@ CoreErrorData make_core_error(cmfa_status status, const char *operation) {
                         "RESTART_OPERATION", operation, status);
     case CMFA_BUSY:
       return make_error("CMFA_BUSY", kStateErrorCategory, "Native core is busy", true, "RETRY", operation, status);
+    case CMFA_SOCKET_PROTECT_FAILED:
+      return make_error("CMFA_SOCKET_PROTECT_FAILED",
+                        kCoreErrorCategory,
+                        "Native socket protection failed",
+                        true,
+                        "RETRY",
+                        operation,
+                        status);
     case CMFA_CORE_UNAVAILABLE:
       return make_error("CMFA_CORE_UNAVAILABLE", kCoreErrorCategory, "Requested core capability is unavailable", false,
                         "UPDATE_CORE", operation, status);

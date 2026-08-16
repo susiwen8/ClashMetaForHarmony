@@ -120,7 +120,7 @@ class FakeTunRuntime implements TunRuntimePort {
   startError?: Error;
   startPortError?: TunRuntimePortError;
   stopError?: Error;
-  closeStaleError?: Error;
+  closeStaleError?: TunRuntimePortError;
   recoverPortError?: TunRuntimePortError;
   recoverError?: Error;
   startDeferred = createDeferred<TunRuntimeSnapshot>();
@@ -938,6 +938,35 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(tunRuntime.stopCalls.length).assertEqual(0);
       expect(platform.log.includes('platform.destroy:vpn-1')).assertFalse();
       expect(notification.stopCalls.length).assertEqual(0);
+      expect(scheduler.tasks.length).assertEqual(0);
+    });
+
+    it('failsClosedWhenCloseStaleOutboundConnectionsErrorsDuringRecovery', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.closeStaleError = new TunRuntimePortError('VPN_TUN_START_FAILED', 'close stale failed');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        scheduler,
+        [85, 86, 87, 88, 89]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => tunRuntime.closeStaleCalls.length === 1);
+      await waitForCondition(() => coordinator.snapshot().state === 'ERROR');
+      await waitForCondition(() => notification.stopCalls.length === 1);
+
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
       expect(scheduler.tasks.length).assertEqual(0);
     });
 

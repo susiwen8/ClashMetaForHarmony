@@ -827,6 +827,30 @@ func cmfa_mihomo_tun_copy_traces_ring_v1(traces *C.cmfa_tun_trace_ring, errorOut
 	return C.CMFA_OK
 }
 
+//export cmfa_mihomo_close_stale_tun_connections_v1
+func cmfa_mihomo_close_stale_tun_connections_v1(sessionID *C.char, errorOut *C.cmfa_error) C.cmfa_status {
+	if sessionID == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "tun session id must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	if err := localProxy.CloseStaleOutboundConnections(C.GoString(sessionID)); err != nil {
+		switch {
+		case errors.Is(err, runtimepkg.ErrRuntimeBusy):
+			setError(errorOut, C.CMFA_BUSY, err.Error())
+			return C.CMFA_BUSY
+		case runtimepkg.IsTunSessionRequired(err):
+			setError(errorOut, C.CMFA_INVALID_ARGUMENT, err.Error())
+			return C.CMFA_INVALID_ARGUMENT
+		default:
+			setError(errorOut, C.CMFA_BACKEND_ERROR, err.Error())
+			return C.CMFA_BACKEND_ERROR
+		}
+	}
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
 //export cmfa_mihomo_take_runtime_log_v1
 func cmfa_mihomo_take_runtime_log_v1(record *C.cmfa_mihomo_runtime_log_record_v1) C.int {
 	if record == nil {

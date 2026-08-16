@@ -64,6 +64,7 @@ type LocalProxy struct {
 	tunSnapshot TunSnapshot
 	tunRecorder *tunTraceRecorder
 	tunTraces   []TunTrace
+	tunCloseStaleInFlight bool
 
 	lastStartOptions       StartOptions
 	restoreSocketProtection func()
@@ -199,6 +200,35 @@ func (p *LocalProxy) CopyTunTraces(limit int) []TunTrace {
 	return append([]TunTrace(nil), stored[len(stored)-limit:]...)
 }
 
+func (p *LocalProxy) CloseStaleOutboundConnections(sessionID string) error {
+	if strings.TrimSpace(sessionID) == "" {
+		return errTunSessionRequired
+	}
+
+	p.mu.Lock()
+	if p.tunCloseStaleInFlight || p.state == RuntimeStarting || p.state == RuntimeStopping {
+		p.mu.Unlock()
+		return ErrRuntimeBusy
+	}
+	activeSessionID := p.tunSnapshot.SessionID
+	activeState := p.tunSnapshot.State
+	if activeSessionID == "" || activeState == TunStateIdle || activeState == TunStateStopped || activeSessionID != sessionID {
+		p.mu.Unlock()
+		return runtimeFailure{message: fmt.Sprintf("close stale outbound connections rejected stale session %s", sessionID)}
+	}
+	p.tunCloseStaleInFlight = true
+	p.mu.Unlock()
+	defer func() {
+		p.mu.Lock()
+		p.tunCloseStaleInFlight = false
+		p.mu.Unlock()
+	}()
+	if err := p.deps.CloseConnections(); err != nil {
+		return runtimeFailure{message: fmt.Sprintf("close tracked connections: %v", err)}
+	}
+	return nil
+}
+
 func (p *LocalProxy) Start(options StartOptions) (Snapshot, error) {
 	if err := p.validateStartOptions(options); err != nil {
 		return p.commitStartFailure(options.ConfigPath, err)
@@ -237,6 +267,10 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 		p.mu.Unlock()
 		return snapshot, nil
 	case RuntimeStarting, RuntimeStopping:
+		p.mu.Unlock()
+		return Snapshot{}, ErrRuntimeBusy
+	}
+	if p.tunCloseStaleInFlight {
 		p.mu.Unlock()
 		return Snapshot{}, ErrRuntimeBusy
 	}
@@ -335,7 +369,7 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		State: RuntimeStarting,
 	}
 	p.mu.Lock()
-	if p.state == RuntimeStarting || p.state == RuntimeRunning || p.state == RuntimeStopping {
+	if p.state == RuntimeStarting || p.state == RuntimeRunning || p.state == RuntimeStopping || p.tunCloseStaleInFlight {
 		p.mu.Unlock()
 		return Snapshot{}, TunSnapshot{}, ErrRuntimeBusy
 	}

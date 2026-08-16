@@ -31,6 +31,8 @@ cmfa_probe_result g_probe_result{};
 cmfa_status g_probe_status = CMFA_OK;
 std::string g_last_cancel_probe_run_id;
 cmfa_status g_cancel_probe_status = CMFA_OK;
+std::string g_last_close_stale_session_id;
+cmfa_status g_close_stale_status = CMFA_OK;
 struct cmfa_mihomo_runtime_log_record_v1 {
   uint32_t struct_size;
   cmfa_log_level level;
@@ -63,6 +65,8 @@ void reset_runtime_snapshot_storage() {
   g_probe_status = CMFA_OK;
   g_last_cancel_probe_run_id.clear();
   g_cancel_probe_status = CMFA_OK;
+  g_last_close_stale_session_id.clear();
+  g_close_stale_status = CMFA_OK;
 }
 
 class TestFailure : public std::runtime_error {
@@ -580,6 +584,29 @@ void test_shutdown_and_repeated_unregister_are_safe() {
   reset_contract();
 }
 
+void test_close_stale_tun_connections_forwards_session_id_to_go_backend() {
+  reset_contract();
+  ErrorBox error;
+
+  const cmfa_status status = cmfa::close_stale_tun_connections_for_mihomo_backend("session-1", &error.error);
+
+  expect_eq(status, CMFA_OK, "close stale should succeed");
+  expect_string_eq(g_last_close_stale_session_id, "session-1", "close stale should forward session id");
+  reset_contract();
+}
+
+void test_close_stale_tun_connections_rejects_empty_session_id() {
+  reset_contract();
+  ErrorBox error;
+
+  expect_status_message(cmfa::close_stale_tun_connections_for_mihomo_backend("", &error.error),
+                        CMFA_INVALID_ARGUMENT,
+                        error,
+                        "tun session id must not be empty",
+                        "empty close stale session");
+  reset_contract();
+}
+
 void test_visible_host_protect_bridge_symbol_can_be_found_and_called() {
   reset_contract();
   HostCapture capture;
@@ -668,6 +695,11 @@ extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmf
   return g_cancel_probe_status;
 }
 
+extern "C" cmfa_status cmfa_mihomo_backend_test_close_stale_tun_connections_impl(const char *session_id, cmfa_error *) {
+  g_last_close_stale_session_id = session_id != nullptr ? session_id : "";
+  return g_close_stale_status;
+}
+
 extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
                                                                    cmfa_runtime_snapshot *snapshot,
                                                                    cmfa_error *error);
@@ -708,6 +740,10 @@ int main() {
       {"probe https returns structured owned result", test_probe_https_returns_structured_owned_result},
       {"cancel probe forwards run id to go backend", test_cancel_probe_forwards_run_id_to_go_backend},
       {"cancel probe rejects empty run id", test_cancel_probe_rejects_empty_run_id},
+      {"close stale tun connections forwards session id to go backend",
+       test_close_stale_tun_connections_forwards_session_id_to_go_backend},
+      {"close stale tun connections rejects empty session id",
+       test_close_stale_tun_connections_rejects_empty_session_id},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
       {"visible host protect bridge symbol can be found and called",
        test_visible_host_protect_bridge_symbol_can_be_found_and_called},

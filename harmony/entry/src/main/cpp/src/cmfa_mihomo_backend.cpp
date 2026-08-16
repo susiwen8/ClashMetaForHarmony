@@ -48,6 +48,8 @@ extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection 
                                                       cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
 extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_ring_v1(cmfa_tun_trace_ring *traces,
                                                            cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
+extern "C" cmfa_status cmfa_mihomo_close_stale_tun_connections_v1(const char *session_id,
+                                                                   cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
 
 namespace {
 
@@ -383,6 +385,9 @@ extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_lo
   return start_local(nullptr, options, snapshot, error);
 }
 
+extern "C" cmfa_status cmfa_mihomo_backend_test_close_stale_tun_connections_impl(const char *session_id,
+                                                                                  cmfa_error *error);
+
 extern "C" cmfa_status cmfa_mihomo_start_tun_v1(const cmfa_tun_options *, cmfa_tun_snapshot *, cmfa_error *error) {
   return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support start_tun");
 }
@@ -401,6 +406,10 @@ extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection 
 
 extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_ring_v1(cmfa_tun_trace_ring *, cmfa_error *error) {
   return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support tun_copy_traces_ring");
+}
+
+extern "C" cmfa_status cmfa_mihomo_close_stale_tun_connections_v1(const char *session_id, cmfa_error *error) {
+  return cmfa_mihomo_backend_test_close_stale_tun_connections_impl(session_id, error);
 }
 #endif
 
@@ -458,6 +467,18 @@ cmfa_status cancel_mihomo_probe(const char *probe_run_id, cmfa_error *error) {
     return fail(error, CMFA_INVALID_ARGUMENT, "probeRunID must not be empty");
   }
   return cmfa_mihomo_probe_cancel_v1(probe_run_id, error);
+}
+
+cmfa_status close_stale_tun_connections_for_mihomo_backend(const char *session_id, cmfa_error *error) {
+  if (session_id == nullptr || session_id[0] == '\0') {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun session id must not be empty");
+  }
+#if !defined(CMFA_BACKEND_TESTING)
+  if (cmfa_mihomo_close_stale_tun_connections_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support close_stale_tun_connections");
+  }
+#endif
+  return cmfa_mihomo_close_stale_tun_connections_v1(session_id, error);
 }
 
 } // namespace cmfa

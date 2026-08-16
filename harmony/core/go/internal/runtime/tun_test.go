@@ -537,3 +537,145 @@ func TestTunStartAndStopRaceExposeBusy(t *testing.T) {
 	}
 	<-done
 }
+
+func TestCloseStaleOutboundConnectionsUsesCloseConnectionsWithoutStoppingTun(t *testing.T) {
+	var order []string
+	tunListener := &fakeTunListener{address: "CMFA-TUN"}
+	proxy := NewLocalProxyWithDeps(LocalProxyDeps{
+		Prepare: func(string) error { return nil },
+		HTTPFactory: func(string) (ListenerHandle, error) {
+			order = append(order, "http.start")
+			return &fakeListener{address: "127.0.0.1:7890"}, nil
+		},
+		SOCKSFactory: func(string) (ListenerHandle, error) {
+			order = append(order, "socks.start")
+			return &fakeListener{address: "127.0.0.1:0"}, nil
+		},
+		TunFactory: func(LC.Tun, C.Tunnel, ...adapterinbound.Addition) (TunListenerHandle, error) {
+			order = append(order, "tun.start")
+			return tunListener, nil
+		},
+		CloseConnections: func() error {
+			order = append(order, "connections.close")
+			return nil
+		},
+		Shutdown: func() error {
+			order = append(order, "executor.shutdown")
+			return nil
+		},
+	})
+
+	snapshot, err := proxy.StartTun(TunStartOptions{
+		SessionID: "session-1",
+		TunFD:     42,
+		Base: StartOptions{
+			ConfigPath:         "phase4.yaml",
+			HTTPListenAddress:  "127.0.0.1:7890",
+			SOCKSListenAddress: "127.0.0.1:0",
+		},
+	})
+	if err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+	if snapshot.State != TunStateReady {
+		t.Fatalf("tun state = %v want %v", snapshot.State, TunStateReady)
+	}
+
+	order = nil
+	if err := proxy.CloseStaleOutboundConnections("session-1"); err != nil {
+		t.Fatalf("CloseStaleOutboundConnections error: %v", err)
+	}
+	if len(order) != 1 || order[0] != "connections.close" {
+		t.Fatalf("order = %#v want only connections.close", order)
+	}
+	if tunListener.closed {
+		t.Fatal("close stale should not close tun listener")
+	}
+	if proxy.TunSnapshot().State != TunStateReady {
+		t.Fatalf("tun state after close stale = %v want %v", proxy.TunSnapshot().State, TunStateReady)
+	}
+}
+
+func TestCloseStaleOutboundConnectionsRejectsStaleSessionID(t *testing.T) {
+	proxy := NewLocalProxyWithDeps(LocalProxyDeps{
+		Prepare: func(string) error { return nil },
+		HTTPFactory: func(string) (ListenerHandle, error) {
+			return &fakeListener{address: "127.0.0.1:7890"}, nil
+		},
+		SOCKSFactory: func(string) (ListenerHandle, error) {
+			return &fakeListener{address: "127.0.0.1:0"}, nil
+		},
+		TunFactory: func(LC.Tun, C.Tunnel, ...adapterinbound.Addition) (TunListenerHandle, error) {
+			return &fakeTunListener{address: "CMFA-TUN"}, nil
+		},
+	})
+
+	if _, err := proxy.StartTun(TunStartOptions{
+		SessionID: "session-1",
+		TunFD:     42,
+		Base: StartOptions{
+			ConfigPath:         "phase4.yaml",
+			HTTPListenAddress:  "127.0.0.1:7890",
+			SOCKSListenAddress: "127.0.0.1:0",
+		},
+	}); err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+
+	err := proxy.CloseStaleOutboundConnections("session-2")
+	if err == nil {
+		t.Fatal("CloseStaleOutboundConnections unexpectedly succeeded for stale session")
+	}
+	if !strings.Contains(err.Error(), "stale session") {
+		t.Fatalf("CloseStaleOutboundConnections error = %q", err.Error())
+	}
+}
+
+func TestCloseStaleOutboundConnectionsMakesStopBusyUntilCleanupReturns(t *testing.T) {
+	blocked := make(chan struct{})
+	release := make(chan struct{})
+	proxy := NewLocalProxyWithDeps(LocalProxyDeps{
+		Prepare: func(string) error { return nil },
+		HTTPFactory: func(string) (ListenerHandle, error) {
+			return &fakeListener{address: "127.0.0.1:7890"}, nil
+		},
+		SOCKSFactory: func(string) (ListenerHandle, error) {
+			return &fakeListener{address: "127.0.0.1:0"}, nil
+		},
+		TunFactory: func(LC.Tun, C.Tunnel, ...adapterinbound.Addition) (TunListenerHandle, error) {
+			return &fakeTunListener{address: "CMFA-TUN"}, nil
+		},
+		CloseConnections: func() error {
+			close(blocked)
+			<-release
+			return nil
+		},
+	})
+
+	if _, err := proxy.StartTun(TunStartOptions{
+		SessionID: "session-1",
+		TunFD:     42,
+		Base: StartOptions{
+			ConfigPath:         "phase4.yaml",
+			HTTPListenAddress:  "127.0.0.1:7890",
+			SOCKSListenAddress: "127.0.0.1:0",
+		},
+	}); err != nil {
+		t.Fatalf("StartTun error: %v", err)
+	}
+
+	done := make(chan error, 1)
+	go func() {
+		done <- proxy.CloseStaleOutboundConnections("session-1")
+	}()
+	<-blocked
+
+	if _, err := proxy.Stop(); !errors.Is(err, ErrRuntimeBusy) {
+		t.Fatalf("Stop error = %v want %v", err, ErrRuntimeBusy)
+	}
+
+	close(release)
+	if err := <-done; err != nil {
+		t.Fatalf("CloseStaleOutboundConnections error: %v", err)
+	}
+}

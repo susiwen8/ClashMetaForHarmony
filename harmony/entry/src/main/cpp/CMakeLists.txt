@@ -47,6 +47,7 @@ add_library(entry SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_async.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_events.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_core_module.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/js_tun.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/addon_init.cpp"
 )
 

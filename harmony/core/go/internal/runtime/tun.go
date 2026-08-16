@@ -17,6 +17,10 @@ var (
 	tunPrefix6           = netip.MustParsePrefix("fd00:111:222::1/126")
 )
 
+func IsTunSessionRequired(err error) bool {
+	return errors.Is(err, errTunSessionRequired)
+}
+
 type TunListenerHandle interface {
 	Address() string
 	Close() error

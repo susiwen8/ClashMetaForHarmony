@@ -16,8 +16,63 @@ export interface RuntimeSnapshot {
 }
 
 export type CoreEvent =
-  | { type: 'runtime'; state: RuntimeState; message: string }
+  | { type: 'runtime'; state: RuntimeState; message: string; code: string; sessionId: string; traceId: string; ingress: string; protocol: string }
   | { type: 'log'; level: LogLevel; message: string };
+
+export interface TunStartCaptureConfig {
+  addresses: string[];
+  routes: string[];
+  dnsServers: string[];
+  mtu: number;
+  ipv4: boolean;
+  ipv6: boolean;
+  isBlocking: boolean;
+  blockedApplications: string[];
+  trustedApplications: string[];
+}
+
+export interface TunStartOptions {
+  fd: number;
+  vpnId: string;
+  sessionId: string;
+  configPath: string;
+  mixedPort: number;
+  platformApiLevel: number;
+  processProtected: boolean;
+  captureConfig: TunStartCaptureConfig;
+  dnsServers: string[];
+}
+
+export interface TunCounters {
+  txPackets: number;
+  txBytes: number;
+  rxPackets: number;
+  rxBytes: number;
+}
+
+export interface TunFailure {
+  code: string;
+  detail: string;
+}
+
+export interface TunSnapshot {
+  sessionId: string;
+  state: 'IDLE' | 'STARTING' | 'READY' | 'STOPPED' | 'ERROR';
+  counters: TunCounters;
+  failure: TunFailure | null;
+}
+
+export interface TunTrace {
+  sequence: number;
+  sessionId: string;
+  traceId: string;
+  ingress: string;
+  protocol: string;
+  sourceAddress: string;
+  destinationAddress: string;
+  hashedTuple: string;
+  correlationHash: string;
+}
 
 export interface CoreErrorContext {
   operation: string;
@@ -41,5 +96,10 @@ export declare function loadConfiguration(path: string): Promise<void>;
 export declare function startLocal(options: LocalOptions): Promise<RuntimeSnapshot>;
 export declare function stopRuntime(): Promise<RuntimeSnapshot>;
 export declare function runtimeSnapshot(): RuntimeSnapshot;
+export declare function startTun(options: TunStartOptions): Promise<TunSnapshot>;
+export declare function stopTun(): Promise<TunSnapshot>;
+export declare function closeStaleOutboundConnections(sessionId: string): Promise<void>;
+export declare function tunSnapshot(): Promise<TunSnapshot>;
+export declare function readTunTraces(afterSequence: number): Promise<TunTrace[]>;
 export declare function subscribe(callback: (event: CoreEvent) => void): number;
 export declare function unsubscribe(subscriptionId: number): void;
