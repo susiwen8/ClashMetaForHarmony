@@ -11,59 +11,99 @@
   "device": {
     "targetKind": "physical",
     "identityMasked": "target-91ac4f20",
-    "modelAlias": "HarmonyPhoneLab",
-    "productAlias": "PuraX-Lab",
-    "apiVersion": "20",
-    "abi": "arm64-v8a"
+    "osVersion": "HarmonyOS 6.0.1.123",
+    "apiVersion": 24,
+    "abi": "arm64-v8a",
+    "deviceClass": "phone"
   },
   "bundles": {
     "production": {
-      "bundleName": "com.github.kr328.clash.harmony",
-      "nativeSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+      "bundleName": "com.github.kr328.clash.harmony"
     },
     "probe": {
-      "bundleName": "com.github.kr328.clash.harmony.probe",
-      "nativeSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+      "bundleName": "com.github.kr328.clash.harmony.trafficprobe"
     },
     "hapSha256": [
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     ]
   },
   "core": {
-    "version": "v1.19.29"
+    "version": "v1.19.29",
+    "nativeSha256": [
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    ]
   },
   "assertions": {
-    "routeMode": "rule",
-    "defaultRoute": "tun",
-    "dnsMode": "clash-dns",
-    "dnsListen": "127.0.0.1:1053",
-    "mtu": 1500
+    "addresses": [
+      "10.111.222.1/30",
+      "fd00:111:222::1/126"
+    ],
+    "routes": [
+      "0.0.0.0/0",
+      "::/0"
+    ],
+    "dns": [
+      "10.111.222.2",
+      "fd00:111:222::2"
+    ],
+    "mtu": 1500,
+    "ipv4Accepted": true,
+    "ipv6Accepted": true,
+    "blocking": false,
+    "blockedApplications": [
+      "com.github.kr328.clash.harmony"
+    ]
   },
   "traffic": {
     "tcp": {
       "result": "pass",
       "sessionId": "session-tcp",
-      "traceId": "trace-tcp"
+      "traceId": "trace-tcp",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "tcp-connect"
+      },
+      "coreEvent": {
+        "event": "mihomo.tcp"
+      }
     },
     "udp": {
       "result": "pass",
       "sessionId": "session-udp",
-      "traceId": "trace-udp"
+      "traceId": "trace-udp",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "udp-associate"
+      },
+      "coreEvent": {
+        "event": "mihomo.udp"
+      }
     },
     "dns": {
       "result": "pass",
       "sessionId": "session-dns",
-      "traceId": "trace-dns"
+      "traceId": "trace-dns",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "dns-query"
+      },
+      "coreEvent": {
+        "event": "mihomo.dns"
+      }
     },
     "ipv4": {
       "result": "pass",
       "sessionId": "session-ipv4",
-      "traceId": "trace-ipv4"
-    },
-    "ipv6": {
-      "result": "not-run",
-      "reason": "network-not-provisioned"
+      "traceId": "trace-ipv4",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "ipv4-flow"
+      },
+      "coreEvent": {
+        "event": "mihomo.ipv4"
+      }
     }
   },
   "localEvidence": {
@@ -100,60 +140,6 @@
       "txPackets": 38,
       "rxBytes": 4096,
       "txBytes": 6144
-    }
-  },
-  "correlations": {
-    "tcp": {
-      "sessionId": "session-tcp",
-      "traceId": "trace-tcp",
-      "captureTrace": {
-        "ingress": "tun",
-        "event": "tcp-connect"
-      },
-      "coreEvent": {
-        "sessionId": "session-tcp",
-        "traceId": "trace-tcp",
-        "event": "mihomo.tcp"
-      }
-    },
-    "udp": {
-      "sessionId": "session-udp",
-      "traceId": "trace-udp",
-      "captureTrace": {
-        "ingress": "tun",
-        "event": "udp-associate"
-      },
-      "coreEvent": {
-        "sessionId": "session-udp",
-        "traceId": "trace-udp",
-        "event": "mihomo.udp"
-      }
-    },
-    "dns": {
-      "sessionId": "session-dns",
-      "traceId": "trace-dns",
-      "captureTrace": {
-        "ingress": "tun",
-        "event": "dns-query"
-      },
-      "coreEvent": {
-        "sessionId": "session-dns",
-        "traceId": "trace-dns",
-        "event": "mihomo.dns"
-      }
-    },
-    "ipv4": {
-      "sessionId": "session-ipv4",
-      "traceId": "trace-ipv4",
-      "captureTrace": {
-        "ingress": "tun",
-        "event": "ipv4-flow"
-      },
-      "coreEvent": {
-        "sessionId": "session-ipv4",
-        "traceId": "trace-ipv4",
-        "event": "mihomo.ipv4"
-      }
     }
   },
   "failures": []

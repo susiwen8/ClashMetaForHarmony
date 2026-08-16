@@ -18,26 +18,17 @@
     "localEvidence",
     "lifecycle",
     "tun",
-    "correlations",
     "failures"
   ],
   "properties": {
-    "schemaVersion": {
-      "const": "4.0.0"
-    },
-    "phase": {
-      "const": 4
-    },
-    "result": {
-      "const": "pass"
-    },
+    "schemaVersion": { "const": "4.0.0" },
+    "phase": { "const": 4 },
+    "result": { "const": "pass" },
     "runId": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
     },
-    "outputPath": {
-      "const": "harmony/artifacts/phase4-device-proof.json"
-    },
+    "outputPath": { "const": "harmony/artifacts/phase4-device-proof.json" },
     "timestamps": {
       "type": "object",
       "additionalProperties": false,
@@ -56,14 +47,14 @@
     "device": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["targetKind", "identityMasked", "modelAlias", "productAlias", "apiVersion", "abi"],
+      "required": ["targetKind", "identityMasked", "osVersion", "apiVersion", "abi", "deviceClass"],
       "properties": {
         "targetKind": { "const": "physical" },
         "identityMasked": { "type": "string", "pattern": "^target-[a-f0-9]{8}$" },
-        "modelAlias": { "type": "string", "minLength": 1 },
-        "productAlias": { "type": "string", "minLength": 1 },
-        "apiVersion": { "const": "20" },
-        "abi": { "const": "arm64-v8a" }
+        "osVersion": { "type": "string", "pattern": "^HarmonyOS 6\\." },
+        "apiVersion": { "type": "integer", "minimum": 20 },
+        "abi": { "const": "arm64-v8a" },
+        "deviceClass": { "const": "phone" }
       }
     },
     "bundles": {
@@ -90,21 +81,71 @@
     "core": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["version"],
+      "required": ["version", "nativeSha256"],
       "properties": {
-        "version": { "const": "v1.19.29" }
+        "version": { "const": "v1.19.29" },
+        "nativeSha256": {
+          "description": "Ordered [addon, mihomo] native sha256 digests.",
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false,
+          "uniqueItems": true,
+          "prefixItems": [
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          ]
+        }
       }
     },
     "assertions": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["routeMode", "defaultRoute", "dnsMode", "dnsListen", "mtu"],
+      "required": ["addresses", "routes", "dns", "mtu", "ipv4Accepted", "ipv6Accepted", "blocking", "blockedApplications"],
       "properties": {
-        "routeMode": { "const": "rule" },
-        "defaultRoute": { "const": "tun" },
-        "dnsMode": { "const": "clash-dns" },
-        "dnsListen": { "const": "127.0.0.1:1053" },
-        "mtu": { "const": 1500 }
+        "addresses": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false,
+          "prefixItems": [
+            { "const": "10.111.222.1/30" },
+            { "const": "fd00:111:222::1/126" }
+          ]
+        },
+        "routes": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false,
+          "prefixItems": [
+            { "const": "0.0.0.0/0" },
+            { "const": "::/0" }
+          ]
+        },
+        "dns": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false,
+          "prefixItems": [
+            { "const": "10.111.222.2" },
+            { "const": "fd00:111:222::2" }
+          ]
+        },
+        "mtu": { "const": 1500 },
+        "ipv4Accepted": { "const": true },
+        "ipv6Accepted": { "const": true },
+        "blocking": { "const": false },
+        "blockedApplications": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 1,
+          "items": false,
+          "prefixItems": [
+            { "const": "com.github.kr328.clash.harmony" }
+          ]
+        }
       }
     },
     "traffic": {
@@ -115,8 +156,7 @@
         "tcp": { "$ref": "#/$defs/correlatedTraffic" },
         "udp": { "$ref": "#/$defs/correlatedTraffic" },
         "dns": { "$ref": "#/$defs/correlatedTraffic" },
-        "ipv4": { "$ref": "#/$defs/correlatedTraffic" },
-        "ipv6": { "$ref": "#/$defs/ipv6Traffic" }
+        "ipv4": { "$ref": "#/$defs/correlatedTraffic" }
       }
     },
     "localEvidence": {
@@ -157,17 +197,6 @@
         }
       }
     },
-    "correlations": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["tcp", "udp", "dns", "ipv4"],
-      "properties": {
-        "tcp": { "$ref": "#/$defs/correlationEntry" },
-        "udp": { "$ref": "#/$defs/correlationEntry" },
-        "dns": { "$ref": "#/$defs/correlationEntry" },
-        "ipv4": { "$ref": "#/$defs/correlationEntry" }
-      }
-    },
     "failures": {
       "type": "array",
       "items": {
@@ -185,29 +214,44 @@
     "productionBundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundleName", "nativeSha256"],
+      "required": ["bundleName"],
       "properties": {
-        "bundleName": { "const": "com.github.kr328.clash.harmony" },
-        "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "bundleName": { "const": "com.github.kr328.clash.harmony" }
       }
     },
     "probeBundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundleName", "nativeSha256"],
+      "required": ["bundleName"],
       "properties": {
-        "bundleName": { "const": "com.github.kr328.clash.harmony.probe" },
-        "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+        "bundleName": { "const": "com.github.kr328.clash.harmony.trafficprobe" }
       }
     },
     "correlatedTraffic": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "sessionId", "traceId"],
+      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
       "properties": {
         "result": { "const": "pass" },
         "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 }
+        "traceId": { "type": "string", "minLength": 1 },
+        "captureTrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ingress", "event"],
+          "properties": {
+            "ingress": { "const": "tun" },
+            "event": { "type": "string", "minLength": 1 }
+          }
+        },
+        "coreEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": {
+            "event": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "localHttpEvidence": {
@@ -230,55 +274,6 @@
         "ingress": { "const": "local-socks" },
         "sessionId": { "type": "string", "minLength": 1 },
         "traceId": { "type": "string", "minLength": 1 }
-      }
-    },
-    "ipv6Traffic": {
-      "type": "object",
-      "oneOf": [
-        {
-          "additionalProperties": false,
-          "required": ["result"],
-          "properties": {
-            "result": { "const": "pass" },
-            "reason": { "type": "string", "minLength": 1 }
-          }
-        },
-        {
-          "additionalProperties": false,
-          "required": ["result", "reason"],
-          "properties": {
-            "result": { "const": "not-run" },
-            "reason": { "type": "string", "minLength": 1 }
-          }
-        }
-      ]
-    },
-    "correlationEntry": {
-      "type": "object",
-      "additionalProperties": false,
-      "required": ["sessionId", "traceId", "captureTrace", "coreEvent"],
-      "properties": {
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 },
-        "captureTrace": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["ingress", "event"],
-          "properties": {
-            "ingress": { "const": "tun" },
-            "event": { "type": "string", "minLength": 1 }
-          }
-        },
-        "coreEvent": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["sessionId", "traceId", "event"],
-          "properties": {
-            "sessionId": { "type": "string", "minLength": 1 },
-            "traceId": { "type": "string", "minLength": 1 },
-            "event": { "type": "string", "minLength": 1 }
-          }
-        }
       }
     },
     "passResult": {

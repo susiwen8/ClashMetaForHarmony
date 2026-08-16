@@ -46,8 +46,26 @@ const leakedWindowsSigningPathValue = joinFragments(['C', ':', '\\', 'Us', 'ers'
 const leakedWindowsForwardSlashSigningPathValue = joinFragments(['C', ':/', 'Us', 'ers/dev/', 'sign', 'ing/client.', sensitiveExtensions[0]]);
 const leakedSecretKey = joinFragments(['secret', 'Token']);
 const leakedSerialKey = joinFragments(['serial', 'Number']);
-const REQUIRED_CORRELATION_KINDS = ['tcp', 'udp', 'dns', 'ipv4'];
+const REQUIRED_TRAFFIC_KINDS = ['tcp', 'udp', 'dns', 'ipv4'];
 const BUNDLE_HAP_HASH_ORDER = ['production', 'probe'];
+const CORE_NATIVE_HASH_ORDER = ['addon', 'mihomo'];
+const ALLOWED_TOP_LEVEL_KEYS = new Set([
+  'schemaVersion',
+  'phase',
+  'result',
+  'runId',
+  'outputPath',
+  'timestamps',
+  'device',
+  'bundles',
+  'core',
+  'assertions',
+  'traffic',
+  'localEvidence',
+  'lifecycle',
+  'tun',
+  'failures'
+]);
 
 function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
   if (Array.isArray(value)) {
@@ -94,38 +112,63 @@ function createValidPhase4Proof() {
     device: {
       targetKind: 'physical',
       identityMasked: 'target-91ac4f20',
-      modelAlias: 'HarmonyPhoneLab',
-      productAlias: 'PuraX-Lab',
-      apiVersion: '20',
-      abi: 'arm64-v8a'
+      osVersion: 'HarmonyOS 6.0.1.123',
+      apiVersion: 24,
+      abi: 'arm64-v8a',
+      deviceClass: 'phone'
     },
     bundles: {
       production: {
-        bundleName: 'com.github.kr328.clash.harmony',
-        nativeSha256: digest('b')
+        bundleName: 'com.github.kr328.clash.harmony'
       },
       probe: {
-        bundleName: 'com.github.kr328.clash.harmony.probe',
-        nativeSha256: digest('d')
+        bundleName: 'com.github.kr328.clash.harmony.trafficprobe'
       },
-      hapSha256: [digest('a'), digest('c')]
+      hapSha256: [digest('a'), digest('b')]
     },
     core: {
-      version: 'v1.19.29'
+      version: 'v1.19.29',
+      nativeSha256: [digest('c'), digest('d')]
     },
     assertions: {
-      routeMode: 'rule',
-      defaultRoute: 'tun',
-      dnsMode: 'clash-dns',
-      dnsListen: '127.0.0.1:1053',
-      mtu: 1500
+      addresses: ['10.111.222.1/30', 'fd00:111:222::1/126'],
+      routes: ['0.0.0.0/0', '::/0'],
+      dns: ['10.111.222.2', 'fd00:111:222::2'],
+      mtu: 1500,
+      ipv4Accepted: true,
+      ipv6Accepted: true,
+      blocking: false,
+      blockedApplications: ['com.github.kr328.clash.harmony']
     },
     traffic: {
-      tcp: { result: 'pass', sessionId: 'session-tcp', traceId: 'trace-tcp' },
-      udp: { result: 'pass', sessionId: 'session-udp', traceId: 'trace-udp' },
-      dns: { result: 'pass', sessionId: 'session-dns', traceId: 'trace-dns' },
-      ipv4: { result: 'pass', sessionId: 'session-ipv4', traceId: 'trace-ipv4' },
-      ipv6: { result: 'not-run', reason: 'network-not-provisioned' }
+      tcp: {
+        result: 'pass',
+        sessionId: 'session-tcp',
+        traceId: 'trace-tcp',
+        captureTrace: { ingress: 'tun', event: 'tcp-connect' },
+        coreEvent: { event: 'mihomo.tcp' }
+      },
+      udp: {
+        result: 'pass',
+        sessionId: 'session-udp',
+        traceId: 'trace-udp',
+        captureTrace: { ingress: 'tun', event: 'udp-associate' },
+        coreEvent: { event: 'mihomo.udp' }
+      },
+      dns: {
+        result: 'pass',
+        sessionId: 'session-dns',
+        traceId: 'trace-dns',
+        captureTrace: { ingress: 'tun', event: 'dns-query' },
+        coreEvent: { event: 'mihomo.dns' }
+      },
+      ipv4: {
+        result: 'pass',
+        sessionId: 'session-ipv4',
+        traceId: 'trace-ipv4',
+        captureTrace: { ingress: 'tun', event: 'ipv4-flow' },
+        coreEvent: { event: 'mihomo.ipv4' }
+      }
     },
     localEvidence: {
       http: { result: 'pass', ingress: 'local-http', sessionId: 'local-http-session', traceId: 'local-http-trace' },
@@ -145,60 +188,6 @@ function createValidPhase4Proof() {
         txBytes: 6144
       }
     },
-    correlations: {
-      tcp: {
-        sessionId: 'session-tcp',
-        traceId: 'trace-tcp',
-        captureTrace: {
-          ingress: 'tun',
-          event: 'tcp-connect'
-        },
-        coreEvent: {
-          sessionId: 'session-tcp',
-          traceId: 'trace-tcp',
-          event: 'mihomo.tcp'
-        }
-      },
-      udp: {
-        sessionId: 'session-udp',
-        traceId: 'trace-udp',
-        captureTrace: {
-          ingress: 'tun',
-          event: 'udp-associate'
-        },
-        coreEvent: {
-          sessionId: 'session-udp',
-          traceId: 'trace-udp',
-          event: 'mihomo.udp'
-        }
-      },
-      dns: {
-        sessionId: 'session-dns',
-        traceId: 'trace-dns',
-        captureTrace: {
-          ingress: 'tun',
-          event: 'dns-query'
-        },
-        coreEvent: {
-          sessionId: 'session-dns',
-          traceId: 'trace-dns',
-          event: 'mihomo.dns'
-        }
-      },
-      ipv4: {
-        sessionId: 'session-ipv4',
-        traceId: 'trace-ipv4',
-        captureTrace: {
-          ingress: 'tun',
-          event: 'ipv4-flow'
-        },
-        coreEvent: {
-          sessionId: 'session-ipv4',
-          traceId: 'trace-ipv4',
-          event: 'mihomo.ipv4'
-        }
-      }
-    },
     failures: []
   };
 }
@@ -207,6 +196,12 @@ function validatePhase4Proof(proof) {
   const errors = [];
   if (!isObject(proof)) {
     return { valid: false, errors: ['proof must be an object'] };
+  }
+
+  for (const key of Object.keys(proof)) {
+    if (!ALLOWED_TOP_LEVEL_KEYS.has(key)) {
+      errors.push(`proof must not include unexpected key ${key}`);
+    }
   }
 
   if (proof.schemaVersion !== '4.0.0') errors.push('schemaVersion must be 4.0.0');
@@ -219,8 +214,17 @@ function validatePhase4Proof(proof) {
     errors.push('timestamps must include startedAt/completedAt ISO timestamps');
   }
 
-  if (!isObject(proof.device) || proof.device.targetKind !== 'physical' || !/^target-[a-f0-9]{8}$/u.test(proof.device.identityMasked ?? '')) {
-    errors.push('device must be a redacted physical device identity');
+  if (
+    !isObject(proof.device) ||
+    proof.device.targetKind !== 'physical' ||
+    !/^target-[a-f0-9]{8}$/u.test(proof.device.identityMasked ?? '') ||
+    !/^HarmonyOS 6\./u.test(proof.device.osVersion ?? '') ||
+    !Number.isInteger(proof.device.apiVersion) ||
+    proof.device.apiVersion < 20 ||
+    proof.device.abi !== 'arm64-v8a' ||
+    proof.device.deviceClass !== 'phone'
+  ) {
+    errors.push('device must match the physical HarmonyOS 6 phone contract');
   }
 
   if (!isObject(proof.bundles?.production) || !isObject(proof.bundles?.probe)) {
@@ -229,11 +233,14 @@ function validatePhase4Proof(proof) {
     if (proof.bundles.production.bundleName === proof.bundles.probe.bundleName) {
       errors.push('production and probe bundle names must differ');
     }
+    if (proof.bundles.production.bundleName !== 'com.github.kr328.clash.harmony') {
+      errors.push('production bundleName must be the canonical app bundle');
+    }
+    if (proof.bundles.probe.bundleName !== 'com.github.kr328.clash.harmony.trafficprobe') {
+      errors.push('probe bundleName must be the approved traffic probe bundle');
+    }
     if ('hapSha256' in proof.bundles.production || 'hapSha256' in proof.bundles.probe) {
       errors.push('bundles.production/probe must not publish per-bundle hapSha256 fields');
-    }
-    if (proof.bundles.production.nativeSha256 === proof.bundles.probe.nativeSha256) {
-      errors.push('production and probe native hashes must differ');
     }
     if (
       !Array.isArray(proof.bundles.hapSha256) ||
@@ -244,42 +251,66 @@ function validatePhase4Proof(proof) {
     } else if (proof.bundles.hapSha256[0] === proof.bundles.hapSha256[1]) {
       errors.push('bundles.hapSha256 must keep production and probe HAP hashes distinct');
     }
-    for (const bundleKey of ['production', 'probe']) {
-      const bundle = proof.bundles[bundleKey];
-      if (!isSha256(bundle.nativeSha256)) {
-        errors.push(`${bundleKey} bundle native hash must be sha256`);
-      }
-    }
   }
 
   if (proof.core?.version !== 'v1.19.29') errors.push('core.version must be pinned');
+  if (
+    !Array.isArray(proof.core?.nativeSha256) ||
+    proof.core.nativeSha256.length !== 2 ||
+    !proof.core.nativeSha256.every((entry) => isSha256(entry))
+  ) {
+    errors.push('core.nativeSha256 must be an ordered [addon, mihomo] sha256 pair');
+  } else if (proof.core.nativeSha256[0] === proof.core.nativeSha256[1]) {
+    errors.push('core.nativeSha256 must keep addon and mihomo hashes distinct');
+  }
 
+  const expectedAssertions = {
+    addresses: ['10.111.222.1/30', 'fd00:111:222::1/126'],
+    routes: ['0.0.0.0/0', '::/0'],
+    dns: ['10.111.222.2', 'fd00:111:222::2'],
+    mtu: 1500,
+    ipv4Accepted: true,
+    ipv6Accepted: true,
+    blocking: false,
+    blockedApplications: ['com.github.kr328.clash.harmony']
+  };
   if (
     !isObject(proof.assertions) ||
-    proof.assertions.routeMode !== 'rule' ||
-    proof.assertions.defaultRoute !== 'tun' ||
-    proof.assertions.dnsMode !== 'clash-dns' ||
-    proof.assertions.dnsListen !== '127.0.0.1:1053' ||
-    proof.assertions.mtu !== 1500
+    !Array.isArray(proof.assertions.addresses) ||
+    !Array.isArray(proof.assertions.routes) ||
+    !Array.isArray(proof.assertions.dns) ||
+    proof.assertions.mtu !== expectedAssertions.mtu ||
+    proof.assertions.ipv4Accepted !== true ||
+    proof.assertions.ipv6Accepted !== true ||
+    proof.assertions.blocking !== false ||
+    JSON.stringify(proof.assertions.addresses) !== JSON.stringify(expectedAssertions.addresses) ||
+    JSON.stringify(proof.assertions.routes) !== JSON.stringify(expectedAssertions.routes) ||
+    JSON.stringify(proof.assertions.dns) !== JSON.stringify(expectedAssertions.dns) ||
+    JSON.stringify(proof.assertions.blockedApplications) !== JSON.stringify(expectedAssertions.blockedApplications)
   ) {
-    errors.push('assertions must pin route, DNS, and MTU');
+    errors.push('assertions must match the canonical VPN contract');
   }
 
-  for (const key of ['tcp', 'udp', 'dns', 'ipv4']) {
+  for (const key of REQUIRED_TRAFFIC_KINDS) {
     const entry = proof.traffic?.[key];
-    if (!isObject(entry) || entry.result !== 'pass' || typeof entry.sessionId !== 'string' || typeof entry.traceId !== 'string') {
-      errors.push(`traffic.${key} must be a passing correlated result`);
+    if (
+      !isObject(entry) ||
+      entry.result !== 'pass' ||
+      typeof entry.sessionId !== 'string' ||
+      typeof entry.traceId !== 'string' ||
+      !isObject(entry.captureTrace) ||
+      entry.captureTrace.ingress !== 'tun' ||
+      typeof entry.captureTrace.event !== 'string' ||
+      entry.captureTrace.event.length === 0 ||
+      !isObject(entry.coreEvent) ||
+      typeof entry.coreEvent.event !== 'string' ||
+      entry.coreEvent.event.length === 0
+    ) {
+      errors.push(`traffic.${key} must be one canonical correlated evidence object`);
     }
   }
-  if (proof.traffic?.ipv6 !== undefined) {
-    const ipv6 = proof.traffic.ipv6;
-    if (!isObject(ipv6) || !['pass', 'not-run'].includes(ipv6.result)) {
-      errors.push('traffic.ipv6 must be optional pass/not-run evidence');
-    } else if (ipv6.result === 'not-run' && (typeof ipv6.reason !== 'string' || ipv6.reason.length === 0)) {
-      errors.push('traffic.ipv6 not-run evidence must include a non-empty reason');
-    } else if (ipv6.result === 'pass' && Object.hasOwn(ipv6, 'reason') && (typeof ipv6.reason !== 'string' || ipv6.reason.length === 0)) {
-      errors.push('traffic.ipv6 pass reason must be a non-empty string when present');
-    }
+  if (isObject(proof.traffic) && 'ipv6' in proof.traffic) {
+    errors.push('traffic must not publish a separate ipv6 probe result');
   }
 
   for (const [key, expectedIngress] of Object.entries({ http: 'local-http', socks: 'local-socks' })) {
@@ -298,30 +329,6 @@ function validatePhase4Proof(proof) {
   for (const key of ['rxPackets', 'txPackets', 'rxBytes', 'txBytes']) {
     if (!Number.isInteger(proof.tun?.counters?.[key]) || proof.tun.counters[key] < 0) {
       errors.push(`tun.counters.${key} must be a non-negative integer`);
-    }
-  }
-
-  if (!isObject(proof.correlations)) {
-    errors.push('correlations must be a closed object keyed by tcp/udp/dns/ipv4');
-  } else {
-    const keys = Object.keys(proof.correlations);
-    for (const kind of REQUIRED_CORRELATION_KINDS) {
-      if (!keys.includes(kind)) {
-        errors.push(`correlations must include exactly one ${kind} trace`);
-      }
-    }
-    for (const key of keys) {
-      if (!REQUIRED_CORRELATION_KINDS.includes(key)) {
-        errors.push(`correlations must not include unexpected key ${key}`);
-        continue;
-      }
-      const entry = proof.correlations[key];
-      if (entry.captureTrace?.ingress !== 'tun') {
-        errors.push(`correlations.${key}.captureTrace.ingress must be tun`);
-      }
-      if (entry.sessionId !== entry.coreEvent?.sessionId || entry.traceId !== entry.coreEvent?.traceId) {
-        errors.push(`correlations.${key} must share sessionId and traceId with coreEvent`);
-      }
     }
   }
 
@@ -356,7 +363,6 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
     'localEvidence',
     'lifecycle',
     'tun',
-    'correlations',
     'failures'
   ]);
   assert.equal(schema.properties.device.additionalProperties, false);
@@ -366,23 +372,36 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.lifecycle.additionalProperties, false);
   assert.equal(schema.properties.tun.additionalProperties, false);
   assert.equal(schema.$defs.productionBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony');
-  assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony.probe');
+  assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony.trafficprobe');
   assert.equal('hapSha256' in schema.$defs.productionBundle.properties, false);
   assert.equal('hapSha256' in schema.$defs.probeBundle.properties, false);
   assert.equal(schema.properties.bundles.properties.hapSha256.uniqueItems, true);
   assert.deepEqual(schema.properties.bundles.properties.hapSha256.description, 'Ordered [production, probe] HAP sha256 digests.');
+  assert.equal(schema.properties.core.properties.version.const, 'v1.19.29');
+  assert.equal(schema.properties.core.properties.nativeSha256.uniqueItems, true);
+  assert.deepEqual(schema.properties.core.properties.nativeSha256.description, 'Ordered [addon, mihomo] native sha256 digests.');
+  assert.equal(schema.properties.device.properties.targetKind.const, 'physical');
+  assert.equal(schema.properties.device.properties.deviceClass.const, 'phone');
+  assert.equal(schema.properties.device.properties.apiVersion.minimum, 20);
+  assert.equal(schema.properties.device.properties.abi.const, 'arm64-v8a');
+  assert.match(schema.properties.device.properties.osVersion.pattern, /HarmonyOS 6/u);
+  assert.equal('modelAlias' in schema.properties.device.properties, false);
+  assert.equal('productAlias' in schema.properties.device.properties, false);
+  assert.equal(schema.properties.assertions.properties.addresses.items, false);
+  assert.equal(schema.properties.assertions.properties.routes.items, false);
+  assert.equal(schema.properties.assertions.properties.dns.items, false);
+  assert.equal(schema.properties.assertions.properties.blocking.const, false);
+  assert.equal(schema.properties.assertions.properties.blockedApplications.items, false);
   assert.equal(schema.$defs.localHttpEvidence.properties.ingress.const, 'local-http');
   assert.equal(schema.$defs.localSocksEvidence.properties.ingress.const, 'local-socks');
-  assert.equal(schema.$defs.ipv6Traffic.oneOf.length, 2);
+  assert.equal('ipv6' in schema.properties.traffic.properties, false);
   assert.deepEqual(
-    schema.$defs.ipv6Traffic.oneOf.map((branch) => branch.properties.result.const),
-    ['pass', 'not-run']
+    Object.keys(schema.properties.traffic.properties),
+    REQUIRED_TRAFFIC_KINDS
   );
-  assert.equal(schema.properties.correlations.additionalProperties, false);
-  assert.deepEqual(schema.properties.correlations.required, REQUIRED_CORRELATION_KINDS);
-  assert.equal(schema.$defs.correlationEntry.additionalProperties, false);
-  assert.equal(schema.$defs.correlationEntry.properties.captureTrace.additionalProperties, false);
-  assert.equal(schema.$defs.correlationEntry.properties.coreEvent.additionalProperties, false);
+  assert.equal(schema.$defs.correlatedTraffic.additionalProperties, false);
+  assert.equal(schema.$defs.correlatedTraffic.properties.captureTrace.additionalProperties, false);
+  assert.equal(schema.$defs.correlatedTraffic.properties.coreEvent.additionalProperties, false);
 
   assert.deepEqual(example, validProof);
   assert.deepEqual(validatePhase4Proof(validProof), { valid: true, errors: [] });
@@ -400,20 +419,26 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['windows forward slash signing path leaked', (proof) => { proof.lifecycle.stop.detail = leakedWindowsForwardSlashSigningPathValue; }, /signing material/u],
     ['secret field leaked', (proof) => { proof.device[leakedSecretKey] = 'abc'; }, /secret-bearing keys/u],
     ['serial-like field leaked', (proof) => { proof.device[leakedSerialKey] = 'ABC123'; }, /serial-like keys/u],
+    ['device class drifted', (proof) => { proof.device.deviceClass = 'tablet'; }, /device must match/u],
+    ['api version too low', (proof) => { proof.device.apiVersion = 19; }, /device must match/u],
+    ['probe bundle identity drifted', (proof) => { proof.bundles.probe.bundleName = 'com.github.kr328.clash.harmony.probe'; }, /traffic probe bundle/u],
     ['probe bundle drifted to production', (proof) => { proof.bundles.probe.bundleName = proof.bundles.production.bundleName; }, /bundle names must differ/u],
     ['probe hap hash drifted to production', (proof) => {
       proof.bundles.hapSha256[1] = proof.bundles.hapSha256[0];
     }, /bundles\.hapSha256/u],
     ['hap hash pair missing probe entry', (proof) => { proof.bundles.hapSha256 = [proof.bundles.hapSha256[0]]; }, /ordered \[production, probe\]/u],
     ['hap hash pair carries extra entry', (proof) => { proof.bundles.hapSha256.push(digest('e')); }, /ordered \[production, probe\]/u],
+    ['core native hash pair missing mihomo entry', (proof) => { proof.core.nativeSha256 = [proof.core.nativeSha256[0]]; }, /ordered \[addon, mihomo\]/u],
+    ['core native hash pair duplicated', (proof) => { proof.core.nativeSha256[1] = proof.core.nativeSha256[0]; }, /core\.nativeSha256/u],
     ['old production hap field leaked', (proof) => { proof.bundles.production.hapSha256 = digest('a'); }, /per-bundle hapSha256/u],
+    ['assertions drifted from vpn addresses', (proof) => { proof.assertions.addresses = ['10.111.222.9/30', 'fd00:111:222::1/126']; }, /VPN contract/u],
+    ['blocked applications drifted', (proof) => { proof.assertions.blockedApplications = []; }, /VPN contract/u],
     ['local ingress broke', (proof) => { proof.localEvidence.http.ingress = 'tun'; }, /localEvidence\.http/u],
     ['socks ingress broke', (proof) => { proof.localEvidence.socks.ingress = 'tun'; }, /localEvidence\.socks/u],
-    ['duplicate correlation kind', (proof) => { proof.correlations.tcpDuplicate = structuredClone(proof.correlations.tcp); }, /unexpected key tcpDuplicate|exactly one/u],
-    ['missing correlation class', (proof) => { delete proof.correlations.dns; }, /exactly one dns trace/u],
-    ['capture ingress broke', (proof) => { proof.correlations.tcp.captureTrace.ingress = 'local-http'; }, /captureTrace\.ingress/u],
-    ['trace correlation broke', (proof) => { proof.correlations.tcp.coreEvent.traceId = 'wrong'; }, /share sessionId and traceId/u],
-    ['ipv6 not-run missing reason', (proof) => { proof.traffic.ipv6 = { result: 'not-run' }; }, /ipv6 not-run/u]
+    ['unexpected top-level correlations field leaked', (proof) => { proof.correlations = {}; }, /unexpected key correlations/u],
+    ['capture ingress broke', (proof) => { proof.traffic.tcp.captureTrace.ingress = 'local-http'; }, /traffic\.tcp/u],
+    ['capture trace omitted', (proof) => { delete proof.traffic.tcp.captureTrace; }, /traffic\.tcp/u],
+    ['core event omitted', (proof) => { delete proof.traffic.tcp.coreEvent; }, /traffic\.tcp/u]
   ];
 
   for (const [label, mutate, expected] of cases) {
@@ -425,22 +450,14 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
   }
 });
 
-test('Phase 4 proof validation accepts ipv6 pass without reason and rejects malformed pass reason', () => {
-  const passWithoutReason = createValidPhase4Proof();
-  passWithoutReason.traffic.ipv6 = { result: 'pass' };
-  assert.deepEqual(validatePhase4Proof(passWithoutReason), { valid: true, errors: [] });
-
-  const malformedPassReason = createValidPhase4Proof();
-  malformedPassReason.traffic.ipv6 = { result: 'pass', reason: '' };
-  const validation = validatePhase4Proof(malformedPassReason);
-  assert.equal(validation.valid, false);
-  assert.match(validation.errors.join('\n'), /ipv6 pass reason/u);
-});
-
 test('Phase 4 bundle hash ordering stays canonical and non-redundant', () => {
   const validProof = createValidPhase4Proof();
-  assert.deepEqual(validProof.bundles.hapSha256, [digest('a'), digest('c')]);
+  assert.deepEqual(validProof.bundles.hapSha256, [digest('a'), digest('b')]);
   assert.deepEqual(BUNDLE_HAP_HASH_ORDER, ['production', 'probe']);
+  assert.deepEqual(validProof.core.nativeSha256, [digest('c'), digest('d')]);
+  assert.deepEqual(CORE_NATIVE_HASH_ORDER, ['addon', 'mihomo']);
   assert.equal('hapSha256' in validProof.bundles.production, false);
   assert.equal('hapSha256' in validProof.bundles.probe, false);
+  assert.equal('nativeSha256' in validProof.bundles.production, false);
+  assert.equal('nativeSha256' in validProof.bundles.probe, false);
 });
