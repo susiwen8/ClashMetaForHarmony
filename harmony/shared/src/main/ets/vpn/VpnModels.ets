@@ -1,3 +1,5 @@
+import { redactSensitiveText } from '../profile/SecretRedactor';
+
 export type VpnRuntimeState =
   | 'STOPPED'
   | 'AWAITING_CONSENT'
@@ -18,36 +20,34 @@ export const VPN_RUNTIME_STATES: VpnRuntimeState[] = [
 ];
 
 export type VpnFailureCode =
-  | 'ALREADY_ACTIVE'
-  | 'CONSENT_DENIED'
-  | 'INVALID_REQUEST'
-  | 'NETWORK_LOST'
-  | 'NOTIFICATION_START_FAILED'
-  | 'NOTIFICATION_STOP_FAILED'
-  | 'PLATFORM_CREATE_FAILED'
-  | 'PROCESS_PROTECT_FAILED'
-  | 'RECOVERY_EXHAUSTED'
-  | 'RESOLVE_FAILED'
-  | 'SESSION_MISMATCH'
-  | 'STOP_FAILED'
-  | 'TUN_START_FAILED'
-  | 'TUN_STOP_FAILED';
+  | 'VPN_PERMISSION_DENIED'
+  | 'VPN_ALREADY_ACTIVE'
+  | 'VPN_PROFILE_UNAVAILABLE'
+  | 'VPN_CONFIG_INVALID'
+  | 'VPN_CREATE_FAILED'
+  | 'VPN_TUN_FD_INVALID'
+  | 'VPN_TUN_START_FAILED'
+  | 'VPN_SOCKET_PROTECT_FAILED'
+  | 'VPN_LOCAL_PORT_CONFLICT'
+  | 'VPN_BACKGROUND_TASK_FAILED'
+  | 'VPN_SYSTEM_REVOKED'
+  | 'VPN_STOP_FAILED';
+
+export type TunRuntimeFailureCode = VpnFailureCode | 'NETWORK_LOST';
 
 export const VPN_FAILURE_CODES: VpnFailureCode[] = [
-  'ALREADY_ACTIVE',
-  'CONSENT_DENIED',
-  'INVALID_REQUEST',
-  'NETWORK_LOST',
-  'NOTIFICATION_START_FAILED',
-  'NOTIFICATION_STOP_FAILED',
-  'PLATFORM_CREATE_FAILED',
-  'PROCESS_PROTECT_FAILED',
-  'RECOVERY_EXHAUSTED',
-  'RESOLVE_FAILED',
-  'SESSION_MISMATCH',
-  'STOP_FAILED',
-  'TUN_START_FAILED',
-  'TUN_STOP_FAILED'
+  'VPN_PERMISSION_DENIED',
+  'VPN_ALREADY_ACTIVE',
+  'VPN_PROFILE_UNAVAILABLE',
+  'VPN_CONFIG_INVALID',
+  'VPN_CREATE_FAILED',
+  'VPN_TUN_FD_INVALID',
+  'VPN_TUN_START_FAILED',
+  'VPN_SOCKET_PROTECT_FAILED',
+  'VPN_LOCAL_PORT_CONFLICT',
+  'VPN_BACKGROUND_TASK_FAILED',
+  'VPN_SYSTEM_REVOKED',
+  'VPN_STOP_FAILED'
 ];
 
 export interface VpnStartRequest {
@@ -117,6 +117,11 @@ export interface VpnFailure {
   detail: string;
 }
 
+export interface TunRuntimeFailure {
+  code: TunRuntimeFailureCode;
+  detail: string;
+}
+
 export type TunRuntimeState = 'IDLE' | 'STARTING' | 'READY' | 'STOPPED' | 'ERROR';
 
 export interface CreateTunRuntimeSnapshotInput {
@@ -124,7 +129,7 @@ export interface CreateTunRuntimeSnapshotInput {
   state: TunRuntimeState;
   counters: VpnCounters;
   ingressTraces: VpnIngressTrace[];
-  failure?: VpnFailure | null;
+  failure?: TunRuntimeFailure | null;
 }
 
 export interface TunRuntimeSnapshot {
@@ -132,13 +137,18 @@ export interface TunRuntimeSnapshot {
   state: TunRuntimeState;
   counters: VpnCounters;
   ingressTraces: VpnIngressTrace[];
-  failure: VpnFailure | null;
+  failure: TunRuntimeFailure | null;
+}
+
+export interface VpnActiveHandleSummary {
+  sessionId: string;
+  attached: boolean;
 }
 
 export interface CreateVpnRuntimeSnapshotInput {
   state: VpnRuntimeState;
   activeRequest: VpnStartRequest | null;
-  activeHandle: TunHandle | null;
+  activeHandle: TunHandle | VpnActiveHandleSummary | null;
   captureConfig: VpnCaptureConfig | null;
   tunSnapshot: TunRuntimeSnapshot | null;
   notificationActive: boolean;
@@ -150,7 +160,7 @@ export interface CreateVpnRuntimeSnapshotInput {
 export interface VpnRuntimeSnapshot {
   state: VpnRuntimeState;
   activeRequest: VpnStartRequest | null;
-  activeHandle: TunHandle | null;
+  activeHandle: VpnActiveHandleSummary | null;
   captureConfig: VpnCaptureConfig | null;
   tunSnapshot: TunRuntimeSnapshot | null;
   notificationActive: boolean;
@@ -231,11 +241,29 @@ function expectExactList(label: string, actual: string[], expected: string[]): v
   }
 }
 
+const VPN_ASSIGNMENT_PATTERN: RegExp =
+  /((?:vpnid|vpn_id|vpn-id|deviceid|device_id|device-id|serial|serialnumber|serial_number))(\s*[:=]\s*)([^\s"'<>]+)/gi;
+
+function sanitizeVpnPublicDetail(rawDetail: string): string {
+  let sanitized: string = redactSensitiveText(rawDetail.trim());
+  sanitized = sanitized.replace(VPN_ASSIGNMENT_PATTERN, (_match: string, key: string, separator: string): string => {
+    return `${key}${separator}<redacted>`;
+  });
+  return sanitized;
+}
+
 function cloneFailure(failure: VpnFailure | null): VpnFailure | null {
   if (failure === null) {
     return null;
   }
   return createVpnFailure(failure.code, failure.detail);
+}
+
+function cloneTunRuntimeFailure(failure: TunRuntimeFailure | null): TunRuntimeFailure | null {
+  if (failure === null) {
+    return null;
+  }
+  return createTunRuntimeFailure(failure.code, failure.detail);
 }
 
 function cloneCounters(counters: VpnCounters): VpnCounters {
@@ -262,11 +290,22 @@ function cloneVpnStartRequest(request: VpnStartRequest | null): VpnStartRequest 
   return createVpnStartRequest(request.profileId, request.versionId, request.sessionId);
 }
 
-function cloneTunHandle(handle: TunHandle | null): TunHandle | null {
+function cloneActiveHandleSummary(handle: TunHandle | VpnActiveHandleSummary | null): VpnActiveHandleSummary | null {
   if (handle === null) {
     return null;
   }
-  return createTunHandle(handle.fd, handle.vpnId, handle.sessionId);
+  const rawHandle: TunHandle = handle as TunHandle;
+  if (rawHandle.fd !== undefined && rawHandle.vpnId !== undefined) {
+    return {
+      sessionId: normalizeId(rawHandle.sessionId, 'Session id'),
+      attached: true
+    };
+  }
+  const summaryHandle: VpnActiveHandleSummary = handle as VpnActiveHandleSummary;
+  return {
+    sessionId: normalizeId(summaryHandle.sessionId, 'Session id'),
+    attached: summaryHandle.attached
+  };
 }
 
 function cloneCaptureConfig(config: VpnCaptureConfig | null): VpnCaptureConfig | null {
@@ -396,7 +435,7 @@ export function createVpnIngressTrace(input: CreateVpnIngressTraceInput): VpnIng
   return {
     sessionId,
     stage,
-    detail,
+    detail: sanitizeVpnPublicDetail(detail),
     atMs: input.atMs
   };
 }
@@ -405,12 +444,26 @@ export function createVpnFailure(code: string, detail: string): VpnFailure {
   if (!VPN_FAILURE_CODES.includes(code as VpnFailureCode)) {
     throw new Error('Vpn failure codes must stay allowlisted.');
   }
-  const normalizedDetail: string = detail.trim();
+  const normalizedDetail: string = sanitizeVpnPublicDetail(detail);
   if (normalizedDetail.length === 0) {
     throw new Error('Vpn failure detail must not be blank.');
   }
   return {
     code: code as VpnFailureCode,
+    detail: normalizedDetail
+  };
+}
+
+export function createTunRuntimeFailure(code: string, detail: string): TunRuntimeFailure {
+  if (code !== 'NETWORK_LOST' && !VPN_FAILURE_CODES.includes(code as VpnFailureCode)) {
+    throw new Error('Tun runtime failure codes must stay allowlisted.');
+  }
+  const normalizedDetail: string = sanitizeVpnPublicDetail(detail);
+  if (normalizedDetail.length === 0) {
+    throw new Error('Tun runtime failure detail must not be blank.');
+  }
+  return {
+    code: code as TunRuntimeFailureCode,
     detail: normalizedDetail
   };
 }
@@ -421,7 +474,7 @@ export function createTunRuntimeSnapshot(input: CreateTunRuntimeSnapshotInput): 
     state: input.state,
     counters: cloneCounters(input.counters),
     ingressTraces: cloneIngressTraces(input.ingressTraces),
-    failure: cloneFailure(input.failure ?? null)
+    failure: cloneTunRuntimeFailure(input.failure ?? null)
   };
 }
 
@@ -429,7 +482,7 @@ export function createVpnRuntimeSnapshot(input: CreateVpnRuntimeSnapshotInput): 
   return {
     state: input.state,
     activeRequest: cloneVpnStartRequest(input.activeRequest),
-    activeHandle: cloneTunHandle(input.activeHandle),
+    activeHandle: cloneActiveHandleSummary(input.activeHandle),
     captureConfig: cloneCaptureConfig(input.captureConfig),
     tunSnapshot: cloneTunSnapshot(input.tunSnapshot),
     notificationActive: input.notificationActive,

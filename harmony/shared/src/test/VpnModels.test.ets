@@ -3,6 +3,7 @@ import {
   VPN_FAILURE_CODES,
   VPN_RUNTIME_STATES,
   createTunHandle,
+  createTunRuntimeFailure,
   createTunRuntimeSnapshot,
   createTunStartOptions,
   createVpnCaptureConfig,
@@ -11,10 +12,12 @@ import {
   createVpnIngressTrace,
   createVpnRuntimeEvent,
   createVpnRuntimeSnapshot,
-  createVpnStartRequest
+  createVpnStartRequest,
+  redactSensitiveText
 } from '../../Index';
 import { expectThrowsMessage } from './fakes/ProfileFakes';
 import type {
+  TunRuntimeFailure,
   TunRuntimeSnapshot,
   VpnCaptureConfig,
   VpnRuntimeEvent,
@@ -57,8 +60,9 @@ export default function vpnModelsTestsuite() {
       expect(VPN_RUNTIME_STATES.join(',')).assertEqual(
         'STOPPED,AWAITING_CONSENT,STARTING,RUNNING,RECOVERING,STOPPING,ERROR'
       );
-      expect(VPN_FAILURE_CODES.includes('CONSENT_DENIED')).assertTrue();
-      expect(VPN_FAILURE_CODES.includes('RECOVERY_EXHAUSTED')).assertTrue();
+      expect(VPN_FAILURE_CODES.join(',')).assertEqual(
+        'VPN_PERMISSION_DENIED,VPN_ALREADY_ACTIVE,VPN_PROFILE_UNAVAILABLE,VPN_CONFIG_INVALID,VPN_CREATE_FAILED,VPN_TUN_FD_INVALID,VPN_TUN_START_FAILED,VPN_SOCKET_PROTECT_FAILED,VPN_LOCAL_PORT_CONFLICT,VPN_BACKGROUND_TASK_FAILED,VPN_SYSTEM_REVOKED,VPN_STOP_FAILED'
+      );
     });
 
     it('createsTheExactFullCaptureConfig', 0, () => {
@@ -74,7 +78,7 @@ export default function vpnModelsTestsuite() {
       expect(config.blockedApplications.join(',')).assertEqual('com.github.kr328.clash.harmony');
     });
 
-    it('clonesArraysAndSnapshotsAcrossPublicBoundaries', 0, () => {
+    it('clonesArraysAndSnapshotsAcrossPublicBoundariesWithoutExposingRawPlatformHandles', 0, () => {
       const addresses: string[] = ['10.111.222.1/30', 'fd00:111:222::1/126'];
       const routes: string[] = ['0.0.0.0/0', '::/0'];
       const dnsServers: string[] = ['10.111.222.2', 'fd00:111:222::2'];
@@ -121,9 +125,12 @@ export default function vpnModelsTestsuite() {
       expect(config.blockedApplications.join(',')).assertEqual('com.github.kr328.clash.harmony');
       expect(event.snapshot.captureConfig?.addresses[0]).assertEqual('10.111.222.1/30');
       expect(event.snapshot.tunSnapshot?.ingressTraces[0].detail).assertEqual('ready');
+      expect(`${JSON.stringify(snapshot)}${JSON.stringify(event)}`.includes('"fd"')).assertFalse();
+      expect(`${JSON.stringify(snapshot)}${JSON.stringify(event)}`.includes('"vpnId"')).assertFalse();
+      expect(event.snapshot.activeHandle?.sessionId).assertEqual('session-1');
     });
 
-    it('rejectsBlankIdsAndUnknownFailureCodes', 0, () => {
+    it('rejectsBlankIdsAndPublicFailureCodesOutsideTheStableContract', 0, () => {
       expectThrowsMessage(() => {
         createVpnStartRequest(' ', 'version-1', 'session-1');
       }, 'must not be blank');
@@ -132,6 +139,9 @@ export default function vpnModelsTestsuite() {
       }, 'must not be blank');
       expectThrowsMessage(() => {
         createVpnFailure('UNLISTED_CODE', 'bad');
+      }, 'allowlisted');
+      expectThrowsMessage(() => {
+        createVpnFailure('NETWORK_LOST', 'bad');
       }, 'allowlisted');
     });
 
@@ -220,6 +230,38 @@ export default function vpnModelsTestsuite() {
       expectThrowsMessage(() => {
         createTunStartOptions(buildExactCaptureConfig(), ['9.9.9.9']);
       }, 'DNS');
+    });
+
+    it('createsInternalTunRuntimeFailuresForRecoveryWithoutPollutingPublicVpnFailureCodes', 0, () => {
+      const failure: TunRuntimeFailure = createTunRuntimeFailure('NETWORK_LOST', 'vpnId=vpn-9 deviceId=XYZ /Users/susiwen8/Documents/token.txt token=abc');
+
+      expect(failure.code).assertEqual('NETWORK_LOST');
+      expect(failure.detail.includes('vpn-9')).assertFalse();
+      expect(failure.detail.includes('XYZ')).assertFalse();
+      expect(failure.detail.includes('/Users/susiwen8/Documents')).assertFalse();
+      expect(failure.detail.includes('abc')).assertFalse();
+    });
+
+    it('redactsSensitiveFailureAndIngressTraceDetailsUsingSharedSecretRedactorPlusVpnIdScrubbing', 0, () => {
+      const rawDetail: string = 'vpnId=vpn-77 deviceId=dev-88 serial=ABC123 path=/Users/susiwen8/Documents/token.txt token=abc https://user:pw@example.com/profile';
+      const failure = createVpnFailure('VPN_STOP_FAILED', rawDetail);
+      const trace = createVpnIngressTrace({
+        sessionId: 'session-9',
+        stage: 'TUN_ERROR',
+        detail: rawDetail,
+        atMs: 99
+      });
+      const baselineRedacted: string = redactSensitiveText(rawDetail);
+
+      expect(failure.detail === rawDetail).assertFalse();
+      expect(trace.detail === rawDetail).assertFalse();
+      expect(failure.detail.includes('/Users/susiwen8/Documents')).assertFalse();
+      expect(failure.detail.includes('https://user:pw@example.com/profile')).assertFalse();
+      expect(failure.detail.includes('token=abc')).assertFalse();
+      expect(failure.detail.includes('vpn-77')).assertFalse();
+      expect(failure.detail.includes('dev-88')).assertFalse();
+      expect(trace.detail).assertEqual(failure.detail);
+      expect(baselineRedacted === rawDetail).assertFalse();
     });
   });
 }

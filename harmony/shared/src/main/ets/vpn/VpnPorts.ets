@@ -1,17 +1,18 @@
 import type {
   NetworkStatus,
   TunHandle,
+  TunRuntimeFailure,
+  TunRuntimeFailureCode,
   TunRuntimeSnapshot,
   TunStartOptions,
   VpnFailure,
-  VpnFailureCode,
   VpnCaptureConfig,
   VpnControllerStartResult,
   VpnControllerStopResult,
   VpnRuntimeEvent,
   VpnRuntimeSnapshot
 } from './VpnModels';
-import { createVpnFailure } from './VpnModels';
+import { createTunRuntimeFailure, createVpnFailure } from './VpnModels';
 
 export type VpnPlatformErrorCode =
   | 'CONSENT_DENIED'
@@ -40,10 +41,10 @@ export class ContinuousNotificationPortError extends Error {
 }
 
 export class TunRuntimePortError extends Error {
-  failure: VpnFailure;
+  failure: TunRuntimeFailure;
 
-  constructor(code: VpnFailureCode, detail: string) {
-    const failure: VpnFailure = createVpnFailure(code, detail);
+  constructor(code: TunRuntimeFailureCode, detail: string) {
+    const failure: TunRuntimeFailure = createTunRuntimeFailure(code, detail);
     super(failure.detail);
     this.failure = failure;
   }
@@ -71,6 +72,8 @@ export interface TunRuntimeEvent {
 export interface TunRuntimePort {
   start(handle: TunHandle, options: TunStartOptions): Promise<TunRuntimeSnapshot>;
   stop(): Promise<void>;
+  closeStaleOutboundConnections(sessionId: string): Promise<void>;
+  recover(sessionId: string): Promise<TunRuntimeSnapshot>;
   snapshot(): TunRuntimeSnapshot;
   subscribe(listener: (event: TunRuntimeEvent) => void): number;
   unsubscribe(subscriptionId: number): void;
