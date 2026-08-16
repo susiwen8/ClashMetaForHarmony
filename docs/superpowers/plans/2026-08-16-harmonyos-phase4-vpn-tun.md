@@ -579,7 +579,7 @@
 
 - [ ] **Step 4: Write failing manifest/wording contract tests**
 
-  Require only `ohos.permission.INTERNET` and `ohos.permission.KEEP_BACKGROUND_RUNNING`; exactly one non-exported extension ability with `name: "CmfaVpnExtensionAbility"`, `type: "vpn"`, `srcEntry: "./ets/vpn/CmfaVpnExtensionAbility.ets"`, and `backgroundModes: ["dataTransfer"]`; no forbidden permission. Require exact Local proxy/VPN global capture resources and reject misleading system-proxy/enterprise wording from production resources.
+  Require only `ohos.permission.INTERNET` and `ohos.permission.KEEP_BACKGROUND_RUNNING`; exactly one non-exported extension ability with `name: "CmfaVpnExtensionAbility"`, `type: "vpn"`, `srcEntry: "./ets/vpn/CmfaVpnExtensionAbility.ets"`, and no extra source-manifest fields beyond the current HarmonyOS 6.x SDK schema. Also require `harmony/hvigorw` to exec the integrated wrapper directly without reading, backing up, or rewriting `module.json5`. Require exact Local proxy/VPN global capture resources and reject misleading system-proxy/enterprise wording from production resources.
 
 - [ ] **Step 5: Run structure tests and confirm RED**
 
@@ -593,7 +593,7 @@
 
 - [ ] **Step 6: Implement the manifest and resources**
 
-  Add the ordinary background permission and VPN extension declaration, update only resource-backed user text, and keep the ability non-exported. Do not add MANAGE_VPN or any settings/enterprise permission.
+  Add the ordinary background permission and the legal four-field VPN extension declaration (`name`, `srcEntry`, `type`, `exported`), update only resource-backed user text, and keep the ability non-exported. Do not add MANAGE_VPN or any settings/enterprise permission, and do not introduce a build-time wrapper sanitizer or any manifest rewrite workaround.
 
 - [ ] **Step 7: Run module, HAP, and structure regressions**
 
@@ -609,7 +609,7 @@
   git diff --check
   ```
 
-  Expected: every test/build exits `0`; the unsigned/development build contains the extension declaration and no forbidden permission.
+  Expected: every test/build exits `0`; the unsigned/development build contains the same four-field VPN extension declaration as the source manifest, no forbidden permission, and no `backgroundModes`. The wrapper must not rewrite the manifest before packaging.
 
 - [ ] **Step 8: Commit the production VPN experience**
 

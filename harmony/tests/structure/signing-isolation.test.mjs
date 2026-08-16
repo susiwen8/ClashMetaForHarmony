@@ -64,7 +64,12 @@ function listTrackedAndCandidateHarmonyFiles() {
     .split('\u0000')
     .filter(Boolean)
     .map((filePath) => path.posix.relative('harmony', filePath))
+    .filter((relativePath) => !isGeneratedModuleTestArtifact(relativePath))
     .sort();
+}
+
+function isGeneratedModuleTestArtifact(relativePath) {
+  return /^(?:core|entry|platform|shared)\/\.test(?:\/|$)/u.test(relativePath);
 }
 
 function isBinaryPath(relativePath) {
@@ -168,6 +173,14 @@ test('signing isolation matchers reject bare extensions, signing credential fiel
 test('signing isolation path resolution decodes encoded spaces from import.meta URLs', () => {
   const spacedRoot = resolvePathFromImportMetaUrl('file:///tmp/Space%20Folder/harmony/tests/structure/signing-isolation.test.mjs');
   assert.equal(spacedRoot, '/tmp/Space Folder/harmony');
+});
+
+test('signing isolation excludes generated module .test artifacts without excluding source test suites', () => {
+  assert.equal(isGeneratedModuleTestArtifact('core/.test/default/cache/default/default@UnitTestArkTS/esmodule/.ts_checker_cache'), true);
+  assert.equal(isGeneratedModuleTestArtifact('entry/.test/default/outputs/test/reports/index.html'), true);
+  assert.equal(isGeneratedModuleTestArtifact('shared/src/test/VpnModels.test.ets'), false);
+  assert.equal(isGeneratedModuleTestArtifact('core/src/test/List.test.ets'), false);
+  assert.equal(isGeneratedModuleTestArtifact('platform/.testing/generated.txt'), false);
 });
 
 test('tracked and candidate harmony files stay free of embedded signing material and machine-specific paths', async () => {

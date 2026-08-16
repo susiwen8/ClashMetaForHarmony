@@ -24,13 +24,32 @@ export interface ProfileSummaryState {
   updatedAt: string;
 }
 
+export interface LocalProxyState {
+  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY';
+  httpAddress?: string;
+  socksAddress?: string;
+  error?: SafeErrorState;
+}
+
+export interface VpnGlobalCaptureState {
+  status: 'STOPPED' | 'AWAITING_CONSENT' | 'STARTING' | 'RUNNING' | 'RECOVERING' | 'STOPPING' | 'ERROR';
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY';
+  ipv4Enabled: boolean;
+  ipv6Enabled: boolean;
+  dnsServers: string[];
+  mtu?: number;
+  notificationActive: boolean;
+  recoveryAttempt: number;
+  scheduledRetryDelayMs?: number;
+  error?: SafeErrorState;
+}
+
 export interface HomeViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR';
   activeProfile?: ProfileSummaryState;
-  runtime: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
-  primaryAction: 'DISABLED' | 'START' | 'STOP' | 'BUSY';
-  httpAddress?: string;
-  socksAddress?: string;
+  localProxy: LocalProxyState;
+  vpnGlobalCapture: VpnGlobalCaptureState;
   error?: SafeErrorState;
 }
 
@@ -97,10 +116,29 @@ class ProfileSummaryStateValue implements ProfileSummaryState {
 class HomeViewStateValue implements HomeViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   activeProfile?: ProfileSummaryState;
-  runtime: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR' = 'STOPPED';
-  primaryAction: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = 'DISABLED';
+  localProxy: LocalProxyState = new LocalProxyStateValue();
+  vpnGlobalCapture: VpnGlobalCaptureState = new VpnGlobalCaptureStateValue();
+  error?: SafeErrorState;
+}
+
+class LocalProxyStateValue implements LocalProxyState {
+  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR' = 'STOPPED';
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = 'DISABLED';
   httpAddress?: string;
   socksAddress?: string;
+  error?: SafeErrorState;
+}
+
+class VpnGlobalCaptureStateValue implements VpnGlobalCaptureState {
+  status: 'STOPPED' | 'AWAITING_CONSENT' | 'STARTING' | 'RUNNING' | 'RECOVERING' | 'STOPPING' | 'ERROR' = 'STOPPED';
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = 'DISABLED';
+  ipv4Enabled: boolean = false;
+  ipv6Enabled: boolean = false;
+  dnsServers: string[] = [];
+  mtu?: number;
+  notificationActive: boolean = false;
+  recoveryAttempt: number = 0;
+  scheduledRetryDelayMs?: number;
   error?: SafeErrorState;
 }
 
@@ -230,19 +268,15 @@ export function cloneProfileRowStates(rows: ProfileRowState[]): ProfileRowState[
 export function createHomeViewState(
   initialization: 'LOADING' | 'READY' | 'ERROR',
   activeProfile: ProfileSummaryState | undefined,
-  runtime: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR',
-  primaryAction: 'DISABLED' | 'START' | 'STOP' | 'BUSY',
-  httpAddress: string | undefined,
-  socksAddress: string | undefined,
+  localProxy: LocalProxyState,
+  vpnGlobalCapture: VpnGlobalCaptureState,
   error: SafeErrorState | undefined
 ): HomeViewState {
   const state: HomeViewStateValue = new HomeViewStateValue();
   state.initialization = initialization;
   state.activeProfile = cloneProfileSummaryState(activeProfile);
-  state.runtime = runtime;
-  state.primaryAction = primaryAction;
-  state.httpAddress = httpAddress;
-  state.socksAddress = socksAddress;
+  state.localProxy = cloneLocalProxyState(localProxy);
+  state.vpnGlobalCapture = cloneVpnGlobalCaptureState(vpnGlobalCapture);
   state.error = cloneSafeErrorState(error);
   return state;
 }
@@ -251,10 +285,75 @@ export function cloneHomeViewState(state: HomeViewState): HomeViewState {
   return createHomeViewState(
     state.initialization,
     state.activeProfile,
-    state.runtime,
-    state.primaryAction,
+    state.localProxy,
+    state.vpnGlobalCapture,
+    state.error
+  );
+}
+
+export function createLocalProxyState(
+  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR',
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY',
+  httpAddress: string | undefined,
+  socksAddress: string | undefined,
+  error: SafeErrorState | undefined
+): LocalProxyState {
+  const state: LocalProxyStateValue = new LocalProxyStateValue();
+  state.status = status;
+  state.action = action;
+  state.httpAddress = httpAddress;
+  state.socksAddress = socksAddress;
+  state.error = cloneSafeErrorState(error);
+  return state;
+}
+
+export function cloneLocalProxyState(state: LocalProxyState): LocalProxyState {
+  return createLocalProxyState(
+    state.status,
+    state.action,
     state.httpAddress,
     state.socksAddress,
+    state.error
+  );
+}
+
+export function createVpnGlobalCaptureState(
+  status: 'STOPPED' | 'AWAITING_CONSENT' | 'STARTING' | 'RUNNING' | 'RECOVERING' | 'STOPPING' | 'ERROR',
+  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY',
+  ipv4Enabled: boolean,
+  ipv6Enabled: boolean,
+  dnsServers: string[],
+  mtu: number | undefined,
+  notificationActive: boolean,
+  recoveryAttempt: number,
+  scheduledRetryDelayMs: number | undefined,
+  error: SafeErrorState | undefined
+): VpnGlobalCaptureState {
+  const state: VpnGlobalCaptureStateValue = new VpnGlobalCaptureStateValue();
+  state.status = status;
+  state.action = action;
+  state.ipv4Enabled = ipv4Enabled;
+  state.ipv6Enabled = ipv6Enabled;
+  state.dnsServers = dnsServers.slice();
+  state.mtu = mtu;
+  state.notificationActive = notificationActive;
+  state.recoveryAttempt = recoveryAttempt;
+  state.scheduledRetryDelayMs = scheduledRetryDelayMs;
+  state.error = cloneSafeErrorState(error);
+  return state;
+}
+
+export function cloneVpnGlobalCaptureState(state: VpnGlobalCaptureState): VpnGlobalCaptureState {
+  return createVpnGlobalCaptureState(
+    state.status,
+    state.action,
+    state.ipv4Enabled,
+    state.ipv6Enabled,
+    state.dnsServers,
+    state.mtu,
+    state.notificationActive,
+    state.recoveryAttempt,
+    state.scheduledRetryDelayMs,
     state.error
   );
 }

@@ -1,8 +1,13 @@
 import common from '@ohos.app.ability.common';
 import { describe, expect, it } from '@ohos/hypium';
+import type { Want } from '@kit.AbilityKit';
 import type { PlatformGraph } from '@cmfa/platform';
 import {
   createAppError,
+  createProfile,
+  createProfileRevision,
+  createVpnRuntimeSnapshot,
+  createVpnStartRequest,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
@@ -28,10 +33,21 @@ import {
   type RemoteProfileAcquisition,
   type RuntimeSnapshot,
   type StagedSource,
-  type SubscriptionSecretStore
+  type SubscriptionSecretStore,
+  type VpnControllerPort,
+  type VpnControllerStartResult,
+  type VpnControllerStopResult,
+  type VpnRuntimeEvent,
+  type VpnRuntimeSnapshot
 } from '@cmfa/shared';
 import type { ApplicationComposition, ApplicationCompositionState } from '../main/ets/bootstrap/ApplicationComposition';
 import { createApplicationComposition, type ApplicationCompositionDependencies } from '../main/ets/bootstrap/CoreComposition';
+import { HarmonyVpnController, type VpnExtensionAbilityApi } from '../main/ets/vpn/HarmonyVpnController';
+import { VpnSessionRegistry } from '../main/ets/vpn/VpnSessionRegistry';
+import {
+  resolveVpnExtensionComposition,
+  resetVpnExtensionCompositionForTesting
+} from '../main/ets/vpn/VpnExtensionComposition';
 
 class DeferredValue<T> {
   readonly promise: Promise<T>;
@@ -93,6 +109,37 @@ class InertRepository implements ProfileRepository {
 
   async getActiveId(): Promise<string | undefined> {
     return undefined;
+  }
+
+  async setActiveId(_id: string | undefined): Promise<void> {
+  }
+}
+
+class SeededRepository implements ProfileRepository {
+  private readonly profile: Profile;
+  private readonly activeId: string;
+
+  constructor(profile: Profile) {
+    this.profile = profile;
+    this.activeId = profile.id;
+  }
+
+  async list(): Promise<Profile[]> {
+    return [this.profile];
+  }
+
+  async get(id: string): Promise<Profile | undefined> {
+    return id === this.profile.id ? this.profile : undefined;
+  }
+
+  async save(_profile: Profile): Promise<void> {
+  }
+
+  async deleteAndClearActive(_id: string): Promise<void> {
+  }
+
+  async getActiveId(): Promise<string | undefined> {
+    return this.activeId;
   }
 
   async setActiveId(_id: string | undefined): Promise<void> {
@@ -204,6 +251,129 @@ class RecordingApplication extends ProfileApplication {
   }
 }
 
+class VpnStartCallRecord {
+  profileId: string = '';
+  versionId: string = '';
+  sessionId: string = '';
+}
+
+class RecordingVpnController implements VpnControllerPort {
+  readonly subscribeIds: number[] = [];
+  readonly startCalls: VpnStartCallRecord[] = [];
+  private nextSubscriptionId: number = 1;
+
+  async start(profileId: string, versionId: string, sessionId: string): Promise<VpnControllerStartResult> {
+    const callRecord: VpnStartCallRecord = new VpnStartCallRecord();
+    callRecord.profileId = profileId;
+    callRecord.versionId = versionId;
+    callRecord.sessionId = sessionId;
+    this.startCalls.push(callRecord);
+    return {
+      kind: 'STARTED',
+      snapshot: this.snapshot()
+    };
+  }
+
+  async stop(_sessionId?: string): Promise<VpnControllerStopResult> {
+    return {
+      kind: 'STOPPED',
+      snapshot: this.snapshot()
+    };
+  }
+
+  snapshot(): VpnRuntimeSnapshot {
+    return createVpnRuntimeSnapshot({
+      state: 'STOPPED',
+      activeRequest: null,
+      activeHandle: null,
+      captureConfig: null,
+      tunSnapshot: null,
+      notificationActive: false,
+      recoveryAttempt: 0,
+      scheduledRetryDelayMs: null,
+      lastFailure: null
+    });
+  }
+
+  subscribe(_listener: (event: VpnRuntimeEvent) => void): number {
+    const subscriptionId: number = this.nextSubscriptionId;
+    this.nextSubscriptionId += 1;
+    this.subscribeIds.push(subscriptionId);
+    return subscriptionId;
+  }
+}
+
+class InertVpnExtensionAbilityApi implements VpnExtensionAbilityApi {
+  async startVpnExtensionAbility(): Promise<void> {
+  }
+
+  async stopVpnExtensionAbility(): Promise<void> {
+  }
+}
+
+class EmptyResourceManagerRecord {
+}
+
+class EmptyApplicationInfoRecord {
+}
+
+class EmptyConfigurationRecord {
+}
+
+class FakeHapModuleInfoRecord {
+  readonly name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+class FakeAbilityInfoRecord {
+  readonly bundleName: string;
+  readonly name: string;
+
+  constructor(bundleName: string, name: string) {
+    this.bundleName = bundleName;
+    this.name = name;
+  }
+}
+
+class FakeVpnExtensionContextRecord {
+  readonly stageMode: boolean = true;
+  readonly resourceManager: EmptyResourceManagerRecord = new EmptyResourceManagerRecord();
+  readonly applicationInfo: EmptyApplicationInfoRecord = new EmptyApplicationInfoRecord();
+  readonly cacheDir: string;
+  readonly tempDir: string;
+  readonly filesDir: string;
+  readonly currentHapModuleInfo: FakeHapModuleInfoRecord;
+  readonly config: EmptyConfigurationRecord = new EmptyConfigurationRecord();
+  readonly extensionAbilityInfo: FakeAbilityInfoRecord;
+
+  constructor(tag: string) {
+    this.cacheDir = `/sandbox/${tag}/cache`;
+    this.tempDir = `/sandbox/${tag}/tmp`;
+    this.filesDir = `/sandbox/${tag}/files`;
+    this.currentHapModuleInfo = new FakeHapModuleInfoRecord(`${tag}-module`);
+    this.extensionAbilityInfo = new FakeAbilityInfoRecord('com.github.kr328.clash.harmony', tag);
+  }
+}
+
+class NullParametersWantRecord {
+  bundleName?: string = 'com.github.kr328.clash.harmony';
+  abilityName?: string = 'CmfaVpnExtensionAbility';
+  parameters?: Record<string, Object> | null = null;
+}
+
+class TimeoutPromiseRecord<T> {
+  readonly promise: Promise<T>;
+
+  constructor(value: T, delayMs: number) {
+    this.promise = new Promise<T>((resolve) => {
+      setTimeout(() => resolve(value), delayMs);
+    });
+  }
+}
+
 class RuntimeAwareCoreService implements CoreService {
   readonly subscribeIds: number[] = [];
   readonly unsubscribeIds: number[] = [];
@@ -269,6 +439,23 @@ function buildRuntimeSnapshot(state: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPP
   };
 }
 
+function createEligibleProfile(profileId: string): Profile {
+  return createProfile({
+    id: profileId,
+    name: 'Profile',
+    sourceKind: 'REMOTE_URL',
+    sourceDisplay: 'https://mirror.example.com/config.yaml',
+    sourceSecretRef: 'secret-ref',
+    currentRevision: createProfileRevision(`profiles/${profileId}.yaml`, 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa', 128, '2026-08-11T12:00:00.000Z'),
+    failedCandidate: null,
+    availability: 'VALID',
+    lastError: null,
+    createdAt: '2026-08-11T12:00:00.000Z',
+    updatedAt: '2026-08-11T12:00:00.000Z',
+    lastSuccessfulUpdateAt: '2026-08-11T12:00:00.000Z'
+  });
+}
+
 function createContext(): common.UIAbilityContext {
   return {
     filesDir: '/sandbox/app/files'
@@ -285,7 +472,8 @@ function collectStatuses(history: ApplicationCompositionState[]): string {
 
 function createProfileApplicationDependencies(
   coreService: CoreService,
-  graph: PlatformGraph
+  graph: PlatformGraph,
+  vpnController?: VpnControllerPort
 ): ProfileApplicationDependencies {
   const runtimeCoordinator = new LocalRuntimeCoordinator({
     repository: graph.repository,
@@ -353,12 +541,18 @@ function createProfileApplicationDependencies(
     manageProfileUseCases,
     runtimeCoordinator,
     commitService,
-    repository: graph.repository
+    repository: graph.repository,
+    vpnController,
+    idGenerator: graph.idGenerator
   };
 }
 
-function createRealProfileApplication(coreService: CoreService, graph: PlatformGraph): ProfileApplication {
-  return new ProfileApplication(createProfileApplicationDependencies(coreService, graph));
+function createRealProfileApplication(
+  coreService: CoreService,
+  graph: PlatformGraph,
+  vpnController?: VpnControllerPort
+): ProfileApplication {
+  return new ProfileApplication(createProfileApplicationDependencies(coreService, graph, vpnController));
 }
 
 function createComposition(
@@ -372,10 +566,12 @@ export default function applicationCompositionTestsuite() {
     it('concurrentInitializeTransitionsLoadingToReadyOnce', 0, async () => {
       const graph = new RecordingPlatformGraph();
       const application = new RecordingApplication();
+      const vpnRegistry = new VpnSessionRegistry();
       const states: ApplicationCompositionState[] = [];
       const graphDeferred = new DeferredValue<PlatformGraph>();
       let createPlatformGraphCallCount: number = 0;
       const composition = createComposition({
+        vpnRegistry,
         createPlatformGraph: async (_context: common.UIAbilityContext): Promise<PlatformGraph> => {
           createPlatformGraphCallCount += 1;
           return await graphDeferred.promise;
@@ -400,8 +596,171 @@ export default function applicationCompositionTestsuite() {
 
       expect(application.initializeCallCount).assertEqual(1);
       expect(collectStatuses(states)).assertEqual('LOADING>READY');
-      expect(composition.state().status).assertEqual('READY');
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status === 'READY') {
+        expect(compositionState.vpnRegistry === vpnRegistry).assertTrue();
+      }
       await composition.close();
+    });
+
+    it('passesTheExactInjectedRegistryThroughReadyStateControllerFactoryAndCustomApplicationFactory', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      const vpnRegistry = new VpnSessionRegistry();
+      const application = new RecordingApplication();
+      let applicationFactoryRegistry: VpnSessionRegistry | undefined = undefined;
+      const composition = createComposition({
+        vpnRegistry,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        },
+        createProfileApplication: (_graph: PlatformGraph, _coreService: CoreService, registry: VpnSessionRegistry): ProfileApplication => {
+          applicationFactoryRegistry = registry;
+          return application;
+        }
+      });
+
+      await composition.initialize();
+
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status === 'READY') {
+        expect(compositionState.vpnRegistry === vpnRegistry).assertTrue();
+      }
+      expect(applicationFactoryRegistry === vpnRegistry).assertTrue();
+      await composition.close();
+    });
+
+    it('customApplicationFactoryCanReuseTheExactRegistryForTheControllerAndReadyState', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      const coreService = new RuntimeAwareCoreService();
+      const vpnRegistry = new VpnSessionRegistry();
+      let controllerRegistry: VpnSessionRegistry | undefined = undefined;
+      const composition = createComposition({
+        coreService,
+        vpnRegistry,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        },
+        createProfileApplication: (platformGraph: PlatformGraph, injectedCoreService: CoreService, registry: VpnSessionRegistry): ProfileApplication => {
+          controllerRegistry = registry;
+          const controller = new HarmonyVpnController(registry, new InertVpnExtensionAbilityApi());
+          return createRealProfileApplication(injectedCoreService, platformGraph, controller);
+        }
+      });
+
+      await composition.initialize();
+
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status === 'READY') {
+        expect(compositionState.vpnRegistry === vpnRegistry).assertTrue();
+      }
+      expect(controllerRegistry === vpnRegistry).assertTrue();
+      await composition.close();
+    });
+
+    it('defaultApplicationWiringUsesTheInjectedRegistryAcrossControllerFactoryAndReadyState', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      const coreService = new RuntimeAwareCoreService();
+      const vpnRegistry = new VpnSessionRegistry();
+      let controllerFactoryRegistry: VpnSessionRegistry | undefined = undefined;
+      const composition = createComposition({
+        coreService,
+        vpnRegistry,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        },
+        createVpnController: (registry: VpnSessionRegistry): VpnControllerPort => {
+          controllerFactoryRegistry = registry;
+          return new HarmonyVpnController(registry, new InertVpnExtensionAbilityApi());
+        }
+      });
+
+      await composition.initialize();
+
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status === 'READY') {
+        expect(compositionState.vpnRegistry === vpnRegistry).assertTrue();
+      }
+      expect(controllerFactoryRegistry === vpnRegistry).assertTrue();
+      await composition.close();
+    });
+
+    it('extensionFactoryUsesTheExactInjectedRegistryForUnexpectedFailureCleanup', 0, async () => {
+      resetVpnExtensionCompositionForTesting();
+      const graph = new RecordingPlatformGraph();
+      const coreService = new RuntimeAwareCoreService();
+      const vpnRegistry = new VpnSessionRegistry();
+      const pendingRequest = createVpnStartRequest('profile-1', 'version-1', 'session-1');
+      vpnRegistry.beginPending(pendingRequest);
+      const composition = createComposition({
+        coreService,
+        vpnRegistry,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return graph;
+        }
+      });
+
+      await composition.initialize();
+
+      const runner = resolveVpnExtensionComposition(new FakeVpnExtensionContextRecord('app-composition') as common.VpnExtensionContext);
+      await runner.start(new NullParametersWantRecord() as Want);
+
+      expect(vpnRegistry.snapshot().state).assertEqual('STOPPED');
+      expect(vpnRegistry.snapshot().activeRequest).assertNull();
+      await composition.close();
+      resetVpnExtensionCompositionForTesting();
+    });
+
+    it('nonSharedStopResolvesWithoutTouchingTheSharedRegistry', 0, async () => {
+      const sharedGraph = new RecordingPlatformGraph();
+      const sharedCoreService = new RuntimeAwareCoreService();
+      const sharedComposition = createComposition({
+        coreService: sharedCoreService,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return sharedGraph;
+        }
+      });
+      await sharedComposition.initialize();
+      const sharedState = sharedComposition.state();
+      expect(sharedState.status).assertEqual('READY');
+      if (sharedState.status !== 'READY') {
+        return;
+      }
+      const sharedRegistry = sharedState.vpnRegistry;
+      sharedRegistry.beginPending(createVpnStartRequest('shared-profile', 'shared-version', 'shared-session'));
+
+      const customGraph = new RecordingPlatformGraph(new SeededRepository(createEligibleProfile('custom-profile')));
+      const customCoreService = new RuntimeAwareCoreService();
+      const customRegistry = new VpnSessionRegistry();
+      const customComposition = createComposition({
+        coreService: customCoreService,
+        vpnRegistry: customRegistry,
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return customGraph;
+        }
+      });
+      await customComposition.initialize();
+      const customState = customComposition.state();
+      expect(customState.status).assertEqual('READY');
+      if (customState.status !== 'READY') {
+        return;
+      }
+      const startResult = await customState.application.startVpnGlobalCapture();
+      expect(startResult.kind).assertEqual('STARTED');
+
+      const stopOutcome = await Promise.race([
+        customState.application.stopVpnGlobalCapture().then(() => 'resolved'),
+        new TimeoutPromiseRecord('timeout', 20).promise
+      ]);
+
+      expect(stopOutcome).assertEqual('resolved');
+      expect(customRegistry.snapshot().state).assertEqual('STOPPED');
+      expect(sharedRegistry.snapshot().state).assertEqual('AWAITING_CONSENT');
+      await customComposition.close();
+      await sharedComposition.close();
     });
 
     it('failedInitializePublishesPersistenceErrorClosesTheGraphAndAllowsExplicitRetry', 0, async () => {

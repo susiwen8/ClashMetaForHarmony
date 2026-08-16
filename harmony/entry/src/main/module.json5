@@ -13,6 +13,9 @@
     "requestPermissions": [
       {
         "name": "ohos.permission.INTERNET"
+      },
+      {
+        "name": "ohos.permission.KEEP_BACKGROUND_RUNNING"
       }
     ],
     "abilities": [
@@ -35,6 +38,14 @@
             ]
           }
         ]
+      }
+    ],
+    "extensionAbilities": [
+      {
+        "name": "CmfaVpnExtensionAbility",
+        "srcEntry": "./ets/vpn/CmfaVpnExtensionAbility.ets",
+        "type": "vpn",
+        "exported": false
       }
     ]
   }

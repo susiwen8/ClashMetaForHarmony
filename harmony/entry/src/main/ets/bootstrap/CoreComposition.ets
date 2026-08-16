@@ -1,5 +1,6 @@
 import common from '@ohos.app.ability.common';
 import type { Want } from '@kit.AbilityKit';
+import { vpnExtension } from '@kit.NetworkKit';
 import { CORE_BRIDGE_VERSION, createCoreService } from '@cmfa/core';
 import { PlatformFactory, type PlatformGraph } from '@cmfa/platform';
 import {
@@ -12,9 +13,13 @@ import {
   RefreshProfileUseCase,
   SerialCommandQueue,
   type AppError,
-  type CoreService
+  type CoreService,
+  type VpnControllerPort
 } from '@cmfa/shared';
 import type { ApplicationComposition, ApplicationCompositionState } from './ApplicationComposition';
+import { HarmonyVpnController, type VpnExtensionAbilityApi } from '../vpn/HarmonyVpnController';
+import { VpnExtensionComposition, installVpnExtensionCompositionFactoryForTesting } from '../vpn/VpnExtensionComposition';
+import { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 export interface Phase1LaunchContext {
   selfTest: boolean;
@@ -108,11 +113,20 @@ const phase1DefaultContext: Phase1LaunchContext = {
 const sharedCoreService: CoreService = createCoreService();
 let phase1LaunchListener: Phase1LaunchListener | undefined = undefined;
 let phase1LaunchListenerId: number = 0;
+let sharedVpnRegistry: VpnSessionRegistry | undefined = undefined;
+let sharedVpnController: HarmonyVpnController | undefined = undefined;
+let vpnExtensionRegistryResolver: (() => VpnSessionRegistry) | undefined = undefined;
 
 export interface ApplicationCompositionDependencies {
   coreService?: CoreService;
   createPlatformGraph?: (context: common.UIAbilityContext) => Promise<PlatformGraph>;
-  createProfileApplication?: (graph: PlatformGraph, coreService: CoreService) => ProfileApplication;
+  createProfileApplication?: (
+    graph: PlatformGraph,
+    coreService: CoreService,
+    vpnRegistry: VpnSessionRegistry
+  ) => ProfileApplication;
+  vpnRegistry?: VpnSessionRegistry;
+  createVpnController?: (registry: VpnSessionRegistry) => VpnControllerPort;
 }
 
 export function getCoreService(): CoreService {
@@ -186,6 +200,29 @@ export function createApplicationComposition(
   return new ApplicationCompositionRecord(context, dependencies ?? {});
 }
 
+class SystemVpnExtensionAbilityApi implements VpnExtensionAbilityApi {
+  private lastWant?: Want;
+  private onStopped?: () => void;
+
+  async startVpnExtensionAbility(want: Want): Promise<void> {
+    this.lastWant = want;
+    await vpnExtension.startVpnExtensionAbility(want);
+  }
+
+  async stopVpnExtensionAbility(): Promise<void> {
+    const stopWant: Want | undefined = this.lastWant;
+    if (stopWant === undefined) {
+      return;
+    }
+    await vpnExtension.stopVpnExtensionAbility(stopWant);
+    this.onStopped?.();
+  }
+
+  bindStopHandler(handler: () => void): void {
+    this.onStopped = handler;
+  }
+}
+
 class ApplicationCompositionRecord implements ApplicationComposition {
   private readonly context: common.UIAbilityContext;
   private readonly dependencies: ApplicationCompositionDependencies;
@@ -197,6 +234,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private closePromise?: Promise<void>;
   private graph?: PlatformGraph;
   private application?: ProfileApplication;
+  private vpnRegistry?: VpnSessionRegistry;
 
   constructor(context: common.UIAbilityContext, dependencies: ApplicationCompositionDependencies) {
     this.context = context;
@@ -246,10 +284,14 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     try {
       const graph: PlatformGraph = await this.createPlatformGraph(this.context);
       this.graph = graph;
-      const application: ProfileApplication = this.createProfileApplication(graph, this.coreService);
+      const vpnRegistry: VpnSessionRegistry = this.resolveVpnRegistry();
+      this.vpnRegistry = vpnRegistry;
+      setVpnExtensionRegistryResolver(() => vpnRegistry);
+      ensureVpnExtensionFactoryInstalled();
+      const application: ProfileApplication = this.createProfileApplication(graph, this.coreService, vpnRegistry);
       this.application = application;
       await application.initialize();
-      const readyState: ApplicationCompositionState = createReadyState(application);
+      const readyState: ApplicationCompositionState = createReadyState(application, vpnRegistry);
       this.publish(readyState);
     } catch (_error) {
       await this.closeResources();
@@ -306,9 +348,13 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     return new PlatformFactory(context).create();
   }
 
-  private createProfileApplication(graph: PlatformGraph, coreService: CoreService): ProfileApplication {
+  private createProfileApplication(
+    graph: PlatformGraph,
+    coreService: CoreService,
+    vpnRegistry: VpnSessionRegistry
+  ): ProfileApplication {
     if (this.dependencies.createProfileApplication !== undefined) {
-      return this.dependencies.createProfileApplication(graph, coreService);
+      return this.dependencies.createProfileApplication(graph, coreService, vpnRegistry);
     }
     const runtimeCoordinator: LocalRuntimeCoordinator = new LocalRuntimeCoordinator({
       repository: graph.repository,
@@ -357,8 +403,24 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       manageProfileUseCases,
       runtimeCoordinator,
       commitService,
-      repository: graph.repository
+      repository: graph.repository,
+      vpnController: this.createVpnController(vpnRegistry),
+      idGenerator: graph.idGenerator
     });
+  }
+
+  private resolveVpnRegistry(): VpnSessionRegistry {
+    return this.dependencies.vpnRegistry ?? resolveSharedVpnRegistry();
+  }
+
+  private createVpnController(registry: VpnSessionRegistry): VpnControllerPort {
+    if (this.dependencies.createVpnController !== undefined) {
+      return this.dependencies.createVpnController(registry);
+    }
+    if (registry === resolveSharedVpnRegistry()) {
+      return resolveSharedVpnController();
+    }
+    return createBoundHarmonyVpnController(registry);
   }
 
   private publish(state: ApplicationCompositionState): void {
@@ -421,10 +483,11 @@ function createLoadingState(): ApplicationCompositionState {
   };
 }
 
-function createReadyState(application: ProfileApplication): ApplicationCompositionState {
+function createReadyState(application: ProfileApplication, vpnRegistry: VpnSessionRegistry): ApplicationCompositionState {
   return {
     status: 'READY',
-    application
+    application,
+    vpnRegistry
   };
 }
 
@@ -433,4 +496,49 @@ function createErrorState(error: AppError): ApplicationCompositionState {
     status: 'ERROR',
     error
   };
+}
+
+function ensureVpnExtensionFactoryInstalled(): void {
+  installVpnExtensionCompositionFactoryForTesting((context: common.VpnExtensionContext | undefined) => {
+    return new VpnExtensionComposition(context, {
+      registry: resolveInstalledVpnExtensionRegistry()
+    });
+  });
+}
+
+function setVpnExtensionRegistryResolver(resolver: () => VpnSessionRegistry): void {
+  vpnExtensionRegistryResolver = resolver;
+}
+
+function resolveSharedVpnRegistry(): VpnSessionRegistry {
+  if (sharedVpnRegistry !== undefined) {
+    return sharedVpnRegistry;
+  }
+  sharedVpnRegistry = new VpnSessionRegistry();
+  return sharedVpnRegistry;
+}
+
+function resolveInstalledVpnExtensionRegistry(): VpnSessionRegistry {
+  if (vpnExtensionRegistryResolver !== undefined) {
+    return vpnExtensionRegistryResolver();
+  }
+  return resolveSharedVpnRegistry();
+}
+
+function resolveSharedVpnController(): HarmonyVpnController {
+  if (sharedVpnController !== undefined) {
+    return sharedVpnController;
+  }
+  sharedVpnController = createBoundHarmonyVpnController(resolveSharedVpnRegistry());
+  ensureVpnExtensionFactoryInstalled();
+  return sharedVpnController;
+}
+
+function createBoundHarmonyVpnController(registry: VpnSessionRegistry): HarmonyVpnController {
+  const api = new SystemVpnExtensionAbilityApi();
+  const controller = new HarmonyVpnController(registry, api);
+  api.bindStopHandler(() => {
+    controller.handleExtensionDestroyed();
+  });
+  return controller;
 }

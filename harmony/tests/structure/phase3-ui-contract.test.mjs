@@ -56,26 +56,42 @@ const REQUIRED_STRING_KEYS = [
   'home_profile_empty_detail',
   'home_profile_manage',
   'home_profile_manage_trailing',
-  'home_runtime_title',
-  'home_runtime_status_stopped',
-  'home_runtime_status_starting',
-  'home_runtime_status_running',
-  'home_runtime_status_stopping',
-  'home_runtime_status_error',
-  'home_runtime_primary_start',
-  'home_runtime_primary_stop',
   'home_runtime_primary_busy',
-  'home_runtime_missing_profile',
-  'home_runtime_http_label',
-  'home_runtime_socks_label',
   'home_runtime_listener_placeholder',
-  'home_runtime_local_proxy',
-  'home_runtime_detail_stopped',
-  'home_runtime_detail_starting',
-  'home_runtime_detail_running',
-  'home_runtime_detail_stopping',
-  'home_runtime_detail_error',
-  'home_runtime_boundary_note',
+  'home_local_title',
+  'home_local_http_label',
+  'home_local_socks_label',
+  'home_local_status_stopped',
+  'home_local_status_starting',
+  'home_local_status_running',
+  'home_local_status_stopping',
+  'home_local_status_error',
+  'home_local_primary_start',
+  'home_local_primary_stop',
+  'home_local_boundary_note',
+  'home_vpn_title',
+  'home_vpn_status_stopped',
+  'home_vpn_status_awaiting_consent',
+  'home_vpn_status_starting',
+  'home_vpn_status_running',
+  'home_vpn_status_recovering',
+  'home_vpn_status_stopping',
+  'home_vpn_status_error',
+  'home_vpn_primary_start',
+  'home_vpn_primary_stop',
+  'home_vpn_ipv4_label',
+  'home_vpn_ipv6_label',
+  'home_vpn_dns_label',
+  'home_vpn_mtu_label',
+  'home_vpn_notification_label',
+  'home_vpn_recovery_label',
+  'home_vpn_enabled',
+  'home_vpn_disabled',
+  'home_vpn_notification_active',
+  'home_vpn_notification_inactive',
+  'home_vpn_recovery_active',
+  'home_vpn_recovery_idle',
+  'home_vpn_boundary_note',
   'home_info_title',
   'home_info_body',
   'home_info_indicator',
@@ -126,7 +142,17 @@ const REQUIRED_STRING_KEYS = [
   'error_persistence',
   'error_core_load',
   'error_runtime_start',
-  'error_runtime_stop'
+  'error_runtime_stop',
+  'error_vpn_permission_denied',
+  'error_vpn_already_active',
+  'error_vpn_system_revoked',
+  'error_vpn_background_task_failed',
+  'error_vpn_stop_failed',
+  'error_vpn_profile_unavailable',
+  'error_vpn_start_failed',
+  'error_vpn_recovering',
+  'error_vpn_requires_local_stop',
+  'error_local_blocked_by_vpn'
 ];
 
 const REQUIRED_BASE_COLOR_KEYS = [
@@ -170,7 +196,8 @@ const REQUIRED_FLOAT_KEYS = [
 
 const REQUIRED_SEMANTIC_IDS = [
   'home.profile.manage',
-  'home.runtime.primary',
+  'home.local.action',
+  'home.vpn.action',
   'profiles.add',
   'import.file',
   'import.url',
@@ -193,19 +220,22 @@ rules:
 `;
 
 const BANNED_COPY_TERMS = [
-  'VPN',
-  'TUN',
-  '全局接管',
-  '全机代理',
-  'traffic',
-  '流量',
-  'log',
-  '日志',
-  'provider',
-  '提供者',
-  'settings',
-  '设置'
+  'system proxy',
+  'global HTTP proxy',
+  'always-on',
+  'lockdown',
+  'enterprise',
+  '系统代理',
+  '全局 HTTP 代理',
+  '常驻 VPN',
+  '锁定模式',
+  '企业专用'
 ];
+
+const APPROVED_BOUNDARY_STRING_VALUES = new Map([
+  ['home_local_boundary_note', 'Only the explicit local HTTP and SOCKS listeners started here are supported.'],
+  ['home_vpn_boundary_note', 'TUN capture is limited to traffic handled by this app session.']
+]);
 
 async function readJson(filePath) {
   return JSON.parse(await fs.readFile(filePath, 'utf8'));
@@ -232,6 +262,11 @@ function assertContainsAll(names, requiredNames, label) {
   for (const requiredName of requiredNames) {
     assert.ok(names.has(requiredName), `${label} must include resource "${requiredName}"`);
   }
+}
+
+function getStringValue(document, key) {
+  const entry = (document.string ?? []).find((candidate) => candidate.name === key);
+  return entry?.value;
 }
 
 function assertNoVisibleLiterals(source, filePath) {
@@ -279,6 +314,16 @@ test('Task 13 resource files cover the native UI copy, semantic colors, and layo
   assertContainsAll(collectResourceNames(baseColors, 'color'), REQUIRED_BASE_COLOR_KEYS, 'base color.json');
   assertContainsAll(collectResourceNames(darkColors, 'color'), REQUIRED_BASE_COLOR_KEYS, 'dark color.json');
   assertContainsAll(collectResourceNames(floats, 'float'), REQUIRED_FLOAT_KEYS, 'float.json');
+
+  for (const [key, value] of APPROVED_BOUNDARY_STRING_VALUES) {
+    assert.equal(getStringValue(stringResources, key), value, `string.json key ${key} must stay exact`);
+  }
+  const stringValues = (stringResources.string ?? []).map((entry) => `${entry.value ?? ''}`).join('\n');
+  for (const term of BANNED_COPY_TERMS) {
+    assert.doesNotMatch(stringValues, new RegExp(`\\b${term.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&')}\\b`, 'u'),
+      `string resources must not claim forbidden networking scope: ${term}`
+    );
+  }
 });
 
 test('Task 13 native UI files expose semantic ids, safe layouts, and resource-backed copy only', async () => {
@@ -317,16 +362,26 @@ test('Task 13 native UI files expose semantic ids, safe layouts, and resource-ba
     'home_profile_title must stay a left-aligned secondary caption'
   );
   assert.match(homePageSource, /\.padding\(\$r\('app\.float\.page_padding_compact'\)\)/u, 'HomePage should use the compact 16vp page padding for the visual baseline');
-  assert.match(homePageSource, /\.id\('home\.runtime\.primary'\)/u, 'HomePage must own the primary runtime action');
-  assert.match(homePageSource, /primaryActionBackground\(this\.state\.primaryAction\)/u, 'HomePage must keep the primary action background stateful');
-  assert.match(homePageSource, /primaryActionForeground\(this\.state\.primaryAction\)/u, 'HomePage must keep the primary action text color stateful');
-  assert.doesNotMatch(runtimeStatusCardSource, /\.id\('home\.runtime\.primary'\)/u, 'RuntimeStatusCard must no longer own the primary action');
-  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_http_label'\)/u, 'RuntimeStatusCard must always render the HTTP listener row');
-  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_socks_label'\)/u, 'RuntimeStatusCard must always render the SOCKS listener row');
+  assert.match(homePageSource, /\.id\('home\.local\.action'\)/u, 'HomePage must own the local proxy action');
+  assert.match(homePageSource, /\.id\('home\.vpn\.action'\)/u, 'HomePage must own the VPN global capture action');
+  assert.match(homePageSource, /resolveActionBackground\(this\.state\.localProxy\.action\)/u, 'HomePage must keep the local action background stateful');
+  assert.match(homePageSource, /resolveActionBackground\(this\.state\.vpnGlobalCapture\.action\)/u, 'HomePage must keep the VPN action background stateful');
+  assert.match(homePageSource, /resolveActionForeground\(this\.state\.localProxy\.action\)/u, 'HomePage must keep the local action text color stateful');
+  assert.match(homePageSource, /resolveActionForeground\(this\.state\.vpnGlobalCapture\.action\)/u, 'HomePage must keep the VPN action text color stateful');
+  assert.doesNotMatch(runtimeStatusCardSource, /\.id\('home\.local\.action'\)|\.id\('home\.vpn\.action'\)/u, 'RuntimeStatusCard must not own page actions');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_local_http_label'\)/u, 'RuntimeStatusCard must render the HTTP listener row');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_local_socks_label'\)/u, 'RuntimeStatusCard must render the SOCKS listener row');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_ipv4_label'\)/u, 'RuntimeStatusCard must render VPN IPv4 facts');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_ipv6_label'\)/u, 'RuntimeStatusCard must render VPN IPv6 facts');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_dns_label'\)/u, 'RuntimeStatusCard must render VPN DNS facts');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_mtu_label'\)/u, 'RuntimeStatusCard must render VPN MTU facts');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_notification_label'\)/u, 'RuntimeStatusCard must render notification status');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_recovery_label'\)/u, 'RuntimeStatusCard must render recovery status');
   assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_listener_placeholder'\)/u, 'RuntimeStatusCard must show a resource-backed placeholder when listener addresses are missing');
-  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_boundary_note'\)/u, 'RuntimeStatusCard must render the local-listener boundary note');
-  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_runtime_detail_stopped'\)|\$r\('app\.string\.home_runtime_detail_starting'\)|\$r\('app\.string\.home_runtime_detail_running'\)|\$r\('app\.string\.home_runtime_detail_stopping'\)|\$r\('app\.string\.home_runtime_detail_error'\)/u,
-    'RuntimeStatusCard must render a resource-backed status detail'
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_local_boundary_note'\)/u, 'RuntimeStatusCard must render the local-listener boundary note');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_vpn_boundary_note'\)/u, 'RuntimeStatusCard must render the VPN boundary note');
+  assert.match(runtimeStatusCardSource, /\$r\('app\.string\.home_local_status_stopped'\)|\$r\('app\.string\.home_vpn_status_running'\)|\$r\('app\.string\.home_vpn_status_recovering'\)/u,
+    'RuntimeStatusCard must render resource-backed local and VPN status labels'
   );
   assert.match(runtimeStatusCardSource, /Divider\(/u, 'RuntimeStatusCard must use dividers to separate status, listener rows, and boundary note');
   assert.match(runtimeStatusCardSource, /\.padding\(\$r\('app\.float\.space_md'\)\)/u, 'RuntimeStatusCard should use the denser card padding for the 360x780 baseline');

@@ -22,10 +22,12 @@ import {
 } from '../presentation/ProfileDetailViewModel';
 import {
   createHomeViewState,
+  createLocalProxyState,
   createImportProfileViewState,
   createProfileDetailViewState,
   createProfilesViewState,
   createSafeErrorState,
+  createVpnGlobalCaptureState,
   safeRemoteHostFromUrl,
   type HomeViewState,
   type ImportProfileViewState,
@@ -66,7 +68,13 @@ struct Index {
   @State private route: AppRoute = 'HOME';
   @State private importSheetVisible: boolean = false;
   @State private detailProfileId: string = '';
-  @State private homeState: HomeViewState = createHomeViewState('LOADING', undefined, 'STOPPED', 'DISABLED', undefined, undefined, undefined);
+  @State private homeState: HomeViewState = createHomeViewState(
+    'LOADING',
+    undefined,
+    createLocalProxyState('STOPPED', 'DISABLED', undefined, undefined, undefined),
+    createVpnGlobalCaptureState('STOPPED', 'DISABLED', false, false, [], undefined, false, 0, undefined, undefined),
+    undefined
+  );
   @State private profilesState: ProfilesViewState = createProfilesViewState('LOADING', [], undefined);
   @State private importState: ImportProfileViewState = createImportProfileViewState('IDLE', undefined, undefined, undefined, undefined);
   @State private detailState: ProfileDetailViewState = createProfileDetailViewState(
@@ -152,8 +160,11 @@ struct Index {
         onManageProfiles: () => {
           this.route = 'PROFILES';
         },
-        onPrimaryAction: () => {
-          void this.homeViewModel?.requestPrimaryAction();
+        onLocalAction: () => {
+          void this.homeViewModel?.requestLocalAction();
+        },
+        onVpnAction: () => {
+          void this.homeViewModel?.requestVpnAction();
         }
       })
     }
@@ -231,7 +242,7 @@ struct Index {
     if (state.status === 'READY') {
       this.compositionStatus = 'READY';
       this.compositionError = undefined;
-      this.attachApplication(state.application);
+      this.attachApplication(state.application, state.vpnRegistry);
       return;
     }
     if (state.status === 'ERROR') {
@@ -248,7 +259,7 @@ struct Index {
     this.disposeViewModels();
   }
 
-  private attachApplication(application: ProfileApplication): void {
+  private attachApplication(application: ProfileApplication, vpnRegistry: import('../vpn/VpnSessionRegistry').VpnSessionRegistry): void {
     if (this.application === application && this.homeViewModel !== undefined && this.profilesViewModel !== undefined &&
       this.importViewModel !== undefined) {
       return;
@@ -256,7 +267,7 @@ struct Index {
     this.disposeViewModels();
     this.application = application;
 
-    this.homeViewModel = new HomeViewModel(application);
+    this.homeViewModel = new HomeViewModel(application, vpnRegistry);
     this.homeSubscriptionId = this.homeViewModel.subscribe((state: HomeViewState): void => {
       this.homeState = state;
     });

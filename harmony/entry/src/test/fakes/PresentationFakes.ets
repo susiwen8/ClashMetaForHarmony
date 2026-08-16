@@ -2,6 +2,7 @@ import {
   createAppError,
   createProfile,
   createProfileRevision,
+  createVpnRuntimeSnapshot,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
@@ -48,6 +49,10 @@ import {
   type RuntimeSnapshot,
   type StagedSource,
   type SubscriptionSecretStore,
+  type VpnControllerStartResult,
+  type VpnControllerStopResult,
+  type VpnRuntimeEvent,
+  type VpnRuntimeSnapshot,
   redactUrl
 } from '@cmfa/shared';
 import { safeRemoteSourceDisplayFromUrl } from '../../main/ets/presentation/PresentationModels';
@@ -317,6 +322,8 @@ export class PresentationTestApplication extends ProfileApplication {
   private readonly enableResults: Promise<ManageEnableResult>[] = [];
   private readonly deleteResults: Promise<ManageDeleteResult>[] = [];
   private readonly replaceResults: Promise<ManageReplaceResult>[] = [];
+  private readonly vpnStartResults: Promise<VpnControllerStartResult>[] = [];
+  private readonly vpnStopResults: Promise<VpnControllerStopResult>[] = [];
 
   constructor(snapshot?: ProfileApplicationSnapshot) {
     super(createDependencies());
@@ -368,6 +375,14 @@ export class PresentationTestApplication extends ProfileApplication {
     this.replaceResults.push(Promise.resolve(result));
   }
 
+  queueVpnStartResult(result: VpnControllerStartResult | Promise<VpnControllerStartResult>): void {
+    this.vpnStartResults.push(Promise.resolve(result));
+  }
+
+  queueVpnStopResult(result: VpnControllerStopResult | Promise<VpnControllerStopResult>): void {
+    this.vpnStopResults.push(Promise.resolve(result));
+  }
+
   deferStart(): DeferredCommand {
     const deferred: DeferredCommand = new DeferredCommand();
     this.startDeferred = deferred;
@@ -398,6 +413,49 @@ export class PresentationTestApplication extends ProfileApplication {
       await deferred.promise;
     }
     return new StoppedResultValue();
+  }
+
+  async startVpnGlobalCapture(): Promise<VpnControllerStartResult> {
+    this.commandLog.push('startVpnGlobalCapture');
+    return await shiftOrDefault<VpnControllerStartResult>(this.vpnStartResults, {
+      kind: 'STARTED',
+      snapshot: createVpnRuntimeSnapshot({
+        state: 'RUNNING',
+        activeRequest: {
+          profileId: this.currentSnapshot.activeProfileId ?? 'active',
+          versionId: 'version-1',
+          sessionId: 'session-1'
+        },
+        activeHandle: {
+          sessionId: 'session-1',
+          attached: true
+        },
+        captureConfig: null,
+        tunSnapshot: null,
+        notificationActive: true,
+        recoveryAttempt: 0,
+        scheduledRetryDelayMs: null,
+        lastFailure: null
+      })
+    });
+  }
+
+  async stopVpnGlobalCapture(): Promise<VpnControllerStopResult> {
+    this.commandLog.push('stopVpnGlobalCapture');
+    return await shiftOrDefault<VpnControllerStopResult>(this.vpnStopResults, {
+      kind: 'STOPPED',
+      snapshot: createVpnRuntimeSnapshot({
+        state: 'STOPPED',
+        activeRequest: null,
+        activeHandle: null,
+        captureConfig: null,
+        tunSnapshot: null,
+        notificationActive: false,
+        recoveryAttempt: 0,
+        scheduledRetryDelayMs: null,
+        lastFailure: null
+      })
+    });
   }
 
   async importLocal(command: LocalAcquireCommand): Promise<ImportProfileResult> {
@@ -449,6 +507,7 @@ export class PresentationTestApplication extends ProfileApplication {
     }
   }
 }
+
 
 export function createApplicationSnapshot(
   status: 'LOADING' | 'READY' | 'ERROR',

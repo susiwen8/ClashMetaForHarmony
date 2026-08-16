@@ -20,5 +20,4 @@ if [ ! -x "${INTEGRATED_HVIGOR_WRAPPER}" ]; then
 fi
 
 cd "${PROJECT_DIR}" || fail "ERROR: Failed to enter Harmony project directory: ${PROJECT_DIR}"
-
 exec "${INTEGRATED_HVIGOR_WRAPPER}" "$@"

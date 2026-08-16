@@ -22,11 +22,11 @@
     },
     {
       "name": "home_title",
-      "value": "本地代理"
+      "value": "Local proxy and VPN global capture"
     },
     {
       "name": "home_subtitle",
-      "value": "在本机启动 HTTP 与 SOCKS 监听"
+      "value": "Use explicit local listeners or a TUN-based VPN capture session."
     },
     {
       "name": "home_profile_title",
@@ -89,44 +89,184 @@
       "value": "请先启用一个有效配置"
     },
     {
-      "name": "home_runtime_http_label",
-      "value": "HTTP 监听"
+      "name": "home_local_title",
+      "value": "Local proxy"
     },
     {
-      "name": "home_runtime_socks_label",
-      "value": "SOCKS 监听"
+      "name": "home_vpn_title",
+      "value": "VPN global capture"
     },
     {
-      "name": "home_runtime_local_proxy",
-      "value": "本地代理"
+      "name": "home_local_http_label",
+      "value": "HTTP listener"
+    },
+    {
+      "name": "home_local_socks_label",
+      "value": "SOCKS listener"
     },
     {
       "name": "home_runtime_listener_placeholder",
       "value": "—"
     },
     {
-      "name": "home_runtime_detail_stopped",
-      "value": "等待有效配置"
+      "name": "home_local_status_stopped",
+      "value": "Local listener stopped"
     },
     {
-      "name": "home_runtime_detail_starting",
-      "value": "正在建立本机监听"
+      "name": "home_local_status_starting",
+      "value": "Starting local listeners"
     },
     {
-      "name": "home_runtime_detail_running",
-      "value": "已在本机提供 HTTP 与 SOCKS 监听"
+      "name": "home_local_status_running",
+      "value": "Local listeners active"
     },
     {
-      "name": "home_runtime_detail_stopping",
-      "value": "正在关闭本机监听"
+      "name": "home_local_status_stopping",
+      "value": "Stopping local listeners"
     },
     {
-      "name": "home_runtime_detail_error",
-      "value": "检查当前配置与本机监听状态"
+      "name": "home_local_status_error",
+      "value": "Local listener error"
     },
     {
-      "name": "home_runtime_boundary_note",
-      "value": "仅提供本机监听，不会自动修改系统网络设置"
+      "name": "home_local_boundary_note",
+      "value": "Only the explicit local HTTP and SOCKS listeners started here are supported."
+    },
+    {
+      "name": "home_vpn_status_stopped",
+      "value": "VPN capture stopped"
+    },
+    {
+      "name": "home_vpn_status_awaiting_consent",
+      "value": "Waiting for VPN consent"
+    },
+    {
+      "name": "home_vpn_status_starting",
+      "value": "Starting TUN capture"
+    },
+    {
+      "name": "home_vpn_status_running",
+      "value": "TUN capture active"
+    },
+    {
+      "name": "home_vpn_status_recovering",
+      "value": "Recovering TUN capture"
+    },
+    {
+      "name": "home_vpn_status_stopping",
+      "value": "Stopping TUN capture"
+    },
+    {
+      "name": "home_vpn_status_error",
+      "value": "VPN capture error"
+    },
+    {
+      "name": "home_vpn_primary_start",
+      "value": "Start VPN global capture"
+    },
+    {
+      "name": "home_vpn_primary_stop",
+      "value": "Stop VPN global capture"
+    },
+    {
+      "name": "home_local_primary_start",
+      "value": "Start Local proxy"
+    },
+    {
+      "name": "home_local_primary_stop",
+      "value": "Stop Local proxy"
+    },
+    {
+      "name": "home_vpn_ipv4_label",
+      "value": "IPv4"
+    },
+    {
+      "name": "home_vpn_ipv6_label",
+      "value": "IPv6"
+    },
+    {
+      "name": "home_vpn_dns_label",
+      "value": "DNS"
+    },
+    {
+      "name": "home_vpn_mtu_label",
+      "value": "MTU"
+    },
+    {
+      "name": "home_vpn_notification_label",
+      "value": "Continuous notification"
+    },
+    {
+      "name": "home_vpn_recovery_label",
+      "value": "Recovery"
+    },
+    {
+      "name": "home_vpn_enabled",
+      "value": "Enabled"
+    },
+    {
+      "name": "home_vpn_disabled",
+      "value": "Disabled"
+    },
+    {
+      "name": "home_vpn_notification_active",
+      "value": "Active"
+    },
+    {
+      "name": "home_vpn_notification_inactive",
+      "value": "Inactive"
+    },
+    {
+      "name": "home_vpn_recovery_active",
+      "value": "Recovery active"
+    },
+    {
+      "name": "home_vpn_recovery_idle",
+      "value": "Idle"
+    },
+    {
+      "name": "home_vpn_boundary_note",
+      "value": "TUN capture is limited to traffic handled by this app session."
+    },
+    {
+      "name": "error_vpn_permission_denied",
+      "value": "VPN permission was denied."
+    },
+    {
+      "name": "error_vpn_already_active",
+      "value": "VPN global capture is already active."
+    },
+    {
+      "name": "error_vpn_system_revoked",
+      "value": "VPN global capture was revoked or replaced by the system."
+    },
+    {
+      "name": "error_vpn_background_task_failed",
+      "value": "VPN global capture could not keep its background task active."
+    },
+    {
+      "name": "error_vpn_stop_failed",
+      "value": "VPN global capture could not stop cleanly."
+    },
+    {
+      "name": "error_vpn_profile_unavailable",
+      "value": "The selected profile has no committed version for VPN global capture."
+    },
+    {
+      "name": "error_vpn_start_failed",
+      "value": "VPN global capture could not start with the selected profile."
+    },
+    {
+      "name": "error_vpn_recovering",
+      "value": "VPN global capture is recovering after a network change."
+    },
+    {
+      "name": "error_vpn_requires_local_stop",
+      "value": "Stop the local proxy before starting VPN global capture."
+    },
+    {
+      "name": "error_local_blocked_by_vpn",
+      "value": "Stop VPN global capture before starting the local proxy."
     },
     {
       "name": "home_info_title",

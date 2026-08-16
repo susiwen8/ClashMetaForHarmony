@@ -1,4 +1,5 @@
 import type { AppError, ProfileApplication } from '@cmfa/shared';
+import type { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 interface ApplicationCompositionLoadingState {
   status: 'LOADING';
@@ -7,6 +8,7 @@ interface ApplicationCompositionLoadingState {
 interface ApplicationCompositionReadyState {
   status: 'READY';
   application: ProfileApplication;
+  vpnRegistry: VpnSessionRegistry;
 }
 
 interface ApplicationCompositionErrorState {

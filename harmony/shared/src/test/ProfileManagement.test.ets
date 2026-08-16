@@ -15,6 +15,8 @@ import {
   ProfileCommitService,
   RefreshProfileUseCase,
   SerialCommandQueue,
+  createVpnFailure,
+  createVpnRuntimeSnapshot,
   type AppError,
   type Clock,
   type CoreEvent,
@@ -34,7 +36,12 @@ import {
   type RemoteProfileAcquisitionFailure,
   type RuntimeSnapshot,
   type StagedSource,
-  type SubscriptionSecretStore
+  type SubscriptionSecretStore,
+  type VpnControllerPort,
+  type VpnControllerStartResult,
+  type VpnControllerStopResult,
+  type VpnRuntimeEvent,
+  type VpnRuntimeSnapshot
 } from '../../Index';
 
 interface ManageFailedResultContract {
@@ -127,6 +134,8 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
   readonly runtimeCoordinator: LocalRuntimeCoordinator;
   readonly commitService: ProfileCommitService;
   readonly repository: FakeProfileRepository;
+  readonly vpnController?: VpnControllerPort;
+  readonly idGenerator?: IdGenerator;
 
   constructor(
     importUseCase: ImportProfileUseCase,
@@ -134,7 +143,9 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
     manageProfileUseCases: ManageProfileUseCases,
     runtimeCoordinator: LocalRuntimeCoordinator,
     commitService: ProfileCommitService,
-    repository: FakeProfileRepository
+    repository: FakeProfileRepository,
+    vpnController?: VpnControllerPort,
+    idGenerator?: IdGenerator
   ) {
     this.importUseCase = importUseCase;
     this.refreshUseCase = refreshUseCase;
@@ -142,6 +153,8 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
     this.runtimeCoordinator = runtimeCoordinator;
     this.commitService = commitService;
     this.repository = repository;
+    this.vpnController = vpnController;
+    this.idGenerator = idGenerator;
   }
 }
 
@@ -416,11 +429,13 @@ class FakeCoreService implements CoreService {
   readonly validateCalls: string[] = [];
   readonly loadCalls: string[] = [];
   readonly startCalls: LocalOptions[] = [];
+  readonly stopCalls: string[] = [];
   readonly subscribeIds: number[] = [];
   readonly callbacks: Map<number, (event: CoreEvent) => void> = new Map();
   runtimeSnapshotValue: RuntimeSnapshot = buildRuntimeSnapshot('STOPPED');
   validateError?: Error;
   loadError?: Error;
+  stopError?: Error;
   startDeferred?: DeferredRuntimeSnapshot;
   validateDeferred?: DeferredVoid;
   validateEntered?: DeferredVoid;
@@ -466,6 +481,11 @@ class FakeCoreService implements CoreService {
   }
 
   async stopRuntime(): Promise<RuntimeSnapshot> {
+    this.log.push('core.stopRuntime');
+    this.stopCalls.push('stop');
+    if (this.stopError !== undefined) {
+      throw this.stopError;
+    }
     return cloneRuntimeSnapshot(this.runtimeSnapshotValue);
   }
 
@@ -504,9 +524,163 @@ class FakeCoreService implements CoreService {
   }
 }
 
+class VpnStartCallRecord {
+  profileId: string = '';
+  versionId: string = '';
+  sessionId: string = '';
+}
+
+class UnavailableVpnCase {
+  repository: FakeProfileRepository;
+  contentStore: FakeProfileContentStore;
+  secretStore: FakeSubscriptionSecretStore;
+
+  constructor(
+    repository: FakeProfileRepository,
+    contentStore: FakeProfileContentStore,
+    secretStore: FakeSubscriptionSecretStore
+  ) {
+    this.repository = repository;
+    this.contentStore = contentStore;
+    this.secretStore = secretStore;
+  }
+}
+
+class FakeVpnController implements VpnControllerPort {
+  readonly startCalls: VpnStartCallRecord[] = [];
+  readonly stopCalls: (string | undefined)[] = [];
+  readonly subscribeIds: number[] = [];
+  readonly unsubscribeIds: number[] = [];
+  private readonly listeners: Map<number, (event: VpnRuntimeEvent) => void> = new Map();
+  private readonly queuedStartResults: VpnControllerStartResult[] = [];
+  private readonly queuedStopResults: VpnControllerStopResult[] = [];
+  private nextSubscriptionId: number = 1;
+  private snapshotValue: VpnRuntimeSnapshot = createVpnRuntimeSnapshot({
+    state: 'STOPPED',
+    activeRequest: null,
+    activeHandle: null,
+    captureConfig: null,
+    tunSnapshot: null,
+    notificationActive: false,
+    recoveryAttempt: 0,
+    scheduledRetryDelayMs: null,
+    lastFailure: null
+  });
+
+  async start(profileId: string, versionId: string, sessionId: string): Promise<VpnControllerStartResult> {
+    const callRecord: VpnStartCallRecord = new VpnStartCallRecord();
+    callRecord.profileId = profileId;
+    callRecord.versionId = versionId;
+    callRecord.sessionId = sessionId;
+    this.startCalls.push(callRecord);
+    if (this.queuedStartResults.length > 0) {
+      const result: VpnControllerStartResult = this.queuedStartResults.shift()!;
+      this.snapshotValue = result.snapshot;
+      return result;
+    }
+    this.snapshotValue = createVpnRuntimeSnapshot({
+      state: 'RUNNING',
+      activeRequest: {
+        profileId,
+        versionId,
+        sessionId
+      },
+      activeHandle: {
+        sessionId,
+        attached: true
+      },
+      captureConfig: null,
+      tunSnapshot: null,
+      notificationActive: true,
+      recoveryAttempt: 0,
+      scheduledRetryDelayMs: null,
+      lastFailure: null
+    });
+    return {
+      kind: 'STARTED',
+      snapshot: this.snapshot()
+    };
+  }
+
+  async stop(sessionId?: string): Promise<VpnControllerStopResult> {
+    this.stopCalls.push(sessionId);
+    if (this.queuedStopResults.length > 0) {
+      const result: VpnControllerStopResult = this.queuedStopResults.shift()!;
+      this.snapshotValue = result.snapshot;
+      return result;
+    }
+    this.snapshotValue = createVpnRuntimeSnapshot({
+      state: 'STOPPED',
+      activeRequest: null,
+      activeHandle: null,
+      captureConfig: null,
+      tunSnapshot: null,
+      notificationActive: false,
+      recoveryAttempt: 0,
+      scheduledRetryDelayMs: null,
+      lastFailure: null
+    });
+    return {
+      kind: 'STOPPED',
+      snapshot: this.snapshot()
+    };
+  }
+
+  snapshot(): VpnRuntimeSnapshot {
+    return createVpnRuntimeSnapshot({
+      state: this.snapshotValue.state,
+      activeRequest: this.snapshotValue.activeRequest,
+      activeHandle: this.snapshotValue.activeHandle,
+      captureConfig: this.snapshotValue.captureConfig,
+      tunSnapshot: this.snapshotValue.tunSnapshot,
+      notificationActive: this.snapshotValue.notificationActive,
+      recoveryAttempt: this.snapshotValue.recoveryAttempt,
+      scheduledRetryDelayMs: this.snapshotValue.scheduledRetryDelayMs,
+      lastFailure: this.snapshotValue.lastFailure
+    });
+  }
+
+  subscribe(listener: (event: VpnRuntimeEvent) => void): number {
+    const subscriptionId: number = this.nextSubscriptionId;
+    this.nextSubscriptionId += 1;
+    this.subscribeIds.push(subscriptionId);
+    this.listeners.set(subscriptionId, listener);
+    return subscriptionId;
+  }
+
+  unsubscribe(subscriptionId: number): void {
+    this.unsubscribeIds.push(subscriptionId);
+    this.listeners.delete(subscriptionId);
+  }
+
+  queueStartResult(result: VpnControllerStartResult): void {
+    this.queuedStartResults.push(result);
+  }
+
+  queueStopResult(result: VpnControllerStopResult): void {
+    this.queuedStopResults.push(result);
+  }
+}
+
 function buildTimestamp(minute: number): string {
   const minuteText: string = `${minute}`.padStart(2, '0');
   return `2026-08-11T12:${minuteText}:00.000Z`;
+}
+
+function joinPieces(pieces: string[]): string {
+  return pieces.join('');
+}
+
+function buildSensitiveDocumentsPath(fileName: string): string {
+  return `${joinPieces(['/Us', 'ers'])}/susiwen8/Documents/${fileName}`;
+}
+
+function buildSecretTokenValue(): string {
+  return joinPieces(['sec', 'ret-beta']);
+}
+
+function buildUsersPrefix(): string {
+  return joinPieces(['/Us', 'ers']);
 }
 
 function buildDigest(seed: string): string {
@@ -643,7 +817,9 @@ function createApplication(
   contentStore: FakeProfileContentStore,
   secretStore: FakeSubscriptionSecretStore,
   coreService: FakeCoreService,
-  sourceGateway?: FakeSourceGateway
+  sourceGateway?: FakeSourceGateway,
+  vpnController?: VpnControllerPort,
+  idGenerator?: IdGenerator
 ): ProfileApplication {
   const runtimeCoordinator = createRuntimeCoordinator(
     repository,
@@ -657,7 +833,9 @@ function createApplication(
     secretStore,
     coreService,
     runtimeCoordinator,
-    sourceGateway
+    sourceGateway,
+    vpnController,
+    idGenerator
   );
 }
 
@@ -667,7 +845,9 @@ function createApplicationWithCoordinator(
   secretStore: FakeSubscriptionSecretStore,
   coreService: FakeCoreService,
   runtimeCoordinator: LocalRuntimeCoordinator,
-  sourceGateway?: FakeSourceGateway
+  sourceGateway?: FakeSourceGateway,
+  vpnController?: VpnControllerPort,
+  idGenerator?: IdGenerator
 ): ProfileApplication {
   const gateway: FakeSourceGateway = sourceGateway ?? new FakeSourceGateway();
   const queue = new SerialCommandQueue();
@@ -710,7 +890,9 @@ function createApplicationWithCoordinator(
       manageProfileUseCases,
       runtimeCoordinator,
       commitService,
-      repository
+      repository,
+      vpnController,
+      idGenerator
     )
   );
 }
@@ -1357,6 +1539,149 @@ export default function profileManagementTestsuite() {
 
       expect(contentStore.reconciledPaths.length).assertEqual(1);
       expect(snapshot.runtime.state).assertEqual('STOPPED');
+    });
+
+    it('applicationStartVpnStopsLocalRuntimeUsesCommittedVersionAndFreshSessionId', 0, async () => {
+      const revision = buildRevision('vpn');
+      const profile = buildProfileRecord('vpn', 'VALID', 'REMOTE_URL', revision, 'secret-vpn');
+      const repository = new FakeProfileRepository([profile], 'vpn');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/vpn.yaml');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-vpn', 'https://origin.example.com/subscription.yaml');
+      const coreService = new FakeCoreService();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING');
+      const vpnController = new FakeVpnController();
+      const application = createApplication(
+        repository,
+        contentStore,
+        secretStore,
+        coreService,
+        undefined,
+        vpnController,
+        new FakeIdGenerator(['vpn-session-1'])
+      );
+
+      await application.initialize();
+      await application.startLocal();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('STOPPED');
+      await application.startVpnGlobalCapture();
+
+      expect(coreService.stopCalls.length).assertEqual(1);
+      expect(vpnController.startCalls.length).assertEqual(1);
+      expect(vpnController.startCalls[0].profileId).assertEqual('vpn');
+      expect(vpnController.startCalls[0].versionId).assertEqual(revision.validatedAt);
+      expect(vpnController.startCalls[0].sessionId).assertEqual('vpn-session-vpn-session-1');
+    });
+
+    it('applicationStartVpnGeneratesDistinctOpaqueSessionIdsAcrossSeparateRuns', 0, async () => {
+      const revision = buildRevision('alpha');
+      const profile = buildProfileRecord('alpha', 'VALID', 'REMOTE_URL', revision, 'secret-alpha');
+      const repository = new FakeProfileRepository([profile], 'alpha');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/alpha.yaml');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-alpha', 'https://origin.example.com/subscription.yaml?token=secret-alpha');
+      const coreService = new FakeCoreService();
+      const vpnController = new FakeVpnController();
+      const application = createApplication(
+        repository,
+        contentStore,
+        secretStore,
+        coreService,
+        undefined,
+        vpnController,
+        new FakeIdGenerator(['run-1', 'run-2'])
+      );
+
+      await application.initialize();
+      await application.startVpnGlobalCapture();
+      await application.stopVpnGlobalCapture();
+      await application.startVpnGlobalCapture();
+
+      expect(vpnController.startCalls.length).assertEqual(2);
+      expect(vpnController.startCalls[0].sessionId === vpnController.startCalls[1].sessionId).assertFalse();
+      expect(vpnController.startCalls[0].sessionId.includes('alpha')).assertFalse();
+      expect(vpnController.startCalls[1].sessionId.includes('alpha')).assertFalse();
+      expect(vpnController.startCalls[0].sessionId.includes(revision.validatedAt)).assertFalse();
+      expect(vpnController.startCalls[1].sessionId.includes(revision.validatedAt)).assertFalse();
+      expect(vpnController.startCalls[0].sessionId.includes('secret-alpha')).assertFalse();
+      expect(vpnController.startCalls[1].sessionId.includes('origin.example.com')).assertFalse();
+    });
+
+    it('applicationStartVpnFailsClosedWhenTheSelectedProfileCannotProduceACommittedRevision', 0, async () => {
+      const unavailableCases: UnavailableVpnCase[] = [
+        new UnavailableVpnCase(
+          new FakeProfileRepository([], 'missing'),
+          new FakeProfileContentStore(),
+          new FakeSubscriptionSecretStore()
+        ),
+        new UnavailableVpnCase(
+          new FakeProfileRepository([buildProfileRecord('invalid', 'INVALID', 'LOCAL_FILE', buildRevision('invalid'))], 'invalid'),
+          new FakeProfileContentStore(),
+          new FakeSubscriptionSecretStore()
+        ),
+        new UnavailableVpnCase(
+          new FakeProfileRepository([buildProfileRecord('empty', 'INVALID', 'LOCAL_FILE', null)], 'empty'),
+          new FakeProfileContentStore(),
+          new FakeSubscriptionSecretStore()
+        )
+      ];
+
+      for (let index = 0; index < unavailableCases.length; index += 1) {
+        const vpnController = new FakeVpnController();
+        const application = createApplication(
+          unavailableCases[index].repository,
+          unavailableCases[index].contentStore,
+          unavailableCases[index].secretStore,
+          new FakeCoreService(),
+          undefined,
+          vpnController
+        );
+
+        await application.initialize();
+        const result = await application.startVpnGlobalCapture();
+
+        expect(result.kind).assertEqual('REJECTED');
+        if (result.kind === 'REJECTED') {
+          expect(result.failure.code).assertEqual('VPN_PROFILE_UNAVAILABLE');
+        }
+        expect(vpnController.startCalls.length).assertEqual(0);
+      }
+    });
+
+    it('applicationStartVpnBlocksControllerStartWhenLocalStopFails', 0, async () => {
+      const revision = buildRevision('beta');
+      const profile = buildProfileRecord('beta', 'VALID', 'REMOTE_URL', revision, 'secret-beta');
+      const repository = new FakeProfileRepository([profile], 'beta');
+      const contentStore = new FakeProfileContentStore();
+      contentStore.resolvedPaths.set(revision.relativePath, '/sandbox/profiles/beta.yaml');
+      const secretStore = new FakeSubscriptionSecretStore();
+      secretStore.storedSecrets.set('secret-beta', `https://origin.example.com/subscription.yaml?token=${buildSecretTokenValue()}`);
+      const coreService = new FakeCoreService();
+      coreService.runtimeSnapshotValue = buildRuntimeSnapshot('RUNNING');
+      coreService.stopError = new Error(`${buildSensitiveDocumentsPath('secret-beta')} token=${buildSecretTokenValue()}`);
+      const vpnController = new FakeVpnController();
+      const application = createApplication(
+        repository,
+        contentStore,
+        secretStore,
+        coreService,
+        undefined,
+        vpnController,
+        new FakeIdGenerator(['run-blocked'])
+      );
+
+      await application.initialize();
+      const result = await application.startVpnGlobalCapture();
+
+      expect(result.kind).assertEqual('REJECTED');
+      if (result.kind === 'REJECTED') {
+        expect(result.failure.code).assertEqual('VPN_LOCAL_STOP_REQUIRED');
+        expect(result.failure.detail.includes(buildUsersPrefix())).assertFalse();
+        expect(result.failure.detail.includes(`token=${buildSecretTokenValue()}`)).assertFalse();
+      }
+      expect(vpnController.startCalls.length).assertEqual(0);
     });
   });
 }

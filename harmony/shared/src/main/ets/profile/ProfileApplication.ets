@@ -9,14 +9,23 @@ import type {
 } from './LocalRuntimeCoordinator';
 import type { ManageDeleteResult, ManageEnableResult, ManageProfileUseCases, ManageReplaceResult } from './ManageProfileUseCases';
 import type { ProfileCommitService } from './ProfileCommitService';
-import { redactSensitiveText } from './SecretRedactor';
+import type { IdGenerator, LocalAcquireCommand, ProfileRepository } from './ProfilePorts';
+import type { Profile, ProfileAvailability, ProfileSourceKind } from './ProfileModels';
 import type {
   RefreshProfileFailedResult,
   RefreshProfileResult,
   RefreshProfileUseCase
 } from './RefreshProfileUseCase';
-import type { LocalAcquireCommand, ProfileRepository } from './ProfilePorts';
-import type { Profile, ProfileAvailability, ProfileSourceKind } from './ProfileModels';
+import { redactSensitiveText } from './SecretRedactor';
+import {
+  createVpnFailure,
+  createVpnRuntimeSnapshot,
+  type VpnControllerStartResult,
+  type VpnControllerStopResult,
+  type VpnRuntimeSnapshot,
+  type VpnRuntimeState
+} from '../vpn/VpnModels';
+import type { VpnControllerPort } from '../vpn/VpnPorts';
 
 export interface ProfileApplicationDependencies {
   importUseCase: ImportProfileUseCase;
@@ -25,6 +34,8 @@ export interface ProfileApplicationDependencies {
   runtimeCoordinator: LocalRuntimeCoordinator;
   commitService: ProfileCommitService;
   repository: ProfileRepository;
+  vpnController?: VpnControllerPort;
+  idGenerator?: IdGenerator;
 }
 
 export interface ProfileApplicationSnapshot {
@@ -88,6 +99,8 @@ export class ProfileApplication {
   private readonly runtimeCoordinator: LocalRuntimeCoordinator;
   private readonly commitService: ProfileCommitService;
   private readonly repository: ProfileRepository;
+  private readonly vpnController?: VpnControllerPort;
+  private readonly idGenerator?: IdGenerator;
   private readonly runtimeListener: LocalRuntimeCoordinatorListener;
   private readonly listeners: Map<number, ProfileApplicationListener> = new Map();
   private initializePromise?: Promise<void>;
@@ -109,6 +122,8 @@ export class ProfileApplication {
     this.runtimeCoordinator = dependencies.runtimeCoordinator;
     this.commitService = dependencies.commitService;
     this.repository = dependencies.repository;
+    this.vpnController = dependencies.vpnController;
+    this.idGenerator = dependencies.idGenerator;
     this.runtimeListener = (runtimeSnapshot: LocalRuntimeCoordinatorSnapshot): void => {
       this.publish(
         createProfileApplicationSnapshot(
@@ -223,6 +238,18 @@ export class ProfileApplication {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
+    if (isVpnBlockingLocalStart(this.vpnController?.snapshot().state)) {
+      return {
+        kind: 'FAILED',
+        error: createAppError('RUNTIME_START', 'Stop VPN global capture before starting the local proxy.', {
+          code: 'CMFA_LOCAL_PROXY_BLOCKED_BY_VPN',
+          retryable: false,
+          timestamp: this.commitService.now(),
+          userMessageResource: 'error.local.blocked_by_vpn'
+        }),
+        snapshot: this.runtimeCoordinator.current()
+      };
+    }
     const result: LocalRuntimeStartResult = await this.runtimeCoordinator.start();
     await this.refreshSnapshotFromRepository(undefined);
     return result;
@@ -235,6 +262,51 @@ export class ProfileApplication {
     const result: LocalRuntimeStopResult = await this.runtimeCoordinator.stop();
     await this.refreshSnapshotFromRepository(undefined);
     return result;
+  }
+
+  async startVpnGlobalCapture(): Promise<VpnControllerStartResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    const controller: VpnControllerPort | undefined = this.vpnController;
+    if (controller === undefined) {
+      return {
+        kind: 'REJECTED',
+        snapshot: createStoppedVpnSnapshot(),
+        failure: createVpnFailure('VPN_CREATE_FAILED', 'VPN global capture is unavailable.')
+      };
+    }
+    const target: ActiveVpnProfile | undefined = await this.resolveActiveVpnProfile();
+    if (target === undefined) {
+      return {
+        kind: 'REJECTED',
+        snapshot: controller.snapshot(),
+        failure: createVpnFailure('VPN_PROFILE_UNAVAILABLE', 'No committed active profile is available for VPN global capture.')
+      };
+    }
+    const localStopResult: LocalRuntimeStopResult = await this.stopLocal();
+    if (localStopResult.kind === 'FAILED' || localStopResult.snapshot.state !== 'STOPPED') {
+      return {
+        kind: 'REJECTED',
+        snapshot: controller.snapshot(),
+        failure: createVpnFailure('VPN_LOCAL_STOP_REQUIRED', 'Stop the local proxy before starting VPN global capture.')
+      };
+    }
+    return await controller.start(target.profileId, target.versionId, createFreshVpnSessionId(this.idGenerator, this.commitService.now()));
+  }
+
+  async stopVpnGlobalCapture(): Promise<VpnControllerStopResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    const controller: VpnControllerPort | undefined = this.vpnController;
+    if (controller === undefined) {
+      return {
+        kind: 'STOPPED',
+        snapshot: createStoppedVpnSnapshot()
+      };
+    }
+    return await controller.stop();
   }
 
   dispose(): void {
@@ -301,6 +373,21 @@ export class ProfileApplication {
     );
   }
 
+  private async resolveActiveVpnProfile(): Promise<ActiveVpnProfile | undefined> {
+    const activeProfileId: string | undefined = this.snapshot.activeProfileId;
+    if (activeProfileId === undefined) {
+      return undefined;
+    }
+    const profile: Profile | undefined = await this.repository.get(activeProfileId);
+    if (profile === undefined || profile.currentRevision === null) {
+      return undefined;
+    }
+    if (profile.availability !== 'VALID' && profile.availability !== 'UPDATE_FAILED_USING_VALID') {
+      return undefined;
+    }
+    return new ActiveVpnProfile(profile.id, profile.currentRevision.validatedAt);
+  }
+
   private publish(snapshot: ProfileApplicationSnapshot): void {
     this.snapshot = cloneProfileApplicationSnapshot(snapshot);
     if (this.listeners.size === 0) {
@@ -313,6 +400,16 @@ export class ProfileApplication {
     for (let index: number = 0; index < listeners.length; index += 1) {
       listeners[index](cloneProfileApplicationSnapshot(this.snapshot));
     }
+  }
+}
+
+class ActiveVpnProfile {
+  profileId: string;
+  versionId: string;
+
+  constructor(profileId: string, versionId: string) {
+    this.profileId = profileId;
+    this.versionId = versionId;
   }
 }
 
@@ -514,10 +611,41 @@ function thisRuntimeStoppedSnapshot(): LocalRuntimeCoordinatorSnapshot {
   };
 }
 
+function createStoppedVpnSnapshot(): VpnRuntimeSnapshot {
+  return createVpnRuntimeSnapshot({
+    state: 'STOPPED',
+    activeRequest: null,
+    activeHandle: null,
+    captureConfig: null,
+    tunSnapshot: null,
+    notificationActive: false,
+    recoveryAttempt: 0,
+    scheduledRetryDelayMs: null,
+    lastFailure: null
+  });
+}
+
+function isVpnBlockingLocalStart(state: VpnRuntimeState | undefined): boolean {
+  if (state === undefined) {
+    return false;
+  }
+  return state === 'AWAITING_CONSENT' ||
+    state === 'STARTING' ||
+    state === 'RUNNING' ||
+    state === 'RECOVERING' ||
+    state === 'STOPPING';
+}
+
+function createFreshVpnSessionId(idGenerator: IdGenerator | undefined, timestamp: string): string {
+  const rawId: string = idGenerator?.nextId().trim() ?? timestamp;
+  const normalized: string = rawId.replace(/[^0-9A-Za-z_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
+  return `vpn-session-${normalized.length > 0 ? normalized : 'current'}`;
+}
+
 function resolveErrorMessage(error: Object | undefined, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
 }
 
 function toError(error: Object | undefined, fallback: string): Error {
-  return error instanceof Error ? error : new Error(resolveErrorMessage(error, fallback));
+  return error instanceof Error ? error : new Error(fallback);
 }
