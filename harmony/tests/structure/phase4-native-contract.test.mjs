@@ -10,6 +10,7 @@ const ENTRY_INCLUDE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp',
 const ENTRY_SOURCE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src');
 const RUNNER_PATH = path.join(HARMONY_ROOT, 'tools', 'test-native-host.mjs');
 const CONTRACT_SOURCE_PATH = path.join(HARMONY_ROOT, 'core', 'abi', 'src', 'cmfa_contract.cpp');
+const GO_MAIN_PATH = path.join(HARMONY_ROOT, 'core', 'go', 'cmd', 'cmfa_core', 'main.go');
 
 function extractFunctionBody(body, functionName) {
   const signature = `${functionName}(`;
@@ -41,13 +42,23 @@ test('Task 3 public ABI appends tun and protection symbols without leaking Harmo
 
   assert.match(typesHeader, /CMFA_SOCKET_PROTECT_FAILED/u);
   assert.match(typesHeader, /\btypedef struct cmfa_tun_options\b/u);
+  assert.match(typesHeader, /\bconst char \*config_path\s*;/u);
+  assert.match(typesHeader, /\buint32_t mixed_port\s*;/u);
+  assert.match(typesHeader, /\buint32_t platform_api_level\s*;/u);
+  assert.match(typesHeader, /\buint8_t process_protected\s*;/u);
+  assert.match(typesHeader, /\btypedef struct cmfa_tun_trace_ring\b/u);
   assert.match(typesHeader, /\btypedef struct cmfa_tun_snapshot\b/u);
   assert.match(typesHeader, /\btypedef struct cmfa_tun_trace_collection\b/u);
   assert.match(hostHeader, /\bcmfa_socket_protect_fn\s+protect_socket\s*;/u);
+  assert.match(hostHeader, /\bsession_id\s*;/u);
+  assert.match(hostHeader, /\btrace_id\s*;/u);
+  assert.match(hostHeader, /\bingress\s*;/u);
+  assert.match(hostHeader, /\bprotocol\s*;/u);
   assert.match(coreHeader, /\bcmfa_status cmfa_tun_start\(/u);
   assert.match(coreHeader, /\bcmfa_status cmfa_tun_stop\(/u);
   assert.match(coreHeader, /\bcmfa_status cmfa_tun_runtime_state\(/u);
   assert.match(coreHeader, /\bcmfa_status cmfa_tun_copy_traces\(/u);
+  assert.match(coreHeader, /\bcmfa_status cmfa_tun_copy_traces_ring\(/u);
 
   for (const header of [typesHeader, hostHeader, coreHeader]) {
     assert.doesNotMatch(header, /\bVpnConnection\b/u);
@@ -67,9 +78,10 @@ test('Task 3 native host runner keeps documented cli stable while defaulting to 
 });
 
 test('Task 3 backend seam adds tun hooks and host protection trampoline', async () => {
-  const [backendHeader, backendSource] = await Promise.all([
+  const [backendHeader, backendSource, goMainSource] = await Promise.all([
     fs.readFile(path.join(ENTRY_INCLUDE_DIR, 'cmfa_mihomo_backend.h'), 'utf8'),
     fs.readFile(path.join(ENTRY_SOURCE_DIR, 'cmfa_mihomo_backend.cpp'), 'utf8'),
+    fs.readFile(GO_MAIN_PATH, 'utf8'),
   ]);
 
   assert.match(backendHeader, /register_mihomo_backend/u);
@@ -77,7 +89,15 @@ test('Task 3 backend seam adds tun hooks and host protection trampoline', async 
   assert.match(backendSource, /\bcmfa_mihomo_stop_tun_v1\b/u);
   assert.match(backendSource, /\bcmfa_mihomo_tun_runtime_state_v1\b/u);
   assert.match(backendSource, /\bcmfa_mihomo_tun_copy_traces_v1\b/u);
+  assert.match(backendSource, /\bcmfa_mihomo_tun_copy_traces_ring_v1\b/u);
   assert.match(backendSource, /\bhost_protect_socket\b/u);
+  assert.match(backendHeader, /\bcmfa_host_protect_socket_bridge_v1\b/u);
+  assert.match(backendHeader, /\bcmfa_host_emit_runtime_event_bridge_v1\b/u);
+  assert.match(backendSource, /\bcmfa_host_protect_socket_bridge_v1\b/u);
+  assert.match(backendSource, /\bcmfa_host_emit_runtime_event_bridge_v1\b/u);
+  assert.match(goMainSource, /"cmfa_host_protect_socket_bridge_v1"/u);
+  assert.match(goMainSource, /"cmfa_host_emit_runtime_event_bridge_v1"/u);
+  assert.doesNotMatch(goMainSource, /__ZN4cmfa33protect_socket_for_mihomo_backend/u);
 });
 
 test('Task 3 protect_socket_to_host stays a synchronous trampoline with no detached worker state', async () => {

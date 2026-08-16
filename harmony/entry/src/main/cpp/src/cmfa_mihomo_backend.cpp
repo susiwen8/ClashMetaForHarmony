@@ -46,6 +46,8 @@ extern "C" cmfa_status cmfa_mihomo_tun_runtime_state_v1(cmfa_tun_snapshot *snaps
                                                         cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
 extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection *traces,
                                                       cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
+extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_ring_v1(cmfa_tun_trace_ring *traces,
+                                                           cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
 
 namespace {
 
@@ -331,6 +333,18 @@ cmfa_status tun_copy_traces(void *, cmfa_tun_trace_collection *traces, cmfa_erro
   return cmfa_mihomo_tun_copy_traces_v1(traces, error);
 }
 
+cmfa_status tun_copy_traces_ring(void *, cmfa_tun_trace_ring *traces, cmfa_error *error) {
+  if (traces == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun trace ring must not be null");
+  }
+  std::memset(traces, 0, sizeof(*traces));
+  traces->struct_size = sizeof(*traces);
+  if (cmfa_mihomo_tun_copy_traces_ring_v1 == nullptr) {
+    return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support tun_copy_traces_ring");
+  }
+  return cmfa_mihomo_tun_copy_traces_ring_v1(traces, error);
+}
+
 cmfa_status shutdown(void *, cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_backend_state.mutex);
   g_backend_state.host = {};
@@ -355,6 +369,7 @@ cmfa_backend_api make_backend_api() {
   api.stop_tun = stop_tun;
   api.tun_runtime_state = tun_runtime_state;
   api.tun_copy_traces = tun_copy_traces;
+  api.tun_copy_traces_ring = tun_copy_traces_ring;
   api.shutdown = shutdown;
   return api;
 }
@@ -382,6 +397,10 @@ extern "C" cmfa_status cmfa_mihomo_tun_runtime_state_v1(cmfa_tun_snapshot *, cmf
 
 extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_v1(cmfa_tun_trace_collection *, cmfa_error *error) {
   return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support tun_copy_traces");
+}
+
+extern "C" cmfa_status cmfa_mihomo_tun_copy_traces_ring_v1(cmfa_tun_trace_ring *, cmfa_error *error) {
+  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend test stub does not support tun_copy_traces_ring");
 }
 #endif
 
@@ -442,3 +461,15 @@ cmfa_status cancel_mihomo_probe(const char *probe_run_id, cmfa_error *error) {
 }
 
 } // namespace cmfa
+
+extern "C" cmfa_status cmfa_host_protect_socket_bridge_v1(int fd, uint32_t timeout_ms, cmfa_error *error) {
+  return cmfa::protect_socket_for_mihomo_backend(fd, timeout_ms, error);
+}
+
+extern "C" cmfa_status cmfa_host_emit_runtime_event_bridge_v1(const cmfa_runtime_event *event, cmfa_error *error) {
+  std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+  if (!g_backend_state.attached || g_backend_state.host.host_emit_event == nullptr) {
+    return fail(error, CMFA_BACKEND_ERROR, "host runtime event callback is unavailable");
+  }
+  return g_backend_state.host.host_emit_event(g_backend_state.host.context, event, error);
+}

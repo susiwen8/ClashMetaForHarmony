@@ -448,11 +448,24 @@ cmfa_status validate_tun_traces_output(cmfa_tun_trace_collection *traces, cmfa_e
   return CMFA_OK;
 }
 
+cmfa_status validate_tun_trace_ring_output(cmfa_tun_trace_ring *traces, cmfa_error *error) {
+  if (traces == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun trace ring output must not be null");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
 cmfa_status validate_tun_options(const cmfa_tun_options *options, cmfa_error *error) {
   if (options == nullptr) {
     return fail(error, CMFA_INVALID_ARGUMENT, "tun options must not be null");
   }
-  if (!has_required_size(options->struct_size, sizeof(cmfa_tun_options))) {
+  const size_t legacy_tun_options_size = offsetof(cmfa_tun_options, config_path);
+  if (!has_required_size(options->struct_size, legacy_tun_options_size)) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "tun options struct_size is too small");
+  }
+  if (static_cast<size_t>(options->struct_size) > legacy_tun_options_size &&
+      !has_required_size(options->struct_size, sizeof(cmfa_tun_options))) {
     return fail(error, CMFA_INVALID_ARGUMENT, "tun options struct_size is too small");
   }
   if (options->tun_fd <= 0) {
@@ -526,9 +539,9 @@ cmfa_status validate_tun_trace_value(const cmfa_tun_trace &trace, cmfa_error *er
        "backend tun trace ingress must be ASCII"},
       {trace.protocol, sizeof(trace.protocol), false, true, "backend tun trace protocol must be NUL terminated",
        "backend tun trace protocol must be ASCII"},
-      {trace.source_address, sizeof(trace.source_address), false, false,
+      {trace.source_address, sizeof(trace.source_address), true, false,
        "backend tun trace source_address must be NUL terminated", "backend tun trace source_address must be valid UTF-8"},
-      {trace.destination_address, sizeof(trace.destination_address), false, false,
+      {trace.destination_address, sizeof(trace.destination_address), true, false,
        "backend tun trace destination_address must be NUL terminated",
        "backend tun trace destination_address must be valid UTF-8"},
   };
@@ -572,6 +585,23 @@ cmfa_status validate_tun_traces_value(const cmfa_tun_trace_collection &traces, c
   }
   if (traces.trace_count > CMFA_MAX_TUN_TRACE_COUNT) {
     return fail(error, CMFA_BACKEND_ERROR, "backend tun traces count exceeds CMFA_MAX_TUN_TRACE_COUNT");
+  }
+  for (size_t index = 0; index < traces.trace_count; ++index) {
+    cmfa_status status = validate_tun_trace_value(traces.traces[index], error);
+    if (status != CMFA_OK) {
+      return status;
+    }
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_tun_trace_ring_value(const cmfa_tun_trace_ring &traces, cmfa_error *error) {
+  if (traces.struct_size != sizeof(cmfa_tun_trace_ring)) {
+    return fail(error, CMFA_BACKEND_ERROR, "backend tun trace ring struct_size is invalid");
+  }
+  if (traces.trace_count > CMFA_TUN_TRACE_RING_CAPACITY) {
+    return fail(error, CMFA_BACKEND_ERROR, "backend tun trace ring count exceeds CMFA_TUN_TRACE_RING_CAPACITY");
   }
   for (size_t index = 0; index < traces.trace_count; ++index) {
     cmfa_status status = validate_tun_trace_value(traces.traces[index], error);
@@ -1626,7 +1656,10 @@ extern "C" cmfa_status cmfa_tun_start(const cmfa_tun_options *options,
     return duplicate_status;
   }
 
-  cmfa_tun_options working_options = *options;
+  cmfa_tun_options working_options{};
+  std::memcpy(&working_options,
+              options,
+              std::min(static_cast<size_t>(options->struct_size), sizeof(cmfa_tun_options)));
   working_options.tun_fd = duplicated_fd;
   cmfa_tun_snapshot working_snapshot{};
   initialize_tun_snapshot(&working_snapshot, options->session_id, CMFA_TUN_STARTING);
@@ -1879,6 +1912,52 @@ extern "C" cmfa_status cmfa_tun_copy_traces(cmfa_tun_trace_collection *traces, c
     store_tun_traces_locked(backend_traces);
     *traces = g_contract.tun_traces;
   }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_tun_copy_traces_ring(cmfa_tun_trace_ring *traces, cmfa_error *error) {
+  const cmfa_status output_status = validate_tun_trace_ring_output(traces, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+
+  cmfa_backend_api backend_copy{};
+  bool borrowed_backend = false;
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error, true, &borrowed_backend);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+  if (!borrowed_backend || backend_copy.tun_copy_traces_ring == nullptr) {
+    if (borrowed_backend) {
+      end_backend_call();
+    }
+    std::lock_guard<std::mutex> lock(g_contract.mutex);
+    std::memset(traces, 0, sizeof(*traces));
+    traces->struct_size = sizeof(*traces);
+    traces->trace_count = g_contract.tun_traces.trace_count;
+    for (size_t index = 0; index < g_contract.tun_traces.trace_count; ++index) {
+      traces->traces[index] = g_contract.tun_traces.traces[index];
+    }
+    clear_error(error);
+    return CMFA_OK;
+  }
+
+  cmfa_tun_trace_ring backend_traces{};
+  std::memset(&backend_traces, 0, sizeof(backend_traces));
+  backend_traces.struct_size = sizeof(backend_traces);
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.tun_copy_traces_ring(backend_copy.context, &backend_traces, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    return finalize_backend_error(error, status, "backend tun_copy_traces_ring failed");
+  }
+  const cmfa_status valid_status = validate_tun_trace_ring_value(backend_traces, error);
+  if (valid_status != CMFA_OK) {
+    return valid_status;
+  }
+  *traces = backend_traces;
   clear_error(error);
   return CMFA_OK;
 }

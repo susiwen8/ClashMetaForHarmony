@@ -25,6 +25,7 @@ extern "C" {
 #define CMFA_MAX_TUN_FAILURE_CODE_BYTES ((size_t)64)
 #define CMFA_MAX_TUN_FAILURE_DETAIL_BYTES ((size_t)1024)
 #define CMFA_MAX_TUN_TRACE_COUNT ((size_t)16)
+#define CMFA_TUN_TRACE_RING_CAPACITY ((size_t)256)
 
 typedef enum cmfa_probe_protocol {
   CMFA_PROBE_PROTOCOL_UNSPECIFIED = 0,
@@ -142,6 +143,11 @@ typedef struct cmfa_tun_options {
   uint32_t struct_size;
   int32_t tun_fd;
   char session_id[CMFA_MAX_TUN_SESSION_ID_BYTES];
+  const char *config_path;
+  uint32_t mixed_port;
+  uint32_t platform_api_level;
+  uint8_t process_protected;
+  uint8_t reserved[3];
 } cmfa_tun_options;
 
 typedef struct cmfa_tun_counters {
@@ -175,6 +181,12 @@ typedef struct cmfa_tun_trace_collection {
   uint32_t trace_count;
   cmfa_tun_trace traces[CMFA_MAX_TUN_TRACE_COUNT];
 } cmfa_tun_trace_collection;
+
+typedef struct cmfa_tun_trace_ring {
+  uint32_t struct_size;
+  uint32_t trace_count;
+  cmfa_tun_trace traces[CMFA_TUN_TRACE_RING_CAPACITY];
+} cmfa_tun_trace_ring;
 
 typedef struct cmfa_tun_snapshot {
   uint32_t struct_size;

@@ -2,9 +2,12 @@ package main
 
 /*
 #cgo CFLAGS: -I${SRCDIR}/../../../abi/include
+#include <dlfcn.h>
+#include <stdlib.h>
 #include <stdint.h>
 #include <string.h>
 
+#include "cmfa_host.h"
 #include "cmfa_types.h"
 
 typedef struct cmfa_mihomo_runtime_log_record_v1 {
@@ -31,6 +34,109 @@ static char *cmfa_snapshot_last_error(cmfa_runtime_snapshot *snapshot) {
 
 static char *cmfa_runtime_log_message(cmfa_mihomo_runtime_log_record_v1 *record) {
 	return record->message;
+}
+
+static char *cmfa_tun_options_session_id(cmfa_tun_options *options) {
+	return options->session_id;
+}
+
+static const char *cmfa_tun_options_config_path(cmfa_tun_options *options) {
+	return options->config_path;
+}
+
+static uint32_t cmfa_tun_options_mixed_port(cmfa_tun_options *options) {
+	return options->mixed_port;
+}
+
+static uint32_t cmfa_tun_options_platform_api_level(cmfa_tun_options *options) {
+	return options->platform_api_level;
+}
+
+static uint8_t cmfa_tun_options_process_protected(cmfa_tun_options *options) {
+	return options->process_protected;
+}
+
+static char *cmfa_tun_snapshot_session_id(cmfa_tun_snapshot *snapshot) {
+	return snapshot->session_id;
+}
+
+static char *cmfa_tun_snapshot_failure_code(cmfa_tun_snapshot *snapshot) {
+	return snapshot->failure.code;
+}
+
+static char *cmfa_tun_snapshot_failure_detail(cmfa_tun_snapshot *snapshot) {
+	return snapshot->failure.detail;
+}
+
+static cmfa_tun_trace *cmfa_tun_trace_at(cmfa_tun_trace_collection *collection, size_t index) {
+	return &collection->traces[index];
+}
+
+static char *cmfa_tun_trace_session_id(cmfa_tun_trace *trace) {
+	return trace->session_id;
+}
+
+static char *cmfa_tun_trace_trace_id(cmfa_tun_trace *trace) {
+	return trace->trace_id;
+}
+
+static char *cmfa_tun_trace_ingress(cmfa_tun_trace *trace) {
+	return trace->ingress;
+}
+
+static char *cmfa_tun_trace_protocol(cmfa_tun_trace *trace) {
+	return trace->protocol;
+}
+
+static char *cmfa_tun_trace_source_address(cmfa_tun_trace *trace) {
+	return trace->source_address;
+}
+
+static char *cmfa_tun_trace_destination_address(cmfa_tun_trace *trace) {
+	return trace->destination_address;
+}
+
+static char *cmfa_tun_trace_hashed_tuple(cmfa_tun_trace *trace) {
+	return trace->hashed_tuple;
+}
+
+static char *cmfa_tun_trace_correlation_hash(cmfa_tun_trace *trace) {
+	return trace->correlation_hash;
+}
+
+typedef cmfa_status (*cmfa_host_protect_socket_bridge_fn)(int fd, uint32_t timeout_ms, cmfa_error *error);
+typedef cmfa_status (*cmfa_host_emit_runtime_event_bridge_fn)(const cmfa_runtime_event *event, cmfa_error *error);
+
+static cmfa_host_protect_socket_bridge_fn cmfa_lookup_host_protect_socket_bridge(void) {
+	return (cmfa_host_protect_socket_bridge_fn)dlsym(RTLD_DEFAULT, "cmfa_host_protect_socket_bridge_v1");
+}
+
+static cmfa_host_emit_runtime_event_bridge_fn cmfa_lookup_host_emit_runtime_event_bridge(void) {
+	return (cmfa_host_emit_runtime_event_bridge_fn)dlsym(RTLD_DEFAULT, "cmfa_host_emit_runtime_event_bridge_v1");
+}
+
+static int cmfa_host_protect_socket_bridge_available(void) {
+	return cmfa_lookup_host_protect_socket_bridge() != 0;
+}
+
+static int cmfa_host_emit_runtime_event_bridge_available(void) {
+	return cmfa_lookup_host_emit_runtime_event_bridge() != 0;
+}
+
+static cmfa_status cmfa_call_host_protect_socket_bridge(int fd, uint32_t timeout_ms, cmfa_error *error) {
+	cmfa_host_protect_socket_bridge_fn bridge = cmfa_lookup_host_protect_socket_bridge();
+	if (bridge == 0) {
+		return CMFA_SOCKET_PROTECT_FAILED;
+	}
+	return bridge(fd, timeout_ms, error);
+}
+
+static cmfa_status cmfa_call_host_emit_runtime_event_bridge(const cmfa_runtime_event *event, cmfa_error *error) {
+	cmfa_host_emit_runtime_event_bridge_fn bridge = cmfa_lookup_host_emit_runtime_event_bridge();
+	if (bridge == 0) {
+		return CMFA_BACKEND_ERROR;
+	}
+	return bridge(event, error);
 }
 
 static char *cmfa_probe_result_probe_run_id(cmfa_probe_result *result) {
@@ -107,6 +213,8 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -128,13 +236,110 @@ var (
 	buildInfoCStr       *C.char
 	probeDefaultTimeout = probepkg.DefaultTimeout
 	runtimeLogs         = runtimepkg.NewLogBuffer(32)
+	tunSocketProtector  = backendHostSocketProtector{}
+	tunEventSink        = backendHostEventSink{}
 	localProxy          = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
-		Prepare:             loadConfigForLocalProxy,
-		Logs:                runtimeLogs,
-		MaxLogContextFields: 4,
-		MaxLogFieldBytes:    256,
+		Prepare:               loadConfigForLocalProxy,
+		Events:                tunEventSink,
+		Logs:                  runtimeLogs,
+		SocketProtector:       tunSocketProtector,
+		SocketProtectAPILevel: 21,
+		MaxLogContextFields:   4,
+		MaxLogFieldBytes:      256,
 	})
 )
+
+type backendHostSocketProtector struct{}
+type backendHostEventSink struct{}
+
+func (backendHostSocketProtector) ProtectSocket(fd int, timeout time.Duration) error {
+	if C.cmfa_host_protect_socket_bridge_available() == 0 {
+		return errors.New("host protect_socket callback is unavailable")
+	}
+
+	var message [1024]C.char
+	cErr := C.cmfa_error{
+		code:     C.CMFA_OK,
+		message:  (*C.char)(unsafe.Pointer(&message[0])),
+		capacity: C.size_t(len(message)),
+	}
+	timeoutMs := timeout / time.Millisecond
+	if timeoutMs < 0 {
+		timeoutMs = 0
+	}
+	if timeoutMs > time.Duration(math.MaxUint32) {
+		timeoutMs = time.Duration(math.MaxUint32)
+	}
+	status := C.cmfa_call_host_protect_socket_bridge(C.int(fd), C.uint32_t(timeoutMs), &cErr)
+	if status == C.CMFA_OK {
+		return nil
+	}
+	if detail := C.GoString(cErr.message); detail != "" {
+		return errors.New(detail)
+	}
+	return fmt.Errorf("host protect_socket failed with status %d", int(status))
+}
+
+func (backendHostEventSink) Publish(event runtimepkg.RuntimeEvent) {
+	if event.TraceID == "" && !(event.Kind == "runtime.socket_protect_failed" && event.Code == "VPN_SOCKET_PROTECT_FAILED") {
+		return
+	}
+	_ = hostRuntimeEventBridge(event)
+}
+
+var hostRuntimeEventBridge = emitRuntimeEventToHost
+
+func emitRuntimeEventToHost(event runtimepkg.RuntimeEvent) error {
+	if C.cmfa_host_emit_runtime_event_bridge_available() == 0 {
+		return errors.New("host runtime event bridge is unavailable")
+	}
+
+	var message [1024]C.char
+	cErr := C.cmfa_error{
+		code:     C.CMFA_OK,
+		message:  (*C.char)(unsafe.Pointer(&message[0])),
+		capacity: C.size_t(len(message)),
+	}
+	cEvent := C.cmfa_runtime_event{
+		struct_size: C.uint32_t(C.sizeof_cmfa_runtime_event),
+		state:       encodeRuntimeState(event.State),
+		message:     C.CString(event.Message),
+		code:        C.CString(event.Code),
+		session_id:  C.CString(event.SessionID),
+		trace_id:    C.CString(event.TraceID),
+		ingress:     C.CString(event.Ingress),
+		protocol:    C.CString(event.Protocol),
+	}
+	defer C.free(unsafe.Pointer(cEvent.message))
+	defer C.free(unsafe.Pointer(cEvent.code))
+	defer C.free(unsafe.Pointer(cEvent.session_id))
+	defer C.free(unsafe.Pointer(cEvent.trace_id))
+	defer C.free(unsafe.Pointer(cEvent.ingress))
+	defer C.free(unsafe.Pointer(cEvent.protocol))
+
+	status := C.cmfa_call_host_emit_runtime_event_bridge(&cEvent, &cErr)
+	if status == C.CMFA_OK {
+		return nil
+	}
+	if detail := C.GoString(cErr.message); detail != "" {
+		return errors.New(detail)
+	}
+	return fmt.Errorf("host runtime event bridge failed with status %d", int(status))
+}
+
+func buildTunStartOptions(configPath string, mixedPort uint32, sessionID string, tunFD int, platformAPILevel uint32, processProtected bool) runtimepkg.TunStartOptions {
+	return runtimepkg.TunStartOptions{
+		SessionID: sessionID,
+		TunFD:     tunFD,
+		Base: runtimepkg.StartOptions{
+			ConfigPath:         configPath,
+			HTTPListenAddress:  "127.0.0.1:" + strconv.FormatUint(uint64(mixedPort), 10),
+			SOCKSListenAddress: "127.0.0.1:0",
+		},
+		PlatformAPILevel: int(platformAPILevel),
+		ProcessProtected: processProtected,
+	}
+}
 
 func goCoreVersion() string {
 	return version.Build().Version
@@ -266,6 +471,85 @@ func writeSnapshot(snapshot *C.cmfa_runtime_snapshot, source runtimepkg.Snapshot
 	snapshot.mixed_port = 0
 }
 
+func encodeTunState(state runtimepkg.TunState) C.cmfa_tun_state_value {
+	switch state {
+	case runtimepkg.TunStateStarting:
+		return C.CMFA_TUN_STARTING
+	case runtimepkg.TunStateReady:
+		return C.CMFA_TUN_READY
+	case runtimepkg.TunStateStopped:
+		return C.CMFA_TUN_STOPPED
+	case runtimepkg.TunStateError:
+		return C.CMFA_TUN_ERROR
+	default:
+		return C.CMFA_TUN_IDLE
+	}
+}
+
+func writeTunSnapshot(snapshot *C.cmfa_tun_snapshot, source runtimepkg.TunSnapshot) {
+	if snapshot == nil {
+		return
+	}
+	*snapshot = C.cmfa_tun_snapshot{}
+	snapshot.struct_size = C.uint32_t(C.sizeof_cmfa_tun_snapshot)
+	snapshot.state = encodeTunState(source.State)
+	copyCStringBuffer(C.cmfa_tun_snapshot_session_id(snapshot), C.CMFA_MAX_TUN_SESSION_ID_BYTES, source.SessionID)
+	snapshot.counters.struct_size = C.uint32_t(C.sizeof_cmfa_tun_counters)
+	snapshot.counters.tx_packets = C.uint64_t(source.Counters.TXPackets)
+	snapshot.counters.tx_bytes = C.uint64_t(source.Counters.TXBytes)
+	snapshot.counters.rx_packets = C.uint64_t(source.Counters.RXPackets)
+	snapshot.counters.rx_bytes = C.uint64_t(source.Counters.RXBytes)
+	snapshot.failure.struct_size = C.uint32_t(C.sizeof_cmfa_tun_failure)
+	copyCStringBuffer(C.cmfa_tun_snapshot_failure_code(snapshot), C.CMFA_MAX_TUN_FAILURE_CODE_BYTES, source.Failure.Code)
+	copyCStringBuffer(C.cmfa_tun_snapshot_failure_detail(snapshot), C.CMFA_MAX_TUN_FAILURE_DETAIL_BYTES, source.Failure.Detail)
+}
+
+func writeTunTrace(trace *C.cmfa_tun_trace, source runtimepkg.TunTrace) {
+	if trace == nil {
+		return
+	}
+	*trace = C.cmfa_tun_trace{}
+	trace.struct_size = C.uint32_t(C.sizeof_cmfa_tun_trace)
+	copyCStringBuffer(C.cmfa_tun_trace_session_id(trace), C.CMFA_MAX_TUN_SESSION_ID_BYTES, source.SessionID)
+	copyCStringBuffer(C.cmfa_tun_trace_trace_id(trace), C.CMFA_MAX_TUN_TRACE_ID_BYTES, source.TraceID)
+	copyCStringBuffer(C.cmfa_tun_trace_ingress(trace), C.CMFA_MAX_TUN_INGRESS_BYTES, source.Ingress)
+	copyCStringBuffer(C.cmfa_tun_trace_protocol(trace), C.CMFA_MAX_TUN_PROTOCOL_BYTES, source.Protocol)
+	copyCStringBuffer(C.cmfa_tun_trace_source_address(trace), C.CMFA_MAX_TUN_ADDRESS_BYTES, source.SourceAddress)
+	copyCStringBuffer(C.cmfa_tun_trace_destination_address(trace), C.CMFA_MAX_TUN_ADDRESS_BYTES, source.DestinationAddress)
+	copyCStringBuffer(C.cmfa_tun_trace_hashed_tuple(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.HashedTuple)
+	copyCStringBuffer(C.cmfa_tun_trace_correlation_hash(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.CorrelationHash)
+}
+
+func writeTunTraceCollection(collection *C.cmfa_tun_trace_collection, traces []runtimepkg.TunTrace) {
+	if collection == nil {
+		return
+	}
+	*collection = C.cmfa_tun_trace_collection{}
+	collection.struct_size = C.uint32_t(C.sizeof_cmfa_tun_trace_collection)
+	if len(traces) > int(C.CMFA_MAX_TUN_TRACE_COUNT) {
+		traces = traces[len(traces)-int(C.CMFA_MAX_TUN_TRACE_COUNT):]
+	}
+	collection.trace_count = C.uint32_t(len(traces))
+	for index := range traces {
+		writeTunTrace(C.cmfa_tun_trace_at(collection, C.size_t(index)), traces[index])
+	}
+}
+
+func writeTunTraceRing(collection *C.cmfa_tun_trace_ring, traces []runtimepkg.TunTrace) {
+	if collection == nil {
+		return
+	}
+	*collection = C.cmfa_tun_trace_ring{}
+	collection.struct_size = C.uint32_t(C.sizeof_cmfa_tun_trace_ring)
+	if len(traces) > int(C.CMFA_TUN_TRACE_RING_CAPACITY) {
+		traces = traces[len(traces)-int(C.CMFA_TUN_TRACE_RING_CAPACITY):]
+	}
+	collection.trace_count = C.uint32_t(len(traces))
+	for index := range traces {
+		writeTunTrace((*C.cmfa_tun_trace)(unsafe.Pointer(&collection.traces[index])), traces[index])
+	}
+}
+
 func writeProbeText(target *C.char, capacity int, value string) {
 	copyCStringBuffer(target, C.size_t(capacity), value)
 }
@@ -372,11 +656,34 @@ func failureMessage(snapshot runtimepkg.Snapshot, err error) string {
 	return "runtime operation failed"
 }
 
+func tunFailureMessage(snapshot runtimepkg.TunSnapshot, err error) string {
+	if snapshot.Failure.Detail != "" {
+		return snapshot.Failure.Detail
+	}
+	if err != nil {
+		return err.Error()
+	}
+	return "tun operation failed"
+}
+
 func probeStatus(err error) C.cmfa_status {
 	if err == nil {
 		return C.CMFA_OK
 	}
 	return C.CMFA_BACKEND_ERROR
+}
+
+func tunStatus(snapshot runtimepkg.TunSnapshot, err error) C.cmfa_status {
+	switch {
+	case err == nil:
+		return C.CMFA_OK
+	case errors.Is(err, runtimepkg.ErrRuntimeBusy):
+		return C.CMFA_BUSY
+	case snapshot.Failure.Code == "VPN_SOCKET_PROTECT_FAILED":
+		return C.CMFA_SOCKET_PROTECT_FAILED
+	default:
+		return C.CMFA_BACKEND_ERROR
+	}
 }
 
 //export cmfa_mihomo_core_version_cstr_v1
@@ -443,6 +750,79 @@ func cmfa_mihomo_runtime_state_v1(snapshot *C.cmfa_runtime_snapshot, errorOut *C
 	}
 
 	writeSnapshot(snapshot, localProxy.Snapshot())
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_start_tun_v1
+func cmfa_mihomo_start_tun_v1(options *C.cmfa_tun_options, snapshot *C.cmfa_tun_snapshot, errorOut *C.cmfa_error) C.cmfa_status {
+	if options == nil || snapshot == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "tun options and snapshot must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	result, err := localProxy.StartTun(buildTunStartOptions(
+		C.GoString(C.cmfa_tun_options_config_path(options)),
+		uint32(C.cmfa_tun_options_mixed_port(options)),
+		C.GoString(C.cmfa_tun_options_session_id(options)),
+		int(options.tun_fd),
+		uint32(C.cmfa_tun_options_platform_api_level(options)),
+		C.cmfa_tun_options_process_protected(options) != 0,
+	))
+	writeTunSnapshot(snapshot, result)
+	status := tunStatus(result, err)
+	if err != nil {
+		setError(errorOut, status, tunFailureMessage(result, err))
+		return status
+	}
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_stop_tun_v1
+func cmfa_mihomo_stop_tun_v1(errorOut *C.cmfa_error) C.cmfa_status {
+	_, err := localProxy.Stop()
+	result := localProxy.TunSnapshot()
+	status := tunStatus(result, err)
+	if err != nil {
+		setError(errorOut, status, tunFailureMessage(result, err))
+		return status
+	}
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_tun_runtime_state_v1
+func cmfa_mihomo_tun_runtime_state_v1(snapshot *C.cmfa_tun_snapshot, errorOut *C.cmfa_error) C.cmfa_status {
+	if snapshot == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "tun snapshot must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	writeTunSnapshot(snapshot, localProxy.TunSnapshot())
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_tun_copy_traces_v1
+func cmfa_mihomo_tun_copy_traces_v1(traces *C.cmfa_tun_trace_collection, errorOut *C.cmfa_error) C.cmfa_status {
+	if traces == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "tun traces must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	writeTunTraceCollection(traces, localProxy.CopyTunTraces(int(C.CMFA_MAX_TUN_TRACE_COUNT)))
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_tun_copy_traces_ring_v1
+func cmfa_mihomo_tun_copy_traces_ring_v1(traces *C.cmfa_tun_trace_ring, errorOut *C.cmfa_error) C.cmfa_status {
+	if traces == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "tun trace ring must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+	writeTunTraceRing(traces, localProxy.CopyTunTraces(int(C.CMFA_TUN_TRACE_RING_CAPACITY)))
 	clearError(errorOut)
 	return C.CMFA_OK
 }

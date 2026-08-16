@@ -149,8 +149,8 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
 
   const publicFunctions = [...stripTestBuildAbiSections(coreHeader).matchAll(/^cmfa_status\s+(cmfa_[a-z0-9_]+)\s*\(/gmu)]
       .map((entry) => entry[1]);
-  if (publicFunctions.length !== 12) {
-    throw new Error(`Expected exactly 12 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
+  if (publicFunctions.length !== 13) {
+    throw new Error(`Expected exactly 13 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
   }
   const expectedFunctions = [
     'cmfa_initialize',
@@ -164,6 +164,7 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
     'cmfa_tun_stop',
     'cmfa_tun_runtime_state',
     'cmfa_tun_copy_traces',
+    'cmfa_tun_copy_traces_ring',
     'cmfa_shutdown',
   ];
   if (publicFunctions.join('\n') !== expectedFunctions.join('\n')) {

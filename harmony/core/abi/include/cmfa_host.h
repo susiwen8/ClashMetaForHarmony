@@ -17,6 +17,11 @@ typedef struct cmfa_runtime_event {
   uint32_t struct_size;
   cmfa_runtime_state_value state;
   const char *message;
+  const char *code;
+  const char *session_id;
+  const char *trace_id;
+  const char *ingress;
+  const char *protocol;
 } cmfa_runtime_event;
 
 typedef void (*cmfa_log_sink_fn)(void *context, const cmfa_log_message *message);
@@ -71,6 +76,7 @@ typedef struct cmfa_backend_api {
   cmfa_status (*stop_tun)(void *context, cmfa_error *error);
   cmfa_status (*tun_runtime_state)(void *context, cmfa_tun_snapshot *snapshot, cmfa_error *error);
   cmfa_status (*tun_copy_traces)(void *context, cmfa_tun_trace_collection *traces, cmfa_error *error);
+  cmfa_status (*tun_copy_traces_ring)(void *context, cmfa_tun_trace_ring *traces, cmfa_error *error);
   cmfa_status (*shutdown)(void *context, cmfa_error *error);
 } cmfa_backend_api;
 

@@ -1,12 +1,28 @@
 #ifndef CMFA_MIHOMO_BACKEND_H
 #define CMFA_MIHOMO_BACKEND_H
 
-#include "cmfa_types.h"
+#include "cmfa_host.h"
 
 #if defined(__GNUC__) || defined(__clang__)
 #define CMFA_MIHOMO_BACKEND_HIDDEN __attribute__((visibility("hidden")))
+#define CMFA_MIHOMO_BACKEND_VISIBLE __attribute__((visibility("default")))
 #else
 #define CMFA_MIHOMO_BACKEND_HIDDEN
+#define CMFA_MIHOMO_BACKEND_VISIBLE
+#endif
+
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+CMFA_MIHOMO_BACKEND_VISIBLE cmfa_status cmfa_host_protect_socket_bridge_v1(int fd,
+                                                                           uint32_t timeout_ms,
+                                                                           cmfa_error *error);
+CMFA_MIHOMO_BACKEND_VISIBLE cmfa_status cmfa_host_emit_runtime_event_bridge_v1(const cmfa_runtime_event *event,
+                                                                                cmfa_error *error);
+
+#ifdef __cplusplus
+}
 #endif
 
 namespace cmfa {

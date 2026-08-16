@@ -23,6 +23,8 @@
 #if defined(__unix__) || defined(__APPLE__)
 #include <cerrno>
 #include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/wait.h>
 #include <unistd.h>
 #endif
 
@@ -52,6 +54,12 @@ void expect_eq(const T &actual, const U &expected, const std::string &message) {
   if (!(actual == expected)) {
     throw TestFailure(message + " (actual=" + std::to_string(static_cast<long long>(actual)) +
                       ", expected=" + std::to_string(static_cast<long long>(expected)) + ")");
+  }
+}
+
+void expect_string_eq(const std::string &actual, const std::string &expected, const std::string &message) {
+  if (actual != expected) {
+    throw TestFailure(message + " (actual=\"" + actual + "\", expected=\"" + expected + "\")");
   }
 }
 
@@ -166,10 +174,15 @@ struct FakeTunBackend {
   cmfa_status start_status = CMFA_OK;
   cmfa_status protect_status = CMFA_OK;
   int received_fd = -1;
+  const char *received_config_path = reinterpret_cast<const char *>(0x1);
+  uint32_t received_mixed_port = 0xffffffffU;
+  uint32_t received_platform_api_level = 0xffffffffU;
+  uint8_t received_process_protected = 0xffU;
   int protect_fd = -1;
   uint32_t protect_timeout_ms = 0;
   cmfa_tun_snapshot snapshot{};
   cmfa_tun_trace_collection traces{};
+  std::vector<cmfa_tun_trace> trace_ring;
 
   FakeTunBackend() {
     snapshot.struct_size = sizeof(snapshot);
@@ -199,6 +212,48 @@ struct PipePair {
     }
     if (write_fd >= 0) {
       (void)::close(write_fd);
+    }
+  }
+};
+
+template <typename ChildFn>
+void expect_child_success_without_signal(ChildFn child_fn, const std::string &message) {
+  const pid_t child = ::fork();
+  expect(child >= 0, "fork should succeed");
+  if (child == 0) {
+    const int exit_code = child_fn();
+    _exit(exit_code);
+  }
+
+  int status = 0;
+  const pid_t waited = ::waitpid(child, &status, 0);
+  expect_eq(waited, child, "waitpid should return child pid");
+  if (WIFSIGNALED(status)) {
+    throw TestFailure(message + " (child signaled " + std::to_string(WTERMSIG(status)) + ")");
+  }
+  if (!WIFEXITED(status) || WEXITSTATUS(status) != 0) {
+    throw TestFailure(message + " (child exit " + std::to_string(WEXITSTATUS(status)) + ")");
+  }
+}
+
+struct GuardPageRegion {
+  char *base = nullptr;
+  size_t page_size = 0;
+  char *prefix = nullptr;
+
+  explicit GuardPageRegion(size_t prefix_size) {
+    page_size = static_cast<size_t>(::sysconf(_SC_PAGESIZE));
+    void *mapping = ::mmap(nullptr, page_size * 2, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANON, -1, 0);
+    expect(mapping != MAP_FAILED, "mmap should succeed");
+    base = static_cast<char *>(mapping);
+    const int protect_status = ::mprotect(base + page_size, page_size, PROT_NONE);
+    expect_eq(protect_status, 0, "mprotect should succeed");
+    prefix = base + (page_size - prefix_size);
+  }
+
+  ~GuardPageRegion() {
+    if (base != nullptr) {
+      (void)::munmap(base, page_size * 2);
     }
   }
 };
@@ -282,6 +337,10 @@ cmfa_status backend_start_tun(void *context,
   std::lock_guard<std::mutex> lock(backend->mutex);
   backend->start_called = true;
   backend->received_fd = options->tun_fd;
+  backend->received_config_path = options->config_path;
+  backend->received_mixed_port = options->mixed_port;
+  backend->received_platform_api_level = options->platform_api_level;
+  backend->received_process_protected = options->process_protected;
   if (backend->protect_on_start) {
     backend->protect_status =
         backend->host.host_protect_socket(backend->host.context, backend->protect_fd, 3000U, error);
@@ -320,6 +379,19 @@ cmfa_status backend_tun_copy_traces(void *context, cmfa_tun_trace_collection *tr
   return CMFA_OK;
 }
 
+cmfa_status backend_tun_copy_traces_ring(void *context, cmfa_tun_trace_ring *traces, cmfa_error *) {
+  auto *backend = static_cast<FakeTunBackend *>(context);
+  std::lock_guard<std::mutex> lock(backend->mutex);
+  std::memset(traces, 0, sizeof(*traces));
+  traces->struct_size = sizeof(*traces);
+  const size_t count = std::min<size_t>(backend->trace_ring.size(), CMFA_TUN_TRACE_RING_CAPACITY);
+  traces->trace_count = static_cast<uint32_t>(count);
+  for (size_t index = 0; index < count; index += 1) {
+    traces->traces[index] = backend->trace_ring[index];
+  }
+  return CMFA_OK;
+}
+
 cmfa_status backend_shutdown(void *context, cmfa_error *) {
   auto *backend = static_cast<FakeTunBackend *>(context);
   std::lock_guard<std::mutex> lock(backend->mutex);
@@ -343,6 +415,7 @@ cmfa_backend_api make_backend_api(FakeTunBackend *backend) {
   api.stop_tun = backend_stop_tun;
   api.tun_runtime_state = backend_tun_runtime_state;
   api.tun_copy_traces = backend_tun_copy_traces;
+  api.tun_copy_traces_ring = backend_tun_copy_traces_ring;
   api.shutdown = backend_shutdown;
   return api;
 }
@@ -373,6 +446,10 @@ cmfa_tun_options make_options(int fd, const char *session_id = "session-1") {
   options.struct_size = sizeof(options);
   options.tun_fd = fd;
   std::strncpy(options.session_id, session_id, sizeof(options.session_id) - 1);
+  options.config_path = "configs/phase4.yaml";
+  options.mixed_port = 7890U;
+  options.platform_api_level = 23U;
+  options.process_protected = 1;
   return options;
 }
 
@@ -438,6 +515,33 @@ void test_invalid_tun_option_shapes_fail_safely() {
             "oversized tun options with invalid fd should fail safely");
 
   reset_contract();
+}
+
+void test_legacy_short_tun_options_do_not_overread_appended_fields() {
+#if defined(__unix__) || defined(__APPLE__)
+  FakeTunBackend backend;
+  ProtectCapture capture;
+  initialize_backend(&backend, &capture, offsetof(cmfa_host_callbacks, protect_socket));
+  PipePair pipe_pair;
+
+  const size_t legacy_size = offsetof(cmfa_tun_options, config_path);
+  GuardPageRegion region(legacy_size);
+  std::memset(region.prefix, 0, legacy_size);
+  auto *options = reinterpret_cast<cmfa_tun_options *>(region.prefix);
+  options->struct_size = static_cast<uint32_t>(legacy_size);
+  options->tun_fd = pipe_pair.read_fd;
+  std::strncpy(options->session_id, "session-1", sizeof(options->session_id) - 1);
+
+  cmfa_tun_snapshot snapshot{};
+  snapshot.struct_size = sizeof(snapshot);
+  ErrorBox error;
+  const cmfa_status status = cmfa_tun_start(options, &snapshot, &error.error);
+  expect(status == CMFA_INVALID_ARGUMENT || status == CMFA_OK, "legacy short tun options should stay type-safe");
+  expect(backend.received_config_path == nullptr, "legacy short tun options must zero appended config_path");
+  expect_eq(backend.received_mixed_port, 0U, "legacy short tun options must zero appended mixed_port");
+  expect_eq(backend.received_platform_api_level, 0U, "legacy short tun options must zero appended platform_api_level");
+  expect_eq(backend.received_process_protected, static_cast<uint8_t>(0), "legacy short tun options must zero appended process_protected");
+#endif
 }
 
 void test_fd_duplication_and_rollback_rules() {
@@ -647,18 +751,66 @@ void test_invalid_trace_hashes_fail_closed() {
 #endif
 }
 
+void test_empty_redacted_trace_addresses_are_allowed() {
+  FakeTunBackend backend;
+  ProtectCapture capture;
+  initialize_backend(&backend, &capture);
+  std::memset(backend.traces.traces[0].source_address, 0, sizeof(backend.traces.traces[0].source_address));
+  std::memset(backend.traces.traces[0].destination_address, 0, sizeof(backend.traces.traces[0].destination_address));
+
+  cmfa_tun_trace_collection traces{};
+  ErrorBox error;
+  expect_eq(cmfa_tun_copy_traces(&traces, &error.error), CMFA_OK, "empty redacted trace addresses should export");
+}
+
+void test_trace_paging_reads_full_ring() {
+  FakeTunBackend backend;
+  ProtectCapture capture;
+  initialize_backend(&backend, &capture);
+  backend.trace_ring.resize(CMFA_TUN_TRACE_RING_CAPACITY);
+  for (size_t index = 0; index < backend.trace_ring.size(); index += 1) {
+    auto &trace = backend.trace_ring[index];
+    trace.struct_size = sizeof(trace);
+    std::snprintf(trace.session_id, sizeof(trace.session_id), "%s", "session-1");
+    std::snprintf(trace.trace_id, sizeof(trace.trace_id), "trace-%03zu", index);
+    std::snprintf(trace.ingress, sizeof(trace.ingress), "%s", "tun");
+    std::snprintf(trace.protocol, sizeof(trace.protocol), "%s", "tcp");
+    std::snprintf(trace.source_address, sizeof(trace.source_address), "10.111.222.%zu:4%03zu", (index % 200) + 1, index);
+    std::snprintf(trace.destination_address, sizeof(trace.destination_address), "1.1.1.%zu:443", (index % 200) + 1);
+    std::snprintf(trace.hashed_tuple, sizeof(trace.hashed_tuple),
+                  "%064zu", index);
+  }
+
+  cmfa_tun_trace_ring traces{};
+  traces.struct_size = sizeof(traces);
+  ErrorBox error;
+  std::vector<std::string> seen_ids;
+  expect_eq(cmfa_tun_copy_traces_ring(&traces, &error.error), CMFA_OK, "trace ring should succeed");
+  for (uint32_t index = 0; index < traces.trace_count; index += 1) {
+    seen_ids.emplace_back(traces.traces[index].trace_id);
+  }
+
+  expect_eq(seen_ids.size(), backend.trace_ring.size(), "ring API should return every stored trace");
+  expect_string_eq(seen_ids.front(), "trace-000", "first paged trace should be oldest");
+  expect_string_eq(seen_ids.back(), "trace-255", "last paged trace should be newest");
+}
+
 } // namespace
 
 int main() {
   const std::vector<std::pair<const char *, std::function<void()>>> tests = {
       {"legacy_host_initializes_and_tun_structs_are_owned", test_legacy_host_initializes_and_tun_structs_are_owned},
       {"invalid_tun_option_shapes_fail_safely", test_invalid_tun_option_shapes_fail_safely},
+      {"legacy_short_tun_options_do_not_overread_appended_fields",
+       test_legacy_short_tun_options_do_not_overread_appended_fields},
       {"fd_duplication_and_rollback_rules", test_fd_duplication_and_rollback_rules},
       {"invalid_fd_and_dup_failure_never_reach_backend", test_invalid_fd_and_dup_failure_never_reach_backend},
       {"socket_protection_success_and_fail_closed", test_socket_protection_success_and_fail_closed},
       {"missing_timeout_reentrant_and_shutdown_protection_failures",
        test_missing_timeout_reentrant_and_shutdown_protection_failures},
       {"invalid_trace_hashes_fail_closed", test_invalid_trace_hashes_fail_closed},
+      {"empty_redacted_trace_addresses_are_allowed", test_empty_redacted_trace_addresses_are_allowed},
+      {"trace_paging_reads_full_ring", test_trace_paging_reads_full_ring},
   };
 
   for (const auto &entry : tests) {

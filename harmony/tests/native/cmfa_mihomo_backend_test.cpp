@@ -12,6 +12,7 @@
 #include <vector>
 
 #if defined(__unix__) || defined(__APPLE__)
+#include <dlfcn.h>
 #include <sys/mman.h>
 #include <sys/wait.h>
 #include <unistd.h>
@@ -108,8 +109,13 @@ struct HostCapture {
   uint32_t log_count = 0;
   uint32_t event_count = 0;
   std::vector<cmfa_runtime_state_value> states;
+  std::vector<std::string> event_codes;
+  std::vector<std::string> event_session_ids;
+  std::vector<std::string> event_trace_ids;
   std::vector<cmfa_log_level> log_levels;
   std::vector<std::string> log_messages;
+  std::vector<int> protected_fds;
+  std::vector<uint32_t> protect_timeouts;
 };
 
 void capture_log(void *context, const cmfa_log_message *message) {
@@ -123,14 +129,25 @@ void capture_event(void *context, const cmfa_runtime_event *event) {
   auto *capture = static_cast<HostCapture *>(context);
   capture->event_count += 1;
   capture->states.push_back(event != nullptr ? event->state : CMFA_RUNTIME_ERROR);
+  capture->event_codes.push_back(event != nullptr && event->code != nullptr ? event->code : "");
+  capture->event_session_ids.push_back(event != nullptr && event->session_id != nullptr ? event->session_id : "");
+  capture->event_trace_ids.push_back(event != nullptr && event->trace_id != nullptr ? event->trace_id : "");
 }
 
-cmfa_host_callbacks make_host_callbacks(HostCapture *capture) {
+cmfa_status capture_protect_socket(void *context, int fd, uint32_t timeout_ms) {
+  auto *capture = static_cast<HostCapture *>(context);
+  capture->protected_fds.push_back(fd);
+  capture->protect_timeouts.push_back(timeout_ms);
+  return CMFA_OK;
+}
+
+cmfa_host_callbacks make_host_callbacks(HostCapture *capture, cmfa_socket_protect_fn protect_socket = nullptr) {
   cmfa_host_callbacks callbacks{};
   callbacks.struct_size = sizeof(callbacks);
   callbacks.context = capture;
   callbacks.log_sink = capture_log;
   callbacks.event_sink = capture_event;
+  callbacks.protect_socket = protect_socket;
   return callbacks;
 }
 
@@ -563,6 +580,28 @@ void test_shutdown_and_repeated_unregister_are_safe() {
   reset_contract();
 }
 
+void test_visible_host_protect_bridge_symbol_can_be_found_and_called() {
+  reset_contract();
+  HostCapture capture;
+  ErrorBox error;
+  expect_eq(cmfa::register_mihomo_backend(&error.error), CMFA_OK, "register should succeed");
+  auto callbacks = make_host_callbacks(&capture, capture_protect_socket);
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+#if defined(__unix__) || defined(__APPLE__)
+  void *symbol = dlsym(RTLD_DEFAULT, "cmfa_host_protect_socket_bridge_v1");
+  expect(symbol != nullptr, "visible host protect bridge symbol should be discoverable via dlsym");
+  using bridge_fn = cmfa_status (*)(int, uint32_t, cmfa_error *);
+  auto bridge = reinterpret_cast<bridge_fn>(symbol);
+  expect_eq(bridge(77, 1234U, &error.error), CMFA_OK, "visible host protect bridge should call through successfully");
+  expect_eq(capture.protected_fds.size(), static_cast<size_t>(1), "protect callback should be invoked exactly once");
+  expect_eq(capture.protected_fds[0], 77, "protect callback should receive fd");
+  expect_eq(capture.protect_timeouts[0], 1234U, "protect callback should receive timeout");
+#endif
+
+  reset_contract();
+}
+
 } // namespace
 
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void) { return g_raw_version; }
@@ -670,6 +709,8 @@ int main() {
       {"cancel probe forwards run id to go backend", test_cancel_probe_forwards_run_id_to_go_backend},
       {"cancel probe rejects empty run id", test_cancel_probe_rejects_empty_run_id},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
+      {"visible host protect bridge symbol can be found and called",
+       test_visible_host_protect_bridge_symbol_can_be_found_and_called},
   };
 
   size_t failures = 0;

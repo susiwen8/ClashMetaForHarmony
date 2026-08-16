@@ -52,6 +52,7 @@ type fakeListener struct {
 	address string
 	closed  bool
 	closeErr error
+	closeFn  func() error
 }
 
 func (l *fakeListener) Address() string {
@@ -62,6 +63,9 @@ func (l *fakeListener) Close() error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 	l.closed = true
+	if l.closeFn != nil {
+		return l.closeFn()
+	}
 	return l.closeErr
 }
 
@@ -472,7 +476,10 @@ func TestLocalProxyPartialBindFailureReportsCleanupFailureAndConsistentSnapshot(
 	if snapshot.LastError != err.Error() {
 		t.Fatalf("snapshot.LastError = %q want err %q", snapshot.LastError, err.Error())
 	}
-	if !strings.Contains(snapshot.LastError, "cleanup HTTP listener failed") {
+	if !strings.Contains(snapshot.LastError, "bind SOCKS listener 127.0.0.1:43011: bind denied") {
+		t.Fatalf("snapshot.LastError = %q", snapshot.LastError)
+	}
+	if !strings.Contains(snapshot.LastError, "cleanup denied") {
 		t.Fatalf("snapshot.LastError = %q", snapshot.LastError)
 	}
 	if strings.Contains(snapshot.LastError, "hunter2") {

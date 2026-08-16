@@ -8,6 +8,11 @@ type RuntimeEvent struct {
 	Message      string
 	HTTPAddress  string
 	SOCKSAddress string
+	Code         string
+	TraceID      string
+	SessionID    string
+	Ingress      string
+	Protocol     string
 }
 
 type EventSink interface {
