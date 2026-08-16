@@ -153,10 +153,11 @@
       "additionalProperties": false,
       "required": ["tcp", "udp", "dns", "ipv4"],
       "properties": {
-        "tcp": { "$ref": "#/$defs/correlatedTraffic" },
-        "udp": { "$ref": "#/$defs/correlatedTraffic" },
-        "dns": { "$ref": "#/$defs/correlatedTraffic" },
-        "ipv4": { "$ref": "#/$defs/correlatedTraffic" }
+        "tcp": { "$ref": "#/$defs/trafficTcp" },
+        "udp": { "$ref": "#/$defs/trafficUdp" },
+        "dns": { "$ref": "#/$defs/trafficDns" },
+        "ipv4": { "$ref": "#/$defs/trafficIpv4" },
+        "ipv6": { "$ref": "#/$defs/trafficIpv6" }
       }
     },
     "localEvidence": {
@@ -227,7 +228,7 @@
         "bundleName": { "const": "com.github.kr328.clash.harmony.trafficprobe" }
       }
     },
-    "correlatedTraffic": {
+    "trafficTcp": {
       "type": "object",
       "additionalProperties": false,
       "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
@@ -241,7 +242,7 @@
           "required": ["ingress", "event"],
           "properties": {
             "ingress": { "const": "tun" },
-            "event": { "type": "string", "minLength": 1 }
+            "event": { "const": "tcp-connect" }
           }
         },
         "coreEvent": {
@@ -249,10 +250,131 @@
           "additionalProperties": false,
           "required": ["event"],
           "properties": {
-            "event": { "type": "string", "minLength": 1 }
+            "event": { "const": "mihomo.tcp" }
           }
         }
       }
+    },
+    "trafficUdp": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "properties": {
+        "result": { "const": "pass" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 },
+        "captureTrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ingress", "event"],
+          "properties": {
+            "ingress": { "const": "tun" },
+            "event": { "const": "udp-associate" }
+          }
+        },
+        "coreEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": {
+            "event": { "const": "mihomo.udp" }
+          }
+        }
+      }
+    },
+    "trafficDns": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "properties": {
+        "result": { "const": "pass" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 },
+        "captureTrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ingress", "event"],
+          "properties": {
+            "ingress": { "const": "tun" },
+            "event": { "const": "dns-query" }
+          }
+        },
+        "coreEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": {
+            "event": { "const": "mihomo.dns" }
+          }
+        }
+      }
+    },
+    "trafficIpv4": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "properties": {
+        "result": { "const": "pass" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 },
+        "captureTrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ingress", "event"],
+          "properties": {
+            "ingress": { "const": "tun" },
+            "event": { "const": "ipv4-flow" }
+          }
+        },
+        "coreEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["event"],
+          "properties": {
+            "event": { "const": "mihomo.ipv4" }
+          }
+        }
+      }
+    },
+    "trafficIpv6": {
+      "oneOf": [
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+          "properties": {
+            "result": { "const": "pass" },
+            "sessionId": { "type": "string", "minLength": 1 },
+            "traceId": { "type": "string", "minLength": 1 },
+            "captureTrace": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["ingress", "event"],
+              "properties": {
+                "ingress": { "const": "tun" },
+                "event": { "const": "ipv6-flow" }
+              }
+            },
+            "coreEvent": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["event"],
+              "properties": {
+                "event": { "const": "mihomo.ipv6" }
+              }
+            }
+          }
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "reason"],
+          "properties": {
+            "result": { "const": "not-run" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
     },
     "localHttpEvidence": {
       "type": "object",

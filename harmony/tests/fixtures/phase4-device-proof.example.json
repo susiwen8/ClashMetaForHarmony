@@ -104,6 +104,10 @@
       "coreEvent": {
         "event": "mihomo.ipv4"
       }
+    },
+    "ipv6": {
+      "result": "not-run",
+      "reason": "network-not-provisioned"
     }
   },
   "localEvidence": {

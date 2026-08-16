@@ -47,6 +47,13 @@ const leakedWindowsForwardSlashSigningPathValue = joinFragments(['C', ':/', 'Us'
 const leakedSecretKey = joinFragments(['secret', 'Token']);
 const leakedSerialKey = joinFragments(['serial', 'Number']);
 const REQUIRED_TRAFFIC_KINDS = ['tcp', 'udp', 'dns', 'ipv4'];
+const TRAFFIC_EVENT_CONTRACT = {
+  tcp: { capture: 'tcp-connect', core: 'mihomo.tcp' },
+  udp: { capture: 'udp-associate', core: 'mihomo.udp' },
+  dns: { capture: 'dns-query', core: 'mihomo.dns' },
+  ipv4: { capture: 'ipv4-flow', core: 'mihomo.ipv4' },
+  ipv6: { capture: 'ipv6-flow', core: 'mihomo.ipv6' }
+};
 const BUNDLE_HAP_HASH_ORDER = ['production', 'probe'];
 const CORE_NATIVE_HASH_ORDER = ['addon', 'mihomo'];
 const ALLOWED_TOP_LEVEL_KEYS = new Set([
@@ -145,30 +152,31 @@ function createValidPhase4Proof() {
         result: 'pass',
         sessionId: 'session-tcp',
         traceId: 'trace-tcp',
-        captureTrace: { ingress: 'tun', event: 'tcp-connect' },
-        coreEvent: { event: 'mihomo.tcp' }
+        captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.tcp.capture },
+        coreEvent: { event: TRAFFIC_EVENT_CONTRACT.tcp.core }
       },
       udp: {
         result: 'pass',
         sessionId: 'session-udp',
         traceId: 'trace-udp',
-        captureTrace: { ingress: 'tun', event: 'udp-associate' },
-        coreEvent: { event: 'mihomo.udp' }
+        captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.udp.capture },
+        coreEvent: { event: TRAFFIC_EVENT_CONTRACT.udp.core }
       },
       dns: {
         result: 'pass',
         sessionId: 'session-dns',
         traceId: 'trace-dns',
-        captureTrace: { ingress: 'tun', event: 'dns-query' },
-        coreEvent: { event: 'mihomo.dns' }
+        captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.dns.capture },
+        coreEvent: { event: TRAFFIC_EVENT_CONTRACT.dns.core }
       },
       ipv4: {
         result: 'pass',
         sessionId: 'session-ipv4',
         traceId: 'trace-ipv4',
-        captureTrace: { ingress: 'tun', event: 'ipv4-flow' },
-        coreEvent: { event: 'mihomo.ipv4' }
-      }
+        captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.ipv4.capture },
+        coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv4.core }
+      },
+      ipv6: { result: 'not-run', reason: 'network-not-provisioned' }
     },
     localEvidence: {
       http: { result: 'pass', ingress: 'local-http', sessionId: 'local-http-session', traceId: 'local-http-trace' },
@@ -293,6 +301,7 @@ function validatePhase4Proof(proof) {
 
   for (const key of REQUIRED_TRAFFIC_KINDS) {
     const entry = proof.traffic?.[key];
+    const expected = TRAFFIC_EVENT_CONTRACT[key];
     if (
       !isObject(entry) ||
       entry.result !== 'pass' ||
@@ -300,17 +309,41 @@ function validatePhase4Proof(proof) {
       typeof entry.traceId !== 'string' ||
       !isObject(entry.captureTrace) ||
       entry.captureTrace.ingress !== 'tun' ||
-      typeof entry.captureTrace.event !== 'string' ||
-      entry.captureTrace.event.length === 0 ||
+      entry.captureTrace.event !== expected.capture ||
       !isObject(entry.coreEvent) ||
-      typeof entry.coreEvent.event !== 'string' ||
-      entry.coreEvent.event.length === 0
+      entry.coreEvent.event !== expected.core
     ) {
       errors.push(`traffic.${key} must be one canonical correlated evidence object`);
     }
   }
   if (isObject(proof.traffic) && 'ipv6' in proof.traffic) {
-    errors.push('traffic must not publish a separate ipv6 probe result');
+    const ipv6 = proof.traffic.ipv6;
+    if (
+      isObject(ipv6) &&
+      ipv6.result === 'pass' &&
+      typeof ipv6.sessionId === 'string' &&
+      typeof ipv6.traceId === 'string' &&
+      isObject(ipv6.captureTrace) &&
+      ipv6.captureTrace.ingress === 'tun' &&
+      ipv6.captureTrace.event === TRAFFIC_EVENT_CONTRACT.ipv6.capture &&
+      isObject(ipv6.coreEvent) &&
+      ipv6.coreEvent.event === TRAFFIC_EVENT_CONTRACT.ipv6.core
+    ) {
+      // valid pass branch
+    } else if (
+      isObject(ipv6) &&
+      ipv6.result === 'not-run' &&
+      typeof ipv6.reason === 'string' &&
+      ipv6.reason.length > 0 &&
+      !Object.hasOwn(ipv6, 'sessionId') &&
+      !Object.hasOwn(ipv6, 'traceId') &&
+      !Object.hasOwn(ipv6, 'captureTrace') &&
+      !Object.hasOwn(ipv6, 'coreEvent')
+    ) {
+      // valid not-run branch
+    } else {
+      errors.push('traffic.ipv6 must be either a full canonical ipv6 correlated evidence object or a not-run reason object');
+    }
   }
 
   for (const [key, expectedIngress] of Object.entries({ http: 'local-http', socks: 'local-socks' })) {
@@ -394,14 +427,22 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.assertions.properties.blockedApplications.items, false);
   assert.equal(schema.$defs.localHttpEvidence.properties.ingress.const, 'local-http');
   assert.equal(schema.$defs.localSocksEvidence.properties.ingress.const, 'local-socks');
-  assert.equal('ipv6' in schema.properties.traffic.properties, false);
+  assert.equal('ipv6' in schema.properties.traffic.properties, true);
   assert.deepEqual(
     Object.keys(schema.properties.traffic.properties),
-    REQUIRED_TRAFFIC_KINDS
+    [...REQUIRED_TRAFFIC_KINDS, 'ipv6']
   );
-  assert.equal(schema.$defs.correlatedTraffic.additionalProperties, false);
-  assert.equal(schema.$defs.correlatedTraffic.properties.captureTrace.additionalProperties, false);
-  assert.equal(schema.$defs.correlatedTraffic.properties.coreEvent.additionalProperties, false);
+  assert.equal(schema.$defs.trafficTcp.properties.captureTrace.properties.event.const, TRAFFIC_EVENT_CONTRACT.tcp.capture);
+  assert.equal(schema.$defs.trafficTcp.properties.coreEvent.properties.event.const, TRAFFIC_EVENT_CONTRACT.tcp.core);
+  assert.equal(schema.$defs.trafficUdp.properties.captureTrace.properties.event.const, TRAFFIC_EVENT_CONTRACT.udp.capture);
+  assert.equal(schema.$defs.trafficUdp.properties.coreEvent.properties.event.const, TRAFFIC_EVENT_CONTRACT.udp.core);
+  assert.equal(schema.$defs.trafficDns.properties.captureTrace.properties.event.const, TRAFFIC_EVENT_CONTRACT.dns.capture);
+  assert.equal(schema.$defs.trafficDns.properties.coreEvent.properties.event.const, TRAFFIC_EVENT_CONTRACT.dns.core);
+  assert.equal(schema.$defs.trafficIpv4.properties.captureTrace.properties.event.const, TRAFFIC_EVENT_CONTRACT.ipv4.capture);
+  assert.equal(schema.$defs.trafficIpv4.properties.coreEvent.properties.event.const, TRAFFIC_EVENT_CONTRACT.ipv4.core);
+  assert.equal(schema.$defs.trafficIpv6.oneOf.length, 2);
+  assert.equal(schema.$defs.trafficIpv6.oneOf[0].properties.captureTrace.properties.event.const, TRAFFIC_EVENT_CONTRACT.ipv6.capture);
+  assert.equal(schema.$defs.trafficIpv6.oneOf[0].properties.coreEvent.properties.event.const, TRAFFIC_EVENT_CONTRACT.ipv6.core);
 
   assert.deepEqual(example, validProof);
   assert.deepEqual(validatePhase4Proof(validProof), { valid: true, errors: [] });
@@ -437,8 +478,21 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['socks ingress broke', (proof) => { proof.localEvidence.socks.ingress = 'tun'; }, /localEvidence\.socks/u],
     ['unexpected top-level correlations field leaked', (proof) => { proof.correlations = {}; }, /unexpected key correlations/u],
     ['capture ingress broke', (proof) => { proof.traffic.tcp.captureTrace.ingress = 'local-http'; }, /traffic\.tcp/u],
+    ['tcp capture event drifted', (proof) => { proof.traffic.tcp.captureTrace.event = TRAFFIC_EVENT_CONTRACT.udp.capture; }, /traffic\.tcp/u],
+    ['tcp core event drifted', (proof) => { proof.traffic.tcp.coreEvent.event = TRAFFIC_EVENT_CONTRACT.udp.core; }, /traffic\.tcp/u],
     ['capture trace omitted', (proof) => { delete proof.traffic.tcp.captureTrace; }, /traffic\.tcp/u],
-    ['core event omitted', (proof) => { delete proof.traffic.tcp.coreEvent; }, /traffic\.tcp/u]
+    ['core event omitted', (proof) => { delete proof.traffic.tcp.coreEvent; }, /traffic\.tcp/u],
+    ['ipv6 not-run missing reason', (proof) => { proof.traffic.ipv6 = { result: 'not-run' }; }, /ipv6/u],
+    ['ipv6 partial pass evidence', (proof) => { proof.traffic.ipv6 = { result: 'pass', sessionId: 'session-ipv6', traceId: 'trace-ipv6' }; }, /ipv6/u],
+    ['ipv6 wrong capture event', (proof) => {
+      proof.traffic.ipv6 = {
+        result: 'pass',
+        sessionId: 'session-ipv6',
+        traceId: 'trace-ipv6',
+        captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.tcp.capture },
+        coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv6.core }
+      };
+    }, /ipv6/u]
   ];
 
   for (const [label, mutate, expected] of cases) {
@@ -460,4 +514,20 @@ test('Phase 4 bundle hash ordering stays canonical and non-redundant', () => {
   assert.equal('hapSha256' in validProof.bundles.probe, false);
   assert.equal('nativeSha256' in validProof.bundles.production, false);
   assert.equal('nativeSha256' in validProof.bundles.probe, false);
+});
+
+test('Phase 4 proof validation accepts canonical ipv6 pass and not-run branches', () => {
+  const notRunProof = createValidPhase4Proof();
+  notRunProof.traffic.ipv6 = { result: 'not-run', reason: 'network-not-provisioned' };
+  assert.deepEqual(validatePhase4Proof(notRunProof), { valid: true, errors: [] });
+
+  const passProof = createValidPhase4Proof();
+  passProof.traffic.ipv6 = {
+    result: 'pass',
+    sessionId: 'session-ipv6',
+    traceId: 'trace-ipv6',
+    captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.ipv6.capture },
+    coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv6.core }
+  };
+  assert.deepEqual(validatePhase4Proof(passProof), { valid: true, errors: [] });
 });
