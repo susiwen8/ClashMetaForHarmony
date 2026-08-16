@@ -33,12 +33,17 @@ function isSha256(value) {
 }
 
 const sensitiveExtensions = ['p12', joinFragments(['p', 'fx']), 'pem', 'cer', 'p7b'];
+const uriSchemePattern = /\b[a-z][a-z0-9+.-]*:\/\//iu;
 const signingPathPattern = new RegExp(
-  String.raw`(?:^|/)[^/\s]+\.(?:${sensitiveExtensions.join('|')})$`,
+  String.raw`(?:^|[\\/])[^\\/\s]+\.(?:${sensitiveExtensions.join('|')})$`,
   'iu'
 );
 const leakedUrlValue = joinFragments(['https', '://device.example.invalid/model']);
+const leakedFileUrlValue = joinFragments(['file', ':///tmp/device-proof/local-evidence']);
+const leakedSshUrlValue = joinFragments(['ssh', '://builder@example.invalid/device-proof']);
 const leakedSigningPathValue = joinFragments(['/Us', 'ers/dev/', 'sign', 'ing/release.', sensitiveExtensions[0]]);
+const leakedWindowsSigningPathValue = joinFragments(['C', ':', '\\', 'Us', 'ers', '\\', 'dev', '\\', 'certificate.', sensitiveExtensions[0]]);
+const leakedWindowsForwardSlashSigningPathValue = joinFragments(['C', ':/', 'Us', 'ers/dev/', 'sign', 'ing/client.', sensitiveExtensions[0]]);
 const leakedSecretKey = joinFragments(['secret', 'Token']);
 const leakedSerialKey = joinFragments(['serial', 'Number']);
 
@@ -50,7 +55,7 @@ function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
 
   if (!isObject(value)) {
     if (typeof value === 'string') {
-      if (/https?:\/\//iu.test(value)) {
+      if (uriSchemePattern.test(value)) {
         errors.push(`${trail} must not contain full URLs`);
       }
       if (signingPathPattern.test(value)) {
@@ -352,7 +357,11 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
   const cases = [
     ['wrong schema version', (proof) => { proof.schemaVersion = '1.0.0'; }, /schemaVersion/u],
     ['full URL leaked', (proof) => { proof.device.modelAlias = leakedUrlValue; }, /full URLs/u],
+    ['file URL leaked', (proof) => { proof.device.productAlias = leakedFileUrlValue; }, /full URLs/u],
+    ['ssh URL leaked', (proof) => { proof.device.productAlias = leakedSshUrlValue; }, /full URLs/u],
     ['signing path leaked', (proof) => { proof.lifecycle.stop.detail = leakedSigningPathValue; }, /signing material/u],
+    ['windows signing path leaked', (proof) => { proof.lifecycle.stop.detail = leakedWindowsSigningPathValue; }, /signing material/u],
+    ['windows forward slash signing path leaked', (proof) => { proof.lifecycle.stop.detail = leakedWindowsForwardSlashSigningPathValue; }, /signing material/u],
     ['secret field leaked', (proof) => { proof.device[leakedSecretKey] = 'abc'; }, /secret-bearing keys/u],
     ['serial-like field leaked', (proof) => { proof.device[leakedSerialKey] = 'ABC123'; }, /serial-like keys/u],
     ['probe bundle drifted to production', (proof) => { proof.bundles.probe.bundleName = proof.bundles.production.bundleName; }, /bundle names must differ/u],
