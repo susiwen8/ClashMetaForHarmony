@@ -377,7 +377,7 @@
 
 **Precondition:** Chunk 1 Tasks 1–5 are landed and green. Task 6 consumes the shared VPN ports from Task 2, Task 7 consumes its config/handle types, and Task 8 constructs `CoreTunRuntime` from Task 5. Do not execute Chunk 2 in isolation or replace those contracts with entry-layer duplicates.
 
-### Task 6: Add fakeable NetworkKit recovery and continuous-notification adapters
+### Task 6: Add permission-free recovery hints and continuous-notification adapters
 
 **Files:**
 - Create: `harmony/platform/src/main/ets/network/NetworkConnectionDriver.ets`
@@ -393,7 +393,7 @@
 
 - [ ] **Step 1: Write failing network-monitor tests**
 
-  Use a hand-written `NetworkConnectionDriver` fake to require `currentNetwork()` to distinguish usable/unavailable, one underlying NetworkKit callback registration regardless of subscriber count, cloned notifications for `netAvailable`, `netLost`, and `netCapabilitiesChange`, and idempotent disposal that unregisters exact callback identities. Late callbacks after disposal must be ignored.
+  Use a hand-written `NetworkConnectionDriver` fake to require `currentNetwork()` to distinguish usable/unavailable, one underlying callback registration regardless of subscriber count, cloned notifications for available/lost/capability changes, and idempotent disposal that unregisters exact callback identities. Late callbacks after disposal must be ignored. Also require the production factory fallback to be opaque/unavailable without throwing.
 
 - [ ] **Step 2: Run platform tests and confirm RED**
 
@@ -404,21 +404,21 @@
 
   Expected: compilation fails because the network driver and monitor do not exist.
 
-- [ ] **Step 3: Implement the NetworkKit adapter**
+- [ ] **Step 3: Implement the permission-free recovery seam**
 
-  The production driver wraps `connection.getDefaultNet()` and one `NetConnection` created with `connection.createNetConnection()`. Register before awaiting events, treat an absent/default handle without internet capability as unavailable, and translate only opaque network identity plus `usable`; do not expose NetworkKit types through `platform/Index.ets`.
+  Keep `HarmonyNetworkMonitor` driven by an injected platform-neutral driver for deterministic tests, but do not ship a driver that calls default-network APIs: those APIs require the unapproved `ohos.permission.GET_NETWORK_INFO`. The production factory returns an opaque/unavailable monitor. Treat this port as a best-effort hint only; shared recovery must schedule `recover(sessionId)` with the existing `250/500/1000/2000/4000 ms` bound even when the hint remains unavailable, and the TUN recovery result is the reachability probe.
 
 - [ ] **Step 4: Write failing continuous-task tests**
 
-  Inject a `ContinuousTaskDriver` and assert `start(sessionId)` creates a WantAgent targeting `EntryAbility`, requests `BackgroundMode.DATA_TRANSFER`, records the returned continuous-task/notification ID when available, subscribes to `continuousTaskCancel`, and emits cancellation only for the current session. Test start failure, duplicate start, session-mismatched stop, repeated stop, stop after partial start, and removal of exact callbacks.
+  Inject a `ContinuousTaskDriver` and assert `start(sessionId)` creates a WantAgent targeting `EntryAbility`, requests the `dataTransfer` mode, records the returned continuous-task/notification ID when available, decodes the platform cancellation `id`, subscribes to `continuousTaskCancel`, and emits cancellation only for the current session. Test start failure, duplicate start, session-mismatched stop, repeated stop, stop after partial start, and removal of exact callbacks.
 
 - [ ] **Step 5: Implement the minimal notification adapter**
 
-  Wrap `backgroundTaskManager.startBackgroundRunning()`/`stopBackgroundRunning()` and `wantAgent.getWantAgent()` behind the driver. API 20 uses the service-style Promise overload; API 21+ may use `ContinuousTaskRequest` only when the runtime API is present. The click Want contains no profile/config secret. Cancellation maps to the shared port; the coordinator, not this adapter, decides session state.
+  Wrap `backgroundTaskManager.startBackgroundRunning()`/`stopBackgroundRunning()` and `wantAgent.getWantAgent()` behind the driver. Use the API 20-compatible string-mode Promise start and no-ID stop overloads at every supported runtime; do not lexically reference API 21-only symbols from the compat-20 module. The click Want contains no profile/config secret. Cancellation maps to the shared port; when a start result omits the optional continuous-task ID, the one-active-session adapter treats the platform cancellation `id` as cancellation of that current session. The coordinator, not this adapter, decides session state.
 
 - [ ] **Step 6: Add and run the platform boundary test**
 
-  Assert only `HarmonyNetworkMonitor` imports NetworkKit connection APIs and only `HarmonyVpnNotificationDriver` imports background-task/WantAgent APIs; neither file imports fd, N-API, core, profile content, or VPN ability types. Then run:
+  Assert no Task 6 production file imports NetworkKit connection APIs, only `HarmonyVpnNotificationDriver` imports background-task/WantAgent APIs, and neither adapter imports fd, N-API, core, profile content, or VPN ability types. Then run:
 
   ```bash
   cd harmony
@@ -431,9 +431,9 @@
 
   Expected: platform Hypium and both structure tests pass.
 
-- [ ] **Step 7: Commit the network/background adapters**
+- [ ] **Step 7: Commit the recovery/background adapters**
 
-  Stage only the platform adapters, platform tests/exports, and boundary test. Record API 20/21 compatibility and callback identity cleanup in Lore trailers.
+  Stage only the shared bounded-recovery adjustment, platform adapters, platform tests/exports, design/plan updates, and boundary test. Record the exact two-permission constraint, API 20/21 compatibility, bounded TUN probe, and callback identity cleanup in Lore trailers.
 
 ### Task 7: Implement the one-owner `VpnConnection` driver and exact full-capture config
 

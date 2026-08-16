@@ -706,5 +706,16 @@ export default function platformFactoryTestsuite() {
       expect(requestAgentTransport.fetchCallCount).assertEqual(1);
       await api20Graph.close();
     });
+
+    it('createsAnOpaqueUnavailableNetworkRecoveryFallbackByDefault', 0, async () => {
+      const context: common.UIAbilityContext = createContext();
+      const factory: PlatformFactory = new PlatformFactory(context);
+
+      const networkRecovery = await factory.createNetworkRecoveryPort();
+      const current = networkRecovery.currentNetwork();
+
+      expect(current.usable).assertFalse();
+      expect(current.networkId).assertEqual('');
+    });
   });
 }

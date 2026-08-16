@@ -11,11 +11,16 @@ import {
   type ProfileRepository,
   type ProfileRevision,
   type ProfileSourceGateway,
-  type SubscriptionSecretStore
+  type SubscriptionSecretStore,
+  type ContinuousNotificationPort,
+  type NetworkRecoveryPort
 } from '@cmfa/shared';
+import { HarmonyVpnNotificationDriver } from './background/HarmonyVpnNotificationDriver';
+import type { PlatformContinuousTaskContext } from './background/ContinuousTaskDriver';
 import type { FileDriver } from './files/FileDriver';
 import { HarmonyFileDriver } from './files/HarmonyFileDriver';
 import { SandboxProfileContentStore } from './files/SandboxProfileContentStore';
+import { HarmonyNetworkMonitor } from './network/HarmonyNetworkMonitor';
 import { HarmonyRdbDriver } from './rdb/HarmonyRdbDriver';
 import { RdbProfileRepository } from './rdb/RdbProfileRepository';
 import type { RdbDriver } from './rdb/RdbDriver';
@@ -95,6 +100,11 @@ export interface PlatformFactoryDependencies {
   createRequestAgentTransport?: (dependencies: PlatformRequestAgentTransportDependencies) => HttpTransport;
   createDownloader?: (dependencies: PlatformDownloaderDependencies) => RemoteProfileAcquirer;
   createSourceGateway?: (dependencies: HarmonyProfileSourceGatewayDependencies) => ProfileSourceGateway;
+  createNetworkRecoveryPort?: () => Promise<NetworkRecoveryPort>;
+  createContinuousNotificationPort?: (
+    context: PlatformContinuousTaskContext,
+    sdkApiVersion: number
+  ) => ContinuousNotificationPort;
 }
 
 export interface PlatformGraph {
@@ -223,6 +233,28 @@ export class PlatformFactory {
         this.inFlight = undefined;
       }
     }
+  }
+
+  async createNetworkRecoveryPort(): Promise<NetworkRecoveryPort> {
+    if (this.dependencies.createNetworkRecoveryPort !== undefined) {
+      return await this.dependencies.createNetworkRecoveryPort();
+    }
+    const monitor = new HarmonyNetworkMonitor();
+    await monitor.initialize();
+    return monitor;
+  }
+
+  createContinuousNotificationPort(): ContinuousNotificationPort {
+    const sdkApiVersion: number = resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion);
+    if (this.dependencies.createContinuousNotificationPort !== undefined) {
+      return this.dependencies.createContinuousNotificationPort(
+        this.context as PlatformContinuousTaskContext,
+        sdkApiVersion
+      );
+    }
+    return new HarmonyVpnNotificationDriver(
+      this.context as PlatformContinuousTaskContext
+    );
   }
 
   private async buildGraph(): Promise<PlatformGraph> {

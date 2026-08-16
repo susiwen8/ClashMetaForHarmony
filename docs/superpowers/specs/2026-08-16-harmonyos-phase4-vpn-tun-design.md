@@ -59,6 +59,16 @@ the feature:
 - `ohos.permission.INTERNET`
 - `ohos.permission.KEEP_BACKGROUND_RUNNING`
 
+This exact two-permission set is also a network-recovery constraint.
+HarmonyOS default-network queries and registrations require
+`ohos.permission.GET_NETWORK_INFO`, so the production VPN path does not call
+`connection.getDefaultNet()`, `getNetCapabilities()`, or
+`NetConnection.register()`. Network identity/capabilities are therefore an
+optional injected hint, not a production dependency. After `NETWORK_LOST`,
+the TUN runtime's own `recover(sessionId)` call is the reachability probe and
+is attempted with the bounded delays `250/500/1000/2000/4000 ms`; success
+returns to `RUNNING`, while exhaustion performs fail-closed cleanup.
+
 The entry module declares a non-exported VPN extension ability with type
 `vpn`. The application does **not** request:
 
@@ -175,9 +185,11 @@ creates a `VpnConnection`, or publishes a notification.
 
 `platform/HarmonyNetworkMonitor` and
 `platform/HarmonyVpnNotificationDriver` are the only new platform adapters.
-They contain NetworkKit/background-notification calls but no fd or native-core
-logic. This keeps network recovery and notification behavior independently
-fakeable in shared coordinator tests.
+The monitor keeps an injectable, platform-neutral network hint seam but the
+production fallback remains opaque/unavailable and imports no NetworkKit
+connection API. The notification adapter owns background-task calls, and
+neither adapter contains fd or native-core logic. This keeps recovery and
+notification behavior independently fakeable in shared coordinator tests.
 
 ### 4.4 Go/mihomo data plane
 

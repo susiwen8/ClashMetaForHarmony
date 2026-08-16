@@ -821,10 +821,6 @@ export class VpnRuntimeCoordinator implements VpnControllerPort {
     if (this.isStopRequested(sessionId) || this.recovery.retryCount >= RECOVERY_DELAYS_MS.length) {
       return;
     }
-    const currentStatus = this.dependencies.networkRecovery.currentNetwork();
-    if (!currentStatus.usable) {
-      return;
-    }
     this.scheduleRecoveryRetry(sessionId);
   }
 

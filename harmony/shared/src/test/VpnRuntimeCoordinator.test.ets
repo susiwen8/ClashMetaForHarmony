@@ -938,7 +938,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(tunRuntime.stopCalls.length).assertEqual(0);
       expect(platform.log.includes('platform.destroy:vpn-1')).assertFalse();
       expect(notification.stopCalls.length).assertEqual(0);
-      expect(scheduler.tasks.length).assertEqual(0);
+      expect(scheduler.tasks.length).assertEqual(1);
     });
 
     it('failsClosedWhenCloseStaleOutboundConnectionsErrorsDuringRecovery', 0, async () => {
@@ -970,7 +970,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(scheduler.tasks.length).assertEqual(0);
     });
 
-    it('recoversOnUsableNetworkWithoutRecreatingPlatformOrNotification', 0, async () => {
+    it('recoversOnScheduledRetryWithoutRecreatingPlatformOrNotification', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
       tunRuntime.recoverSnapshotValue = buildTunSnapshot('session-1', 'READY');
@@ -990,7 +990,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
 
       await coordinator.start('profile-1', 'version-1', 'session-1');
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
-      network.emitUsable('wifi-1');
+      await waitForCondition(() => scheduler.tasks.length === 1);
       await scheduler.latest().run();
 
       expect(scheduler.delays.join(',')).assertEqual('250');
@@ -1055,8 +1055,8 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
 
       for (let index = 0; index < 5; index += 1) {
-        network.emitUsable(`net-${index}`);
-        await scheduler.latest().run();
+        await waitForCondition(() => scheduler.tasks.length === index + 1);
+        await scheduler.tasks[index].run();
       }
 
       expect(scheduler.delays.join(',')).assertEqual('250,500,1000,2000,4000');
@@ -1067,7 +1067,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(coordinator.snapshot().state).assertEqual('ERROR');
     });
 
-    it('usesCurrentNetworkToScheduleRecoveryAndAvoidsDuplicatePendingTasks', 0, async () => {
+    it('deduplicatesUsableEventsWhenRecoveryRetryIsAlreadyScheduled', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
       tunRuntime.recoverPortError = new TunRuntimePortError('NETWORK_LOST', 'recover lost');
@@ -1093,7 +1093,6 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await scheduler.latest().run();
       await waitForCondition(() => scheduler.tasks.length === 2);
 
-      expect(network.currentNetworkCalls > 0).assertTrue();
       expect(scheduler.delays.join(',')).assertEqual('250,500');
     });
 
@@ -1178,7 +1177,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       }
     });
 
-    it('waitsForANewUsableEventWhenCurrentNetworkIsNotUsableAfterARecoveryLoss', 0, async () => {
+    it('schedulesTheNextBoundedRetryEvenWhenCurrentNetworkRemainsOpaqueOrUnavailable', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
       tunRuntime.recoverPortError = new TunRuntimePortError('NETWORK_LOST', 'recover lost');
@@ -1200,12 +1199,6 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await waitForCondition(() => scheduler.tasks.length === 1);
       network.status = { usable: false, networkId: '' };
       await scheduler.latest().run();
-      await settleMicrotasks();
-
-      expect(network.currentNetworkCalls > 0).assertTrue();
-      expect(scheduler.tasks.length).assertEqual(1);
-
-      network.emitUsable('wifi-2');
       await waitForCondition(() => scheduler.tasks.length === 2);
       expect(scheduler.delays.join(',')).assertEqual('250,500');
     });
