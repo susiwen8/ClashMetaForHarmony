@@ -69,11 +69,12 @@
     "bundles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["production", "probe", "hapSha256Pair"],
+      "required": ["production", "probe", "hapSha256"],
       "properties": {
         "production": { "$ref": "#/$defs/productionBundle" },
         "probe": { "$ref": "#/$defs/probeBundle" },
-        "hapSha256Pair": {
+        "hapSha256": {
+          "description": "Ordered [production, probe] HAP sha256 digests.",
           "type": "array",
           "minItems": 2,
           "maxItems": 2,
@@ -184,20 +185,18 @@
     "productionBundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundleName", "hapSha256", "nativeSha256"],
+      "required": ["bundleName", "nativeSha256"],
       "properties": {
         "bundleName": { "const": "com.github.kr328.clash.harmony" },
-        "hapSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },
     "probeBundle": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["bundleName", "hapSha256", "nativeSha256"],
+      "required": ["bundleName", "nativeSha256"],
       "properties": {
         "bundleName": { "const": "com.github.kr328.clash.harmony.probe" },
-        "hapSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
     },

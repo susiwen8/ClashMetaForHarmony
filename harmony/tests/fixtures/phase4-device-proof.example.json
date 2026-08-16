@@ -19,15 +19,13 @@
   "bundles": {
     "production": {
       "bundleName": "com.github.kr328.clash.harmony",
-      "hapSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "nativeSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
     },
     "probe": {
       "bundleName": "com.github.kr328.clash.harmony.probe",
-      "hapSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "nativeSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
     },
-    "hapSha256Pair": [
+    "hapSha256": [
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
     ]

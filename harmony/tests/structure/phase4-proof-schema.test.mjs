@@ -47,6 +47,7 @@ const leakedWindowsForwardSlashSigningPathValue = joinFragments(['C', ':/', 'Us'
 const leakedSecretKey = joinFragments(['secret', 'Token']);
 const leakedSerialKey = joinFragments(['serial', 'Number']);
 const REQUIRED_CORRELATION_KINDS = ['tcp', 'udp', 'dns', 'ipv4'];
+const BUNDLE_HAP_HASH_ORDER = ['production', 'probe'];
 
 function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
   if (Array.isArray(value)) {
@@ -101,15 +102,13 @@ function createValidPhase4Proof() {
     bundles: {
       production: {
         bundleName: 'com.github.kr328.clash.harmony',
-        hapSha256: digest('a'),
         nativeSha256: digest('b')
       },
       probe: {
         bundleName: 'com.github.kr328.clash.harmony.probe',
-        hapSha256: digest('c'),
         nativeSha256: digest('d')
       },
-      hapSha256Pair: [digest('a'), digest('c')]
+      hapSha256: [digest('a'), digest('c')]
     },
     core: {
       version: 'v1.19.29'
@@ -230,26 +229,25 @@ function validatePhase4Proof(proof) {
     if (proof.bundles.production.bundleName === proof.bundles.probe.bundleName) {
       errors.push('production and probe bundle names must differ');
     }
-    if (proof.bundles.production.hapSha256 === proof.bundles.probe.hapSha256) {
-      errors.push('production and probe HAP hashes must differ');
+    if ('hapSha256' in proof.bundles.production || 'hapSha256' in proof.bundles.probe) {
+      errors.push('bundles.production/probe must not publish per-bundle hapSha256 fields');
     }
     if (proof.bundles.production.nativeSha256 === proof.bundles.probe.nativeSha256) {
       errors.push('production and probe native hashes must differ');
     }
     if (
-      !Array.isArray(proof.bundles.hapSha256Pair) ||
-      proof.bundles.hapSha256Pair.length !== 2 ||
-      proof.bundles.hapSha256Pair[0] !== proof.bundles.production.hapSha256 ||
-      proof.bundles.hapSha256Pair[1] !== proof.bundles.probe.hapSha256
+      !Array.isArray(proof.bundles.hapSha256) ||
+      proof.bundles.hapSha256.length !== 2 ||
+      !proof.bundles.hapSha256.every((entry) => isSha256(entry))
     ) {
-      errors.push('bundles.hapSha256Pair must mirror production/probe hap hashes in order');
-    } else if (proof.bundles.hapSha256Pair[0] === proof.bundles.hapSha256Pair[1]) {
-      errors.push('bundles.hapSha256Pair must keep production and probe HAP hashes distinct');
+      errors.push('bundles.hapSha256 must be an ordered [production, probe] sha256 pair');
+    } else if (proof.bundles.hapSha256[0] === proof.bundles.hapSha256[1]) {
+      errors.push('bundles.hapSha256 must keep production and probe HAP hashes distinct');
     }
     for (const bundleKey of ['production', 'probe']) {
       const bundle = proof.bundles[bundleKey];
-      if (!isSha256(bundle.hapSha256) || !isSha256(bundle.nativeSha256)) {
-        errors.push(`${bundleKey} bundle hashes must be sha256`);
+      if (!isSha256(bundle.nativeSha256)) {
+        errors.push(`${bundleKey} bundle native hash must be sha256`);
       }
     }
   }
@@ -369,7 +367,10 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.tun.additionalProperties, false);
   assert.equal(schema.$defs.productionBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony');
   assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony.probe');
-  assert.equal(schema.properties.bundles.properties.hapSha256Pair.uniqueItems, true);
+  assert.equal('hapSha256' in schema.$defs.productionBundle.properties, false);
+  assert.equal('hapSha256' in schema.$defs.probeBundle.properties, false);
+  assert.equal(schema.properties.bundles.properties.hapSha256.uniqueItems, true);
+  assert.deepEqual(schema.properties.bundles.properties.hapSha256.description, 'Ordered [production, probe] HAP sha256 digests.');
   assert.equal(schema.$defs.localHttpEvidence.properties.ingress.const, 'local-http');
   assert.equal(schema.$defs.localSocksEvidence.properties.ingress.const, 'local-socks');
   assert.equal(schema.$defs.ipv6Traffic.oneOf.length, 2);
@@ -401,9 +402,11 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['serial-like field leaked', (proof) => { proof.device[leakedSerialKey] = 'ABC123'; }, /serial-like keys/u],
     ['probe bundle drifted to production', (proof) => { proof.bundles.probe.bundleName = proof.bundles.production.bundleName; }, /bundle names must differ/u],
     ['probe hap hash drifted to production', (proof) => {
-      proof.bundles.probe.hapSha256 = proof.bundles.production.hapSha256;
-      proof.bundles.hapSha256Pair[1] = proof.bundles.hapSha256Pair[0];
-    }, /HAP hashes must differ|hapSha256Pair/u],
+      proof.bundles.hapSha256[1] = proof.bundles.hapSha256[0];
+    }, /bundles\.hapSha256/u],
+    ['hap hash pair missing probe entry', (proof) => { proof.bundles.hapSha256 = [proof.bundles.hapSha256[0]]; }, /ordered \[production, probe\]/u],
+    ['hap hash pair carries extra entry', (proof) => { proof.bundles.hapSha256.push(digest('e')); }, /ordered \[production, probe\]/u],
+    ['old production hap field leaked', (proof) => { proof.bundles.production.hapSha256 = digest('a'); }, /per-bundle hapSha256/u],
     ['local ingress broke', (proof) => { proof.localEvidence.http.ingress = 'tun'; }, /localEvidence\.http/u],
     ['socks ingress broke', (proof) => { proof.localEvidence.socks.ingress = 'tun'; }, /localEvidence\.socks/u],
     ['duplicate correlation kind', (proof) => { proof.correlations.tcpDuplicate = structuredClone(proof.correlations.tcp); }, /unexpected key tcpDuplicate|exactly one/u],
@@ -432,4 +435,12 @@ test('Phase 4 proof validation accepts ipv6 pass without reason and rejects malf
   const validation = validatePhase4Proof(malformedPassReason);
   assert.equal(validation.valid, false);
   assert.match(validation.errors.join('\n'), /ipv6 pass reason/u);
+});
+
+test('Phase 4 bundle hash ordering stays canonical and non-redundant', () => {
+  const validProof = createValidPhase4Proof();
+  assert.deepEqual(validProof.bundles.hapSha256, [digest('a'), digest('c')]);
+  assert.deepEqual(BUNDLE_HAP_HASH_ORDER, ['production', 'probe']);
+  assert.equal('hapSha256' in validProof.bundles.production, false);
+  assert.equal('hapSha256' in validProof.bundles.probe, false);
 });
