@@ -69,10 +69,21 @@
     "bundles": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["production", "probe"],
+      "required": ["production", "probe", "hapSha256Pair"],
       "properties": {
-        "production": { "$ref": "#/$defs/bundle" },
-        "probe": { "$ref": "#/$defs/bundle" }
+        "production": { "$ref": "#/$defs/productionBundle" },
+        "probe": { "$ref": "#/$defs/probeBundle" },
+        "hapSha256Pair": {
+          "type": "array",
+          "minItems": 2,
+          "maxItems": 2,
+          "items": false,
+          "uniqueItems": true,
+          "prefixItems": [
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+            { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+          ]
+        }
       }
     },
     "core": {
@@ -104,15 +115,7 @@
         "udp": { "$ref": "#/$defs/correlatedTraffic" },
         "dns": { "$ref": "#/$defs/correlatedTraffic" },
         "ipv4": { "$ref": "#/$defs/correlatedTraffic" },
-        "ipv6": {
-          "type": "object",
-          "additionalProperties": false,
-          "required": ["result", "reason"],
-          "properties": {
-            "result": { "enum": ["pass", "not-run"] },
-            "reason": { "type": "string", "minLength": 1 }
-          }
-        }
+        "ipv6": { "$ref": "#/$defs/ipv6Traffic" }
       }
     },
     "localEvidence": {
@@ -120,8 +123,8 @@
       "additionalProperties": false,
       "required": ["http", "socks"],
       "properties": {
-        "http": { "$ref": "#/$defs/localEvidence" },
-        "socks": { "$ref": "#/$defs/localEvidence" }
+        "http": { "$ref": "#/$defs/localHttpEvidence" },
+        "socks": { "$ref": "#/$defs/localSocksEvidence" }
       }
     },
     "lifecycle": {
@@ -154,36 +157,14 @@
       }
     },
     "correlations": {
-      "type": "array",
-      "minItems": 4,
-      "items": {
-        "type": "object",
-        "additionalProperties": false,
-        "required": ["kind", "sessionId", "traceId", "captureTrace", "coreEvent"],
-        "properties": {
-          "kind": { "enum": ["tcp", "udp", "dns", "ipv4"] },
-          "sessionId": { "type": "string", "minLength": 1 },
-          "traceId": { "type": "string", "minLength": 1 },
-          "captureTrace": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["ingress", "event"],
-            "properties": {
-              "ingress": { "const": "tun" },
-              "event": { "type": "string", "minLength": 1 }
-            }
-          },
-          "coreEvent": {
-            "type": "object",
-            "additionalProperties": false,
-            "required": ["sessionId", "traceId", "event"],
-            "properties": {
-              "sessionId": { "type": "string", "minLength": 1 },
-              "traceId": { "type": "string", "minLength": 1 },
-              "event": { "type": "string", "minLength": 1 }
-            }
-          }
-        }
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tcp", "udp", "dns", "ipv4"],
+      "properties": {
+        "tcp": { "$ref": "#/$defs/correlationEntry" },
+        "udp": { "$ref": "#/$defs/correlationEntry" },
+        "dns": { "$ref": "#/$defs/correlationEntry" },
+        "ipv4": { "$ref": "#/$defs/correlationEntry" }
       }
     },
     "failures": {
@@ -200,12 +181,22 @@
     }
   },
   "$defs": {
-    "bundle": {
+    "productionBundle": {
       "type": "object",
       "additionalProperties": false,
       "required": ["bundleName", "hapSha256", "nativeSha256"],
       "properties": {
-        "bundleName": { "type": "string", "minLength": 1 },
+        "bundleName": { "const": "com.github.kr328.clash.harmony" },
+        "hapSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "probeBundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleName", "hapSha256", "nativeSha256"],
+      "properties": {
+        "bundleName": { "const": "com.github.kr328.clash.harmony.probe" },
         "hapSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
         "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
       }
@@ -220,15 +211,75 @@
         "traceId": { "type": "string", "minLength": 1 }
       }
     },
-    "localEvidence": {
+    "localHttpEvidence": {
       "type": "object",
       "additionalProperties": false,
       "required": ["result", "ingress", "sessionId", "traceId"],
       "properties": {
         "result": { "const": "pass" },
-        "ingress": { "enum": ["local-http", "local-socks"] },
+        "ingress": { "const": "local-http" },
         "sessionId": { "type": "string", "minLength": 1 },
         "traceId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "localSocksEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "ingress", "sessionId", "traceId"],
+      "properties": {
+        "result": { "const": "pass" },
+        "ingress": { "const": "local-socks" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "ipv6Traffic": {
+      "type": "object",
+      "oneOf": [
+        {
+          "additionalProperties": false,
+          "required": ["result"],
+          "properties": {
+            "result": { "const": "pass" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        },
+        {
+          "additionalProperties": false,
+          "required": ["result", "reason"],
+          "properties": {
+            "result": { "const": "not-run" },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      ]
+    },
+    "correlationEntry": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sessionId", "traceId", "captureTrace", "coreEvent"],
+      "properties": {
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 },
+        "captureTrace": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["ingress", "event"],
+          "properties": {
+            "ingress": { "const": "tun" },
+            "event": { "type": "string", "minLength": 1 }
+          }
+        },
+        "coreEvent": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["sessionId", "traceId", "event"],
+          "properties": {
+            "sessionId": { "type": "string", "minLength": 1 },
+            "traceId": { "type": "string", "minLength": 1 },
+            "event": { "type": "string", "minLength": 1 }
+          }
+        }
       }
     },
     "passResult": {

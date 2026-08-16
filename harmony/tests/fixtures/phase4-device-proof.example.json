@@ -26,7 +26,11 @@
       "bundleName": "com.github.kr328.clash.harmony.probe",
       "hapSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       "nativeSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
-    }
+    },
+    "hapSha256Pair": [
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"
+    ]
   },
   "core": {
     "version": "v1.19.29"
@@ -100,9 +104,8 @@
       "txBytes": 6144
     }
   },
-  "correlations": [
-    {
-      "kind": "tcp",
+  "correlations": {
+    "tcp": {
       "sessionId": "session-tcp",
       "traceId": "trace-tcp",
       "captureTrace": {
@@ -115,8 +118,7 @@
         "event": "mihomo.tcp"
       }
     },
-    {
-      "kind": "udp",
+    "udp": {
       "sessionId": "session-udp",
       "traceId": "trace-udp",
       "captureTrace": {
@@ -129,8 +131,7 @@
         "event": "mihomo.udp"
       }
     },
-    {
-      "kind": "dns",
+    "dns": {
       "sessionId": "session-dns",
       "traceId": "trace-dns",
       "captureTrace": {
@@ -143,8 +144,7 @@
         "event": "mihomo.dns"
       }
     },
-    {
-      "kind": "ipv4",
+    "ipv4": {
       "sessionId": "session-ipv4",
       "traceId": "trace-ipv4",
       "captureTrace": {
@@ -157,6 +157,6 @@
         "event": "mihomo.ipv4"
       }
     }
-  ],
+  },
   "failures": []
 }

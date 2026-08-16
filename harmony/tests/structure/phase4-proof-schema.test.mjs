@@ -46,6 +46,7 @@ const leakedWindowsSigningPathValue = joinFragments(['C', ':', '\\', 'Us', 'ers'
 const leakedWindowsForwardSlashSigningPathValue = joinFragments(['C', ':/', 'Us', 'ers/dev/', 'sign', 'ing/client.', sensitiveExtensions[0]]);
 const leakedSecretKey = joinFragments(['secret', 'Token']);
 const leakedSerialKey = joinFragments(['serial', 'Number']);
+const REQUIRED_CORRELATION_KINDS = ['tcp', 'udp', 'dns', 'ipv4'];
 
 function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
   if (Array.isArray(value)) {
@@ -107,7 +108,8 @@ function createValidPhase4Proof() {
         bundleName: 'com.github.kr328.clash.harmony.probe',
         hapSha256: digest('c'),
         nativeSha256: digest('d')
-      }
+      },
+      hapSha256Pair: [digest('a'), digest('c')]
     },
     core: {
       version: 'v1.19.29'
@@ -144,9 +146,8 @@ function createValidPhase4Proof() {
         txBytes: 6144
       }
     },
-    correlations: [
-      {
-        kind: 'tcp',
+    correlations: {
+      tcp: {
         sessionId: 'session-tcp',
         traceId: 'trace-tcp',
         captureTrace: {
@@ -159,8 +160,7 @@ function createValidPhase4Proof() {
           event: 'mihomo.tcp'
         }
       },
-      {
-        kind: 'udp',
+      udp: {
         sessionId: 'session-udp',
         traceId: 'trace-udp',
         captureTrace: {
@@ -173,8 +173,7 @@ function createValidPhase4Proof() {
           event: 'mihomo.udp'
         }
       },
-      {
-        kind: 'dns',
+      dns: {
         sessionId: 'session-dns',
         traceId: 'trace-dns',
         captureTrace: {
@@ -187,8 +186,7 @@ function createValidPhase4Proof() {
           event: 'mihomo.dns'
         }
       },
-      {
-        kind: 'ipv4',
+      ipv4: {
         sessionId: 'session-ipv4',
         traceId: 'trace-ipv4',
         captureTrace: {
@@ -201,7 +199,7 @@ function createValidPhase4Proof() {
           event: 'mihomo.ipv4'
         }
       }
-    ],
+    },
     failures: []
   };
 }
@@ -238,6 +236,16 @@ function validatePhase4Proof(proof) {
     if (proof.bundles.production.nativeSha256 === proof.bundles.probe.nativeSha256) {
       errors.push('production and probe native hashes must differ');
     }
+    if (
+      !Array.isArray(proof.bundles.hapSha256Pair) ||
+      proof.bundles.hapSha256Pair.length !== 2 ||
+      proof.bundles.hapSha256Pair[0] !== proof.bundles.production.hapSha256 ||
+      proof.bundles.hapSha256Pair[1] !== proof.bundles.probe.hapSha256
+    ) {
+      errors.push('bundles.hapSha256Pair must mirror production/probe hap hashes in order');
+    } else if (proof.bundles.hapSha256Pair[0] === proof.bundles.hapSha256Pair[1]) {
+      errors.push('bundles.hapSha256Pair must keep production and probe HAP hashes distinct');
+    }
     for (const bundleKey of ['production', 'probe']) {
       const bundle = proof.bundles[bundleKey];
       if (!isSha256(bundle.hapSha256) || !isSha256(bundle.nativeSha256)) {
@@ -269,6 +277,10 @@ function validatePhase4Proof(proof) {
     const ipv6 = proof.traffic.ipv6;
     if (!isObject(ipv6) || !['pass', 'not-run'].includes(ipv6.result)) {
       errors.push('traffic.ipv6 must be optional pass/not-run evidence');
+    } else if (ipv6.result === 'not-run' && (typeof ipv6.reason !== 'string' || ipv6.reason.length === 0)) {
+      errors.push('traffic.ipv6 not-run evidence must include a non-empty reason');
+    } else if (ipv6.result === 'pass' && Object.hasOwn(ipv6, 'reason') && (typeof ipv6.reason !== 'string' || ipv6.reason.length === 0)) {
+      errors.push('traffic.ipv6 pass reason must be a non-empty string when present');
     }
   }
 
@@ -291,15 +303,26 @@ function validatePhase4Proof(proof) {
     }
   }
 
-  if (!Array.isArray(proof.correlations) || proof.correlations.length < 4) {
-    errors.push('correlations must include TCP/UDP/DNS/IPv4 tun traces');
+  if (!isObject(proof.correlations)) {
+    errors.push('correlations must be a closed object keyed by tcp/udp/dns/ipv4');
   } else {
-    for (const entry of proof.correlations) {
+    const keys = Object.keys(proof.correlations);
+    for (const kind of REQUIRED_CORRELATION_KINDS) {
+      if (!keys.includes(kind)) {
+        errors.push(`correlations must include exactly one ${kind} trace`);
+      }
+    }
+    for (const key of keys) {
+      if (!REQUIRED_CORRELATION_KINDS.includes(key)) {
+        errors.push(`correlations must not include unexpected key ${key}`);
+        continue;
+      }
+      const entry = proof.correlations[key];
       if (entry.captureTrace?.ingress !== 'tun') {
-        errors.push(`correlations.${entry.kind}.captureTrace.ingress must be tun`);
+        errors.push(`correlations.${key}.captureTrace.ingress must be tun`);
       }
       if (entry.sessionId !== entry.coreEvent?.sessionId || entry.traceId !== entry.coreEvent?.traceId) {
-        errors.push(`correlations.${entry.kind} must share sessionId and traceId with coreEvent`);
+        errors.push(`correlations.${key} must share sessionId and traceId with coreEvent`);
       }
     }
   }
@@ -344,9 +367,21 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.localEvidence.additionalProperties, false);
   assert.equal(schema.properties.lifecycle.additionalProperties, false);
   assert.equal(schema.properties.tun.additionalProperties, false);
-  assert.equal(schema.properties.correlations.items.additionalProperties, false);
-  assert.equal(schema.properties.correlations.items.properties.captureTrace.additionalProperties, false);
-  assert.equal(schema.properties.correlations.items.properties.coreEvent.additionalProperties, false);
+  assert.equal(schema.$defs.productionBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony');
+  assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony.probe');
+  assert.equal(schema.properties.bundles.properties.hapSha256Pair.uniqueItems, true);
+  assert.equal(schema.$defs.localHttpEvidence.properties.ingress.const, 'local-http');
+  assert.equal(schema.$defs.localSocksEvidence.properties.ingress.const, 'local-socks');
+  assert.equal(schema.$defs.ipv6Traffic.oneOf.length, 2);
+  assert.deepEqual(
+    schema.$defs.ipv6Traffic.oneOf.map((branch) => branch.properties.result.const),
+    ['pass', 'not-run']
+  );
+  assert.equal(schema.properties.correlations.additionalProperties, false);
+  assert.deepEqual(schema.properties.correlations.required, REQUIRED_CORRELATION_KINDS);
+  assert.equal(schema.$defs.correlationEntry.additionalProperties, false);
+  assert.equal(schema.$defs.correlationEntry.properties.captureTrace.additionalProperties, false);
+  assert.equal(schema.$defs.correlationEntry.properties.coreEvent.additionalProperties, false);
 
   assert.deepEqual(example, validProof);
   assert.deepEqual(validatePhase4Proof(validProof), { valid: true, errors: [] });
@@ -365,10 +400,17 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['secret field leaked', (proof) => { proof.device[leakedSecretKey] = 'abc'; }, /secret-bearing keys/u],
     ['serial-like field leaked', (proof) => { proof.device[leakedSerialKey] = 'ABC123'; }, /serial-like keys/u],
     ['probe bundle drifted to production', (proof) => { proof.bundles.probe.bundleName = proof.bundles.production.bundleName; }, /bundle names must differ/u],
-    ['probe hap hash drifted to production', (proof) => { proof.bundles.probe.hapSha256 = proof.bundles.production.hapSha256; }, /HAP hashes must differ/u],
+    ['probe hap hash drifted to production', (proof) => {
+      proof.bundles.probe.hapSha256 = proof.bundles.production.hapSha256;
+      proof.bundles.hapSha256Pair[1] = proof.bundles.hapSha256Pair[0];
+    }, /HAP hashes must differ|hapSha256Pair/u],
     ['local ingress broke', (proof) => { proof.localEvidence.http.ingress = 'tun'; }, /localEvidence\.http/u],
-    ['capture ingress broke', (proof) => { proof.correlations[0].captureTrace.ingress = 'local-http'; }, /captureTrace\.ingress/u],
-    ['trace correlation broke', (proof) => { proof.correlations[0].coreEvent.traceId = 'wrong'; }, /share sessionId and traceId/u]
+    ['socks ingress broke', (proof) => { proof.localEvidence.socks.ingress = 'tun'; }, /localEvidence\.socks/u],
+    ['duplicate correlation kind', (proof) => { proof.correlations.tcpDuplicate = structuredClone(proof.correlations.tcp); }, /unexpected key tcpDuplicate|exactly one/u],
+    ['missing correlation class', (proof) => { delete proof.correlations.dns; }, /exactly one dns trace/u],
+    ['capture ingress broke', (proof) => { proof.correlations.tcp.captureTrace.ingress = 'local-http'; }, /captureTrace\.ingress/u],
+    ['trace correlation broke', (proof) => { proof.correlations.tcp.coreEvent.traceId = 'wrong'; }, /share sessionId and traceId/u],
+    ['ipv6 not-run missing reason', (proof) => { proof.traffic.ipv6 = { result: 'not-run' }; }, /ipv6 not-run/u]
   ];
 
   for (const [label, mutate, expected] of cases) {
@@ -378,4 +420,16 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     assert.equal(validation.valid, false, label);
     assert.match(validation.errors.join('\n'), expected, label);
   }
+});
+
+test('Phase 4 proof validation accepts ipv6 pass without reason and rejects malformed pass reason', () => {
+  const passWithoutReason = createValidPhase4Proof();
+  passWithoutReason.traffic.ipv6 = { result: 'pass' };
+  assert.deepEqual(validatePhase4Proof(passWithoutReason), { valid: true, errors: [] });
+
+  const malformedPassReason = createValidPhase4Proof();
+  malformedPassReason.traffic.ipv6 = { result: 'pass', reason: '' };
+  const validation = validatePhase4Proof(malformedPassReason);
+  assert.equal(validation.valid, false);
+  assert.match(validation.errors.join('\n'), /ipv6 pass reason/u);
 });
