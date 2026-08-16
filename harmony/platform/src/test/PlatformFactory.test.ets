@@ -339,7 +339,7 @@ function createDefaultDependencies(
   const fixedClock: SequenceClock = clock ?? new SequenceClock(['2026-08-07T00:00:00.000Z']);
   const fixedIds: SequenceIdGenerator = idGenerator ?? new SequenceIdGenerator(['stage-one', 'stage-two', 'stage-three']);
   return {
-    resolvePaths: (_context: common.UIAbilityContext): PlatformPaths => ({
+    resolvePaths: (_context: common.Context): PlatformPaths => ({
       filesDir: context.filesDir,
       databaseName: DATABASE_NAME
     }),
@@ -468,7 +468,7 @@ export default function platformFactoryTestsuite() {
       fileDriver.seedTextFile(`${FILES_DIR}/profile-secrets/secret-beta.json`, '{"value":"beta"}');
       fileDriver.seedTextFile(`${FILES_DIR}/profile-secrets/secret-orphan.json`, '{"value":"orphan"}');
 
-      dependencies.resolvePaths = (_context: common.UIAbilityContext): PlatformPaths => {
+      dependencies.resolvePaths = (_context: common.Context): PlatformPaths => {
         events.push('paths.resolve');
         return {
           filesDir: context.filesDir,

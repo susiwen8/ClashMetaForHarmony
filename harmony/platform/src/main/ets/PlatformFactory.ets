@@ -6,6 +6,7 @@ import {
   type AppError,
   type Clock,
   type IdGenerator,
+  type LocalAcquireCommand,
   type Profile,
   type ProfileContentStore,
   type ProfileRepository,
@@ -62,14 +63,14 @@ export interface PlatformPickerDependencies {
 }
 
 export interface PlatformRequestAgentTransportDependencies {
-  context: common.UIAbilityContext;
+  context: common.Context;
   fileDriver: FileDriver;
   paths: PlatformPaths;
   idGenerator: IdGenerator;
 }
 
 export interface PlatformDownloaderDependencies {
-  context: common.UIAbilityContext;
+  context: common.Context;
   sdkApiVersion: number;
   fileDriver: FileDriver;
   paths: PlatformPaths;
@@ -80,12 +81,12 @@ export interface PlatformDownloaderDependencies {
 }
 
 export interface PlatformFactoryDependencies {
-  resolvePaths?: (context: common.UIAbilityContext) => PlatformPaths;
-  resolveSdkApiVersion?: (context: common.UIAbilityContext) => number;
+  resolvePaths?: (context: common.Context) => PlatformPaths;
+  resolveSdkApiVersion?: (context: common.Context) => number;
   createClock?: () => Clock;
   createIdGenerator?: () => IdGenerator;
   createFileDriver?: () => FileDriver;
-  createRdbDriver?: (context: common.UIAbilityContext, paths: PlatformPaths) => CloseableRdbDriver;
+  createRdbDriver?: (context: common.Context, paths: PlatformPaths) => CloseableRdbDriver;
   createHuksDriver?: () => PrepareableHuksDriver;
   createRepository?: (driver: CloseableRdbDriver) => ProfileRepository;
   createContentStore?: (fileDriver: FileDriver, paths: PlatformPaths) => ProfileContentStore;
@@ -115,6 +116,12 @@ export interface PlatformGraph {
   clock: Clock;
   idGenerator: IdGenerator;
   close(): Promise<void>;
+}
+
+class UnsupportedLocalProfileAcquirer implements LocalProfileAcquirer {
+  async acquire(_command: LocalAcquireCommand): Promise<never> {
+    throw new Error('Local profile acquisition requires UIAbilityContext.');
+  }
 }
 
 class SystemClock implements Clock {
@@ -203,12 +210,12 @@ class PlatformGraphRecord implements PlatformGraph {
 }
 
 export class PlatformFactory {
-  private readonly context: common.UIAbilityContext;
+  private readonly context: common.Context;
   private readonly dependencies: PlatformFactoryDependencies;
   private inFlight?: Promise<PlatformGraph>;
   private readyGraph?: PlatformGraph;
 
-  constructor(context: common.UIAbilityContext, dependencies?: PlatformFactoryDependencies) {
+  constructor(context: common.Context, dependencies?: PlatformFactoryDependencies) {
     this.context = context;
     this.dependencies = dependencies ?? {};
   }
@@ -248,12 +255,12 @@ export class PlatformFactory {
     const sdkApiVersion: number = resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion);
     if (this.dependencies.createContinuousNotificationPort !== undefined) {
       return this.dependencies.createContinuousNotificationPort(
-        this.context as PlatformContinuousTaskContext,
+        toPlatformContinuousTaskContext(this.context),
         sdkApiVersion
       );
     }
     return new HarmonyVpnNotificationDriver(
-      this.context as PlatformContinuousTaskContext
+      toPlatformContinuousTaskContext(this.context)
     );
   }
 
@@ -281,18 +288,12 @@ export class PlatformFactory {
         idGenerator
       ) ?? new HuksSubscriptionSecretStore(huksDriver, fileDriver, paths.filesDir, idGenerator);
       const picker: LocalProfileAcquirer = this.dependencies.createPicker?.({
-        context: this.context,
+        context: this.context as common.UIAbilityContext,
         fileDriver,
         paths,
         clock,
         idGenerator
-      }) ?? new HarmonyFilePicker({
-        context: this.context,
-        fileDriver,
-        filesDir: paths.filesDir,
-        clock,
-        idGenerator
-      });
+      }) ?? this.createDefaultPicker(fileDriver, paths, clock, idGenerator);
       const networkKitTransport: HttpTransport = this.dependencies.createNetworkKitTransport?.() ??
         new NetworkKitHttpTransport();
       const requestAgentTransport: HttpTransport = this.dependencies.createRequestAgentTransport?.({
@@ -361,7 +362,7 @@ export class PlatformFactory {
     }
   }
 
-  private resolvePaths(context: common.UIAbilityContext): PlatformPaths {
+  private resolvePaths(context: common.Context): PlatformPaths {
     if (this.dependencies.resolvePaths !== undefined) {
       return this.dependencies.resolvePaths(context);
     }
@@ -369,6 +370,24 @@ export class PlatformFactory {
       filesDir: context.filesDir,
       databaseName: DEFAULT_DATABASE_NAME
     };
+  }
+
+  private createDefaultPicker(
+    fileDriver: FileDriver,
+    paths: PlatformPaths,
+    clock: Clock,
+    idGenerator: IdGenerator
+  ): LocalProfileAcquirer {
+    if (!hasUiAbilityInfo(this.context)) {
+      return new UnsupportedLocalProfileAcquirer();
+    }
+    return new HarmonyFilePicker({
+      context: this.context as common.UIAbilityContext,
+      fileDriver,
+      filesDir: paths.filesDir,
+      clock,
+      idGenerator
+    });
   }
 }
 
@@ -409,8 +428,8 @@ function collectReferencedSecretIds(profiles: Profile[]): string[] {
 }
 
 function resolveSdkApiVersion(
-  context: common.UIAbilityContext,
-  override?: (context: common.UIAbilityContext) => number
+  context: common.Context,
+  override?: (context: common.Context) => number
 ): number {
   if (override !== undefined) {
     return override(context);
@@ -420,6 +439,32 @@ function resolveSdkApiVersion(
     throw new Error('Runtime sdk api version was unavailable.');
   }
   return runtimeSdkApiVersion;
+}
+
+function hasUiAbilityInfo(context: common.Context): boolean {
+  const uiContext: common.UIAbilityContext = context as common.UIAbilityContext;
+  return uiContext.abilityInfo !== undefined;
+}
+
+function toPlatformContinuousTaskContext(context: common.Context): PlatformContinuousTaskContext {
+  const uiContext: common.UIAbilityContext = context as common.UIAbilityContext;
+  if (uiContext.abilityInfo !== undefined) {
+    return {
+      abilityInfo: {
+        bundleName: uiContext.abilityInfo.bundleName,
+        moduleName: uiContext.currentHapModuleInfo.name,
+        name: uiContext.abilityInfo.name
+      }
+    };
+  }
+  const extensionContext: common.VpnExtensionContext = context as common.VpnExtensionContext;
+  return {
+    abilityInfo: {
+      bundleName: extensionContext.extensionAbilityInfo.bundleName,
+      moduleName: extensionContext.currentHapModuleInfo.name,
+      name: extensionContext.extensionAbilityInfo.name
+    }
+  };
 }
 
 function sanitizeInitializationError(): PlatformInitializationError {
