@@ -1099,9 +1099,13 @@ export async function buildPhase1Native(options = {}) {
         env: phase2SelfTestEnv,
         fsApi
       });
+      const reportedCoreCommand = Array.isArray(coreProof?.components?.mihomoCore?.build?.command) &&
+        coreProof.components.mihomoCore.build.command.length > 0
+        ? coreProof.components.mihomoCore.build.command
+        : ['node', 'harmony/tools/build-mihomo-ohos.mjs'];
       manifest.builds.core = createBuildStep(
         coreProof?.result === 'pass' ? 'pass' : 'fail',
-        ['node', 'harmony/tools/build-mihomo-ohos.mjs'],
+        reportedCoreCommand,
         coreProof?.result === 'pass' ? 0 : 1,
         '',
         ''

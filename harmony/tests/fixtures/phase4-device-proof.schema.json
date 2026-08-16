@@ -1,0 +1,243 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Phase 4 Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "phase",
+    "result",
+    "runId",
+    "outputPath",
+    "timestamps",
+    "device",
+    "bundles",
+    "core",
+    "assertions",
+    "traffic",
+    "localEvidence",
+    "lifecycle",
+    "tun",
+    "correlations",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "4.0.0"
+    },
+    "phase": {
+      "const": 4
+    },
+    "result": {
+      "const": "pass"
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "outputPath": {
+      "const": "harmony/artifacts/phase4-device-proof.json"
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "completedAt"],
+      "properties": {
+        "startedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "completedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "device": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["targetKind", "identityMasked", "modelAlias", "productAlias", "apiVersion", "abi"],
+      "properties": {
+        "targetKind": { "const": "physical" },
+        "identityMasked": { "type": "string", "pattern": "^target-[a-f0-9]{8}$" },
+        "modelAlias": { "type": "string", "minLength": 1 },
+        "productAlias": { "type": "string", "minLength": 1 },
+        "apiVersion": { "const": "20" },
+        "abi": { "const": "arm64-v8a" }
+      }
+    },
+    "bundles": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["production", "probe"],
+      "properties": {
+        "production": { "$ref": "#/$defs/bundle" },
+        "probe": { "$ref": "#/$defs/bundle" }
+      }
+    },
+    "core": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["version"],
+      "properties": {
+        "version": { "const": "v1.19.29" }
+      }
+    },
+    "assertions": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["routeMode", "defaultRoute", "dnsMode", "dnsListen", "mtu"],
+      "properties": {
+        "routeMode": { "const": "rule" },
+        "defaultRoute": { "const": "tun" },
+        "dnsMode": { "const": "clash-dns" },
+        "dnsListen": { "const": "127.0.0.1:1053" },
+        "mtu": { "const": 1500 }
+      }
+    },
+    "traffic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["tcp", "udp", "dns", "ipv4"],
+      "properties": {
+        "tcp": { "$ref": "#/$defs/correlatedTraffic" },
+        "udp": { "$ref": "#/$defs/correlatedTraffic" },
+        "dns": { "$ref": "#/$defs/correlatedTraffic" },
+        "ipv4": { "$ref": "#/$defs/correlatedTraffic" },
+        "ipv6": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["result", "reason"],
+          "properties": {
+            "result": { "enum": ["pass", "not-run"] },
+            "reason": { "type": "string", "minLength": 1 }
+          }
+        }
+      }
+    },
+    "localEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["http", "socks"],
+      "properties": {
+        "http": { "$ref": "#/$defs/localEvidence" },
+        "socks": { "$ref": "#/$defs/localEvidence" }
+      }
+    },
+    "lifecycle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["notification", "background", "recovery", "stop"],
+      "properties": {
+        "notification": { "$ref": "#/$defs/passResult" },
+        "background": { "$ref": "#/$defs/passResult" },
+        "recovery": { "$ref": "#/$defs/passResult" },
+        "stop": { "$ref": "#/$defs/passResult" }
+      }
+    },
+    "tun": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["counters"],
+      "properties": {
+        "counters": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["rxPackets", "txPackets", "rxBytes", "txBytes"],
+          "properties": {
+            "rxPackets": { "type": "integer", "minimum": 0 },
+            "txPackets": { "type": "integer", "minimum": 0 },
+            "rxBytes": { "type": "integer", "minimum": 0 },
+            "txBytes": { "type": "integer", "minimum": 0 }
+          }
+        }
+      }
+    },
+    "correlations": {
+      "type": "array",
+      "minItems": 4,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["kind", "sessionId", "traceId", "captureTrace", "coreEvent"],
+        "properties": {
+          "kind": { "enum": ["tcp", "udp", "dns", "ipv4"] },
+          "sessionId": { "type": "string", "minLength": 1 },
+          "traceId": { "type": "string", "minLength": 1 },
+          "captureTrace": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["ingress", "event"],
+            "properties": {
+              "ingress": { "const": "tun" },
+              "event": { "type": "string", "minLength": 1 }
+            }
+          },
+          "coreEvent": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["sessionId", "traceId", "event"],
+            "properties": {
+              "sessionId": { "type": "string", "minLength": 1 },
+              "traceId": { "type": "string", "minLength": 1 },
+              "event": { "type": "string", "minLength": 1 }
+            }
+          }
+        }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "detail"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "detail": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "bundle": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["bundleName", "hapSha256", "nativeSha256"],
+      "properties": {
+        "bundleName": { "type": "string", "minLength": 1 },
+        "hapSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "nativeSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "correlatedTraffic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "sessionId", "traceId"],
+      "properties": {
+        "result": { "const": "pass" },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "localEvidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result", "ingress", "sessionId", "traceId"],
+      "properties": {
+        "result": { "const": "pass" },
+        "ingress": { "enum": ["local-http", "local-socks"] },
+        "sessionId": { "type": "string", "minLength": 1 },
+        "traceId": { "type": "string", "minLength": 1 }
+      }
+    },
+    "passResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["result"],
+      "properties": {
+        "result": { "const": "pass" }
+      }
+    }
+  }
+}

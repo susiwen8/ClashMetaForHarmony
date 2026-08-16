@@ -1,0 +1,162 @@
+{
+  "schemaVersion": "4.0.0",
+  "phase": 4,
+  "result": "pass",
+  "runId": "4b6ec0a3-47cd-4776-96f1-b03df8a09472",
+  "outputPath": "harmony/artifacts/phase4-device-proof.json",
+  "timestamps": {
+    "startedAt": "2026-08-15T03:00:00.000Z",
+    "completedAt": "2026-08-15T03:00:09.000Z"
+  },
+  "device": {
+    "targetKind": "physical",
+    "identityMasked": "target-91ac4f20",
+    "modelAlias": "HarmonyPhoneLab",
+    "productAlias": "PuraX-Lab",
+    "apiVersion": "20",
+    "abi": "arm64-v8a"
+  },
+  "bundles": {
+    "production": {
+      "bundleName": "com.github.kr328.clash.harmony",
+      "hapSha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+      "nativeSha256": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    },
+    "probe": {
+      "bundleName": "com.github.kr328.clash.harmony.probe",
+      "hapSha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+      "nativeSha256": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+    }
+  },
+  "core": {
+    "version": "v1.19.29"
+  },
+  "assertions": {
+    "routeMode": "rule",
+    "defaultRoute": "tun",
+    "dnsMode": "clash-dns",
+    "dnsListen": "127.0.0.1:1053",
+    "mtu": 1500
+  },
+  "traffic": {
+    "tcp": {
+      "result": "pass",
+      "sessionId": "session-tcp",
+      "traceId": "trace-tcp"
+    },
+    "udp": {
+      "result": "pass",
+      "sessionId": "session-udp",
+      "traceId": "trace-udp"
+    },
+    "dns": {
+      "result": "pass",
+      "sessionId": "session-dns",
+      "traceId": "trace-dns"
+    },
+    "ipv4": {
+      "result": "pass",
+      "sessionId": "session-ipv4",
+      "traceId": "trace-ipv4"
+    },
+    "ipv6": {
+      "result": "not-run",
+      "reason": "network-not-provisioned"
+    }
+  },
+  "localEvidence": {
+    "http": {
+      "result": "pass",
+      "ingress": "local-http",
+      "sessionId": "local-http-session",
+      "traceId": "local-http-trace"
+    },
+    "socks": {
+      "result": "pass",
+      "ingress": "local-socks",
+      "sessionId": "local-socks-session",
+      "traceId": "local-socks-trace"
+    }
+  },
+  "lifecycle": {
+    "notification": {
+      "result": "pass"
+    },
+    "background": {
+      "result": "pass"
+    },
+    "recovery": {
+      "result": "pass"
+    },
+    "stop": {
+      "result": "pass"
+    }
+  },
+  "tun": {
+    "counters": {
+      "rxPackets": 41,
+      "txPackets": 38,
+      "rxBytes": 4096,
+      "txBytes": 6144
+    }
+  },
+  "correlations": [
+    {
+      "kind": "tcp",
+      "sessionId": "session-tcp",
+      "traceId": "trace-tcp",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "tcp-connect"
+      },
+      "coreEvent": {
+        "sessionId": "session-tcp",
+        "traceId": "trace-tcp",
+        "event": "mihomo.tcp"
+      }
+    },
+    {
+      "kind": "udp",
+      "sessionId": "session-udp",
+      "traceId": "trace-udp",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "udp-associate"
+      },
+      "coreEvent": {
+        "sessionId": "session-udp",
+        "traceId": "trace-udp",
+        "event": "mihomo.udp"
+      }
+    },
+    {
+      "kind": "dns",
+      "sessionId": "session-dns",
+      "traceId": "trace-dns",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "dns-query"
+      },
+      "coreEvent": {
+        "sessionId": "session-dns",
+        "traceId": "trace-dns",
+        "event": "mihomo.dns"
+      }
+    },
+    {
+      "kind": "ipv4",
+      "sessionId": "session-ipv4",
+      "traceId": "trace-ipv4",
+      "captureTrace": {
+        "ingress": "tun",
+        "event": "ipv4-flow"
+      },
+      "coreEvent": {
+        "sessionId": "session-ipv4",
+        "traceId": "trace-ipv4",
+        "event": "mihomo.ipv4"
+      }
+    }
+  ],
+  "failures": []
+}

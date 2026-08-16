@@ -450,7 +450,7 @@ export async function buildGoComponent(options) {
   componentProof.toolVersions.goBinary = normalizePathForReport(REPO_ROOT, goBinaryPath);
   componentProof.toolVersions.goVersion = await readGoVersionImpl({ cwd: moduleAbsolutePath, env: buildEnv, runCommandImpl, spawnImpl, goBinaryPath });
 
-  const buildArgs = ['build', '-mod=readonly', '-tags', 'ohos', '-buildmode=c-shared', '-o', artifactPath, ...extraGoArgs, packagePath];
+  const buildArgs = ['build', '-mod=readonly', '-tags', 'ohos,with_gvisor', '-buildmode=c-shared', '-o', artifactPath, ...extraGoArgs, packagePath];
   componentProof.build.command = [normalizePathForReport(REPO_ROOT, goBinaryPath), ...buildArgs];
   componentProof.build.env = {
     GOOS: buildEnv.GOOS,

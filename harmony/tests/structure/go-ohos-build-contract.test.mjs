@@ -72,6 +72,10 @@ function createGoRunner(envOverrides = {}) {
   });
 }
 
+function assertGoOhosWithGvisorBuildArgs(args, artifactPath, packagePath = '.') {
+  assert.deepEqual(args, ['build', '-mod=readonly', '-tags', 'ohos,with_gvisor', '-buildmode=c-shared', '-o', artifactPath, packagePath]);
+}
+
 test('Task 5 build surfaces exist and export the documented entry points', async () => {
   const [{ buildGoOhosProbe, GO_OHOS_PROOF_PATH }, { buildMihomoOhos }, { inspectNativeLibrary }] = await Promise.all([
     import(probeHelperPath),
@@ -594,7 +598,7 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
 
     assert.equal(proof.components.probe.result, 'pass');
     assert.equal(proof.result, 'incomplete');
-    assert.deepEqual(observed.args, ['build', '-mod=readonly', '-tags', 'ohos', '-buildmode=c-shared', '-o', fakeArtifactPath, '.']);
+    assertGoOhosWithGvisorBuildArgs(observed.args, fakeArtifactPath);
     assert.equal(observed.env.GOOS, 'linux');
     assert.equal(observed.env.GOARCH, 'arm64');
     assert.equal(observed.env.CGO_ENABLED, '1');
@@ -603,9 +607,20 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
     assert.equal(observed.cwd, path.join(fakeHarmonyRoot, 'core', 'go', 'probe'));
     assert.equal('CGO_CFLAGS' in observed.env, false);
     assert.equal('CGO_LDFLAGS' in observed.env, false);
+    assertGoOhosWithGvisorBuildArgs(proof.components.probe.build.command.slice(1), '<path>');
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('Task 5 Go OHOS build contract rejects an ohos-only production tag fixture', () => {
+  assert.throws(
+    () => assertGoOhosWithGvisorBuildArgs(
+      ['build', '-mod=readonly', '-tags', 'ohos', '-buildmode=c-shared', '-o', 'harmony/artifacts/libcmfa_probe.so', '.'],
+      'harmony/artifacts/libcmfa_probe.so'
+    ),
+    /with_gvisor/u
+  );
 });
 
 test('Task 5 helpers reject host clang overrides and still write sanitized proof when the toolchain inspector throws', async () => {
