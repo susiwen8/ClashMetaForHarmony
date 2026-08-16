@@ -52,9 +52,18 @@ class FakeClock implements ClockPort {
 class FakeResolver implements CommittedProfileResolverPort {
   readonly calls: string[] = [];
   config: VpnCaptureConfig = buildExactCaptureConfig();
+  resolveError?: Error;
+  resolveGate = createDeferred<void>();
+  useDeferredResolve: boolean = false;
 
   async resolve(profileId: string, versionId: string): Promise<VpnCaptureConfig> {
     this.calls.push(`${profileId}:${versionId}`);
+    if (this.useDeferredResolve) {
+      await this.resolveGate.promise;
+    }
+    if (this.resolveError !== undefined) {
+      throw this.resolveError;
+    }
     return this.config;
   }
 }
@@ -65,9 +74,14 @@ class FakePlatform implements VpnPlatformSessionPort {
   createError?: Error;
   destroyError?: Error;
   nextHandle: TunHandle = createTunHandle(31, 'vpn-1', 'session-1');
+  createGate = createDeferred<void>();
+  useDeferredCreate: boolean = false;
 
   async create(_config: VpnCaptureConfig): Promise<TunHandle> {
     this.log.push(`platform.create:${this.nextHandle.sessionId}`);
+    if (this.useDeferredCreate) {
+      await this.createGate.promise;
+    }
     if (this.createError !== undefined) {
       throw this.createError;
     }
@@ -110,7 +124,9 @@ class FakeTunRuntime implements TunRuntimePort {
   recoverPortError?: TunRuntimePortError;
   recoverError?: Error;
   startDeferred = createDeferred<TunRuntimeSnapshot>();
+  recoverDeferred = createDeferred<TunRuntimeSnapshot>();
   useDeferredStart: boolean = false;
+  useDeferredRecover: boolean = false;
 
   async start(handle: TunHandle, _options: TunStartOptions): Promise<TunRuntimeSnapshot> {
     this.log.push(`tun.start:${handle.sessionId}`);
@@ -156,6 +172,9 @@ class FakeTunRuntime implements TunRuntimePort {
     if (this.recoverError !== undefined) {
       throw this.recoverError;
     }
+    if (this.useDeferredRecover) {
+      return await this.recoverDeferred.promise;
+    }
     return cloneTunSnapshot(this.recoverSnapshotValue);
   }
 
@@ -188,8 +207,10 @@ class FakeNetworkRecovery implements NetworkRecoveryPort {
   private readonly listeners: Map<number, (status: NetworkStatus) => void> = new Map();
   private nextListenerId: number = 1;
   status: NetworkStatus = { usable: false, networkId: '' };
+  currentNetworkCalls: number = 0;
 
   currentNetwork(): NetworkStatus {
+    this.currentNetworkCalls += 1;
     return {
       usable: this.status.usable,
       networkId: this.status.networkId
@@ -416,6 +437,12 @@ async function waitForCondition(predicate: () => boolean, maxTurns: number = 12)
   throw new Error('Condition was not satisfied within bounded microtask turns.');
 }
 
+async function settleMicrotasks(turns: number = 6): Promise<void> {
+  for (let turn = 0; turn < turns; turn += 1) {
+    await Promise.resolve();
+  }
+}
+
 function captureEventStates(coordinator: VpnRuntimeCoordinator): string[] {
   const states: string[] = [];
   coordinator.subscribe((event) => {
@@ -557,6 +584,45 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(coordinator.snapshot().state).assertEqual('STOPPED');
     });
 
+    it('settlesStopWhileAwaitingReadyWithoutRequiringALaterTunEvent', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'STARTING');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [37, 38, 39, 40]
+      );
+      let startSettled: boolean = false;
+      let stopSettled: boolean = false;
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1').then((result) => {
+        startSettled = true;
+        return result;
+      });
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
+      const stopPromise: Promise<VpnControllerStopResult> = coordinator.stop().then((result) => {
+        stopSettled = true;
+        return result;
+      });
+      await waitForCondition(() => startSettled && stopSettled);
+      const startResult: VpnControllerStartResult = await startPromise;
+      const stopResult: VpnControllerStopResult = await stopPromise;
+
+      expect(startSettled).assertTrue();
+      expect(stopSettled).assertTrue();
+      expect(startResult.kind).assertEqual('STOPPED');
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+    });
+
     it('reversesCleanupWithoutSkippingLaterStepsAcrossPartialStartFailures', 0, async () => {
       const processPlatform = new FakePlatform();
       processPlatform.protectProcessError = new Error('protect failed');
@@ -611,6 +677,128 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(notification.log.join('>')).assertEqual('notification.start:session-1>notification.stop:session-1');
     });
 
+    it('settlesStopWhenResolverFailureArrivesAfterStopWasRequested', 0, async () => {
+      const resolver = new FakeResolver();
+      resolver.useDeferredResolve = true;
+      const tunRuntime = new FakeTunRuntime();
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        resolver,
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [52, 53, 54, 55]
+      );
+      let startSettled: boolean = false;
+      let stopSettled: boolean = false;
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1').then((result) => {
+        startSettled = true;
+        return result;
+      });
+      const stopPromise: Promise<VpnControllerStopResult> = coordinator.stop().then((result) => {
+        stopSettled = true;
+        return result;
+      });
+      resolver.resolveError = new Error('resolve failed');
+      resolver.resolveGate.resolve(undefined);
+      await waitForCondition(() => startSettled && stopSettled);
+      const startResult: VpnControllerStartResult = await startPromise;
+      const stopResult: VpnControllerStopResult = await stopPromise;
+
+      expect(startResult.kind).assertEqual('FAILED');
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('settlesStopWhenCreateFailureArrivesAfterStopWasRequested', 0, async () => {
+      const resolver = new FakeResolver();
+      const platform = new FakePlatform();
+      platform.useDeferredCreate = true;
+      const tunRuntime = new FakeTunRuntime();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        resolver,
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [56, 57, 58, 59]
+      );
+      let startSettled: boolean = false;
+      let stopSettled: boolean = false;
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1').then((result) => {
+        startSettled = true;
+        return result;
+      });
+      await waitForCondition(() => platform.log.includes('platform.create:session-1'));
+      const stopPromise: Promise<VpnControllerStopResult> = coordinator.stop().then((result) => {
+        stopSettled = true;
+        return result;
+      });
+      platform.createError = new Error('create failed');
+      platform.createGate.resolve(undefined);
+      await waitForCondition(() => startSettled && stopSettled);
+      const startResult: VpnControllerStartResult = await startPromise;
+      const stopResult: VpnControllerStopResult = await stopPromise;
+
+      expect(startResult.kind).assertEqual('FAILED');
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('settlesStopWhenConsentDenialArrivesAfterStopWasRequested', 0, async () => {
+      const resolver = new FakeResolver();
+      const platform = new FakePlatform();
+      platform.useDeferredCreate = true;
+      const tunRuntime = new FakeTunRuntime();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        resolver,
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [60, 61, 62, 63]
+      );
+      let startSettled: boolean = false;
+      let stopSettled: boolean = false;
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1').then((result) => {
+        startSettled = true;
+        return result;
+      });
+      await waitForCondition(() => platform.log.includes('platform.create:session-1'));
+      const stopPromise: Promise<VpnControllerStopResult> = coordinator.stop().then((result) => {
+        stopSettled = true;
+        return result;
+      });
+      platform.createError = buildPlatformError('CONSENT_DENIED', 'denied');
+      platform.createGate.resolve(undefined);
+      await waitForCondition(() => startSettled && stopSettled);
+      const startResult: VpnControllerStartResult = await startPromise;
+      const stopResult: VpnControllerStopResult = await stopPromise;
+
+      expect(startResult.kind).assertEqual('STOPPED');
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
     it('ignoresLateEventsFromOldSessions', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
@@ -629,6 +817,77 @@ export default function vpnRuntimeCoordinatorTestsuite() {
 
       expect(coordinator.snapshot().state).assertEqual('RUNNING');
       expect(coordinator.snapshot().activeRequest?.sessionId).assertEqual('session-1');
+    });
+
+    it('ignoresStaleStopRequestsAndNotificationCancellationFromAnOldSession', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [65, 66, 67, 68, 69, 70]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      await coordinator.stop('session-1');
+      platform.nextHandle = createTunHandle(32, 'vpn-2', 'session-2');
+      tunRuntime.snapshotValue = buildTunSnapshot('session-2', 'READY');
+      await coordinator.start('profile-1', 'version-2', 'session-2');
+      const stopCountBefore: number = tunRuntime.stopCalls.length;
+      const destroyCountBefore: number = countArrayEntry(platform.log, 'platform.destroy:vpn-2');
+      const notificationStopCountBefore: number = notification.stopCalls.length;
+
+      await coordinator.stop('session-1');
+      notification.emitCancellation('session-1');
+      await settleMicrotasks();
+
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+      expect(coordinator.snapshot().activeRequest?.sessionId).assertEqual('session-2');
+      expect(tunRuntime.stopCalls.length).assertEqual(stopCountBefore);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-2')).assertEqual(destroyCountBefore);
+      expect(notification.stopCalls.length).assertEqual(notificationStopCountBefore);
+
+      const session2Stop: VpnControllerStopResult = await coordinator.stop('session-2');
+      expect(session2Stop.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(stopCountBefore + 1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-2')).assertEqual(destroyCountBefore + 1);
+      expect(notification.stopCalls.length).assertEqual(notificationStopCountBefore + 1);
+    });
+
+    it('idleStaleStopDoesNotPublishStoppingOrClearTheNextPreAdmitOwner', 0, async () => {
+      const resolver = new FakeResolver();
+      resolver.useDeferredResolve = true;
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-2', 'READY');
+      const coordinator = createCoordinator(
+        resolver,
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        new FakeNotification(),
+        new FakeScheduler(),
+        [71, 72, 73, 74]
+      );
+      const states: string[] = captureEventStates(coordinator);
+
+      const staleStopResult: VpnControllerStopResult = await coordinator.stop('old-session');
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-2', 'session-2');
+      const duplicateStart: VpnControllerStartResult = await coordinator.start('profile-1', 'version-3', 'session-3');
+      resolver.resolveGate.resolve(undefined);
+      const startResult: VpnControllerStartResult = await startPromise;
+
+      expect(staleStopResult.kind).assertEqual('STOPPED');
+      expect(states.includes('STOPPING')).assertFalse();
+      expect(duplicateStart.kind).assertEqual('REJECTED');
+      expect(startResult.kind).assertEqual('STARTED');
+      expect(coordinator.snapshot().activeRequest?.sessionId).assertEqual('session-2');
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
     });
 
     it('treatsConsentDenialAsStoppedInsteadOfError', 0, async () => {
@@ -714,6 +973,37 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(coordinator.snapshot().state).assertEqual('RUNNING');
     });
 
+    it('failsClosedWhenRecoverReturnsAReadySnapshotForAStaleSession', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.recoverSnapshotValue = buildTunSnapshot('old-session', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const network = new FakeNetworkRecovery();
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        network,
+        notification,
+        scheduler,
+        [90, 91, 92, 93, 94]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      network.emitUsable('wifi-1');
+      await scheduler.latest().run();
+      await waitForCondition(() => coordinator.snapshot().activeRequest === null);
+
+      expect(coordinator.snapshot().state).assertEqual('ERROR');
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+      expect(coordinator.snapshot().activeRequest).assertEqual(null);
+    });
+
     it('exhaustsFiveRecoveryAttemptsThenCleansUpExactlyOnce', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
@@ -746,6 +1036,149 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
       expect(notification.stopCalls.length).assertEqual(1);
       expect(coordinator.snapshot().state).assertEqual('ERROR');
+    });
+
+    it('usesCurrentNetworkToScheduleRecoveryAndAvoidsDuplicatePendingTasks', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.recoverPortError = new TunRuntimePortError('NETWORK_LOST', 'recover lost');
+      const network = new FakeNetworkRecovery();
+      network.status = { usable: true, networkId: 'wifi-1' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        network,
+        new FakeNotification(),
+        scheduler,
+        [107, 108, 109, 110, 111]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => tunRuntime.closeStaleCalls.length === 1);
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      network.emitUsable('wifi-1');
+      network.emitUsable('wifi-1');
+      await scheduler.latest().run();
+      await waitForCondition(() => scheduler.tasks.length === 2);
+
+      expect(network.currentNetworkCalls > 0).assertTrue();
+      expect(scheduler.delays.join(',')).assertEqual('250,500');
+    });
+
+    it('doesNotScheduleAnotherRetryWhileRecoverIsStillInFlight', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.useDeferredRecover = true;
+      const network = new FakeNetworkRecovery();
+      network.status = { usable: true, networkId: 'wifi-1' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        network,
+        new FakeNotification(),
+        scheduler,
+        [111, 112, 113, 114, 115]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      const firstTask: FakeDelayTask = scheduler.latest();
+      const recoverRunPromise: Promise<void> = firstTask.run();
+      await waitForCondition(() => tunRuntime.recoverCalls.length === 1);
+      network.emitUsable('wifi-1');
+      network.emitUsable('wifi-1');
+      await settleMicrotasks();
+      expect(scheduler.tasks.length).assertEqual(1);
+      tunRuntime.recoverDeferred.resolve(buildTunSnapshot('session-1', 'READY'));
+      await recoverRunPromise;
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+    });
+
+    it('ignoresLateRecoverReadyAfterUserStopTakesOwnershipOfCleanup', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.useDeferredRecover = true;
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const network = new FakeNetworkRecovery();
+      network.status = { usable: true, networkId: 'wifi-1' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        network,
+        notification,
+        scheduler,
+        [116, 117, 118, 119, 120]
+      );
+      const states: string[] = captureEventStates(coordinator);
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      const recoveryTask: FakeDelayTask = scheduler.latest();
+      const recoveryRunPromise: Promise<void> = recoveryTask.run();
+      await waitForCondition(() => tunRuntime.recoverCalls.length === 1);
+
+      const stopPromise: Promise<VpnControllerStopResult> = coordinator.stop('session-1');
+      expect(coordinator.snapshot().state).assertEqual('STOPPING');
+
+      tunRuntime.recoverDeferred.resolve(buildTunSnapshot('session-1', 'READY'));
+
+      await recoveryRunPromise;
+      const stopResult: VpnControllerStopResult = await stopPromise;
+
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+      const stoppingIndex: number = states.indexOf('STOPPING');
+      expect(stoppingIndex >= 0).assertTrue();
+      for (let index = stoppingIndex + 1; index < states.length; index += 1) {
+        expect(states[index] === 'RUNNING').assertFalse();
+        expect(states[index] === 'RECOVERING').assertFalse();
+        expect(states[index] === 'ERROR').assertFalse();
+      }
+    });
+
+    it('waitsForANewUsableEventWhenCurrentNetworkIsNotUsableAfterARecoveryLoss', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.recoverPortError = new TunRuntimePortError('NETWORK_LOST', 'recover lost');
+      const network = new FakeNetworkRecovery();
+      network.status = { usable: true, networkId: 'wifi-1' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        network,
+        new FakeNotification(),
+        scheduler,
+        [112, 113, 114, 115, 116]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      network.status = { usable: false, networkId: '' };
+      await scheduler.latest().run();
+      await settleMicrotasks();
+
+      expect(network.currentNetworkCalls > 0).assertTrue();
+      expect(scheduler.tasks.length).assertEqual(1);
+
+      network.emitUsable('wifi-2');
+      await waitForCondition(() => scheduler.tasks.length === 2);
+      expect(scheduler.delays.join(',')).assertEqual('250,500');
     });
 
     it('publishesStoppingBeforeCleanupAndCancelsRecoveryWithoutDoubleCleanupOrLateRunning', 0, async () => {

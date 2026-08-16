@@ -242,10 +242,15 @@ function expectExactList(label: string, actual: string[], expected: string[]): v
 }
 
 const VPN_ASSIGNMENT_PATTERN: RegExp =
-  /((?:vpnid|vpn_id|vpn-id|deviceid|device_id|device-id|serial|serialnumber|serial_number))(\s*[:=]\s*)([^\s"'<>]+)/gi;
+  /((?:vpnid|vpn_id|vpn-id|deviceid|device_id|device-id|serial|serialnumber|serial_number))(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s"'<>]+)/gi;
+const QUOTED_VPN_ASSIGNMENT_PATTERN: RegExp =
+  /((?:vpnid|vpn_id|vpn-id|deviceid|device_id|device-id|serial|serialnumber|serial_number))(\s*[:=]\s*)("[^"]*"|'[^']*')/gi;
 
 function sanitizeVpnPublicDetail(rawDetail: string): string {
   let sanitized: string = redactSensitiveText(rawDetail.trim());
+  sanitized = sanitized.replace(QUOTED_VPN_ASSIGNMENT_PATTERN, (_match: string, key: string, separator: string): string => {
+    return `${key}${separator}<redacted>`;
+  });
   sanitized = sanitized.replace(VPN_ASSIGNMENT_PATTERN, (_match: string, key: string, separator: string): string => {
     return `${key}${separator}<redacted>`;
   });

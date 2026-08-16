@@ -263,5 +263,24 @@ export default function vpnModelsTestsuite() {
       expect(trace.detail).assertEqual(failure.detail);
       expect(baselineRedacted === rawDetail).assertFalse();
     });
+
+    it('redactsQuotedVpnAndDeviceAssignmentsWithoutRemovingTheKeys', 0, () => {
+      const rawDetail: string = 'vpnId="vpn-77" deviceId: \'dev-88\' serial="ABC123"';
+      const failure = createVpnFailure('VPN_STOP_FAILED', rawDetail);
+      const trace = createVpnIngressTrace({
+        sessionId: 'session-10',
+        stage: 'TUN_ERROR',
+        detail: rawDetail,
+        atMs: 100
+      });
+
+      expect(failure.detail.includes('vpnId')).assertTrue();
+      expect(failure.detail.includes('deviceId')).assertTrue();
+      expect(failure.detail.includes('serial')).assertTrue();
+      expect(failure.detail.includes('vpn-77')).assertFalse();
+      expect(failure.detail.includes('dev-88')).assertFalse();
+      expect(failure.detail.includes('ABC123')).assertFalse();
+      expect(trace.detail).assertEqual(failure.detail);
+    });
   });
 }
