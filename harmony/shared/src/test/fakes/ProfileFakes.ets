@@ -618,6 +618,22 @@ export function createDeferred<T>(): Deferred<T> {
   );
 }
 
+export function expectThrowsMessage(block: () => void, expectedFragment: string): void {
+  let didThrow: boolean = false;
+  try {
+    block();
+  } catch (error) {
+    didThrow = true;
+    const message: string = error instanceof Error ? error.message : `${error}`;
+    if (!message.includes(expectedFragment)) {
+      throw new Error(`Expected "${message}" to include "${expectedFragment}".`);
+    }
+  }
+  if (!didThrow) {
+    throw new Error(`Expected block to throw "${expectedFragment}".`);
+  }
+}
+
 export function buildCoreError(code: string, detail: string, retryable: boolean): Error {
   return new FixtureCoreError(code, detail, retryable);
 }

@@ -13,3 +13,6 @@ export * from './src/main/ets/profile/RefreshProfileUseCase';
 export * from './src/main/ets/profile/LocalRuntimeCoordinator';
 export * from './src/main/ets/profile/ManageProfileUseCases';
 export * from './src/main/ets/profile/ProfileApplication';
+export * from './src/main/ets/vpn/VpnModels';
+export * from './src/main/ets/vpn/VpnPorts';
+export * from './src/main/ets/vpn/VpnRuntimeCoordinator';
