@@ -27,6 +27,12 @@ const CORE_EXPORTS = [
   'cmfa_mihomo_tun_copy_traces_v1',
   'cmfa_mihomo_tun_runtime_state_v1'
 ];
+const NODE_ADDON_ALLOWED_EXPORTS = [
+  '_fini',
+  '_init',
+  'cmfa_host_emit_runtime_event_bridge_v1',
+  'cmfa_host_protect_socket_bridge_v1'
+];
 const NODE_ADDON_ALLOWED_NEEDED = ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const CORE_ALLOWED_NEEDED = ['libc.so'];
 const TOOLCHAIN_LOCK_IDENTITY = 'harmony/toolchain.lock.json';
@@ -388,8 +394,8 @@ export function collectArtifactElfContractErrors(elf, artifactKind) {
       errors.push('requiredExports must stay empty for the addon contract');
     }
     const exported = Array.isArray(elf.exportedSymbols) ? [...elf.exportedSymbols].sort() : null;
-    if (JSON.stringify(exported) !== JSON.stringify(['_fini', '_init'])) {
-      errors.push('exportedSymbols must only contain _init and _fini');
+    if (JSON.stringify(exported) !== JSON.stringify(NODE_ADDON_ALLOWED_EXPORTS)) {
+      errors.push(`exportedSymbols must only contain ${NODE_ADDON_ALLOWED_EXPORTS.join(', ')}`);
     }
   }
 

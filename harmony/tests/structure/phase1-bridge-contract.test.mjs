@@ -67,6 +67,12 @@ const typedTypeExports = [
   'CoreErrorContext',
   'CoreError'
 ];
+const NODE_ADDON_ALLOWED_EXPORTS = [
+  '_fini',
+  '_init',
+  'cmfa_host_emit_runtime_event_bridge_v1',
+  'cmfa_host_protect_socket_bridge_v1'
+];
 
 async function readTreeFiles(rootDir) {
   const entries = await fs.readdir(rootDir, { withFileTypes: true });
@@ -428,29 +434,51 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
         },
         '--dyn-syms': {
           stdout: [
-            'Symbol table \'.dynsym\' contains 2 entries:',
-            '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-            '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _ZNSt4__n17promiseIvE28set_exception_at_thread_exitESt13exception_ptr'
+            'Symbol table \'.dynsym\' contains 4 entries:',
+            '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+            '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+            '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+            '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1'
           ].join('\n')
-        }
+        },
+        '-rW': { stdout: '' }
       })
     });
     assert.equal(validResult.component, 'nodeAddon');
     assert.equal(validResult.result, 'pass');
+    assert.deepEqual(validResult.exportedSymbols, NODE_ADDON_ALLOWED_EXPORTS);
 
     const failureCases = [
+      {
+        name: 'initial-exec TLS relocation fails because the native module is loaded with dlopen',
+        outputsByFlag: {
+          '-h': { stdout: 'Machine: AArch64\n' },
+          '-d': {
+            stdout: [
+            'Shared library: [libace_napi.z.so]',
+            'Shared library: [libc.so]',
+            'Shared library: [libcmfa_mihomo.so]',
+            'Shared library: [libhilog_ndk.z.so]'
+          ].join('\n')
+        },
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init\n' },
+          '-rW': { stdout: '0000000001 R_AARCH64_TLS_TPREL64 0000000000 runtime.tlsg + 0\n' }
+        },
+        expectedCode: 'DYNAMIC_TLS_MODEL_REQUIRED'
+      },
       {
         name: 'missing allowlisted dependency fails',
         outputsByFlag: {
           '-h': { stdout: 'Machine: AArch64\n' },
           '-d': {
             stdout: [
-              'Shared library: [libace_napi.z.so]',
-              'Shared library: [libc.so]',
-              'Shared library: [libcmfa_mihomo.so]'
-            ].join('\n')
-          },
-          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+            'Shared library: [libace_napi.z.so]',
+            'Shared library: [libc.so]',
+            'Shared library: [libcmfa_mihomo.so]'
+          ].join('\n')
+        },
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init\n' },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'DT_NEEDED_SET_MISMATCH'
       },
@@ -460,14 +488,15 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           '-h': { stdout: 'Machine: AArch64\n' },
           '-d': {
             stdout: [
-              'Shared library: [libace_napi.z.so]',
-              'Shared library: [libc.so]',
-              'Shared library: [libcmfa_mihomo.so]',
-              'Shared library: [libhilog_ndk.z.so]',
-              'Shared library: [libextra.so]'
-            ].join('\n')
-          },
-          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+            'Shared library: [libace_napi.z.so]',
+            'Shared library: [libc.so]',
+            'Shared library: [libcmfa_mihomo.so]',
+            'Shared library: [libhilog_ndk.z.so]',
+            'Shared library: [libextra.so]'
+          ].join('\n')
+        },
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init\n' },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'DT_NEEDED_NOT_ALLOWLISTED'
       },
@@ -477,14 +506,15 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           '-h': { stdout: 'Machine: AArch64\n' },
           '-d': {
             stdout: [
-              'Shared library: [libace_napi.z.so]',
-              'Shared library: [libc.so]',
-              'Shared library: [libcmfa_mihomo.so]',
-              'Shared library: [libhilog_ndk.z.so]',
-              'Shared library: [libdl.so]'
-            ].join('\n')
-          },
-          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+            'Shared library: [libace_napi.z.so]',
+            'Shared library: [libc.so]',
+            'Shared library: [libcmfa_mihomo.so]',
+            'Shared library: [libhilog_ndk.z.so]',
+            'Shared library: [libdl.so]'
+          ].join('\n')
+        },
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init\n' },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'LIBDL_FORBIDDEN'
       },
@@ -494,16 +524,40 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           '-h': { stdout: 'Machine: AArch64\n' },
           '-d': {
             stdout: [
+            'Shared library: [libace_napi.z.so]',
+            'Shared library: [libc.so]',
+            'Shared library: [libcmfa_mihomo.so]',
+            'Shared library: [libhilog_ndk.z.so]',
+            'Shared library: [libc++_shared.so]'
+          ].join('\n')
+        },
+          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init\n' },
+          '-rW': { stdout: '' }
+        },
+        expectedCode: 'LIBCXX_SHARED_FORBIDDEN'
+      },
+      {
+        name: 'missing fixed host bridge export fails',
+        outputsByFlag: {
+          '-h': { stdout: 'Machine: AArch64\n' },
+          '-d': {
+            stdout: [
               'Shared library: [libace_napi.z.so]',
               'Shared library: [libc.so]',
               'Shared library: [libcmfa_mihomo.so]',
-              'Shared library: [libhilog_ndk.z.so]',
-              'Shared library: [libc++_shared.so]'
+              'Shared library: [libhilog_ndk.z.so]'
             ].join('\n')
           },
-          '--dyn-syms': { stdout: '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1\n' }
+          '--dyn-syms': {
+            stdout: [
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1'
+            ].join('\n')
+          },
+          '-rW': { stdout: '' }
         },
-        expectedCode: 'LIBCXX_SHARED_FORBIDDEN'
+        expectedCode: 'EXPORT_SET_MISMATCH'
       },
       {
         name: 'public cmfa export fails',
@@ -519,10 +573,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_runtime_state'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_runtime_state'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'PUBLIC_CMFA_EXPORT_FORBIDDEN'
       },
@@ -540,10 +598,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _ZN4cmfa24register_mihomo_backendEP10cmfa_error'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 _ZN4cmfa24register_mihomo_backendEP10cmfa_error'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'BACKEND_REGISTER_SYMBOL_FORBIDDEN'
       },
@@ -561,10 +623,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_internal_register_backend'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_internal_register_backend'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'INTERNAL_SYMBOL_FORBIDDEN'
       },
@@ -582,10 +648,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_test_hook'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_test_hook'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'EXPORT_SENTINEL_FORBIDDEN'
       },
@@ -603,10 +673,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 fake_backend'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 fake_backend'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'EXPORT_SENTINEL_FORBIDDEN'
       },
@@ -624,10 +698,14 @@ test('Task 7 nodeAddon inspector enforces exact dependency and export contracts'
           },
           '--dyn-syms': {
             stdout: [
-              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 napi_register_module_v1',
-              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 stub_core'
+              '1: 00000000     0 FUNC    GLOBAL DEFAULT   10 _init',
+              '2: 00000000     0 FUNC    GLOBAL DEFAULT   10 _fini',
+              '3: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_emit_runtime_event_bridge_v1',
+              '4: 00000000     0 FUNC    GLOBAL DEFAULT   10 cmfa_host_protect_socket_bridge_v1',
+              '5: 00000000     0 FUNC    GLOBAL DEFAULT   10 stub_core'
             ].join('\n')
-          }
+          },
+          '-rW': { stdout: '' }
         },
         expectedCode: 'EXPORT_SENTINEL_FORBIDDEN'
       }

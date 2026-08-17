@@ -35,6 +35,11 @@ const FIXED_HOST_BRIDGE_SYMBOLS = [
   'cmfa_host_emit_runtime_event_bridge_v1',
   'cmfa_host_protect_socket_bridge_v1'
 ];
+const NODE_ADDON_ALLOWED_EXPORTS = [
+  '_fini',
+  '_init',
+  ...FIXED_HOST_BRIDGE_SYMBOLS
+];
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
   mihomoCore: [
@@ -327,6 +332,9 @@ export async function inspectNativeLibrary({
       failures.push(createFailure('DT_NEEDED_SET_MISMATCH', neededLibraries.join(',')));
     }
     for (const symbol of exportedSymbols) {
+      if (FIXED_HOST_BRIDGE_SYMBOLS.includes(symbol)) {
+        continue;
+      }
       for (const forbidden of NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS) {
         if (forbidden.pattern.test(symbol)) {
           failures.push(createFailure(forbidden.code, symbol));
@@ -335,6 +343,9 @@ export async function inspectNativeLibrary({
       if (EXPORT_SENTINEL_PATTERN.test(symbol)) {
         failures.push(createFailure('EXPORT_SENTINEL_FORBIDDEN', symbol));
       }
+    }
+    if (exportedSymbols.join('\0') !== NODE_ADDON_ALLOWED_EXPORTS.join('\0')) {
+      failures.push(createFailure('EXPORT_SET_MISMATCH', exportedSymbols.join(',')));
     }
   }
 

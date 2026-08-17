@@ -29,6 +29,12 @@ const CORE_EXPORTS = [
   'cmfa_mihomo_tun_copy_traces_v1',
   'cmfa_mihomo_tun_runtime_state_v1'
 ];
+const NODE_ADDON_ALLOWED_EXPORTS = [
+  '_fini',
+  '_init',
+  'cmfa_host_emit_runtime_event_bridge_v1',
+  'cmfa_host_protect_socket_bridge_v1'
+];
 const defaultPrePackageCorePath = path.join(
   harmonyRoot,
   'entry',
@@ -149,7 +155,7 @@ function createElfReport(component, overrides = {}) {
       architecture: 'AArch64',
       neededLibraries: ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'],
       allowedNeededLibraries: ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'],
-      exportedSymbols: ['_fini', '_init'],
+      exportedSymbols: NODE_ADDON_ALLOWED_EXPORTS,
       requiredExports: [],
       failures: []
     }
@@ -520,7 +526,12 @@ test('extractAndHashHapEntry keeps the public positional signature and removes i
                 } else if (args[0] === '-d') {
                   child.stdout.emit('data', 'Shared library: [libace_napi.z.so]\nShared library: [libc.so]\nShared library: [libcmfa_mihomo.so]\nShared library: [libhilog_ndk.z.so]\n');
                 } else {
-                  child.stdout.emit('data', '1: 0000 GLOBAL DEFAULT 1 _init\n2: 0000 GLOBAL DEFAULT 1 _fini\n');
+                  child.stdout.emit('data', [
+                    '1: 0000 GLOBAL DEFAULT 1 _init',
+                    '2: 0000 GLOBAL DEFAULT 1 _fini',
+                    '3: 0000 GLOBAL DEFAULT 1 cmfa_host_emit_runtime_event_bridge_v1',
+                    '4: 0000 GLOBAL DEFAULT 1 cmfa_host_protect_socket_bridge_v1'
+                  ].join('\n'));
                 }
                 child.emit('close', 0, null);
               });
@@ -871,6 +882,43 @@ test('strict manifest validator requires the canonical 14-symbol core export con
   }));
   assert.equal(extraPublicExport.valid, false);
   assert.match(extraPublicExport.errors.join('\n'), /exportedSymbols must not expose extra cmfa_\* symbols/u);
+});
+
+test('strict manifest validator requires the canonical four-symbol addon export contract and rejects missing or extra exports', async () => {
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  const exactCanonical = validatePhase1NativeManifest(createStrictManifest());
+  assert.equal(exactCanonical.valid, true, exactCanonical.errors.join('\n'));
+
+  const missingBridgeExport = validatePhase1NativeManifest(createStrictManifest({
+    artifacts: {
+      ...createStrictManifest().artifacts,
+      prePackageAddon: createArtifact(
+        'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so',
+        'addon-bytes',
+        createElfReport('nodeAddon', {
+          exportedSymbols: NODE_ADDON_ALLOWED_EXPORTS.filter((symbol) => symbol !== 'cmfa_host_emit_runtime_event_bridge_v1')
+        })
+      )
+    }
+  }));
+  assert.equal(missingBridgeExport.valid, false);
+  assert.match(missingBridgeExport.errors.join('\n'), /exportedSymbols must only contain/u);
+
+  const extraAddonExport = validatePhase1NativeManifest(createStrictManifest({
+    artifacts: {
+      ...createStrictManifest().artifacts,
+      prePackageAddon: createArtifact(
+        'harmony/entry/build/default/intermediates/cmake/default/obj/arm64-v8a/libentry.so',
+        'addon-bytes',
+        createElfReport('nodeAddon', {
+          exportedSymbols: [...NODE_ADDON_ALLOWED_EXPORTS, 'napi_register_module_v1']
+        })
+      )
+    }
+  }));
+  assert.equal(extraAddonExport.valid, false);
+  assert.match(extraAddonExport.errors.join('\n'), /exportedSymbols must only contain/u);
 });
 
 test('strict manifest validator rejects fail-priority violations, stale invariants, and fake ELF pass reports', async () => {
