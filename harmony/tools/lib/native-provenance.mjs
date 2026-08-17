@@ -12,14 +12,20 @@ const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const SIGNING_TOKEN_PATTERN = /(^|[\s"'(=\[])([^\s"'<>]*\.(?:p12|cer|p7b|pem|pfx))(?=$|[\s"'<>)}\]])/giu;
 const CORE_EXPORTS = [
+  'cmfa_mihomo_close_stale_tun_connections_v1',
   'cmfa_mihomo_core_build_info_json_cstr_v1',
   'cmfa_mihomo_core_version_cstr_v1',
   'cmfa_mihomo_probe_cancel_v1',
   'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_start_tun_v1',
+  'cmfa_mihomo_stop_tun_v1',
   'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
+  'cmfa_mihomo_take_runtime_log_v1',
+  'cmfa_mihomo_tun_copy_traces_ring_v1',
+  'cmfa_mihomo_tun_copy_traces_v1',
+  'cmfa_mihomo_tun_runtime_state_v1'
 ];
 const NODE_ADDON_ALLOWED_NEEDED = ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const CORE_ALLOWED_NEEDED = ['libc.so'];

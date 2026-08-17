@@ -13,6 +13,22 @@ const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const repoRoot = path.resolve(harmonyRoot, '..');
 const defaultManifestPath = path.join(harmonyRoot, 'artifacts', 'phase1-native-provenance.json');
 const defaultRawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+const CORE_EXPORTS = [
+  'cmfa_mihomo_close_stale_tun_connections_v1',
+  'cmfa_mihomo_core_build_info_json_cstr_v1',
+  'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_probe_cancel_v1',
+  'cmfa_mihomo_probe_https_v1',
+  'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_start_tun_v1',
+  'cmfa_mihomo_stop_tun_v1',
+  'cmfa_mihomo_stop_v1',
+  'cmfa_mihomo_take_runtime_log_v1',
+  'cmfa_mihomo_tun_copy_traces_ring_v1',
+  'cmfa_mihomo_tun_copy_traces_v1',
+  'cmfa_mihomo_tun_runtime_state_v1'
+];
 const defaultPrePackageCorePath = path.join(
   harmonyRoot,
   'entry',
@@ -126,16 +142,6 @@ function createPhase2SelfTestEvidence(enabled = false) {
 }
 
 function createElfReport(component, overrides = {}) {
-  const coreExports = [
-    'cmfa_mihomo_core_build_info_json_cstr_v1',
-    'cmfa_mihomo_core_version_cstr_v1',
-    'cmfa_mihomo_probe_cancel_v1',
-    'cmfa_mihomo_probe_https_v1',
-    'cmfa_mihomo_runtime_state_v1',
-    'cmfa_mihomo_start_local_v1',
-    'cmfa_mihomo_stop_v1',
-    'cmfa_mihomo_take_runtime_log_v1'
-  ];
   const defaults = component === 'nodeAddon'
     ? {
       result: 'pass',
@@ -153,8 +159,8 @@ function createElfReport(component, overrides = {}) {
       architecture: 'AArch64',
       neededLibraries: ['libc.so'],
       allowedNeededLibraries: ['libc.so'],
-      exportedSymbols: coreExports,
-      requiredExports: coreExports,
+      exportedSymbols: CORE_EXPORTS,
+      requiredExports: CORE_EXPORTS,
       failures: []
     };
 
@@ -825,6 +831,46 @@ test('strict manifest validator requires the canonical harmony/toolchain.lock.js
 
   assert.equal(invalid.valid, false);
   assert.match(invalid.errors.join('\n'), /toolchainLock\.path|harmony\/toolchain\.lock\.json/u);
+});
+
+test('strict manifest validator requires the canonical 14-symbol core export contract and rejects missing or extra public exports', async () => {
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  const exactCanonicalManifest = createStrictManifest();
+  const exactCanonical = validatePhase1NativeManifest(exactCanonicalManifest);
+  assert.equal(exactCanonical.valid, true, exactCanonical.errors.join('\n'));
+
+  const missingTunExport = validatePhase1NativeManifest(createStrictManifest({
+    artifacts: {
+      ...createStrictManifest().artifacts,
+      rawCore: createArtifact(
+        'harmony/artifacts/libcmfa_mihomo.so',
+        'core-bytes',
+        createElfReport('mihomoCore', {
+          exportedSymbols: CORE_EXPORTS.filter((symbol) => symbol !== 'cmfa_mihomo_tun_runtime_state_v1'),
+          requiredExports: CORE_EXPORTS.filter((symbol) => symbol !== 'cmfa_mihomo_tun_runtime_state_v1')
+        })
+      )
+    }
+  }));
+  assert.equal(missingTunExport.valid, false);
+  assert.match(missingTunExport.errors.join('\n'), /requiredExports must match the core export contract|exportedSymbols must include/u);
+
+  const extraPublicExport = validatePhase1NativeManifest(createStrictManifest({
+    artifacts: {
+      ...createStrictManifest().artifacts,
+      rawCore: createArtifact(
+        'harmony/artifacts/libcmfa_mihomo.so',
+        'core-bytes',
+        createElfReport('mihomoCore', {
+          exportedSymbols: [...CORE_EXPORTS, 'cmfa_extra_symbol'],
+          requiredExports: CORE_EXPORTS
+        })
+      )
+    }
+  }));
+  assert.equal(extraPublicExport.valid, false);
+  assert.match(extraPublicExport.errors.join('\n'), /exportedSymbols must not expose extra cmfa_\* symbols/u);
 });
 
 test('strict manifest validator rejects fail-priority violations, stale invariants, and fake ELF pass reports', async () => {
