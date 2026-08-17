@@ -1,0 +1,16 @@
+{
+  "string": [
+    {
+      "name": "module_desc",
+      "value": "Standalone direct-traffic probe."
+    },
+    {
+      "name": "ProbeAbility_desc",
+      "value": "Standalone direct-traffic probe ability."
+    },
+    {
+      "name": "ProbeAbility_label",
+      "value": "Traffic Probe"
+    }
+  ]
+}

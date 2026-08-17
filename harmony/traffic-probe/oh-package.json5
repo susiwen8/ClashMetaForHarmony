@@ -1,0 +1,8 @@
+{
+  "modelVersion": "5.0.0",
+  "description": "Standalone HarmonyOS direct-traffic probe project.",
+  "dependencies": {},
+  "devDependencies": {
+    "@ohos/hypium": "1.0.25"
+  }
+}

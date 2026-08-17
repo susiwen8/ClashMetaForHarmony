@@ -1,0 +1,41 @@
+{
+  "module": {
+    "name": "entry",
+    "type": "entry",
+    "description": "$string:module_desc",
+    "mainElement": "ProbeAbility",
+    "deviceTypes": [
+      "phone"
+    ],
+    "deliveryWithInstall": true,
+    "installationFree": false,
+    "pages": "$profile:main_pages",
+    "requestPermissions": [
+      {
+        "name": "ohos.permission.INTERNET"
+      }
+    ],
+    "abilities": [
+      {
+        "name": "ProbeAbility",
+        "srcEntry": "./ets/entryability/ProbeAbility.ets",
+        "description": "$string:ProbeAbility_desc",
+        "label": "$string:ProbeAbility_label",
+        "icon": "$media:layered_image",
+        "startWindowIcon": "$media:startIcon",
+        "startWindowBackground": "$color:start_window_background",
+        "exported": true,
+        "skills": [
+          {
+            "entities": [
+              "entity.system.home"
+            ],
+            "actions": [
+              "ohos.want.action.home"
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
