@@ -96,10 +96,16 @@ function defaultSnapshot(sessionId: string, state: 'IDLE' | 'STOPPED' = 'IDLE'):
 
 function traceToIngressTrace(trace: InternalTunNativeTrace): VpnIngressTrace {
   return createVpnIngressTrace({
+    sequence: trace.sequence,
     sessionId: trace.sessionId,
     stage: `${trace.ingress}/${trace.protocol}`,
-    detail: `${trace.sourceAddress} -> ${trace.destinationAddress} (${trace.traceId})`,
-    atMs: trace.sequence
+    detail: `${trace.protocol}:${trace.traceId}`,
+    atMs: trace.sequence,
+    traceId: trace.traceId,
+    ingress: trace.ingress,
+    protocol: trace.protocol,
+    hashedTuple: trace.hashedTuple,
+    correlationHash: trace.correlationHash
   });
 }
 

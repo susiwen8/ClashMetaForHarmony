@@ -446,7 +446,12 @@ export default function coreTunRuntimeTestsuite() {
       const latestSnapshot: TunRuntimeSnapshot = runtime.snapshot();
       const latestTraces = await runtime.readTunTraces(0);
       expect(latestSnapshot.counters.rxPackets).assertEqual(3);
-      expect(latestSnapshot.ingressTraces[0].detail.includes('1.1.1.1:443')).assertTrue();
+      expect(latestSnapshot.ingressTraces[0].detail.includes('1.1.1.1:443')).assertFalse();
+      expect(latestSnapshot.ingressTraces[0].traceId).assertEqual('trace-1');
+      expect(latestSnapshot.ingressTraces[0].ingress).assertEqual('tun');
+      expect(latestSnapshot.ingressTraces[0].protocol).assertEqual('udp');
+      expect(latestSnapshot.ingressTraces[0].hashedTuple).assertEqual('hash-1');
+      expect(latestSnapshot.ingressTraces[0].correlationHash).assertEqual('corr-1');
       expect(latestTraces[0].protocol).assertEqual('udp');
       runtime.dispose();
     });
@@ -509,6 +514,9 @@ export default function coreTunRuntimeTestsuite() {
       expect(received.length).assertEqual(1);
       expect(received[0].counters.rxPackets).assertEqual(17);
       expect(received[0].ingressTraces.length).assertEqual(2);
+      expect(received[0].ingressTraces[1].traceId).assertEqual('trace-2');
+      expect(received[0].ingressTraces[1].protocol).assertEqual('dns');
+      expect(received[0].ingressTraces[1].correlationHash).assertEqual('corr-2');
       received[0].counters.rxPackets = 0;
       expect(runtime.snapshot().counters.rxPackets).assertEqual(17);
 

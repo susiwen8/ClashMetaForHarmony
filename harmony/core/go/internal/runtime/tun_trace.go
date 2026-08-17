@@ -15,7 +15,6 @@ import (
 )
 
 var flowMarkerPattern = regexp.MustCompile(`cmfa-[A-Za-z0-9._:-]+`)
-const controlledProbeHost = "controlled.invalid"
 
 type tunTraceRecorder struct {
 	sessionID string
@@ -237,7 +236,7 @@ func (c *tapConn) peek() []byte {
 }
 
 func markerHash(metadata *C.Metadata, payload []byte) string {
-	if metadata == nil || !strings.EqualFold(strings.TrimSpace(metadata.Host), controlledProbeHost) {
+	if metadata == nil {
 		return ""
 	}
 	marker := flowMarkerPattern.Find(payload)

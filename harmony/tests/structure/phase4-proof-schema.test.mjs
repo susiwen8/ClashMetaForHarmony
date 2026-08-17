@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict';
+import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
+import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath } from 'node:url';
@@ -7,9 +9,37 @@ import { fileURLToPath } from 'node:url';
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const SCHEMA_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase4-device-proof.schema.json');
 const EXAMPLE_PATH = path.join(HARMONY_ROOT, 'tests', 'fixtures', 'phase4-device-proof.example.json');
+const RUNNER_MODULE_PATH = new URL('../bin/run-phase4-device-proof.mjs', import.meta.url);
 
 function digest(char) {
   return char.repeat(64);
+}
+
+function hashHex(value) {
+  return crypto.createHash('sha256').update(value).digest('hex');
+}
+
+function shortHash(value) {
+  let hashValue = 2166136261;
+  for (let index = 0; index < value.length; index += 1) {
+    hashValue ^= value.charCodeAt(index);
+    hashValue = Math.imul(hashValue, 16777619);
+  }
+  return (hashValue >>> 0).toString(16).padStart(8, '0');
+}
+
+function createDnsPacketHash(runId, flowId) {
+  const label = `${shortHash(runId)}-${shortHash(flowId)}.invalid`;
+  const header = [0x12, 0x34, 0x01, 0x00, 0x00, 0x01, 0x00, 0x00, 0x00, 0x00, 0x00, 0x00];
+  const bytes = [];
+  for (const segment of label.split('.')) {
+    bytes.push(segment.length);
+    for (let index = 0; index < segment.length; index += 1) {
+      bytes.push(segment.charCodeAt(index) & 0xff);
+    }
+  }
+  bytes.push(0x00, 0x00, 0x01, 0x00, 0x01);
+  return hashHex(Buffer.from(header.concat(bytes)));
 }
 
 function joinFragments(parts) {
@@ -530,4 +560,178 @@ test('Phase 4 proof validation accepts canonical ipv6 pass and not-run branches'
     coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv6.core }
   };
   assert.deepEqual(validatePhase4Proof(passProof), { valid: true, errors: [] });
+});
+
+test('Phase 4 runner argument proofs stay canonical, incomplete, and recursively redacted', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const tempRoot = await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'phase4-proof-schema-'));
+  const outputPath = path.join(tempRoot, 'phase4-device-proof.json');
+  const proof = await runner.writeArgumentErrorProof({
+    outputPath,
+    detail: `bad input ${leakedUrlValue} ${leakedSigningPathValue} ${leakedWindowsSigningPathValue}`
+  });
+
+  assert.equal(proof.result, 'incomplete');
+  assert.equal(proof.outputPath, 'harmony/artifacts/phase4-device-proof.json');
+  assert.equal(collectForbiddenShapeErrors(proof).length, 0);
+  assert.equal(JSON.stringify(proof).includes(leakedUrlValue), false);
+  assert.equal(JSON.stringify(proof).includes(leakedSigningPathValue), false);
+  assert.equal(JSON.stringify(proof).includes(leakedWindowsSigningPathValue), false);
+  assert.deepEqual(JSON.parse(await fs.readFile(outputPath, 'utf8')), proof);
+});
+
+test('Phase 4 runner correlated pass output matches the closed production schema', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const runId = '4b6ec0a3-47cd-4776-96f1-b03df8a09472';
+  const sessionId = '0eaf3b3d-5d04-4cd7-b1f4-e2a7d5ccf7a1';
+  const flowId = '5e55ea90-9911-489f-93b3-fffd53605025';
+  const markerHash = hashHex(`cmfa-${flowId}`);
+  const dnsHash = createDnsPacketHash(runId, flowId);
+  const proof = runner.correlatePhase4Evidence({
+    runId,
+    origin: {
+      runId,
+      observations: [
+        { protocol: 'https', runId, sessionId, flowId, responseBodySha256: digest('6') },
+        { protocol: 'tcp', runId, sessionId, flowId, payloadSha256: digest('7'), correlationHash: markerHash },
+        { protocol: 'udp', runId, sessionId, flowId, payloadSha256: digest('8'), correlationHash: markerHash, dnsShaped: false }
+      ]
+    },
+    probe: {
+      version: '1.0.0',
+      result: 'pass',
+      runId,
+      sessionId,
+      records: [
+        { flowId: 'https-flow', stepId: 'https', ingressExpectation: 'origin-https', outcome: 'pass', transport: 'https', targetPort: 443, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1, statusCode: 200 },
+        { flowId, stepId: 'tcp', ingressExpectation: 'tun', outcome: 'pass', transport: 'tcp', targetPort: 443, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId, stepId: 'udp-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId, stepId: 'dns-packet-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId: 'local-http-flow', stepId: 'http-connect', ingressExpectation: 'local-http-connect-listener', outcome: 'pass', transport: 'tcp', targetPort: 7890, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId: 'local-socks-flow', stepId: 'socks5', ingressExpectation: 'local-socks5-listener', outcome: 'pass', transport: 'tcp', targetPort: 7891, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 }
+      ],
+      failures: []
+    },
+    runtime: {
+      counters: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 },
+      records: [
+        { sequence: 1, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-tcp', coreAlias: '', protocol: 'tcp', hashedTuple: 'hash-tcp', correlationHash: markerHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'tcp' },
+        { sequence: 2, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-udp', coreAlias: '', protocol: 'udp', hashedTuple: 'hash-udp', correlationHash: markerHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'udp' },
+        { sequence: 3, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: dnsHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-dns', coreAlias: '', protocol: 'dns', hashedTuple: 'hash-dns', correlationHash: dnsHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'dns' }
+      ]
+    },
+    packages: {
+      result: 'pass',
+      production: {
+        bundleName: 'com.github.kr328.clash.harmony',
+        hapSha256: digest('a'),
+        signatureSha256: digest('b')
+      },
+      probe: {
+        bundleName: 'com.github.kr328.clash.harmony.trafficprobe',
+        hapSha256: digest('c'),
+        signatureSha256: digest('d')
+      }
+    },
+    lifecycle: {
+      launcherContinuity: true,
+      screenOffContinuity: true,
+      vpnIndicatorVisible: true,
+      ongoingNotificationVisible: true,
+      networkLossRecovery: true,
+      stopCleanup: true,
+      networkingRestored: true
+    }
+  });
+
+  assert.deepEqual(validatePhase4Proof(proof), { valid: true, errors: [] });
+  assert.equal(collectForbiddenShapeErrors(proof).length, 0);
+});
+
+test('Phase 4 runner generic schema validator enforces additionalProperties, required, const/type/pattern/minimum, tuples, uniqueItems, oneOf, and bad refs', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const schema = JSON.parse(await fs.readFile(SCHEMA_PATH, 'utf8'));
+  const valid = createValidPhase4Proof();
+  assert.deepEqual(await runner.validatePhase4ProofDocument(valid), { valid: true, errors: [] });
+
+  const badTop = createValidPhase4Proof();
+  badTop.extraTop = true;
+  assert.equal((await runner.validatePhase4ProofDocument(badTop)).valid, false);
+
+  const badNested = createValidPhase4Proof();
+  badNested.traffic.tcp.extra = true;
+  assert.equal((await runner.validatePhase4ProofDocument(badNested)).valid, false);
+
+  const missingRequired = createValidPhase4Proof();
+  delete missingRequired.device.abi;
+  assert.equal((await runner.validatePhase4ProofDocument(missingRequired)).valid, false);
+
+  const wrongConst = createValidPhase4Proof();
+  wrongConst.phase = 3;
+  assert.equal((await runner.validatePhase4ProofDocument(wrongConst)).valid, false);
+
+  const wrongType = createValidPhase4Proof();
+  wrongType.device.apiVersion = '20';
+  assert.equal((await runner.validatePhase4ProofDocument(wrongType)).valid, false);
+
+  const wrongPattern = createValidPhase4Proof();
+  wrongPattern.runId = 'nope';
+  assert.equal((await runner.validatePhase4ProofDocument(wrongPattern)).valid, false);
+
+  const wrongMinimum = createValidPhase4Proof();
+  wrongMinimum.device.apiVersion = 19;
+  assert.equal((await runner.validatePhase4ProofDocument(wrongMinimum)).valid, false);
+
+  const tupleDrift = createValidPhase4Proof();
+  tupleDrift.bundles.hapSha256 = [digest('a')];
+  assert.equal((await runner.validatePhase4ProofDocument(tupleDrift)).valid, false);
+
+  const duplicateUnique = createValidPhase4Proof();
+  duplicateUnique.bundles.hapSha256[1] = duplicateUnique.bundles.hapSha256[0];
+  assert.equal((await runner.validatePhase4ProofDocument(duplicateUnique)).valid, false);
+
+  const oneOfBoth = createValidPhase4Proof();
+  oneOfBoth.traffic.ipv6 = {
+    result: 'not-run',
+    reason: 'network-not-provisioned',
+    sessionId: 'extra'
+  };
+  assert.equal((await runner.validatePhase4ProofDocument(oneOfBoth)).valid, false);
+
+  const oneOfNeither = createValidPhase4Proof();
+  oneOfNeither.traffic.ipv6 = { result: 'meh' };
+  assert.equal((await runner.validatePhase4ProofDocument(oneOfNeither)).valid, false);
+
+  const sensitiveNested = createValidPhase4Proof();
+  sensitiveNested.lifecycle.stop.secretToken = 'abc';
+  assert.equal((await runner.validatePhase4ProofDocument(sensitiveNested)).valid, false);
+
+  const badRefSchema = {
+    type: 'object',
+    properties: {
+      value: { $ref: '#/$defs/missing' }
+    }
+  };
+  const badRef = await runner.validateValueAgainstSchema({ value: 1 }, badRefSchema, badRefSchema);
+  assert.equal(badRef.valid, false);
+  assert.match(badRef.errors.join('\n'), /\$ref|missing/u);
+
+  assert.equal(schema.$defs.trafficIpv6.oneOf.length, 2);
+});
+
+test('Phase 4 runner falls back to canonical incomplete proof when pass candidate violates shipped schema', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const tempRoot = await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'phase4-schema-fallback-'));
+  const outputPath = path.join(tempRoot, 'phase4-device-proof.json');
+  const invalidPass = createValidPhase4Proof();
+  invalidPass.result = 'pass';
+  invalidPass.traffic = {};
+  invalidPass.device.secretToken = 'abc';
+
+  const persisted = await runner.writeValidatedProof(invalidPass, outputPath);
+  assert.equal(persisted.result, 'incomplete');
+  assert.equal(persisted.outputPath, 'harmony/artifacts/phase4-device-proof.json');
+  assert.match(persisted.failures.map((entry) => entry.code).join(','), /PHASE4_PROOF_INVALID/u);
+  assert.equal(collectForbiddenShapeErrors(persisted).length, 0);
+  assert.deepEqual(JSON.parse(await fs.readFile(outputPath, 'utf8')), persisted);
 });

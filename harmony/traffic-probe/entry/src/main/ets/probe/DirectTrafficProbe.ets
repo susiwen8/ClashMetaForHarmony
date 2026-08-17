@@ -3,6 +3,7 @@ import { connection, http, socket } from '@kit.NetworkKit';
 import type common from '@ohos.app.ability.common';
 import {
   buildCorrelationToken,
+  buildFlowMarker,
   clampEvidenceString,
   PROBE_FAILURE_DETAIL_DNS_LOOKUP_EMPTY,
   PROBE_FAILURE_DETAIL_DNS_LOOKUP_FAILED,
@@ -1119,11 +1120,11 @@ export function buildHttpsExpectedBody(command: ProbeCommand): string {
 }
 
 export function buildTcpExpectedPayload(command: ProbeCommand): string {
-  return buildCorrelationToken('TCP', command.runId, command.sessionId, command.flowIds.tcp);
+  return `${buildCorrelationToken('TCP', command.runId, command.sessionId, command.flowIds.tcp)}|${buildFlowMarker(command.flowIds.tcp)}`;
 }
 
 export function buildUdpExpectedPayload(command: ProbeCommand, flowId: string): string {
-  return buildCorrelationToken('UDP', command.runId, command.sessionId, flowId);
+  return `${buildCorrelationToken('UDP', command.runId, command.sessionId, flowId)}|${buildFlowMarker(flowId)}`;
 }
 
 function buildHttpConnectPayload(command: ProbeCommand): ArrayBuffer {

@@ -34,6 +34,7 @@ import {
 } from '@cmfa/shared';
 import { defaultSdkApiVersionResolver, HarmonyVpnConnectionApi } from './VpnConnectionApi';
 import { HarmonyVpnConnectionDriver } from './HarmonyVpnConnectionDriver';
+import { VpnEvidenceJournal, type VpnEvidenceJournalPort } from './VpnEvidenceJournal';
 import { VpnSessionRegistry } from './VpnSessionRegistry';
 
 const EXACT_CAPTURE_CONFIG: VpnCaptureConfig = createVpnCaptureConfig({
@@ -68,6 +69,7 @@ export interface VpnExtensionCompositionDependencies {
   createCoordinator?: (dependencies: VpnRuntimeCoordinatorDependencies) => VpnControllerPort;
   createClock?: () => ClockPort;
   createScheduler?: () => BoundedDelaySchedulerPort;
+  createEvidenceJournal?: () => VpnEvidenceJournalPort;
 }
 
 class CompositionClock implements ClockPort {
@@ -383,6 +385,9 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
   private readonly registry: VpnSessionRegistry;
   private platformGraph?: PlatformGraph;
   private coordinator?: VpnControllerPort;
+  private tunRuntime?: TunRuntimePort;
+  private tunJournalSubscriptionId: number = 0;
+  private evidenceJournal?: VpnEvidenceJournalPort;
   private currentRequest?: VpnStartRequest;
   private startPromise?: Promise<void>;
   private stopPromise?: Promise<void>;
@@ -460,6 +465,12 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
       const tunRuntime: TunRuntimePort = new DeferredTunRuntime(() => {
         return this.createTunRuntime(configPath.require());
       });
+      this.tunRuntime = tunRuntime;
+      this.evidenceJournal = this.dependencies.createEvidenceJournal?.() ?? new VpnEvidenceJournal();
+      this.evidenceJournal.rotateSession(request.sessionId);
+      this.tunJournalSubscriptionId = tunRuntime.subscribe((event: TunRuntimeEvent) => {
+        this.evidenceJournal?.recordTunEvent(event);
+      });
       const coordinator: VpnControllerPort = this.createCoordinator({
         resolver,
         platform: this.createPlatformPort(request.sessionId),
@@ -485,6 +496,7 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
           scheduledRetryDelayMs: event.snapshot.scheduledRetryDelayMs,
           lastFailure: sanitizeFailure(event.snapshot.lastFailure)
         });
+        this.evidenceJournal?.recordCoordinatorEvent(event);
       });
       const result: VpnControllerStartResult = await coordinator.start(request.profileId, request.versionId, request.sessionId);
       if (result.kind === 'STARTED') {
@@ -521,6 +533,10 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
     if (this.coordinator !== undefined) {
       const stopResult: VpnControllerStopResult = await this.coordinator.stop(request.sessionId);
       stopFailure = sanitizeFailure(extractFailure(stopResult));
+      this.evidenceJournal?.finalizeStop({
+        type: 'STOPPED',
+        snapshot: stopResult.snapshot
+      });
     }
     await this.disposeOwnedResources();
     this.registry.completeStop(
@@ -595,6 +611,12 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
   }
 
   private async disposeOwnedResources(): Promise<void> {
+    if (this.tunRuntime !== undefined && this.tunJournalSubscriptionId !== 0) {
+      this.tunRuntime.unsubscribe(this.tunJournalSubscriptionId);
+      this.tunJournalSubscriptionId = 0;
+    }
+    this.tunRuntime = undefined;
+    this.evidenceJournal = undefined;
     const graph: PlatformGraph | undefined = this.platformGraph;
     this.platformGraph = undefined;
     if (graph === undefined) {

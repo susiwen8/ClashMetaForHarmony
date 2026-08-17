@@ -3,6 +3,25 @@ export const PROBE_EVIDENCE_FILE_NAME: string = 'phase4-probe-evidence.json';
 export const PROBE_HTTP_HEADER_RUN_ID: string = 'XCMFAProbeRunId';
 export const PROBE_HTTP_HEADER_SESSION_ID: string = 'XCMFAProbeSessionId';
 export const PROBE_HTTP_HEADER_FLOW_ID: string = 'XCMFAProbeFlowId';
+export const PROBE_PARAM_RUN_ID: string = 'runId';
+export const PROBE_PARAM_SESSION_ID: string = 'sessionId';
+export const PROBE_PARAM_PINNED_PUBLIC_KEY_HASH: string = 'pinnedPublicKeyHash';
+export const PROBE_PARAM_FLOW_HTTPS: string = 'flowHttps';
+export const PROBE_PARAM_FLOW_TCP: string = 'flowTcp';
+export const PROBE_PARAM_FLOW_UDP_IPV4: string = 'flowUdpIpv4';
+export const PROBE_PARAM_FLOW_UDP_IPV6: string = 'flowUdpIpv6';
+export const PROBE_PARAM_FLOW_DNS_LOOKUP: string = 'flowDnsLookup';
+export const PROBE_PARAM_FLOW_DNS_PACKET_IPV4: string = 'flowDnsPacketIpv4';
+export const PROBE_PARAM_FLOW_DNS_PACKET_IPV6: string = 'flowDnsPacketIpv6';
+export const PROBE_PARAM_FLOW_HTTP_CONNECT: string = 'flowHttpConnect';
+export const PROBE_PARAM_FLOW_SOCKS5: string = 'flowSocks5';
+export const PROBE_PARAM_ORIGIN_HOST: string = 'originHost';
+export const PROBE_PARAM_ORIGIN_HTTPS_PORT: string = 'originHttpsPort';
+export const PROBE_PARAM_ORIGIN_TCP_PORT: string = 'originTcpPort';
+export const PROBE_PARAM_ORIGIN_UDP_PORT: string = 'originUdpPort';
+export const PROBE_PARAM_ORIGIN_DNS_PORT: string = 'originDnsPort';
+export const PROBE_PARAM_LOCAL_HTTP_CONNECT_PORT: string = 'localHttpConnectPort';
+export const PROBE_PARAM_LOCAL_SOCKS5_PORT: string = 'localSocks5Port';
 export const PROBE_FAILURE_DETAIL_DNS_LOOKUP_FAILED: string = 'Standalone DNS correlation lookup failed.';
 export const PROBE_FAILURE_DETAIL_DNS_LOOKUP_EMPTY: string = 'Standalone DNS correlation lookup returned no addresses.';
 export const PROBE_FAILURE_DETAIL_HTTPS_FAILED: string = 'Standalone HTTPS correlation check failed.';
@@ -413,4 +432,8 @@ export function clampEvidenceString(value: string, maxLength: number): string {
 
 export function buildCorrelationToken(protocol: string, runId: string, sessionId: string, flowId: string): string {
   return `${protocol}|${runId}|${sessionId}|${flowId}`;
+}
+
+export function buildFlowMarker(flowId: string): string {
+  return `cmfa-${flowId}`;
 }

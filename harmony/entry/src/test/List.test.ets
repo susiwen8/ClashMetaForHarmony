@@ -6,6 +6,7 @@ import harmonyVpnConnectionDriverTestsuite from './HarmonyVpnConnectionDriver.te
 import importProfileViewModelTestsuite from './ImportProfileViewModel.test';
 import profilesViewModelTestsuite from './ProfilesViewModel.test';
 import profileDetailViewModelTestsuite from './ProfileDetailViewModel.test';
+import vpnEvidenceJournalTestsuite from './VpnEvidenceJournal.test';
 import vpnExtensionCompositionTestsuite from './VpnExtensionComposition.test';
 import vpnSessionRegistryTestsuite from './VpnSessionRegistry.test';
 
@@ -17,6 +18,7 @@ export default function testsuite() {
   importProfileViewModelTestsuite();
   profilesViewModelTestsuite();
   profileDetailViewModelTestsuite();
+  vpnEvidenceJournalTestsuite();
   vpnExtensionCompositionTestsuite();
   vpnSessionRegistryTestsuite();
   describe('EntryListTest', () => {

@@ -45,10 +45,16 @@ function buildRuntimeSnapshot(sessionId: string): TunRuntimeSnapshot {
     counters: createVpnCounters(7, 70, 9, 90),
     ingressTraces: [
       createVpnIngressTrace({
+        sequence: 22,
         sessionId,
         stage: 'TUN_READY',
         detail: 'ready',
-        atMs: 22
+        atMs: 22,
+        traceId: 'trace-22',
+        ingress: 'tun',
+        protocol: 'tcp',
+        hashedTuple: 'hash-22',
+        correlationHash: 'corr-22'
       })
     ]
   });
@@ -125,6 +131,11 @@ export default function vpnModelsTestsuite() {
       expect(config.blockedApplications.join(',')).assertEqual('com.github.kr328.clash.harmony');
       expect(event.snapshot.captureConfig?.addresses[0]).assertEqual('10.111.222.1/30');
       expect(event.snapshot.tunSnapshot?.ingressTraces[0].detail).assertEqual('ready');
+      expect(event.snapshot.tunSnapshot?.ingressTraces[0].traceId).assertEqual('trace-22');
+      expect(event.snapshot.tunSnapshot?.ingressTraces[0].ingress).assertEqual('tun');
+      expect(event.snapshot.tunSnapshot?.ingressTraces[0].protocol).assertEqual('tcp');
+      expect(event.snapshot.tunSnapshot?.ingressTraces[0].hashedTuple).assertEqual('hash-22');
+      expect(event.snapshot.tunSnapshot?.ingressTraces[0].correlationHash).assertEqual('corr-22');
       expect(`${JSON.stringify(snapshot)}${JSON.stringify(event)}`.includes('"fd"')).assertFalse();
       expect(`${JSON.stringify(snapshot)}${JSON.stringify(event)}`.includes('"vpnId"')).assertFalse();
       expect(event.snapshot.activeHandle?.sessionId).assertEqual('session-1');
@@ -246,10 +257,16 @@ export default function vpnModelsTestsuite() {
       const rawDetail: string = 'vpnId=vpn-77 deviceId=dev-88 serial=ABC123 path=/Users/susiwen8/Documents/token.txt token=abc https://user:pw@example.com/profile';
       const failure = createVpnFailure('VPN_STOP_FAILED', rawDetail);
       const trace = createVpnIngressTrace({
+        sequence: 99,
         sessionId: 'session-9',
         stage: 'TUN_ERROR',
         detail: rawDetail,
-        atMs: 99
+        atMs: 99,
+        traceId: 'trace-99',
+        ingress: 'tun',
+        protocol: 'tcp',
+        hashedTuple: 'hash-99',
+        correlationHash: 'corr-99'
       });
       const baselineRedacted: string = redactSensitiveText(rawDetail);
 
@@ -268,10 +285,16 @@ export default function vpnModelsTestsuite() {
       const rawDetail: string = 'vpnId="vpn-77" deviceId: \'dev-88\' serial="ABC123"';
       const failure = createVpnFailure('VPN_STOP_FAILED', rawDetail);
       const trace = createVpnIngressTrace({
+        sequence: 100,
         sessionId: 'session-10',
         stage: 'TUN_ERROR',
         detail: rawDetail,
-        atMs: 100
+        atMs: 100,
+        traceId: 'trace-100',
+        ingress: 'tun',
+        protocol: 'udp',
+        hashedTuple: 'hash-100',
+        correlationHash: 'corr-100'
       });
 
       expect(failure.detail.includes('vpnId')).assertTrue();
@@ -281,6 +304,28 @@ export default function vpnModelsTestsuite() {
       expect(failure.detail.includes('dev-88')).assertFalse();
       expect(failure.detail.includes('ABC123')).assertFalse();
       expect(trace.detail).assertEqual(failure.detail);
+    });
+
+    it('preservesSafeTraceFieldsAcrossCloneBoundaries', 0, () => {
+      const trace = createVpnIngressTrace({
+        sequence: 7,
+        sessionId: 'session-11',
+        stage: 'tun/tcp',
+        detail: 'linked',
+        atMs: 7,
+        traceId: 'trace-7',
+        ingress: 'tun',
+        protocol: 'tcp',
+        hashedTuple: 'hash-7',
+        correlationHash: 'corr-7'
+      });
+
+      expect(trace.sequence).assertEqual(7);
+      expect(trace.traceId).assertEqual('trace-7');
+      expect(trace.ingress).assertEqual('tun');
+      expect(trace.protocol).assertEqual('tcp');
+      expect(trace.hashedTuple).assertEqual('hash-7');
+      expect(trace.correlationHash).assertEqual('corr-7');
     });
   });
 }

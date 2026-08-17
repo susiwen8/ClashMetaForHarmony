@@ -101,17 +101,29 @@ export interface VpnCounters {
 }
 
 export interface CreateVpnIngressTraceInput {
+  sequence?: number;
   sessionId: string;
   stage: string;
   detail: string;
   atMs: number;
+  traceId?: string;
+  ingress?: string;
+  protocol?: string;
+  hashedTuple?: string;
+  correlationHash?: string;
 }
 
 export interface VpnIngressTrace {
+  sequence: number;
   sessionId: string;
   stage: string;
   detail: string;
   atMs: number;
+  traceId: string;
+  ingress: string;
+  protocol: string;
+  hashedTuple: string;
+  correlationHash: string;
 }
 
 export interface VpnFailure {
@@ -281,10 +293,16 @@ function cloneIngressTraces(traces: VpnIngressTrace[]): VpnIngressTrace[] {
   const clones: VpnIngressTrace[] = [];
   for (let index = 0; index < traces.length; index += 1) {
     clones.push(createVpnIngressTrace({
+      sequence: traces[index].sequence,
       sessionId: traces[index].sessionId,
       stage: traces[index].stage,
       detail: traces[index].detail,
-      atMs: traces[index].atMs
+      atMs: traces[index].atMs,
+      traceId: traces[index].traceId,
+      ingress: traces[index].ingress,
+      protocol: traces[index].protocol,
+      hashedTuple: traces[index].hashedTuple,
+      correlationHash: traces[index].correlationHash
     }));
   }
   return clones;
@@ -439,11 +457,26 @@ export function createVpnIngressTrace(input: CreateVpnIngressTraceInput): VpnIng
   if (!Number.isInteger(input.atMs) || input.atMs < 0) {
     throw new Error('Vpn ingress timestamp must be a non-negative integer.');
   }
+  const sequence: number = input.sequence ?? input.atMs;
+  if (!Number.isInteger(sequence) || sequence < 0) {
+    throw new Error('Vpn ingress sequence must be a non-negative integer.');
+  }
+  const traceId: string = `${input.traceId ?? ''}`.trim();
+  const ingress: string = `${input.ingress ?? stage.split('/')[0] ?? ''}`.trim();
+  const protocol: string = `${input.protocol ?? stage.split('/')[1] ?? ''}`.trim();
+  const hashedTuple: string = `${input.hashedTuple ?? ''}`.trim();
+  const correlationHash: string = `${input.correlationHash ?? ''}`.trim();
   return {
+    sequence,
     sessionId,
     stage,
     detail: sanitizeVpnPublicDetail(detail),
-    atMs: input.atMs
+    atMs: input.atMs,
+    traceId,
+    ingress,
+    protocol,
+    hashedTuple,
+    correlationHash
   };
 }
 

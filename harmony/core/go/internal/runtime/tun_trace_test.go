@@ -205,3 +205,63 @@ func TestIngressTupleHashUsesPortsAndNotHost(t *testing.T) {
 		t.Fatalf("port change should affect tuple hash: %q", traces[0].HashedTuple)
 	}
 }
+
+func TestMarkerHashUsesPayloadMarkerEvenWhenDestinationIsLanIP(t *testing.T) {
+	recorder := newTunTraceRecorder("session-lan", &recordingSink{}, 8)
+	delegate := &traceTunnel{}
+	wrapped := recorder.Wrap(delegate)
+
+	left, right := net.Pipe()
+	go func() {
+		_, _ = right.Write([]byte("TCP|run|session|flow|cmfa-flow-lan"))
+		_ = right.Close()
+	}()
+
+	wrapped.HandleTCPConn(left, &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.TCP,
+		SrcIP:   netip.MustParseAddr("10.111.222.2"),
+		SrcPort: 41000,
+		DstIP:   netip.MustParseAddr("192.168.1.50"),
+		DstPort: 443,
+		Host:    "192.168.1.50",
+	})
+
+	traces := recorder.Traces(8)
+	if len(traces) != 1 {
+		t.Fatalf("trace count = %d want 1", len(traces))
+	}
+	if traces[0].CorrelationHash != hashBytesHex([]byte("cmfa-flow-lan")) {
+		t.Fatalf("correlation hash = %q want marker hash", traces[0].CorrelationHash)
+	}
+}
+
+func TestMarkerHashReturnsEmptyWithoutMarkerOnLanPayload(t *testing.T) {
+	recorder := newTunTraceRecorder("session-empty", &recordingSink{}, 8)
+	delegate := &traceTunnel{}
+	wrapped := recorder.Wrap(delegate)
+
+	left, right := net.Pipe()
+	go func() {
+		_, _ = right.Write([]byte("TCP|run|session|flow"))
+		_ = right.Close()
+	}()
+
+	wrapped.HandleTCPConn(left, &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.TCP,
+		SrcIP:   netip.MustParseAddr("10.111.222.2"),
+		SrcPort: 41000,
+		DstIP:   netip.MustParseAddr("192.168.1.50"),
+		DstPort: 443,
+		Host:    "192.168.1.50",
+	})
+
+	traces := recorder.Traces(8)
+	if len(traces) != 1 {
+		t.Fatalf("trace count = %d want 1", len(traces))
+	}
+	if traces[0].CorrelationHash != "" {
+		t.Fatalf("correlation hash = %q want empty without marker", traces[0].CorrelationHash)
+	}
+}
