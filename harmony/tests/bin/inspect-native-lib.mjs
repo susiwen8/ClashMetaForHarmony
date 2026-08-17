@@ -21,10 +21,38 @@ const PROBE_CANCEL_EXPORT = 'cmfa_mihomo_probe_cancel_v1';
 const TAKE_LOG_EXPORT = 'cmfa_mihomo_take_runtime_log_v1';
 const RUNTIME_STATE_EXPORT = 'cmfa_mihomo_runtime_state_v1';
 const START_LOCAL_EXPORT = 'cmfa_mihomo_start_local_v1';
+const CLOSE_STALE_TUN_CONNECTIONS_EXPORT = 'cmfa_mihomo_close_stale_tun_connections_v1';
+const START_TUN_EXPORT = 'cmfa_mihomo_start_tun_v1';
+const STOP_TUN_EXPORT = 'cmfa_mihomo_stop_tun_v1';
 const STOP_EXPORT = 'cmfa_mihomo_stop_v1';
+const TUN_COPY_TRACES_EXPORT = 'cmfa_mihomo_tun_copy_traces_v1';
+const TUN_COPY_TRACES_RING_EXPORT = 'cmfa_mihomo_tun_copy_traces_ring_v1';
+const TUN_RUNTIME_STATE_EXPORT = 'cmfa_mihomo_tun_runtime_state_v1';
+const DLOPEN_TEXT_PATTERN = /\bdlopen\b/u;
+const DLSYM_TEXT_PATTERN = /\bdlsym\b/u;
+const LIBDL_TEXT_PATTERN = /\blibdl(?:\.so)?\b/u;
+const FIXED_HOST_BRIDGE_SYMBOLS = [
+  'cmfa_host_emit_runtime_event_bridge_v1',
+  'cmfa_host_protect_socket_bridge_v1'
+];
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
-  mihomoCore: [BUILD_INFO_EXPORT, RAW_VERSION_EXPORT, PROBE_CANCEL_EXPORT, PROBE_HTTPS_EXPORT, RUNTIME_STATE_EXPORT, START_LOCAL_EXPORT, STOP_EXPORT, TAKE_LOG_EXPORT],
+  mihomoCore: [
+    CLOSE_STALE_TUN_CONNECTIONS_EXPORT,
+    BUILD_INFO_EXPORT,
+    RAW_VERSION_EXPORT,
+    PROBE_CANCEL_EXPORT,
+    PROBE_HTTPS_EXPORT,
+    RUNTIME_STATE_EXPORT,
+    START_LOCAL_EXPORT,
+    START_TUN_EXPORT,
+    STOP_TUN_EXPORT,
+    STOP_EXPORT,
+    TAKE_LOG_EXPORT,
+    TUN_COPY_TRACES_RING_EXPORT,
+    TUN_COPY_TRACES_EXPORT,
+    TUN_RUNTIME_STATE_EXPORT
+  ],
   nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
@@ -40,6 +68,11 @@ const NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS = [
   { code: 'BACKEND_REGISTER_SYMBOL_FORBIDDEN', pattern: /register_mihomo_backend|unregister_mihomo_backend/u }
 ];
 const DEFAULT_LLVM_READELF_TIMEOUT_MS = 30_000;
+
+function extractHostBridgeSymbols(binaryText) {
+  const matches = binaryText.match(/\bcmfa_host_[a-z0-9_]+_bridge_v1\b/gu) ?? [];
+  return [...new Set(matches)].sort();
+}
 
 function isoTimestamp(date = new Date()) {
   return date.toISOString();
@@ -320,6 +353,13 @@ export async function inspectNativeLibrary({
 
   if (selectedComponent === 'mihomoCore') {
     const publicExports = exportedSymbols.filter((entry) => entry.startsWith('cmfa_'));
+    const fixedHostBridgeSymbols = extractHostBridgeSymbols(binaryText);
+    const fixedHostBridgeLookupAllowed =
+      DLSYM_TEXT_PATTERN.test(binaryText) &&
+      !neededLibraries.includes('libdl.so') &&
+      !DLOPEN_TEXT_PATTERN.test(binaryText) &&
+      !LIBDL_TEXT_PATTERN.test(binaryText) &&
+      fixedHostBridgeSymbols.join('\0') === FIXED_HOST_BRIDGE_SYMBOLS.join('\0');
 
     if (parseError && parseError !== 'missing') {
       failures.push(createFailure('BUILD_INFO_INVALID', parseError));
@@ -352,7 +392,11 @@ export async function inspectNativeLibrary({
     if (JNI_CONTENT_PATTERN.test(binaryText)) {
       failures.push(createFailure('ANDROID_JNI_FORBIDDEN', 'JNI_OnLoad'));
     }
-    if (DLOPEN_CONTENT_PATTERN.test(binaryText)) {
+    if (
+      DLOPEN_TEXT_PATTERN.test(binaryText) ||
+      LIBDL_TEXT_PATTERN.test(binaryText) ||
+      (DLSYM_TEXT_PATTERN.test(binaryText) && !fixedHostBridgeLookupAllowed)
+    ) {
       failures.push(createFailure('DLOPEN_SENTINEL_FORBIDDEN', 'dlopen/dlsym/libdl'));
     }
   }

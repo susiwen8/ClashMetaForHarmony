@@ -17,14 +17,24 @@ const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const EXPECTED_BUILD_INFO_JSON = '{"version":"v1.19.29","upstreamCommit":"e26714a181ac0e2fa803453c0a8e9a9ce94e31cb","abiVersion":"cmfa-harmony-v1","buildId":"ea041f1758f53faf"}';
 const CORE_EXPORTS = [
+  'cmfa_mihomo_close_stale_tun_connections_v1',
   BUILD_INFO_EXPORT,
   RAW_VERSION_EXPORT,
   'cmfa_mihomo_probe_cancel_v1',
   'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
+  'cmfa_mihomo_start_tun_v1',
+  'cmfa_mihomo_stop_tun_v1',
   'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
+  'cmfa_mihomo_take_runtime_log_v1',
+  'cmfa_mihomo_tun_copy_traces_ring_v1',
+  'cmfa_mihomo_tun_copy_traces_v1',
+  'cmfa_mihomo_tun_runtime_state_v1'
+];
+const FIXED_HOST_BRIDGE_SYMBOLS = [
+  'cmfa_host_emit_runtime_event_bridge_v1',
+  'cmfa_host_protect_socket_bridge_v1'
 ];
 
 function joinFragments(parts) {
@@ -1145,6 +1155,8 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
   const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-mihomo-elf-'));
   const fakeLibPath = path.join(tempRoot, 'libcmfa_mihomo.so');
   const fakeBuildInfo = '{"version":"v1.19.29","upstreamCommit":"e26714a181ac0e2fa803453c0a8e9a9ce94e31cb","abiVersion":"cmfa-harmony-v1","buildId":"0123456789abcdef"}';
+  const validCoreBinary = `fake-mihomo-so\0${fakeBuildInfo}\0v1.19.29`;
+  const fixedBridgeBinary = `${validCoreBinary}\0dlsym\0${FIXED_HOST_BRIDGE_SYMBOLS.join('\0')}`;
 
   const makeReadelfOutput = ({ neededLibraries = ['libc.so'], exportedSymbols = CORE_EXPORTS } = {}) => ({
     header: 'ELF Header:\n  Machine:                           AArch64\n',
@@ -1152,8 +1164,9 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     symbols: exportedSymbols.map((entry, index) => `    ${index + 1}: 0000000000000000     0 FUNC    GLOBAL DEFAULT   12 ${entry}`).join('\n')
   });
 
-  const inspectSynthetic = async ({ neededLibraries, exportedSymbols }) => {
+  const inspectSynthetic = async ({ neededLibraries, exportedSymbols, binaryText = validCoreBinary }) => {
     const outputs = makeReadelfOutput({ neededLibraries, exportedSymbols });
+    await fs.writeFile(fakeLibPath, binaryText, 'utf8');
     const spawnImpl = (_command, args) => {
       const stdoutText = args[0] === '-h' ? outputs.header : args[0] === '-d' ? outputs.dynamic : outputs.symbols;
       return {
@@ -1189,8 +1202,6 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     });
   };
 
-  await fs.writeFile(fakeLibPath, `fake-mihomo-so\0${fakeBuildInfo}\0v1.19.29`, 'utf8');
-
   try {
     const validInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],
@@ -1200,6 +1211,22 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     assert.deepEqual(validInspection.exportedSymbols, CORE_EXPORTS);
     assert.equal(validInspection.buildInfo?.version, 'v1.19.29');
     assert.deepEqual(validInspection.failures, []);
+
+    const allowedBridgeInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: CORE_EXPORTS,
+      binaryText: fixedBridgeBinary
+    });
+    assert.equal(allowedBridgeInspection.result, 'pass');
+    assert.deepEqual(allowedBridgeInspection.failures, []);
+
+    const missingTunExportInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: CORE_EXPORTS.filter((entry) => entry !== 'cmfa_mihomo_tun_runtime_state_v1')
+    });
+    assert.equal(missingTunExportInspection.result, 'fail');
+    assert.ok(missingTunExportInspection.failures.some((entry) => entry.code === 'EXPORT_MISSING' && entry.detail === 'cmfa_mihomo_tun_runtime_state_v1'));
+    assert.ok(missingTunExportInspection.failures.some((entry) => entry.code === 'EXPORT_SET_MISMATCH'));
 
     const forbiddenInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],
@@ -1228,6 +1255,30 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     });
     assert.equal(libdlInspection.result, 'fail');
     assert.ok(libdlInspection.failures.some((entry) => entry.code === 'LIBDL_FORBIDDEN' && entry.detail === 'libdl.so'));
+
+    const arbitraryDlsymInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: CORE_EXPORTS,
+      binaryText: `${validCoreBinary}\0dlsym\0cmfa_host_random_bridge_v1`
+    });
+    assert.equal(arbitraryDlsymInspection.result, 'fail');
+    assert.ok(arbitraryDlsymInspection.failures.some((entry) => entry.code === 'DLOPEN_SENTINEL_FORBIDDEN'));
+
+    const dlopenInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: CORE_EXPORTS,
+      binaryText: `${fixedBridgeBinary}\0dlopen`
+    });
+    assert.equal(dlopenInspection.result, 'fail');
+    assert.ok(dlopenInspection.failures.some((entry) => entry.code === 'DLOPEN_SENTINEL_FORBIDDEN'));
+
+    const textualLibdlInspection = await inspectSynthetic({
+      neededLibraries: ['libc.so'],
+      exportedSymbols: CORE_EXPORTS,
+      binaryText: `${fixedBridgeBinary}\0libdl.so`
+    });
+    assert.equal(textualLibdlInspection.result, 'fail');
+    assert.ok(textualLibdlInspection.failures.some((entry) => entry.code === 'DLOPEN_SENTINEL_FORBIDDEN'));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
