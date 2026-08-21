@@ -204,6 +204,14 @@ options, certificates, private keys, or subscription credentials.
 The names in these results remain application-private and are never written to
 logs or proof artifacts.
 
+`ProxyQueryResult` is a separate closed union:
+
+- `SNAPSHOT`: matching profile/revision, optional matching running session,
+  query generation, and one or more bounded `ProxyGroupSnapshot` values;
+- `REJECTED`: allowlisted query error, retryable flag, and timestamp.
+
+Query results never reuse selection result kinds.
+
 ### 7.2 Core contract
 
 The typed core boundary adds equivalents of the Android behavior:
@@ -226,7 +234,8 @@ fail closed with typed core errors.
   applies the selector to that runtime.
 - `VpnProxyCommandBus`: carries one serialized session/profile/revision-bound
   query or patch command from the UI-owned service to the active extension
-  handler and returns one `ProxySelectionResult`.
+  handler. Query commands return `ProxyQueryResult`; patch commands return
+  `ProxySelectionResult`.
 
 `ProxyService` is the only unit allowed to coordinate these ports.
 
@@ -259,9 +268,14 @@ type, or duplicated member is rejected by ArkTS decoding.
 
 1. The ViewModel asks `ProxyService` for the active profile snapshot.
 2. The service rejects absent, invalid, or revision-mismatched active profiles.
-3. The loaded core returns selectable group names.
-4. The service fetches the initial group and publishes an immutable view state.
-5. Switching groups cancels or supersedes an older in-flight group query.
+3. If a matching VPN session is running, every group/member/current-selection
+   read goes through `VpnProxyCommandBus` to the extension-owned runtime. The UI
+   must not merge or compare it with an app-owned core snapshot.
+4. If no matching VPN session is running, reads come from the app-owned loaded
+   core for the active revision.
+5. The authoritative runtime returns selectable group names.
+6. The service fetches the initial group and publishes an immutable view state.
+7. Switching groups cancels or supersedes an older in-flight group query.
 
 ### 9.2 Select while VPN is running
 
@@ -411,9 +425,14 @@ endpoints, credentials, subscription data, or configuration paths.
 3. Observe multiple groups/nodes from the active mihomo runtime.
 4. Select another terminal node and confirm the runtime reports it selected.
 5. Send an HTTPS request through VPN after selection.
-6. Force-stop/relaunch, start VPN again, and confirm the persisted selection is
+6. Stop VPN, select a different node, and confirm the UI shows only the
+   “下次启动 VPN 时应用” saved-intent marker, not the runtime checkmark.
+7. Start VPN and confirm replay succeeds before `RUNNING`; once running, query
+   through the extension-owned runtime and confirm the saved marker changes to
+   the runtime checkmark.
+8. Force-stop/relaunch, start VPN again, and confirm the persisted selection is
    replayed before `RUNNING`.
-7. Update the profile and confirm stale selections are removed without exposing
+9. Update the profile and confirm stale selections are removed without exposing
    node details in logs/evidence.
 
 ## 14. Acceptance Criteria
@@ -426,12 +445,15 @@ endpoints, credentials, subscription data, or configuration paths.
 5. Selecting a terminal node while VPN runs changes the runtime immediately.
 6. Only confirmed selections are persisted, and they replay on the next VPN
    start.
-7. A failed or stale selection leaves the previous runtime/persisted selection
+7. Selecting while VPN is stopped shows a saved-intent marker; starting VPN
+   replays it before `RUNNING` and replaces that marker with a runtime-confirmed
+   checkmark.
+8. A failed or stale selection leaves the previous runtime/persisted selection
    unchanged.
-8. A real HTTPS request succeeds through VPN after node selection.
-9. The dedicated selection table contains only profile ID, group name, selected
+9. A real HTTPS request succeeds through VPN after node selection.
+10. The dedicated selection table contains only profile ID, group name, selected
    node name, revision ID, and timestamp. No endpoint, credential, subscription
    value, or signing material is written there; logs, other RDB tables, UI state
    serialization, and proof artifacts use no raw group/node names.
-10. Platform/core/entry tests and signed HAP/package inspection pass with no
+11. Platform/core/entry tests and signed HAP/package inspection pass with no
     new failures beyond explicitly documented pre-existing baseline errors.
