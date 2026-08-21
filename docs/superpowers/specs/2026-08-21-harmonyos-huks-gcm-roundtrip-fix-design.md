@@ -72,8 +72,8 @@ source is exposed to presentation code.
 `HuksSubscriptionSecretStore`, profile use cases, RDB codecs, download logic,
 and UI error mapping remain unchanged. They already provide the correct
 envelope, persistence, and failure boundaries. The detail page reuses its
-existing refresh and replacement controls; no new navigation or source field
-is added.
+existing refresh and replacement controls and shows retry-or-replace copy only
+for decrypt failures; no new navigation or source field is added.
 
 ## 5. Error Handling
 
