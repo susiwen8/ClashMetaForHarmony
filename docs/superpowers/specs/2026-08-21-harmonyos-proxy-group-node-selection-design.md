@@ -9,10 +9,17 @@
 
 The HarmonyOS application can now decrypt and download the user's subscription,
 but the resulting profile remains invalid with `VALIDATION / CMFA_BACKEND_ERROR`.
-The downloaded candidate is an 81 KiB UTF-8 Clash YAML document with complete
-`proxies`, `proxy-groups`, `rules`, and general configuration. It is neither a
-Base64 subscription nor a URI list. Its group and rule references are
-structurally complete.
+Fresh replay identified two deterministic compatibility gaps:
+
+1. Harmony sends no product `User-Agent`, so the service returns a 1,176-byte
+   Base64 subscription that decodes to five `hysteria2` URI entries. The Android
+   request header or `ClashMetaForAndroid/HarmonyOS` returns a full Clash YAML
+   document instead.
+2. The full YAML contains a `GEOIP` rule. Harmony never initializes mihomo's
+   stable home or provisions `geoip.metadb`, so validation fails with the safe
+   category `GEODATA_MISSING`. The exact YAML passes the same
+   `mihomoexecutor.ParseWithBytes` replay once mihomo has a stable home and a
+   verified GeoIP database.
 
 Even after that compatibility failure is repaired, the current Harmony
 `CoreService` exposes only configuration validation/loading and runtime start,
@@ -35,6 +42,8 @@ and mutating proxy selections in the UI.
 | Stopped VPN | Persist the selection and replay it on the next VPN start |
 | Source of truth | The loaded mihomo runtime, not an ArkTS YAML parser |
 | Validation blocker | Fix the exact backend incompatibility before exposing nodes |
+| Subscription negotiation | Send stable `ClashMetaForAndroid/HarmonyOS` on every request and redirect |
+| GeoIP dependency | Package a digest-pinned `geoip.metadb`, install it atomically into the app files root, and initialize mihomo home there |
 | Sensitive fields | Never expose server, port, UUID, password, token, key, or subscription URL |
 | Persistence | Store only profile ID, group name, selected node name, and update metadata |
 | First milestone exclusions | No latency tests, search, sorting, provider management, or traffic charts |
@@ -70,8 +79,14 @@ and mutating proxy selections in the UI.
 ## 5. Validation Compatibility Gate
 
 Node browsing begins only after the active profile has a valid committed
-revision. The existing failed candidate must first be replayed through the same
-`mihomoexecutor.ParseWithBytes` seam used by production.
+revision. The existing failure has now been reproduced through the same
+`mihomoexecutor.ParseWithBytes` seam used by production. The root-cause report
+must record these two verified causes:
+
+- `SUBSCRIPTION_CONTENT_NEGOTIATION`: missing product User-Agent returns Base64
+  URI content instead of Clash YAML;
+- `GEODATA_HOME_UNPREPARED`: the YAML's GEOIP rule cannot load because the core
+  home is unset/unstable and `geoip.metadb` is absent.
 
 This gate is a separate tracer-bullet plan. It must produce
 `docs/harmony/subscription-validation-compatibility.md` before any proxy query,
@@ -83,20 +98,39 @@ not an acceptable gate result.
 
 The validation plan sequence is:
 
-1. Reproduce the candidate failure through a deterministic, local test or
-   replay harness that never checks the sensitive fixture into source control.
-2. Preserve a redacted parser failure category, field path, and line number
+1. Add a stable product User-Agent to both Harmony HTTP transports and preserve
+   it across manual redirects.
+2. Add a digest/size-pinned GeoIP asset lock and build preparation path.
+3. Install the packaged `geoip.metadb` atomically into the application files
+   root before exposing the core graph.
+4. Resolve every managed temp/current/failed configuration path to that stable
+   files root and initialize mihomo home exactly once; reject home drift.
+5. Preserve a redacted parser failure category, field path, and line number
    when mihomo supplies them. Node names, addresses, credentials, and paths are
    removed before the error crosses the Go boundary.
-3. Minimize the candidate by removing one top-level section or proxy field at a
-   time until the rejected field or combination is isolated.
-4. Fix the compatibility problem at the core/parser boundary or update the
-   pinned parser when that is the verified cause.
-5. Convert the real candidate from `failedCandidate` to `currentRevision` only
+6. Convert the real candidate from `failedCandidate` to `currentRevision` only
    after the unchanged production validator accepts it.
 
-The downloader must not add Base64 or URI-list heuristics for this candidate;
-evidence already rules those formats out.
+The downloader must not locally convert the Base64 URI list. Product content
+negotiation intentionally requests the same full Clash YAML class used by the
+Android application, preserving its groups and rules for later node browsing.
+
+Plan A uses these concrete components:
+
+- `harmony/geodata.lock.json`: canonical asset name, expected byte length,
+  SHA-256, official URL, and an optional mirror URL subject to the same digest;
+- `harmony/tools/prepare-geodata.mjs`: bounded download/cache verification and
+  atomic creation of an ignored generated rawfile before HAP packaging;
+- `HarmonyGeodataInstaller`: reads the packaged rawfile, verifies size/digest,
+  and atomically installs `geoip.metadb` into the application files root;
+- Go managed-path resolution: maps `tmp/<stage>.yaml` and
+  `profiles/<id>/<valid|failed>/<revision>.yaml` back to the same files root;
+- a mutex-protected mihomo-home initializer that accepts the first canonical
+  files root and rejects later drift.
+
+The binary GeoIP asset is generated and ignored, not committed. A missing or
+digest-mismatched asset fails the build/package gate; runtime never accepts an
+unverified database.
 
 ## 5.1 Gated implementation slices
 
