@@ -32,6 +32,10 @@ Use the one-shot AES-GCM sequence demonstrated by the HarmonyOS HUKS samples:
    properties.
 5. For decryption, return `finishSession.outData` as plaintext only after HUKS
    authenticates the stored tag.
+6. Keep the manual refresh action available when the last error is
+   `SOURCE_DECRYPT_FAILED`, so a profile created by the pre-fix build can retry
+   its preserved envelope after an in-place application upgrade. Source
+   replacement remains available as a fallback.
 
 Subscription URLs are small control-plane secrets, so a one-shot operation is
 the narrowest reliable solution. This change does not generalize the driver
@@ -55,13 +59,21 @@ valid and only the HUKS operation sequence changes.
 
 ## 4. Code Boundaries
 
-`HarmonyHuksDriver` owns the change. It will construct complete finish options,
-run one HUKS operation per encrypt/decrypt call, separate encryption output,
-and retain the existing redacted stage/code diagnostics.
+`HarmonyHuksDriver` owns the cryptographic change. It will construct complete
+finish options, run one HUKS operation per encrypt/decrypt call, separate
+encryption output, and retain the existing redacted stage/code diagnostics.
+
+`ProfileDetailViewModel` owns the narrow recovery-policy change. A remote
+profile whose last error is `SOURCE_DECRYPT_FAILED` may invoke refresh again
+after an upgrade even though replacement is also offered. Missing secrets and
+unsupported envelope versions remain replacement-only states. No plaintext
+source is exposed to presentation code.
 
 `HuksSubscriptionSecretStore`, profile use cases, RDB codecs, download logic,
 and UI error mapping remain unchanged. They already provide the correct
-envelope, persistence, and failure boundaries.
+envelope, persistence, and failure boundaries. The detail page reuses its
+existing refresh and replacement controls; no new navigation or source field
+is added.
 
 ## 5. Error Handling
 
@@ -87,6 +99,10 @@ test double will model the desired one-shot contract and assert:
 - business bytes are never passed as the optional authentication token;
 - the round trip restores the original UTF-8 bytes.
 
+A presentation regression test will also assert that a remote profile with a
+stored `SOURCE_DECRYPT_FAILED` error exposes both retry and replacement, while
+missing and unsupported secrets remain replacement-only.
+
 Existing key-lifecycle, output-shape, redaction, secret-envelope, and profile
 management tests remain in the verification set. Diagnostic tests will expect
 the failure stage to move from `encrypt.update` to `encrypt.finish` where
@@ -94,20 +110,31 @@ appropriate.
 
 ## 7. Device Verification
 
-1. Build a fresh signed debug HAP from the current worktree.
-2. Confirm one physical HarmonyOS 6.x target is connected.
-3. Install in place without uninstalling or clearing data.
-4. Launch the app and retry the existing newly created remote profile.
-5. Verify the error is no longer `SOURCE_DECRYPT_FAILED` and that execution
+1. Before building or installing the fix, identify the target profile that was
+   imported by the pre-fix build and record a local, non-secret integrity
+   snapshot of its encoded `sourceSecretRef` and envelope bytes. Record only
+   equality and digest evidence in logs; never print the values.
+2. Build a fresh signed debug HAP from the current worktree.
+3. Confirm one physical HarmonyOS 6.x target is connected.
+4. Install in place without uninstalling, clearing data, replacing the source,
+   reimporting the profile, or running an eager secret migration.
+5. Launch the app and use the refresh action on that preserved pre-fix profile.
+6. Verify the error is no longer `SOURCE_DECRYPT_FAILED` and that execution
    reaches download/parse handling or imports the profile successfully.
-6. Confirm the profile and its stored source remain present after relaunch.
+7. Relaunch the application and refresh the same profile a second time without
+   replacing its source.
+8. Compare the post-test integrity snapshot with the pre-install snapshot and
+   assert that the encoded reference and envelope digest are unchanged.
+9. Confirm the profile and its stored source remain present after relaunch.
 
 The subscription credential and downloaded node contents must not appear in
 terminal output, logs, screenshots, test fixtures, or the final report.
 
 ## 8. Non-Goals
 
-- Changing subscription parsing, HTTP behavior, VPN/TUN, proxy routing, or UI.
+- Changing subscription parsing, HTTP behavior, VPN/TUN, proxy routing, or the
+  UI beyond enabling the existing refresh control for recoverable decrypt
+  failures.
 - Rotating or exporting the HUKS key.
 - Re-encrypting all stored envelopes eagerly.
 - Adding a second encryption library or dependency.
