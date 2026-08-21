@@ -73,7 +73,15 @@ Node browsing begins only after the active profile has a valid committed
 revision. The existing failed candidate must first be replayed through the same
 `mihomoexecutor.ParseWithBytes` seam used by production.
 
-The implementation sequence is:
+This gate is a separate tracer-bullet plan. It must produce
+`docs/harmony/subscription-validation-compatibility.md` before any proxy query,
+selection, persistence, or UI plan begins. That report must identify the exact
+rejected field or field combination, the upstream/runtime behavior that rejects
+it, the minimized non-secret fixture shape, the selected fix, and a regression
+test that fails before the fix and passes after it. “Unknown parser problem” is
+not an acceptable gate result.
+
+The validation plan sequence is:
 
 1. Reproduce the candidate failure through a deterministic, local test or
    replay harness that never checks the sensitive fixture into source control.
@@ -89,6 +97,24 @@ The implementation sequence is:
 
 The downloader must not add Base64 or URI-list heuristics for this candidate;
 evidence already rules those formats out.
+
+## 5.1 Gated implementation slices
+
+This design is implemented through four separate plans, in order:
+
+1. **Plan A — Validation compatibility:** identify and fix the exact current
+   YAML rejection, producing the required compatibility report and valid
+   committed profile.
+2. **Plan B — Native proxy contract:** add bounded Go/C++/Node-API/ArkTS query
+   and selector-patch contracts with no UI or persistence.
+3. **Plan C — Selection service and replay:** add the cross-runtime command bus,
+   repository, running/stopped semantics, rollback, and VPN-start replay.
+4. **Plan D — ArkUI and device proof:** add the page, navigation, presentation
+   states, and physical-device acceptance flow.
+
+Plan B cannot start until Plan A passes on the current subscription. Plan C
+cannot start until Plan B has host and packaged-native contract evidence. Plan D
+cannot start until Plan C proves running and stopped selections without ArkUI.
 
 ## 6. Architecture
 
@@ -113,9 +139,20 @@ serial command policy. `core` implements runtime queries and selector patches.
 ArkUI only.
 
 The current VPN extension and application runtime share the packaged native
-core in the present process model. The service still depends on an
-`ActiveProxyRuntimePort` rather than a process-global singleton so a future
-separate-process VPN implementation can replace the port with IPC without
+core and the installed `VpnSessionRegistry` in the present process model. A new
+`VpnProxyCommandBus` is installed beside that registry through the same
+production composition factory:
+
+- ArkUI/`ProxyService` submits commands to the bus;
+- `VpnExtensionComposition` binds one handler only while its matching session
+  owns a loaded running core;
+- the bus requires exact session ID, profile ID, and revision ID matches;
+- the extension handler serializes patches against start, recovery, and stop;
+- stopping/unbinding rejects pending commands with `VPN_SESSION_CHANGED`;
+- the response returns to the caller as a typed result.
+
+The UI never calls a process-global native selector directly. A future
+separate-process VPN implementation may replace the same bus with IPC without
 changing ViewModels or domain rules.
 
 ## 7. Domain Models and Ports
@@ -137,6 +174,11 @@ changing ViewModels or domain rules.
 - ordered `nodes`;
 - snapshot generation/version used to reject stale taps.
 
+`ProxyGroupSnapshot` has these bridge limits: at most 128 groups, at most 1,024
+members per group, at most 256 UTF-8 bytes per name, and at most 1 MiB of native
+JSON per response. Exceeding a limit fails closed instead of truncating a
+selection surface.
+
 `ProxySelectionRecord` contains:
 
 - profile ID;
@@ -147,6 +189,20 @@ changing ViewModels or domain rules.
 
 None of these models contains server address, port, UUID, password, transport
 options, certificates, private keys, or subscription credentials.
+
+`ProxySelectionResult` is a closed union:
+
+- `APPLIED_NOW`: matching profile/revision/session, confirmed post-patch group
+  snapshot, and confirmation timestamp;
+- `SAVED_FOR_NEXT_START`: matching profile/revision, saved group/node names,
+  and save timestamp; it explicitly contains no runtime-confirmed snapshot;
+- `APPLIED_NOT_PERSISTED`: matching running session and confirmed runtime
+  snapshot plus the typed persistence/rollback failure;
+- `REJECTED`: allowlisted error code, retryable flag, and timestamp, with no raw
+  mihomo message.
+
+The names in these results remain application-private and are never written to
+logs or proof artifacts.
 
 ### 7.2 Core contract
 
@@ -168,6 +224,9 @@ fail closed with typed core errors.
   reconciles confirmed selections by profile/group.
 - `VpnProxyRuntimePort`: reports whether the matching VPN session is active and
   applies the selector to that runtime.
+- `VpnProxyCommandBus`: carries one serialized session/profile/revision-bound
+  query or patch command from the UI-owned service to the active extension
+  handler and returns one `ProxySelectionResult`.
 
 `ProxyService` is the only unit allowed to coordinate these ports.
 
@@ -189,6 +248,11 @@ and error codes only. It must reject unknown fields and oversized responses.
 Native errors are mapped to allowlisted ArkTS error codes; raw mihomo messages
 are redacted before crossing the boundary.
 
+The Go/C++ result schema uses explicit `schemaVersion`, `kind`, profile/revision
+identity hashes, optional session identity hash, group snapshot, and allowlisted
+error fields. A response with an unknown schema version, result kind, field,
+type, or duplicated member is rejected by ArkTS decoding.
+
 ## 9. Query and Selection Flows
 
 ### 9.1 Open the node page
@@ -204,21 +268,40 @@ are redacted before crossing the boundary.
 1. The command is serialized and carries profile, revision, group, node, and
    snapshot generation.
 2. `ProxyService` re-queries the group and rejects a stale or missing member.
-3. `VpnProxyRuntimePort` patches the active matching VPN runtime.
-4. The service queries the group again and requires the selected member to
+3. `ProxyService` submits a session/profile/revision-bound command through
+   `VpnProxyCommandBus`.
+4. The handler bound by `VpnExtensionComposition` rechecks the active session
+   and serializes the patch against recovery/stop.
+5. `VpnProxyRuntimePort` patches the active matching VPN runtime.
+6. The handler queries the group again and requires the selected member to
    match the command.
-5. Only after runtime confirmation does the repository persist the selection.
-6. UI publishes the confirmed snapshot. A rejected patch leaves persistence
+7. Only after runtime confirmation does the repository persist the selection.
+8. UI publishes `APPLIED_NOW` and the confirmed snapshot. A rejected patch leaves persistence
    and presentation on the prior selection.
+
+If persistence fails after the runtime patch, the handler attempts to patch the
+previous member back and confirms the rollback. Confirmed rollback returns
+`REJECTED` and keeps the prior UI/persistence state. If rollback also fails, the
+result is `APPLIED_NOT_PERSISTED`; UI shows the runtime-confirmed member with a
+warning that it will not survive restart. The system never claims startup can
+repair a selection that was never durably recorded.
 
 ### 9.3 Select while VPN is stopped
 
 1. The loaded active configuration still validates the group/member pair.
 2. The service persists the confirmed intent for the active revision.
-3. On the next VPN start, selections are replayed after configuration load and
+3. UI publishes `SAVED_FOR_NEXT_START`. The saved member uses a distinct
+   “下次启动 VPN 时应用” indicator; it does not receive the current-runtime
+   checkmark.
+4. On the next VPN start, selections are replayed after configuration load and
    before the coordinator publishes `RUNNING`.
-4. A missing group/member is removed from persistence and the configuration's
+5. Each replay is post-query confirmed. Once the VPN reports `RUNNING`, UI
+   converts the saved indicator into the runtime-confirmed checkmark.
+6. A missing group/member is removed from persistence and the configuration's
    default selection remains active.
+
+If the stopped-state persistence write fails, no runtime state has changed and
+the result is `REJECTED`; UI remains on the prior confirmed/default selection.
 
 ### 9.4 Subscription update
 
@@ -240,6 +323,12 @@ IDs. Deleting a profile deletes its selections transactionally. Selection
 records are metadata, but group/node names are still treated as private:
 diagnostics use counts and hashes rather than raw names.
 
+The dedicated selection table is the only durable location allowed to contain
+raw group/node names. All other RDB tables, logs, exported diagnostics, proof
+artifacts, and error details contain counts or hashes only. Endpoint and
+credential fields are forbidden everywhere outside the encrypted/full profile
+revision already owned by `ProfileContentStore`.
+
 ## 11. ArkUI Experience
 
 The home page adds a `home.proxy.manage` entry labeled “代理节点”. It is:
@@ -253,6 +342,7 @@ The home page adds a `home.proxy.manage` entry labeled “代理节点”. It is
 - an ordered node list;
 - protocol/group type labels;
 - a checkmark for the confirmed member;
+- a separate “下次启动 VPN 时应用” marker for a stopped-state saved intent;
 - bounded loading state;
 - empty, invalid-profile, core-not-ready, and typed failure states.
 
@@ -260,6 +350,11 @@ A node tap is non-destructive and requires no confirmation dialog. While the
 selection command is running, duplicate taps are ignored and the prior
 confirmed selection stays visible. Nested group members navigate to that group
 rather than being sent as a terminal selector choice.
+
+The checkmark always means “confirmed by the current loaded runtime.” It never
+represents a stopped-state saved intent. `APPLIED_NOT_PERSISTED` shows the
+runtime checkmark plus a restart-persistence warning until another confirmed
+selection or VPN restart resolves the difference.
 
 The UI never renders endpoints or credentials, and copied error details remain
 pre-sanitized.
@@ -272,8 +367,9 @@ pre-sanitized.
 - Native query rejected: `PROXY_QUERY_FAILED`.
 - Runtime patch rejected: `PROXY_SELECTION_FAILED`.
 - Persistence failed after a running-runtime patch: report a reconciliation
-  error and keep the confirmed runtime snapshot visible; startup reconciliation
-  repairs persistence without silently selecting a different node.
+  error, attempt confirmed runtime rollback, and return `APPLIED_NOT_PERSISTED`
+  only when rollback fails. Do not promise later reconciliation without a
+  durable record.
 
 Logs and evidence may include operation, result code, group/node counts,
 revision hash, and duration. They must not include raw group/node names,
@@ -333,9 +429,9 @@ endpoints, credentials, subscription data, or configuration paths.
 7. A failed or stale selection leaves the previous runtime/persisted selection
    unchanged.
 8. A real HTTPS request succeeds through VPN after node selection.
-9. No node endpoint, credential, subscription value, or signing material is
-   written to logs, RDB selection records, UI state serialization, or proof
-   artifacts.
+9. The dedicated selection table contains only profile ID, group name, selected
+   node name, revision ID, and timestamp. No endpoint, credential, subscription
+   value, or signing material is written there; logs, other RDB tables, UI state
+   serialization, and proof artifacts use no raw group/node names.
 10. Platform/core/entry tests and signed HAP/package inspection pass with no
     new failures beyond explicitly documented pre-existing baseline errors.
-
