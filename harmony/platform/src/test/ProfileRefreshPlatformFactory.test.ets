@@ -14,9 +14,11 @@ import type {
 } from '@cmfa/shared';
 import {
   ProfileRefreshPlatformFactory,
+  type ProfileRefreshCloseableRdbDriver,
   type ProfileRefreshPlatformComponents,
   type ProfileRefreshSecretStore
 } from '../main/ets/ProfileRefreshPlatformFactory';
+import { RecordingRdbDriver } from './fakes/PlatformFakes';
 
 class DeferredValue<T> {
   readonly promise: Promise<T>;
@@ -90,6 +92,14 @@ class FakeLeasePort implements ProfileRefreshLeasePort {
 
 class FakeClock implements Clock { now(): string { return '2026-09-01T00:00:00.000Z'; } }
 class FakeIdGenerator implements IdGenerator { nextId(): string { return 'id-1'; } }
+
+class CloseableRecordingRdbDriver extends RecordingRdbDriver implements ProfileRefreshCloseableRdbDriver {
+  closeCalls: number = 0;
+
+  async close(): Promise<void> {
+    this.closeCalls += 1;
+  }
+}
 
 function createComponents(
   log: string[],
@@ -191,6 +201,35 @@ export default function profileRefreshPlatformFactoryTestsuite() {
       expect(attempts).assertEqual(2);
       await graph.close();
       expect(log.filter((entry) => entry === 'rdb.close').length).assertEqual(2);
+    });
+
+    it('closesAnRdbCreatedBeforeDefaultComponentConstructionFails', 0, async () => {
+      const drivers: CloseableRecordingRdbDriver[] = [];
+      const factory = new ProfileRefreshPlatformFactory({ filesDir: '/data/test' } as common.Context, {
+        createRdbDriver: (): ProfileRefreshCloseableRdbDriver => {
+          const driver = new CloseableRecordingRdbDriver();
+          drivers.push(driver);
+          return driver;
+        },
+        createHuksDriver: () => {
+          throw new Error('unsafe constructor detail');
+        }
+      });
+
+      for (let attempt: number = 0; attempt < 2; attempt += 1) {
+        let errorText = '';
+        try {
+          await factory.create();
+        } catch (error) {
+          errorText = `${error}`;
+        }
+        expect(errorText).assertContain('Profile refresh platform initialization failed.');
+        expect(errorText.includes('unsafe constructor detail')).assertFalse();
+      }
+
+      expect(drivers.length).assertEqual(2);
+      expect(drivers[0].closeCalls).assertEqual(1);
+      expect(drivers[1].closeCalls).assertEqual(1);
     });
   });
 }

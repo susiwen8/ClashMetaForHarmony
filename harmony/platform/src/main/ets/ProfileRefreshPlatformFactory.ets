@@ -18,9 +18,11 @@ import {
 import { HarmonyFileDriver } from './files/HarmonyFileDriver';
 import { SandboxProfileContentStore } from './files/SandboxProfileContentStore';
 import { HarmonyRdbDriver } from './rdb/HarmonyRdbDriver';
+import type { RdbDriver } from './rdb/RdbDriver';
 import { RdbProfileRefreshLeaseStore } from './rdb/RdbProfileRefreshLeaseStore';
 import { RdbProfileRepository } from './rdb/RdbProfileRepository';
 import { HarmonyHuksDriver } from './secrets/HarmonyHuksDriver';
+import type { HuksDriver } from './secrets/HuksDriver';
 import { HuksSubscriptionSecretStore } from './secrets/HuksSubscriptionSecretStore';
 import { HarmonyProfileSourceGateway, type LocalProfileAcquirer, type RemoteProfileAcquirer } from './source/HarmonyProfileSourceGateway';
 import { NetworkKitHttpTransport } from './source/NetworkKitHttpTransport';
@@ -58,7 +60,17 @@ export interface ProfileRefreshPlatformGraph {
 }
 
 export interface ProfileRefreshPlatformFactoryDependencies {
-  createComponents?: () => ProfileRefreshPlatformComponents;
+  createComponents?: () => ProfileRefreshPlatformComponents | Promise<ProfileRefreshPlatformComponents>;
+  createRdbDriver?: (context: common.Context, databaseName: string) => ProfileRefreshCloseableRdbDriver;
+  createHuksDriver?: () => ProfileRefreshPrepareableHuksDriver;
+}
+
+export interface ProfileRefreshCloseableRdbDriver extends RdbDriver {
+  close(): Promise<void>;
+}
+
+export interface ProfileRefreshPrepareableHuksDriver extends HuksDriver {
+  prepare(): Promise<void>;
 }
 
 class SystemClock implements Clock {
@@ -168,11 +180,13 @@ export class ProfileRefreshPlatformFactory {
   }
 
   private async buildGraph(): Promise<ProfileRefreshPlatformGraph> {
-    const components: ProfileRefreshPlatformComponents =
-      this.dependencies.createComponents?.() ?? this.createDefaultComponents();
+    let components: ProfileRefreshPlatformComponents | undefined = undefined;
     let graph: ProfileRefreshPlatformGraph | undefined = undefined;
 
     try {
+      components = this.dependencies.createComponents !== undefined
+        ? await this.dependencies.createComponents()
+        : await this.createDefaultComponents();
       await components.prepareSecrets();
       const profiles: Profile[] = await components.repository.list();
       await components.contentStore.reconcile(collectReferencedRevisions(profiles));
@@ -183,60 +197,76 @@ export class ProfileRefreshPlatformFactory {
       if (graph !== undefined) {
         await safeCloseGraph(graph);
       } else {
-        await safeCloseRdb(components);
+        if (components !== undefined) {
+          await safeCloseRdb(components);
+        }
       }
       throw error as Error;
     }
   }
 
-  private createDefaultComponents(): ProfileRefreshPlatformComponents {
+  private async createDefaultComponents(): Promise<ProfileRefreshPlatformComponents> {
     const filesDir: string = this.context.filesDir;
     const clock: Clock = new SystemClock();
     const idGenerator: IdGenerator = new SystemIdGenerator();
     const fileDriver = new HarmonyFileDriver();
-    const rdbDriver = new HarmonyRdbDriver(this.context, DEFAULT_DATABASE_NAME);
-    const repository: ProfileRepository = new RdbProfileRepository(rdbDriver);
-    const profileRefreshLeasePort: ProfileRefreshLeasePort = new RdbProfileRefreshLeaseStore(rdbDriver);
-    const contentStore: ProfileContentStore = new SandboxProfileContentStore(fileDriver, filesDir);
-    const huksDriver = new HarmonyHuksDriver();
-    const secretStore: ProfileRefreshSecretStore =
-      new HuksSubscriptionSecretStore(huksDriver, fileDriver, filesDir, idGenerator);
-    const networkKitTransport = new NetworkKitHttpTransport();
-    const requestAgentTransport = new RequestAgentRedirectTransport({
-      context: this.context,
-      fileDriver,
-      filesDir,
-      idGenerator
-    });
-    const remoteAcquirer: RemoteProfileAcquirer = new SubscriptionDownloader({
-      sdkApiVersion: resolveSdkApiVersionSafe(),
-      networkKitTransport,
-      requestAgentTransport,
-      fileDriver,
-      filesDir,
-      clock,
-      idGenerator
-    });
-    const sourceGateway: ProfileSourceGateway = new HarmonyProfileSourceGateway({
-      localAcquirer: new UnsupportedLocalProfileAcquirer(),
-      remoteAcquirer
-    });
+    let rdbDriver: ProfileRefreshCloseableRdbDriver | undefined = undefined;
+    try {
+      rdbDriver = this.dependencies.createRdbDriver?.(this.context, DEFAULT_DATABASE_NAME) ??
+        new HarmonyRdbDriver(this.context, DEFAULT_DATABASE_NAME);
+      const repository: ProfileRepository = new RdbProfileRepository(rdbDriver);
+      const profileRefreshLeasePort: ProfileRefreshLeasePort = new RdbProfileRefreshLeaseStore(rdbDriver);
+      const contentStore: ProfileContentStore = new SandboxProfileContentStore(fileDriver, filesDir);
+      const huksDriver: ProfileRefreshPrepareableHuksDriver = this.dependencies.createHuksDriver?.() ??
+        new HarmonyHuksDriver();
+      const secretStore: ProfileRefreshSecretStore =
+        new HuksSubscriptionSecretStore(huksDriver, fileDriver, filesDir, idGenerator);
+      const networkKitTransport = new NetworkKitHttpTransport();
+      const requestAgentTransport = new RequestAgentRedirectTransport({
+        context: this.context,
+        fileDriver,
+        filesDir,
+        idGenerator
+      });
+      const remoteAcquirer: RemoteProfileAcquirer = new SubscriptionDownloader({
+        sdkApiVersion: resolveSdkApiVersionSafe(),
+        networkKitTransport,
+        requestAgentTransport,
+        fileDriver,
+        filesDir,
+        clock,
+        idGenerator
+      });
+      const sourceGateway: ProfileSourceGateway = new HarmonyProfileSourceGateway({
+        localAcquirer: new UnsupportedLocalProfileAcquirer(),
+        remoteAcquirer
+      });
+      const ownedRdbDriver: ProfileRefreshCloseableRdbDriver = rdbDriver;
 
-    return {
-      repository,
-      profileRefreshLeasePort,
-      contentStore,
-      sourceGateway,
-      secretStore,
-      clock,
-      idGenerator,
-      prepareSecrets: async (): Promise<void> => {
-        await huksDriver.prepare();
-      },
-      closeRdb: async (): Promise<void> => {
-        await rdbDriver.close();
+      return {
+        repository,
+        profileRefreshLeasePort,
+        contentStore,
+        sourceGateway,
+        secretStore,
+        clock,
+        idGenerator,
+        prepareSecrets: async (): Promise<void> => {
+          await huksDriver.prepare();
+        },
+        closeRdb: async (): Promise<void> => {
+          await ownedRdbDriver.close();
+        }
+      };
+    } catch (error) {
+      if (rdbDriver !== undefined) {
+        try {
+          await rdbDriver.close();
+        } catch (_) {
+        }
       }
-    };
+      throw error as Error;
+    }
   }
 }
 
