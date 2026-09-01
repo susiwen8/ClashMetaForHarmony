@@ -221,6 +221,33 @@ export default function subscriptionRefreshWorkAbilityTestsuite() {
       expect(closeCalls).assertEqual(1);
     });
 
+    it('preservesTheBatchErrorWhenBatchAndGraphCloseBothFail', 0, async () => {
+      const batchError = new Error('primary batch error');
+      const batch: SubscriptionRefreshBatchPort = {
+        execute: async (): Promise<RefreshProfilesResult> => {
+          throw batchError;
+        }
+      };
+      const graph = {
+        close: async (): Promise<void> => {
+          throw new Error('secondary close error');
+        }
+      } as ProfileRefreshPlatformGraph;
+      const composition = new SubscriptionRefreshComposition({} as WorkSchedulerExtensionContext, {
+        createPlatformGraph: async (): Promise<ProfileRefreshPlatformGraph> => graph,
+        createBatchUseCase: (): SubscriptionRefreshBatchPort => batch
+      });
+      let caught: Error | undefined = undefined;
+
+      try {
+        await composition.run(123456, (): boolean => false);
+      } catch (error) {
+        caught = error as Error;
+      }
+
+      expect(caught === batchError).assertTrue();
+    });
+
     it('createsAndClosesAFreshProfileGraphForEveryRepeatedRun', 0, async () => {
       const batch = new RecordingBatchPort();
       let graphCreations = 0;

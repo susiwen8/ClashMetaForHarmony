@@ -42,6 +42,7 @@ export class SubscriptionRefreshComposition implements SubscriptionRefreshWorkCo
 
   async run(deadlineMs: number, isCancelled: () => boolean): Promise<void> {
     const graph: ProfileRefreshPlatformGraph = await this.dependencies.createPlatformGraph(this.context);
+    let primaryError: Error | undefined = undefined;
     try {
       const batch: SubscriptionRefreshBatchPort = this.dependencies.createBatchUseCase(graph);
       await batch.execute({
@@ -49,8 +50,19 @@ export class SubscriptionRefreshComposition implements SubscriptionRefreshWorkCo
         deadlineMs,
         isCancelled
       });
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error('Subscription refresh batch failed.');
     } finally {
-      await graph.close();
+      try {
+        await graph.close();
+      } catch (closeError) {
+        if (primaryError === undefined) {
+          throw closeError;
+        }
+      }
+    }
+    if (primaryError !== undefined) {
+      throw primaryError;
     }
   }
 }
