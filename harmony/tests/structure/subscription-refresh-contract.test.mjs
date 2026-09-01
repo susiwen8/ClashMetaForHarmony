@@ -11,6 +11,18 @@ const PLATFORM_INDEX = path.join(PLATFORM_ROOT, 'Index.ets');
 const FACTORY_PATH = path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'ProfileRefreshPlatformFactory.ets');
 const DRIVER_PATH = path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'background', 'WorkSchedulerDriver.ets');
 const PLATFORM_TEST_LIST = path.join(PLATFORM_ROOT, 'src', 'test', 'List.test.ets');
+const ENTRY_ROOT = path.join(HARMONY_ROOT, 'entry');
+const ENTRY_ETS_ROOT = path.join(ENTRY_ROOT, 'src', 'main', 'ets');
+const MODULE_JSON_PATH = path.join(ENTRY_ROOT, 'src', 'main', 'module.json5');
+const WORK_ABILITY_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshWorkAbility.ets');
+const WORK_COMPOSITION_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshComposition.ets');
+const ENTRY_TEST_LIST = path.join(ENTRY_ROOT, 'src', 'test', 'List.test.ets');
+const PROFILE_ONLY_HELPER_PATHS = [
+  path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'SubscriptionDownloader.ets'),
+  path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets'),
+  path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'NetworkKitHttpTransport.ets'),
+  path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'HarmonyProfileSourceGateway.ets')
+];
 
 async function readUtf8(filePath) {
   return await fs.readFile(filePath, 'utf8');
@@ -31,12 +43,13 @@ test('subscription refresh platform barrel exports the profile-only graph and sc
 });
 
 test('subscription refresh platform graph stays isolated from vpn notification and entry dependencies', async () => {
-  const [barrel, factory, driver] = await Promise.all([
+  const [barrel, factory, driver, ...helperSources] = await Promise.all([
     readUtf8(PROFILE_REFRESH_BARREL),
     readUtf8(FACTORY_PATH),
-    readUtf8(DRIVER_PATH)
+    readUtf8(DRIVER_PATH),
+    ...PROFILE_ONLY_HELPER_PATHS.map((filePath) => readUtf8(filePath))
   ]);
-  const combined = `${barrel}\n${factory}\n${driver}`;
+  const combined = `${barrel}\n${factory}\n${driver}\n${helperSources.join('\n')}`;
 
   for (const forbidden of [
     'ContinuousTaskDriver',
@@ -56,6 +69,51 @@ test('subscription refresh platform graph stays isolated from vpn notification a
   assert.match(factory, /SandboxProfileContentStore/u);
   assert.match(factory, /HuksSubscriptionSecretStore/u);
   assert.match(factory, /SubscriptionDownloader/u);
+});
+
+test('subscription refresh registers one non-exported workScheduler extension without weakening the VPN extension', async () => {
+  const moduleSource = await readUtf8(MODULE_JSON_PATH);
+  const normalized = moduleSource
+    .replace(/\/\*[\s\S]*?\*\//gu, '')
+    .replace(/^\s*\/\/.*$/gmu, '')
+    .replace(/,\s*([}\]])/gu, '$1');
+  const moduleDocument = JSON.parse(normalized);
+  const extensions = moduleDocument.module.extensionAbilities ?? [];
+  const vpnExtensions = extensions.filter((extension) => extension.type === 'vpn');
+  const workExtensions = extensions.filter((extension) => extension.type === 'workScheduler');
+
+  assert.equal(vpnExtensions.length, 1);
+  assert.equal(vpnExtensions[0].name, 'CmfaVpnExtensionAbility');
+  assert.equal(workExtensions.length, 1);
+  assert.deepEqual(workExtensions[0], {
+    name: 'SubscriptionRefreshWorkAbility',
+    srcEntry: './ets/background/SubscriptionRefreshWorkAbility.ets',
+    type: 'workScheduler',
+    exported: false
+  });
+});
+
+test('subscription refresh work ability applies the deadline cancellation and profile-only composition contract', async () => {
+  const [ability, composition, entryList] = await Promise.all([
+    readUtf8(WORK_ABILITY_PATH),
+    readUtf8(WORK_COMPOSITION_PATH),
+    readUtf8(ENTRY_TEST_LIST)
+  ]);
+
+  assert.match(ability, /extends WorkSchedulerExtensionAbility/u);
+  assert.match(ability, /100\s*\*\s*1000/u);
+  assert.match(ability, /onWorkStart\(work:\s*workScheduler\.WorkInfo\):\s*void/u);
+  assert.match(ability, /onWorkStop\(work:\s*workScheduler\.WorkInfo\):\s*void/u);
+  assert.match(ability, /workScheduler\.stopWork\(work, false\)/u);
+  assert.match(composition, /new ProfileRefreshPlatformFactory\(context\)/u);
+  assert.match(composition, /from '@cmfa\/platform\/ProfileRefresh';/u);
+  assert.match(composition, /mode:\s*'DUE'/u);
+  assert.match(composition, /deadlineMs/u);
+  assert.match(composition, /isCancelled/u);
+  assert.match(composition, /await graph\.close\(\)/u);
+  assert.doesNotMatch(composition, /PlatformFactory|HarmonyVpnNotificationDriver|backgroundTaskManager|VpnRpc|CoreComposition/u);
+  assert.match(entryList, /import subscriptionRefreshWorkAbilityTestsuite from '\.\/SubscriptionRefreshWorkAbility\.test';/u);
+  assert.match(entryList, /subscriptionRefreshWorkAbilityTestsuite\(\);/u);
 });
 
 test('subscription refresh scheduler registers one persisted two-hour any-network work without clearing unrelated work', async () => {

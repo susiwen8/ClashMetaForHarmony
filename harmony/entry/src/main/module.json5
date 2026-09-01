@@ -52,6 +52,12 @@
         "srcEntry": "./ets/vpn/CmfaVpnExtensionAbility.ets",
         "type": "vpn",
         "exported": false
+      },
+      {
+        "name": "SubscriptionRefreshWorkAbility",
+        "srcEntry": "./ets/background/SubscriptionRefreshWorkAbility.ets",
+        "type": "workScheduler",
+        "exported": false
       }
     ]
   }

@@ -113,13 +113,23 @@ test('phase4 vpn contract keeps the production manifest to the minimal VPN surfa
   ], 'module.json5 must declare exactly INTERNET, GET_NETWORK_INFO, and KEEP_BACKGROUND_RUNNING');
 
   const extensions = moduleDocument.module.extensionAbilities ?? [];
-  assert.equal(extensions.length, 1, 'module.json5 must declare exactly one extension ability');
-  assert.deepEqual(extensions[0], {
+  assert.equal(extensions.length, 2, 'module.json5 must declare exactly one VPN and one workScheduler extension ability');
+  const vpnExtensions = extensions.filter((extension) => extension.type === 'vpn');
+  const workExtensions = extensions.filter((extension) => extension.type === 'workScheduler');
+  assert.equal(vpnExtensions.length, 1, 'module.json5 must keep exactly one VPN extension ability');
+  assert.equal(workExtensions.length, 1, 'module.json5 must keep exactly one workScheduler extension ability');
+  assert.deepEqual(vpnExtensions[0], {
     name: 'CmfaVpnExtensionAbility',
     srcEntry: './ets/vpn/CmfaVpnExtensionAbility.ets',
     type: 'vpn',
     exported: false
   }, 'VPN extension ability contract drifted');
+  assert.deepEqual(workExtensions[0], {
+    name: 'SubscriptionRefreshWorkAbility',
+    srcEntry: './ets/background/SubscriptionRefreshWorkAbility.ets',
+    type: 'workScheduler',
+    exported: false
+  }, 'workScheduler extension ability contract drifted');
 
   const entryAbility = (moduleDocument.module.abilities ?? []).find((ability) => ability.name === 'EntryAbility');
   assert.deepEqual(entryAbility?.backgroundModes, ['dataTransfer'],
@@ -128,11 +138,11 @@ test('phase4 vpn contract keeps the production manifest to the minimal VPN surfa
     'EntryAbility must not declare an explicit process override');
   assert.notEqual(entryAbility?.isolationProcess, true,
     'EntryAbility must not opt into isolationProcess');
-  assert.notEqual(extensions[0]?.isolationProcess, true,
+  assert.notEqual(vpnExtensions[0]?.isolationProcess, true,
     'CmfaVpnExtensionAbility must not opt into isolationProcess');
-  assert.equal('process' in extensions[0], false,
+  assert.equal('process' in vpnExtensions[0], false,
     'CmfaVpnExtensionAbility must not declare an explicit process field');
-  assert.equal('extensionProcessMode' in extensions[0], false,
+  assert.equal('extensionProcessMode' in vpnExtensions[0], false,
     'CmfaVpnExtensionAbility must not declare extensionProcessMode for same-process routing');
 
   const serialized = JSON.stringify(moduleDocument);
