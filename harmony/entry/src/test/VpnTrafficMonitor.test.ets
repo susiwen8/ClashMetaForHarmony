@@ -383,7 +383,7 @@ export default function vpnTrafficMonitorTestsuite() {
       expectSnapshot(snapshots[3], true, 1600, 2800, 600, 1000);
     });
 
-    it('rescheduleFailureStopsGenerationWithoutFallbackAndAllowsRetry', 0, async () => {
+    it('rescheduleFailureClearsSnapshotAndKeepsNextSessionZeroUntilItsFirstSample', 0, async () => {
       const clock = new ManualClock(1000);
       const scheduler = new ThrowingScheduler(2);
       const source = new ScriptedTrafficSource();
@@ -401,15 +401,18 @@ export default function vpnTrafficMonitorTestsuite() {
 
       expect(source.calls.length).assertEqual(1);
       expectSnapshot(snapshots[0], true, 128, 256, 0, 0);
+      expectSnapshot(snapshots[1], false, 0, 0, 0, 0);
+      expectSnapshot(monitor.snapshot(), false, 0, 0, 0, 0);
       expect(scheduler.scheduledDelays).assertDeepEquals([0]);
       expect(scheduler.pendingCount()).assertEqual(0);
 
       clock.setNow(2000);
-      monitor.start('session-1');
+      monitor.start('session-2');
+      expectSnapshot(monitor.snapshot(), false, 0, 0, 0, 0);
       await scheduler.runNext();
 
       expect(source.calls.length).assertEqual(2);
-      expectSnapshot(snapshots[1], true, 1152, 2304, 0, 0);
+      expectSnapshot(snapshots[2], true, 1152, 2304, 0, 0);
       expect(scheduler.scheduledDelays).assertDeepEquals([0, 0, 1000]);
     });
 

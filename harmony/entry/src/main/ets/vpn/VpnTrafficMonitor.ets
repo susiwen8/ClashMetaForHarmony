@@ -316,7 +316,7 @@ export class VpnTrafficMonitor implements VpnTrafficMonitorReadPort, VpnTrafficM
         return;
       }
       if (!this.scheduleNextTick(sessionId, generation, 1000)) {
-        this.terminateGeneration(sessionId, generation);
+        await this.terminateGeneration(sessionId, generation);
       }
     } catch (_) {
       this.tracker.reset();
@@ -333,7 +333,7 @@ export class VpnTrafficMonitor implements VpnTrafficMonitorReadPort, VpnTrafficM
         return;
       }
       if (!this.scheduleNextTick(sessionId, generation, 1000)) {
-        this.terminateGeneration(sessionId, generation);
+        await this.terminateGeneration(sessionId, generation);
       }
     }
   }
@@ -371,7 +371,11 @@ export class VpnTrafficMonitor implements VpnTrafficMonitorReadPort, VpnTrafficM
       this.generation === generation;
   }
 
-  private terminateGeneration(sessionId: string, generation: number): void {
+  private async terminateGeneration(sessionId: string, generation: number): Promise<void> {
+    if (!this.isGenerationActive(sessionId, generation)) {
+      return;
+    }
+    await this.publishSnapshot(createSnapshot(false, 0, 0, 0, 0), true);
     if (!this.isGenerationActive(sessionId, generation)) {
       return;
     }
