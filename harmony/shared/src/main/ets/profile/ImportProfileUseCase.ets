@@ -482,7 +482,8 @@ function createInitialProfile(shape: InitialProfileShape): Profile {
     lastError: shape.lastError,
     createdAt: shape.createdAt,
     updatedAt: shape.updatedAt,
-    lastSuccessfulUpdateAt: shape.lastSuccessfulUpdateAt
+    lastSuccessfulUpdateAt: shape.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: 0
   });
 }
 

@@ -74,7 +74,8 @@ export class ProfileCommitService {
       lastError: profile.lastError,
       createdAt: profile.createdAt,
       updatedAt: profile.updatedAt,
-      lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
+      lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+      autoUpdateIntervalMs: profile.autoUpdateIntervalMs
     });
   }
 

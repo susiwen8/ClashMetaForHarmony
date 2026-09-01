@@ -315,6 +315,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.failedCandidate === null).assertTrue();
       expect(result.profile.sourceDisplay).assertEqual('home.yaml');
       expect(result.profile.lastSuccessfulUpdateAt).assertEqual('2026-08-07T00:01:00.000Z');
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(0);
       expect(collapseTimeline(timeline.entries)).assertEqual('acquire>validate>retainRevision>saveProfile');
     });
 
@@ -1453,6 +1454,30 @@ export default function profileImportUseCasesTestsuite() {
       expect(revisions.length).assertEqual(2);
       expect(revisions[0].relativePath).assertEqual('profiles/shared/current.yaml');
       expect(revisions[1].relativePath).assertEqual(uniqueRevision.relativePath);
+    });
+
+    it('buildSavedProfilePreservesAutoUpdateInterval', 0, () => {
+      const current = buildRevision('profiles/saved/current.yaml', '2026-08-07T00:00:00.000Z');
+      const options = new ProfileFixtureOptions();
+      options.id = 'saved-profile';
+      options.name = 'Saved Profile';
+      options.sourceKind = 'REMOTE_URL';
+      options.sourceDisplay = 'https://saved.example.com';
+      options.sourceSecretRef = 'secret-saved';
+      options.currentRevision = current;
+      options.availability = 'VALID';
+      options.createdAt = '2026-08-07T00:00:00.000Z';
+      options.updatedAt = '2026-08-07T00:01:00.000Z';
+      options.lastSuccessfulUpdateAt = '2026-08-07T00:01:00.000Z';
+      const repository = new FakeProfileRepository([buildProfile(options)]);
+      const contentStore = new FakeProfileContentStore();
+      const service: ProfileCommitService = createCommitService(
+        createCommitServiceDependencies(repository, contentStore, new FakeClock(['2026-08-07T01:00:00.000Z']))
+      );
+
+      const saved = service.buildSavedProfile(buildProfileWithInterval(options, 180000));
+
+      expect(saved.autoUpdateIntervalMs).assertEqual(180000);
     });
   });
 }
