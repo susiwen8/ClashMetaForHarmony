@@ -308,6 +308,50 @@ export default function vpnTrafficMonitorTestsuite() {
       expect(scheduler.pendingCount()).assertEqual(1);
     });
 
+    it('listenerFailureDoesNotReportSourceFailureOrResetBaselineForOtherSubscribers', 0, async () => {
+      const clock = new ManualClock(1000);
+      const scheduler = new ManualScheduler();
+      const source = new ScriptedTrafficSource();
+      const reportStages: string[] = [];
+      const monitor = new VpnTrafficMonitor(
+        source,
+        clock,
+        scheduler,
+        createReportStageCollector(reportStages)
+      );
+      const healthySnapshots: VpnTrafficMonitorSnapshot[] = [];
+      let rejectingListenerCalls: number = 0;
+
+      monitor.subscribe(async (_snapshot: VpnTrafficMonitorSnapshot): Promise<void> => {
+        rejectingListenerCalls += 1;
+        if (rejectingListenerCalls === 1) {
+          throw new Error('listener failed');
+        }
+      });
+      monitor.subscribe((snapshot: VpnTrafficMonitorSnapshot): void => {
+        healthySnapshots.push(snapshot);
+      });
+      source.queueValue(1024, 2048);
+      source.queueValue(3072, 6144);
+
+      monitor.start('session-1');
+      await scheduler.runNext();
+      clock.setNow(2000);
+      await scheduler.runNext();
+
+      expect(rejectingListenerCalls).assertEqual(2);
+      expect(healthySnapshots.length).assertEqual(2);
+      expectSnapshot(healthySnapshots[0], true, 1024, 2048, 0, 0);
+      expectSnapshot(healthySnapshots[1], true, 3072, 6144, 2048, 4096);
+      expect(reportStages).assertDeepEquals([
+        'notification.traffic.source-ok',
+        'notification.traffic.counters-nonzero',
+        'notification.traffic.rate-zero',
+        'notification.traffic.rate-nonzero'
+      ]);
+      expect(scheduler.scheduledDelays).assertDeepEquals([0, 1000, 1000]);
+    });
+
     it('sourceFailurePublishesUnavailableZeroRatesAndRetriesFromAFreshBaseline', 0, async () => {
       const clock = new ManualClock(1000);
       const scheduler = new ManualScheduler();

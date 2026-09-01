@@ -351,7 +351,10 @@ export class VpnTrafficMonitor implements VpnTrafficMonitorReadPort, VpnTrafficM
       listeners.push(listener);
     });
     for (let index: number = 0; index < listeners.length; index += 1) {
-      await listeners[index](cloneSnapshot(this.currentSnapshot));
+      try {
+        await listeners[index](cloneSnapshot(this.currentSnapshot));
+      } catch (_) {
+      }
     }
   }
 

@@ -182,7 +182,6 @@ export default function vpnTrafficNotificationCoordinatorTestsuite() {
       expect(monitor.listenerCount()).assertEqual(1);
       expect(sink.updates).assertDeepEquals([
         { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
-        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
         { sessionId: 'session-1', uploadBytesPerSecond: 1024, downloadBytesPerSecond: 2048 }
       ]);
     });
@@ -257,6 +256,25 @@ export default function vpnTrafficNotificationCoordinatorTestsuite() {
       ]);
     });
 
+    it('startSeedsUnavailableTrafficWithoutEmittingFakeDiagnostics', 0, async () => {
+      const reportStages: string[] = [];
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
+      const sink = new RecordingTrafficSink();
+      const coordinator = new VpnTrafficNotificationCoordinator(
+        monitor,
+        sink,
+        createReportStageCollector(reportStages)
+      );
+
+      coordinator.start('session-1');
+      await settleMicrotasks();
+
+      expect(sink.updates).assertDeepEquals([
+        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
+      ]);
+      expect(reportStages).assertDeepEquals([]);
+    });
+
     it('reportsTrafficDiagnosticStagesOnlyOnTransitionsAndReplaysAfterUnavailableSnapshot', 0, async () => {
       const reportStages: string[] = [];
       const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
@@ -300,8 +318,10 @@ export default function vpnTrafficNotificationCoordinatorTestsuite() {
 
       coordinator.start('session-1');
       await settleMicrotasks();
+      await monitor.publish(createSnapshot(false, 0, 0, 0, 0));
       coordinator.start('session-2');
       await settleMicrotasks();
+      await monitor.publish(createSnapshot(false, 0, 0, 0, 0));
 
       expect(reportStages).assertDeepEquals([
         'notification.traffic.source-failed',

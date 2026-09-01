@@ -855,11 +855,9 @@ export default function harmonyVpnControllerTestsuite() {
       await harness.trafficScheduler.runNext();
 
       expect(harness.reportStages).assertDeepEquals([
-        'notification.traffic.source-failed',
-        'notification.traffic.counters-zero',
-        'notification.traffic.rate-zero',
         'notification.traffic.source-ok',
         'notification.traffic.counters-nonzero',
+        'notification.traffic.rate-zero',
         'notification.traffic.rate-nonzero'
       ]);
     });

@@ -65,6 +65,14 @@ function isNonZeroRate(snapshot: VpnTrafficMonitorSnapshot): boolean {
   return snapshot.uploadBytesPerSecond > 0 || snapshot.downloadBytesPerSecond > 0;
 }
 
+function isUnavailableSeedSnapshot(snapshot: VpnTrafficMonitorSnapshot): boolean {
+  return snapshot.available === false &&
+    snapshot.txBytes === 0 &&
+    snapshot.rxBytes === 0 &&
+    snapshot.uploadBytesPerSecond === 0 &&
+    snapshot.downloadBytesPerSecond === 0;
+}
+
 export class VpnTrafficNotificationCoordinator {
   private readonly monitor: VpnTrafficMonitorReadPort;
   private readonly sink: VpnTrafficNotificationSinkPort;
@@ -107,7 +115,13 @@ export class VpnTrafficNotificationCoordinator {
     listenerId = this.monitor.subscribe(listener);
     this.subscriptionId = listenerId;
 
-    void this.forwardSnapshot(sessionId, listenerId, this.monitor.snapshot());
+    const initialSnapshot = this.monitor.snapshot();
+    void this.forwardSnapshot(
+      sessionId,
+      listenerId,
+      initialSnapshot,
+      isUnavailableSeedSnapshot(initialSnapshot)
+    );
   }
 
   stop(sessionId: string): void {
@@ -132,16 +146,19 @@ export class VpnTrafficNotificationCoordinator {
   private async forwardSnapshot(
     sessionId: string,
     subscriptionId: number,
-    snapshot: VpnTrafficMonitorSnapshot
+    snapshot: VpnTrafficMonitorSnapshot,
+    suppressDiagnostics: boolean = false
   ): Promise<void> {
     if (!this.isSubscriptionActive(sessionId, subscriptionId)) {
       return;
     }
 
     const snapshotValue = cloneSnapshot(snapshot);
-    this.reportSourceState(snapshotValue.available);
-    this.reportCountersState(isNonZeroCounters(snapshotValue));
-    this.reportRateState(isNonZeroRate(snapshotValue));
+    if (!suppressDiagnostics) {
+      this.reportSourceState(snapshotValue.available);
+      this.reportCountersState(isNonZeroCounters(snapshotValue));
+      this.reportRateState(isNonZeroRate(snapshotValue));
+    }
     if (this.isSamePublishedTrafficRate(snapshotValue)) {
       return;
     }
