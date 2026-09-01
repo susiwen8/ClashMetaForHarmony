@@ -204,6 +204,9 @@ struct Index {
         },
         onOpenProfile: (profileId: string) => {
           this.openDetailRoute(profileId);
+        },
+        onRefreshAll: () => {
+          void this.profilesViewModel?.requestRefreshAll();
         }
       })
     } else if (this.route === 'DETAIL' && this.profileDetailViewModel !== undefined) {

@@ -17,6 +17,9 @@ const MODULE_JSON_PATH = path.join(ENTRY_ROOT, 'src', 'main', 'module.json5');
 const WORK_ABILITY_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshWorkAbility.ets');
 const WORK_COMPOSITION_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshComposition.ets');
 const ENTRY_TEST_LIST = path.join(ENTRY_ROOT, 'src', 'test', 'List.test.ets');
+const PROFILES_PAGE_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'ProfilesPage.ets');
+const INDEX_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'Index.ets');
+const STRINGS_PATH = path.join(ENTRY_ROOT, 'src', 'main', 'resources', 'base', 'element', 'string.json');
 const PROFILE_ONLY_HELPER_PATHS = [
   path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'SubscriptionDownloader.ets'),
   path.join(PLATFORM_ROOT, 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets'),
@@ -135,4 +138,40 @@ test('subscription refresh platform test suites remain registered', async () => 
   assert.match(list, /workSchedulerDriverTestsuite\(\);/u);
   assert.match(list, /import profileRefreshPlatformFactoryTestsuite from '\.\/ProfileRefreshPlatformFactory\.test';/u);
   assert.match(list, /profileRefreshPlatformFactoryTestsuite\(\);/u);
+});
+
+test('subscription refresh profiles UI wires refresh-all progress and privacy-safe result counts', async () => {
+  const [page, index, stringsSource] = await Promise.all([
+    readUtf8(PROFILES_PAGE_PATH),
+    readUtf8(INDEX_PATH),
+    readUtf8(STRINGS_PATH)
+  ]);
+  const strings = JSON.parse(stringsSource);
+  const names = new Set((strings.string ?? []).map((entry) => entry.name));
+
+  assert.match(page, /\.id\('profiles\.refresh-all'\)/u);
+  assert.match(page, /\.id\('profiles\.refresh-progress'\)/u);
+  assert.match(page, /\.id\('profiles\.refresh-summary'\)/u);
+  assert.match(page, /refreshAllSummary/u);
+  assert.match(page, /summary\.success/u);
+  assert.match(page, /summary\.failedUsingCurrent/u);
+  assert.match(page, /summary\.skippedHttp/u);
+  assert.match(page, /summary\.busy/u);
+  const summarySource = page.slice(page.indexOf('function createRefreshSummaryItems'));
+  assert.doesNotMatch(summarySource, /profileId|sourceDisplay|sourceSecretRef/u);
+  assert.match(index, /onRefreshAll:\s*\(\)\s*=>\s*\{[\s\S]*requestRefreshAll\(\)/u);
+
+  for (const name of [
+    'profiles_refresh_all',
+    'profiles_refresh_pending',
+    'profiles_refresh_success',
+    'profiles_refresh_failed_using_current',
+    'profiles_refresh_failed',
+    'profiles_refresh_skipped_http',
+    'profiles_refresh_skipped_not_due',
+    'profiles_refresh_busy',
+    'profiles_refresh_interrupted'
+  ]) {
+    assert.equal(names.has(name), true, `missing string resource ${name}`);
+  }
 });

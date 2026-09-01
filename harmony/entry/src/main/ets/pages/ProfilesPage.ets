@@ -1,4 +1,4 @@
-import type { ProfileRowState, ProfilesViewState } from '../presentation/PresentationModels';
+import type { ProfileRowState, ProfilesRefreshSummaryState, ProfilesViewState } from '../presentation/PresentationModels';
 import { ProfileListItem } from '../components/ProfileListItem';
 import { SafeErrorCard, createEmptySafeErrorState } from '../components/SafeErrorCard';
 
@@ -12,8 +12,17 @@ export struct ProfilesPage {
   };
   onOpenProfile: (profileId: string) => void = (_profileId: string) => {
   };
+  onRefreshAll: () => void = () => {
+  };
 
   build() {
+    const remoteCount: number = countRemoteProfileRows(this.state.profiles);
+    const refreshSummary: ProfilesRefreshSummaryState | undefined = this.state.refreshAllSummary;
+    const showRefreshPanel: boolean = remoteCount > 0 ||
+      this.state.refreshAllPending ||
+      refreshSummary !== undefined ||
+      this.state.refreshAllError !== undefined;
+
     Scroll() {
       Column({ space: $r('app.float.space_lg') }) {
         Row({ space: $r('app.float.space_md') }) {
@@ -48,6 +57,72 @@ export struct ProfilesPage {
 
         if (this.state.error !== undefined) {
           SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
+        }
+
+        if (showRefreshPanel) {
+          Column({ space: $r('app.float.space_sm') }) {
+            Button(this.state.refreshAllPending
+              ? $r('app.string.profiles_refresh_pending')
+              : $r('app.string.profiles_refresh_all'))
+              .id('profiles.refresh-all')
+              .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+              .enabled(remoteCount > 0 && !this.state.refreshAllPending)
+              .backgroundColor($r('app.color.color_surface_card'))
+              .fontColor($r('app.color.color_text_primary'))
+              .onClick(() => {
+                this.onRefreshAll();
+              })
+
+            if (this.state.refreshAllPending) {
+              Text(`${this.state.completedRefreshCount} / ${this.state.totalRefreshCount}`)
+                .id('profiles.refresh-progress')
+                .fontSize($r('app.float.type_caption'))
+                .fontColor($r('app.color.color_text_secondary'))
+            }
+
+            if (refreshSummary !== undefined) {
+              Flex({
+                wrap: FlexWrap.Wrap,
+                justifyContent: FlexAlign.Start,
+                alignItems: ItemAlign.Center
+              }) {
+                ForEach(createRefreshSummaryItems(refreshSummary), (item: RefreshSummaryItem) => {
+                  Row({ space: $r('app.float.space_xs') }) {
+                    Text(`${item.count}`)
+                      .fontSize($r('app.float.type_caption'))
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor($r('app.color.color_text_primary'))
+
+                    Text(item.label)
+                      .fontSize($r('app.float.type_caption'))
+                      .fontColor($r('app.color.color_text_secondary'))
+                  }
+                  .margin({ right: $r('app.float.space_md'), bottom: $r('app.float.space_xs') })
+                }, (item: RefreshSummaryItem) => item.key)
+
+                if (this.state.refreshAllInterrupted) {
+                  Text($r('app.string.profiles_refresh_interrupted'))
+                    .fontSize($r('app.float.type_caption'))
+                    .fontColor($r('app.color.color_status_warning'))
+                    .margin({ bottom: $r('app.float.space_xs') })
+                }
+              }
+              .id('profiles.refresh-summary')
+              .width('100%')
+            }
+
+            if (this.state.refreshAllError !== undefined) {
+              SafeErrorCard({ error: this.state.refreshAllError ?? createEmptySafeErrorState() })
+            }
+          }
+          .width('100%')
+          .padding($r('app.float.space_lg'))
+          .borderRadius($r('app.float.radius_card'))
+          .backgroundColor($r('app.color.color_surface_card'))
+          .border({
+            width: 1,
+            color: $r('app.color.color_border_subtle')
+          })
         }
 
         if (this.state.profiles.length === 0) {
@@ -85,4 +160,55 @@ export struct ProfilesPage {
     .width('100%')
     .height('100%')
   }
+}
+
+interface RefreshSummaryItem {
+  key: string;
+  label: Resource;
+  count: number;
+}
+
+function countRemoteProfileRows(rows: ProfileRowState[]): number {
+  let count: number = 0;
+  for (let index: number = 0; index < rows.length; index += 1) {
+    if (rows[index].sourceKind === 'REMOTE_URL') {
+      count += 1;
+    }
+  }
+  return count;
+}
+
+function createRefreshSummaryItems(summary: ProfilesRefreshSummaryState): RefreshSummaryItem[] {
+  return [
+    {
+      key: 'success',
+      label: $r('app.string.profiles_refresh_success'),
+      count: summary.success
+    },
+    {
+      key: 'failedUsingCurrent',
+      label: $r('app.string.profiles_refresh_failed_using_current'),
+      count: summary.failedUsingCurrent
+    },
+    {
+      key: 'failed',
+      label: $r('app.string.profiles_refresh_failed'),
+      count: summary.failed
+    },
+    {
+      key: 'skippedHttp',
+      label: $r('app.string.profiles_refresh_skipped_http'),
+      count: summary.skippedHttp
+    },
+    {
+      key: 'skippedNotDue',
+      label: $r('app.string.profiles_refresh_skipped_not_due'),
+      count: summary.skippedNotDue
+    },
+    {
+      key: 'busy',
+      label: $r('app.string.profiles_refresh_busy'),
+      count: summary.busy
+    }
+  ];
 }

@@ -345,6 +345,42 @@
       "value": "添加配置"
     },
     {
+      "name": "profiles_refresh_all",
+      "value": "刷新全部订阅"
+    },
+    {
+      "name": "profiles_refresh_pending",
+      "value": "正在刷新订阅"
+    },
+    {
+      "name": "profiles_refresh_success",
+      "value": "成功"
+    },
+    {
+      "name": "profiles_refresh_failed_using_current",
+      "value": "失败，保留当前版本"
+    },
+    {
+      "name": "profiles_refresh_failed",
+      "value": "失败"
+    },
+    {
+      "name": "profiles_refresh_skipped_http",
+      "value": "跳过 HTTP"
+    },
+    {
+      "name": "profiles_refresh_skipped_not_due",
+      "value": "尚未到更新时间"
+    },
+    {
+      "name": "profiles_refresh_busy",
+      "value": "其他进程正在刷新"
+    },
+    {
+      "name": "profiles_refresh_interrupted",
+      "value": "本次刷新已中断，剩余订阅稍后处理"
+    },
+    {
       "name": "profiles_empty_title",
       "value": "还没有配置"
     },
