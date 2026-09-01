@@ -220,5 +220,29 @@ export default function subscriptionRefreshWorkAbilityTestsuite() {
 
       expect(closeCalls).assertEqual(1);
     });
+
+    it('createsAndClosesAFreshProfileGraphForEveryRepeatedRun', 0, async () => {
+      const batch = new RecordingBatchPort();
+      let graphCreations = 0;
+      let graphCloses = 0;
+      const composition = new SubscriptionRefreshComposition({} as WorkSchedulerExtensionContext, {
+        createPlatformGraph: async (): Promise<ProfileRefreshPlatformGraph> => {
+          graphCreations += 1;
+          return {
+            close: async (): Promise<void> => {
+              graphCloses += 1;
+            }
+          } as ProfileRefreshPlatformGraph;
+        },
+        createBatchUseCase: (): SubscriptionRefreshBatchPort => batch
+      });
+
+      await composition.run(123456, (): boolean => false);
+      await composition.run(223456, (): boolean => false);
+
+      expect(graphCreations).assertEqual(2);
+      expect(graphCloses).assertEqual(2);
+      expect(batch.commands.length).assertEqual(2);
+    });
   });
 }
