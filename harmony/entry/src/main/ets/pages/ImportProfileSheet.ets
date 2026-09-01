@@ -43,6 +43,7 @@ export struct ImportProfileSheet {
       })
         .width('100%')
         .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+        .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
         .onChange((value: string) => {
           this.viewModel?.updateNameDraft(value);
         })
@@ -82,6 +83,7 @@ export struct ImportProfileSheet {
         .id('import.url')
         .width('100%')
         .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+        .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
         .onChange((value: string) => {
           this.viewModel?.updateUrlDraft(value);
         })

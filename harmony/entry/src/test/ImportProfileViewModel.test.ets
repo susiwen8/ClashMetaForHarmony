@@ -421,6 +421,11 @@ export default function importProfileViewModelTestsuite() {
       const duplicate = viewModel.requestScanQr();
       expect(viewModel.current().status).assertEqual('SCANNING');
       expect(scanner.calls).assertEqual(1);
+      viewModel.updateNameDraft('must-not-apply');
+      viewModel.updateUrlDraft('https://must-not-apply.example');
+      expect(viewModel.current().status).assertEqual('SCANNING');
+      expect(viewModel.currentNameDraft()).assertEqual('');
+      expect(viewModel.currentUrlDraft()).assertEqual('');
       deferred.resolve(createScannedQrScanResult('ftp://secret.example.com/?token=secret'));
       await first;
       await duplicate;

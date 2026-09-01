@@ -104,6 +104,9 @@ export class ImportProfileViewModel {
   }
 
   updateNameDraft(value: string): void {
+    if (this.state.status === 'SCANNING') {
+      return;
+    }
     const draftChanged: boolean = this.nameDraft !== value;
     this.nameDraft = value;
     this.nameIssue = undefined;
@@ -119,6 +122,9 @@ export class ImportProfileViewModel {
   }
 
   updateUrlDraft(value: string): void {
+    if (this.state.status === 'SCANNING') {
+      return;
+    }
     const draftChanged: boolean = this.urlDraft !== value;
     this.urlDraft = value;
     this.urlIssue = undefined;
