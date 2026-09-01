@@ -128,6 +128,42 @@ export default function workSchedulerDriverTestsuite() {
       expect(system.obtainCalls).assertEqual(2);
     });
 
+    it('treatsSdkMaterializedFalseZeroAndEmptyDefaultsAsNoConstraints', 0, async () => {
+      const system = new RecordingWorkSchedulerSystemPort();
+      const materialized = desiredWork();
+      materialized.isCharging = false;
+      materialized.chargerType = 0;
+      materialized.batteryLevel = 0;
+      materialized.batteryStatus = 0;
+      materialized.storageRequest = 0;
+      materialized.repeatCount = 0;
+      materialized.isDeepIdle = false;
+      materialized.idleWaitTime = 0;
+      materialized.parameters = {};
+      materialized.earliestStartTime = 0;
+      system.works.push(materialized);
+      const driver = new WorkSchedulerDriver(system);
+
+      await driver.reconcile(true);
+
+      expect(system.started.length).assertEqual(0);
+      expect(system.stopped.length).assertEqual(0);
+    });
+
+    it('replacesAWorkWithAnActuallyEnabledChargingConstraint', 0, async () => {
+      const system = new RecordingWorkSchedulerSystemPort();
+      const constrained = desiredWork();
+      constrained.isCharging = true;
+      constrained.chargerType = 0;
+      system.works.push(constrained);
+      const driver = new WorkSchedulerDriver(system);
+
+      await driver.reconcile(true);
+
+      expect(system.stopped.length).assertEqual(1);
+      expect(system.started.length).assertEqual(1);
+    });
+
     it('replacesDriftAndDuplicatesWithoutTouchingUnrelatedWorks', 0, async () => {
       const system = new RecordingWorkSchedulerSystemPort();
       const drift = desiredWork();

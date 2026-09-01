@@ -134,16 +134,24 @@ function isDesiredSubscriptionRefreshWork(work: SubscriptionRefreshWorkInfo): bo
     work.networkType === workScheduler.NetworkType.NETWORK_TYPE_ANY &&
     work.isRepeat === true &&
     work.repeatCycleTime === SUBSCRIPTION_REFRESH_REPEAT_MS &&
-    work.isCharging === undefined &&
-    work.chargerType === undefined &&
-    work.batteryLevel === undefined &&
-    work.batteryStatus === undefined &&
-    work.storageRequest === undefined &&
-    work.repeatCount === undefined &&
-    work.isDeepIdle === undefined &&
-    work.idleWaitTime === undefined &&
-    work.parameters === undefined &&
-    work.earliestStartTime === undefined;
+    work.isCharging !== true &&
+    isUnsetSdkNumber(work.chargerType) &&
+    isUnsetSdkNumber(work.batteryLevel) &&
+    isUnsetSdkNumber(work.batteryStatus) &&
+    isUnsetSdkNumber(work.storageRequest) &&
+    isUnsetSdkNumber(work.repeatCount) &&
+    work.isDeepIdle !== true &&
+    isUnsetSdkNumber(work.idleWaitTime) &&
+    isEmptyParameters(work.parameters) &&
+    isUnsetSdkNumber(work.earliestStartTime);
+}
+
+function isUnsetSdkNumber(value: number | undefined): boolean {
+  return value === undefined || value === 0;
+}
+
+function isEmptyParameters(parameters: Record<string, number | string | boolean> | undefined): boolean {
+  return parameters === undefined || Object.keys(parameters).length === 0;
 }
 
 function cloneParameters(
