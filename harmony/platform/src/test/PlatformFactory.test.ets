@@ -11,6 +11,10 @@ import {
   type ProfileContentStore,
   type ProfileRepository,
   type ProfileRevision,
+  type ProxySelectionPair,
+  type ProxySelectionRecord,
+  type ProxyIdentityHasher,
+  type ProxySelectionRepository,
   type RemoteAcquireCommand,
   type RemoteProfileAcquisition,
   type RemoteProfileAcquisitionSuccess,
@@ -21,8 +25,10 @@ import { PlatformFactory, type PlatformFactoryDependencies, type PlatformGraph, 
 import type { DurableProfileRow } from '../main/ets/rdb/RdbDriver';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import { RdbProfileRepository } from '../main/ets/rdb/RdbProfileRepository';
+import { RdbProxySelectionRepository } from '../main/ets/rdb/RdbProxySelectionRepository';
 import { SandboxProfileContentStore } from '../main/ets/files/SandboxProfileContentStore';
 import type { FileDriver } from '../main/ets/files/FileDriver';
+import { HarmonyProxyIdentityHasher } from '../main/ets/proxy/HarmonyProxyIdentityHasher';
 import { HuksSubscriptionSecretStore } from '../main/ets/secrets/HuksSubscriptionSecretStore';
 import type { HuksDriver, HuksEncryptedPayload } from '../main/ets/secrets/HuksDriver';
 import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from '../main/ets/source/HttpTransport';
@@ -32,6 +38,7 @@ import type {
   LocalProfileAcquirer,
   RemoteProfileAcquirer
 } from '../main/ets/source/HarmonyProfileSourceGateway';
+import type { GeodataInstaller, HarmonyGeodataInstallerDependencies } from '../main/ets/geodata/HarmonyGeodataInstaller';
 import {
   DeterministicHuksDriver,
   FakeFileDriver,
@@ -44,6 +51,8 @@ import {
 
 const FILES_DIR: string = '/sandbox/app/files';
 const DATABASE_NAME: string = 'cmfa_profiles.db';
+const CANONICAL_GEOIP_SIZE_BYTES: number = 8593535;
+const CANONICAL_GEOIP_SHA256: string = '71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd';
 
 class FakeLocalAcquirer implements LocalProfileAcquirer {
   callCount: number = 0;
@@ -231,6 +240,65 @@ class ThrowingContentStore implements ProfileContentStore {
   }
 }
 
+class FakeProxySelectionRepository implements ProxySelectionRepository {
+  readonly label: string;
+
+  constructor(label: string) {
+    this.label = label;
+  }
+
+  async listByProfile(_profileId: string): Promise<ProxySelectionRecord[]> {
+    return [];
+  }
+
+  async get(_profileId: string, _groupName: string): Promise<ProxySelectionRecord | undefined> {
+    return undefined;
+  }
+
+  async upsert(_record: ProxySelectionRecord): Promise<void> {
+  }
+
+  async delete(_profileId: string, _groupName: string): Promise<void> {
+  }
+
+  async deleteProfile(_profileId: string): Promise<void> {
+  }
+
+  async reconcileProfile(_profileId: string, _newRevisionId: string, _validPairs: ProxySelectionPair[]): Promise<void> {
+  }
+}
+
+class FakeProxyIdentityHasher implements ProxyIdentityHasher {
+  readonly label: string;
+
+  constructor(label: string) {
+    this.label = label;
+  }
+
+  async sha256(value: string): Promise<string> {
+    return `${this.label}:${value}`;
+  }
+}
+
+class RecordingGeodataInstaller implements GeodataInstaller {
+  readonly events: string[];
+  readonly error?: Error;
+  installCallCount: number = 0;
+
+  constructor(events: string[], error?: Error) {
+    this.events = events;
+    this.error = error;
+  }
+
+  async ensureInstalled(): Promise<void> {
+    this.installCallCount += 1;
+    this.events.push('geodata.install');
+    if (this.error !== undefined) {
+      throw this.error;
+    }
+  }
+}
+
 class TrackingHttpTransport implements HttpTransport {
   readonly name: string;
   fetchCallCount: number = 0;
@@ -348,6 +416,7 @@ function createDefaultDependencies(
     createFileDriver: (): FileDriver => fileDriver,
     createRdbDriver: (): CloseableRdbDriver => rdbDriver,
     createHuksDriver: (): PrepareableHuksDriver => huksDriver,
+    createGeodataInstaller: (): GeodataInstaller => new RecordingGeodataInstaller([]),
     resolveSdkApiVersion: (): number => 23
   };
 }
@@ -447,6 +516,7 @@ export default function platformFactoryTestsuite() {
       const fileDriver: FakeFileDriver = new FakeFileDriver();
       const rdbDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver(events);
       const huksDriver: RecordingPrepareHuksDriver = new RecordingPrepareHuksDriver(events);
+      const geodataInstaller: RecordingGeodataInstaller = new RecordingGeodataInstaller(events);
       const currentA: ProfileRevision = createRevision('profiles/profile-a/valid/current-a.yaml');
       const currentB: ProfileRevision = createRevision('profiles/profile-b/valid/current-b.yaml');
       const failedB: ProfileRevision = createRevision('profiles/profile-b/failed/failed-b.yaml');
@@ -454,6 +524,7 @@ export default function platformFactoryTestsuite() {
       const profileA: Profile = createProfileRecord('profile-a', currentA, null, 'secret-alpha');
       const profileB: Profile = createProfileRecord('profile-b', currentB, failedB, 'secret-beta');
       const dependencies: PlatformFactoryDependencies = createDefaultDependencies(context, fileDriver, rdbDriver, huksDriver);
+      let observedGeodataDependencies: HarmonyGeodataInstallerDependencies | undefined = undefined;
       let firstPromise: Promise<PlatformGraph>;
       let secondPromise: Promise<PlatformGraph>;
       let firstGraph: PlatformGraph;
@@ -474,6 +545,14 @@ export default function platformFactoryTestsuite() {
           filesDir: context.filesDir,
           databaseName: DATABASE_NAME
         };
+      };
+      dependencies.createFileDriver = (): FileDriver => {
+        events.push('fileDriver.create');
+        return fileDriver;
+      };
+      dependencies.createGeodataInstaller = (geodataDependencies: HarmonyGeodataInstallerDependencies): GeodataInstaller => {
+        observedGeodataDependencies = geodataDependencies;
+        return geodataInstaller;
       };
       dependencies.createContentStore = (_fileDriver: FileDriver, paths: PlatformPaths): ProfileContentStore => {
         expect(paths.filesDir).assertEqual(FILES_DIR);
@@ -510,6 +589,14 @@ export default function platformFactoryTestsuite() {
       expect(rdbDriver.initializeCallCount).assertEqual(1);
       expect(rdbDriver.closeCallCount).assertEqual(0);
       expect(huksDriver.prepareCallCount).assertEqual(1);
+      expect(geodataInstaller.installCallCount).assertEqual(1);
+      expect(observedGeodataDependencies !== undefined).assertTrue();
+      if (observedGeodataDependencies !== undefined) {
+        const capturedGeodataDependencies: HarmonyGeodataInstallerDependencies =
+          observedGeodataDependencies as HarmonyGeodataInstallerDependencies;
+        expect(capturedGeodataDependencies.expectedByteLength).assertEqual(CANONICAL_GEOIP_SIZE_BYTES);
+        expect(capturedGeodataDependencies.expectedSha256Digest).assertEqual(CANONICAL_GEOIP_SHA256);
+      }
       expect(fileDriver.fileExists(`${FILES_DIR}/${orphanRelativePath}`)).assertFalse();
       expect(fileDriver.fileExists(`${FILES_DIR}/${currentA.relativePath}`)).assertTrue();
       expect(fileDriver.fileExists(`${FILES_DIR}/${currentB.relativePath}`)).assertTrue();
@@ -518,17 +605,21 @@ export default function platformFactoryTestsuite() {
       expect(fileDriver.fileExists(`${FILES_DIR}/profile-secrets/secret-alpha.json`)).assertTrue();
       expect(fileDriver.fileExists(`${FILES_DIR}/profile-secrets/secret-beta.json`)).assertTrue();
       expect(firstGraph.repository instanceof RdbProfileRepository).assertTrue();
+      expect(firstGraph.proxySelectionRepository instanceof RdbProxySelectionRepository).assertTrue();
+      expect(firstGraph.proxyIdentityHasher instanceof HarmonyProxyIdentityHasher).assertTrue();
       expect(Object.keys(firstGraph).sort().join(',')).assertEqual(
-        'clock,contentStore,idGenerator,repository,secretStore,sourceGateway'
+        'clock,contentStore,idGenerator,proxyIdentityHasher,proxySelectionRepository,repository,secretStore,sourceGateway'
       );
       expect(typeof firstGraph.close === 'function').assertTrue();
       assertOrderedEvents(events, [
         'paths.resolve',
-        'rdb.initialize:1',
+        'fileDriver.create',
+        'geodata.install',
+        'huks.prepare',
+        'rdb.initialize:2',
         'repository.list',
         'content.reconcile:3',
-        'secret.reconcile:2',
-        'huks.prepare'
+        'secret.reconcile:2'
       ]);
 
       await firstGraph.close();
@@ -599,6 +690,8 @@ export default function platformFactoryTestsuite() {
       const graph: PlatformGraph = await factory.create();
       expect(driverIndex).assertEqual(2);
       expect(graph.repository instanceof RdbProfileRepository).assertTrue();
+      expect(graph.proxySelectionRepository instanceof RdbProxySelectionRepository).assertTrue();
+      expect(graph.proxyIdentityHasher instanceof HarmonyProxyIdentityHasher).assertTrue();
 
       await graph.close();
       expect(secondDriver.closeCallCount).assertEqual(1);
@@ -651,6 +744,8 @@ export default function platformFactoryTestsuite() {
       const graph: PlatformGraph = await factory.create();
       expect(driverIndex).assertEqual(2);
       expect(graph.repository instanceof RdbProfileRepository).assertTrue();
+      expect(graph.proxySelectionRepository instanceof RdbProxySelectionRepository).assertTrue();
+      expect(graph.proxyIdentityHasher instanceof HarmonyProxyIdentityHasher).assertTrue();
 
       await graph.close();
       expect(secondDriver.closeCallCount).assertEqual(1);
@@ -716,6 +811,122 @@ export default function platformFactoryTestsuite() {
 
       expect(current.usable).assertFalse();
       expect(current.networkId).assertEqual('');
+    });
+
+    it('stopsInitializationBeforeSecretsRepositoryAndReconcileWhenGeodataInstallFails', 0, async () => {
+      const events: string[] = [];
+      const context: common.UIAbilityContext = createContext();
+      const fileDriver: FakeFileDriver = new FakeFileDriver();
+      const rdbDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver(events);
+      const huksDriver: RecordingPrepareHuksDriver = new RecordingPrepareHuksDriver(events);
+      const geodataInstaller: RecordingGeodataInstaller = new RecordingGeodataInstaller(events, new Error('geoip install failed'));
+      const dependencies: PlatformFactoryDependencies = createDefaultDependencies(context, fileDriver, rdbDriver, huksDriver);
+      const factory: PlatformFactory = new PlatformFactory(context, dependencies);
+      let observedGeodataDependencies: HarmonyGeodataInstallerDependencies | undefined = undefined;
+
+      dependencies.resolvePaths = (_context: common.Context): PlatformPaths => {
+        events.push('paths.resolve');
+        return {
+          filesDir: context.filesDir,
+          databaseName: DATABASE_NAME
+        };
+      };
+      dependencies.createFileDriver = (): FileDriver => {
+        events.push('fileDriver.create');
+        return fileDriver;
+      };
+      dependencies.createGeodataInstaller = (geodataDependencies: HarmonyGeodataInstallerDependencies): GeodataInstaller => {
+        observedGeodataDependencies = geodataDependencies;
+        return geodataInstaller;
+      };
+      dependencies.createRepository = (driver: CloseableRdbDriver): ProfileRepository => {
+        events.push('repository.create');
+        return new RdbProfileRepository(driver);
+      };
+
+      try {
+        await factory.create();
+        expect(false).assertTrue();
+      } catch (error) {
+        const appError: AppError = asAppError(error as Object);
+        expect(appError.stage).assertEqual('PERSISTENCE');
+        expect(appError.technicalDetail).assertEqual('Platform initialization failed.');
+      }
+
+      expect(geodataInstaller.installCallCount).assertEqual(1);
+      expect(observedGeodataDependencies !== undefined).assertTrue();
+      if (observedGeodataDependencies !== undefined) {
+        const capturedGeodataDependencies: HarmonyGeodataInstallerDependencies =
+          observedGeodataDependencies as HarmonyGeodataInstallerDependencies;
+        expect(capturedGeodataDependencies.expectedByteLength).assertEqual(CANONICAL_GEOIP_SIZE_BYTES);
+        expect(capturedGeodataDependencies.expectedSha256Digest).assertEqual(CANONICAL_GEOIP_SHA256);
+      }
+      expect(huksDriver.prepareCallCount).assertEqual(0);
+      expect(events.includes('repository.create')).assertFalse();
+      expect(events.some((event: string): boolean => event.startsWith('rdb.initialize:'))).assertFalse();
+      expect(events.includes('repository.list')).assertFalse();
+      expect(events.includes('content.reconcile:0')).assertFalse();
+      expect(events.includes('secret.reconcile:0')).assertFalse();
+      assertOrderedEvents(events, [
+        'paths.resolve',
+        'fileDriver.create',
+        'geodata.install'
+      ]);
+    });
+
+    it('injectsASelectionRepositoryAndHasherIntoTheGraphUsingTheSameDriverInstance', 0, async () => {
+      const context: common.UIAbilityContext = createContext();
+      const fileDriver: FakeFileDriver = new FakeFileDriver();
+      const rdbDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver([]);
+      const huksDriver: RecordingPrepareHuksDriver = new RecordingPrepareHuksDriver([]);
+      const dependencies: PlatformFactoryDependencies = createDefaultDependencies(context, fileDriver, rdbDriver, huksDriver);
+      const injectedRepository = new FakeProxySelectionRepository('selection-repository');
+      const injectedHasher = new FakeProxyIdentityHasher('identity-hasher');
+      let observedRepositoryDriver: CloseableRdbDriver | undefined = undefined;
+      let hasherCreateCallCount = 0;
+
+      dependencies.createProxySelectionRepository = (driver: CloseableRdbDriver): ProxySelectionRepository => {
+        observedRepositoryDriver = driver;
+        return injectedRepository;
+      };
+      dependencies.createProxyIdentityHasher = (): ProxyIdentityHasher => {
+        hasherCreateCallCount += 1;
+        return injectedHasher;
+      };
+
+      const graph: PlatformGraph = await new PlatformFactory(context, dependencies).create();
+
+      expect(observedRepositoryDriver === rdbDriver).assertTrue();
+      expect(hasherCreateCallCount).assertEqual(1);
+      expect(graph.proxySelectionRepository === injectedRepository).assertTrue();
+      expect(graph.proxyIdentityHasher === injectedHasher).assertTrue();
+
+      await graph.close();
+      expect(rdbDriver.closeCallCount).assertEqual(1);
+    });
+
+    it('sanitizesProxyHasherConstructionFailuresAndClosesTheSharedDriver', 0, async () => {
+      const context: common.UIAbilityContext = createContext();
+      const fileDriver: FakeFileDriver = new FakeFileDriver();
+      const rdbDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver([]);
+      const huksDriver: RecordingPrepareHuksDriver = new RecordingPrepareHuksDriver([]);
+      const dependencies: PlatformFactoryDependencies = createDefaultDependencies(context, fileDriver, rdbDriver, huksDriver);
+
+      dependencies.createProxyIdentityHasher = (): ProxyIdentityHasher => {
+        throw new Error('unsafe hasher construction for safe-value-sentinel');
+      };
+
+      try {
+        await new PlatformFactory(context, dependencies).create();
+        expect(false).assertTrue();
+      } catch (error) {
+        const appError: AppError = asAppError(error as Object);
+        expect(appError.stage).assertEqual('PERSISTENCE');
+        expect(appError.technicalDetail).assertEqual('Platform initialization failed.');
+        assertNoLeak(appError.technicalDetail, ['safe-value-sentinel']);
+      }
+
+      expect(rdbDriver.closeCallCount).assertEqual(1);
     });
   });
 }

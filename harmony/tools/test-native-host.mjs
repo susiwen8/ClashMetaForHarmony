@@ -18,7 +18,10 @@ const JS_CODEC_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', '
 const JS_ASYNC_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_async.cpp');
 const JS_EVENTS_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_events.cpp');
 const JS_CORE_MODULE_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_core_module.cpp');
+const JS_RUNTIME_CONTROL_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_runtime_control.cpp');
+const JS_PROXY_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_proxy.cpp');
 const JS_TUN_SOURCE = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'src', 'js_tun.cpp');
+const JS_PROXY_NAPI_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'js_proxy_napi_test.cpp');
 const JS_TUN_NAPI_TEST_SOURCE = path.join(HARMONY_ROOT, 'tests', 'native', 'js_tun_napi_test.cpp');
 const ENTRY_INCLUDE_DIR = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'cpp', 'include');
 const NAPI_SHIM_INCLUDE_DIR = path.join(HARMONY_ROOT, 'tests', 'native', 'shim');
@@ -33,6 +36,7 @@ const USAGE_LINES = [
   '  node harmony/tools/test-native-host.mjs --case contract',
   '  node harmony/tools/test-native-host.mjs --case mihomo-backend',
   '  node harmony/tools/test-native-host.mjs --case napi-environment',
+  '  node harmony/tools/test-native-host.mjs --case napi-proxy',
   '  node harmony/tools/test-native-host.mjs --case napi-tun',
 ];
 
@@ -155,11 +159,52 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
   if (!/char\s+active_config_path\s*\[\s*CMFA_MAX_PATH_BYTES\s*\]\s*;/u.test(typesHeader)) {
     throw new Error('cmfa_runtime_snapshot.active_config_path is not an inline fixed-size array.');
   }
+  if (!/#define\s+CMFA_MAX_PROXY_HASH_BYTES\s+\(\(size_t\)65\)/u.test(typesHeader)) {
+    throw new Error('cmfa_types.h must define CMFA_MAX_PROXY_HASH_BYTES as ((size_t)65).');
+  }
+  if (!/#define\s+CMFA_MAX_PROXY_NAME_UTF8_BYTES\s+\(\(size_t\)256\)/u.test(typesHeader)) {
+    throw new Error('cmfa_types.h must define CMFA_MAX_PROXY_NAME_UTF8_BYTES as ((size_t)256).');
+  }
+  if (!/#define\s+CMFA_MAX_PROXY_JSON_BYTES\s+\(\(size_t\)\(1024\s*\*\s*1024\)\)/u.test(typesHeader)) {
+    throw new Error('cmfa_types.h must define CMFA_MAX_PROXY_JSON_BYTES as ((size_t)(1024 * 1024)).');
+  }
+  if (!/#define\s+CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES\s+\(\(size_t\)33\)/u.test(typesHeader)) {
+    throw new Error('cmfa_types.h must define CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES as ((size_t)33).');
+  }
+  if (!/typedef\s+struct\s+cmfa_proxy_query_context\s*\{[\s\S]*char\s+profile_hash\s*\[\s*CMFA_MAX_PROXY_HASH_BYTES\s*\]\s*;[\s\S]*char\s+revision_hash\s*\[\s*CMFA_MAX_PROXY_HASH_BYTES\s*\]\s*;[\s\S]*char\s+session_hash\s*\[\s*CMFA_MAX_PROXY_HASH_BYTES\s*\]\s*;[\s\S]*uint64_t\s+generation\s*;[\s\S]*\}\s*cmfa_proxy_query_context\s*;/u.test(typesHeader)) {
+    throw new Error('cmfa_proxy_query_context must be publicly declared with fixed-size hash arrays.');
+  }
+  if (!/typedef\s+struct\s+cmfa_json_buffer\s*\{[\s\S]*char\s*\*\s*data\s*;[\s\S]*size_t\s+capacity\s*;[\s\S]*size_t\s+length\s*;[\s\S]*\}\s*cmfa_json_buffer\s*;/u.test(typesHeader)) {
+    throw new Error('cmfa_json_buffer must be publicly declared.');
+  }
+  for (const rawSymbol of [
+    'cmfa_mihomo_core_version_cstr_v1',
+    'cmfa_mihomo_probe_cancel_v1',
+    'cmfa_mihomo_proxy_delay_start_v1',
+    'cmfa_mihomo_proxy_delay_snapshot_v1',
+    'cmfa_mihomo_proxy_delay_cancel_v1',
+  ]) {
+    if (coreHeader.includes(rawSymbol) || hostHeader.includes(rawSymbol) || typesHeader.includes(rawSymbol)) {
+      throw new Error(`Public ABI headers must not mention raw backend symbol ${rawSymbol}.`);
+    }
+  }
+  for (const callbackName of [
+    'proxy_groups',
+    'proxy_group',
+    'proxy_select',
+    'proxy_delay_start',
+    'proxy_delay_snapshot',
+    'proxy_delay_cancel',
+  ]) {
+    if (!new RegExp(`\\b${callbackName}\\b`, 'u').test(hostHeader)) {
+      throw new Error(`Hidden cmfa_backend_api is missing ${callbackName}.`);
+    }
+  }
 
   const publicFunctions = [...stripTestBuildAbiSections(coreHeader).matchAll(/^cmfa_status\s+(cmfa_[a-z0-9_]+)\s*\(/gmu)]
       .map((entry) => entry[1]);
-  if (publicFunctions.length !== 13) {
-    throw new Error(`Expected exactly 13 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
+  if (publicFunctions.length !== 21) {
+    throw new Error(`Expected exactly 21 app-facing cmfa_* declarations, found ${publicFunctions.length}.`);
   }
   const expectedFunctions = [
     'cmfa_initialize',
@@ -169,6 +214,14 @@ function assertPublicHeaderContract(coreHeader, hostHeader, typesHeader) {
     'cmfa_start_local',
     'cmfa_stop',
     'cmfa_runtime_state',
+    'cmfa_runtime_mode_query',
+    'cmfa_runtime_mode_set',
+    'cmfa_proxy_groups',
+    'cmfa_proxy_group',
+    'cmfa_proxy_select',
+    'cmfa_proxy_delay_start',
+    'cmfa_proxy_delay_snapshot',
+    'cmfa_proxy_delay_cancel',
     'cmfa_tun_start',
     'cmfa_tun_stop',
     'cmfa_tun_runtime_state',
@@ -198,13 +251,29 @@ async function verifyPublicHeaders(tempDir) {
     '',
     '_Static_assert(sizeof(((cmfa_runtime_snapshot *)0)->active_config_path) == CMFA_MAX_PATH_BYTES,',
     '               "snapshot path must be an inline fixed-size buffer");',
+    '_Static_assert(CMFA_MAX_PROXY_HASH_BYTES == 65, "proxy hash bytes must stay fixed");',
+    '_Static_assert(CMFA_MAX_PROXY_NAME_UTF8_BYTES == 256, "proxy name bytes must stay fixed");',
+    '_Static_assert(CMFA_MAX_PROXY_JSON_BYTES == 1024u * 1024u, "proxy json bytes must stay fixed");',
+    '_Static_assert(CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES == 33, "proxy delay job id bytes must stay fixed");',
     '',
     'int main(void) {',
     '  cmfa_host_callbacks callbacks = {0};',
     '  cmfa_runtime_snapshot snapshot = {0};',
+    '  cmfa_proxy_query_context query = {0};',
+    '  cmfa_json_buffer json = {0};',
     '  cmfa_error error = {0};',
     '  (void)callbacks;',
     '  (void)snapshot;',
+    '  query.struct_size = sizeof(query);',
+    '  json.data = 0;',
+    '  json.capacity = 0;',
+    '  json.length = 0;',
+    '  (void)cmfa_proxy_groups(&query, 0, &json, &error);',
+    '  (void)cmfa_proxy_group(&query, "group", &json, &error);',
+    '  (void)cmfa_proxy_select(&query, "group", "member", &json, &error);',
+    '  (void)cmfa_proxy_delay_start(&query, "group", &json, &error);',
+    '  (void)cmfa_proxy_delay_snapshot("0123456789abcdef0123456789abcdef", &json, &error);',
+    '  (void)cmfa_proxy_delay_cancel("0123456789abcdef0123456789abcdef", &json, &error);',
     '  (void)error;',
     '  return 0;',
     '}',
@@ -303,13 +372,31 @@ const CASES = new Map([
       JS_ASYNC_SOURCE,
       JS_EVENTS_SOURCE,
       JS_CORE_MODULE_SOURCE,
+      JS_RUNTIME_CONTROL_SOURCE,
+      JS_PROXY_SOURCE,
       JS_TUN_SOURCE,
       JS_TUN_NAPI_TEST_SOURCE,
     ],
-    defines: [],
+    defines: ['CMFA_NAPI_PROXY_HOST_STUBS=1'],
     prefix: 'napi-tun-test-',
     includeDirs: [NAPI_SHIM_INCLUDE_DIR, ENTRY_INCLUDE_DIR],
     outputName: 'js_tun_napi_test',
+  }],
+  ['napi-proxy', {
+    sources: [
+      NAPI_ENVIRONMENT_SOURCE,
+      JS_ERRORS_SOURCE,
+      JS_CODEC_SOURCE,
+      JS_ASYNC_SOURCE,
+      JS_CORE_MODULE_SOURCE,
+      JS_RUNTIME_CONTROL_SOURCE,
+      JS_PROXY_SOURCE,
+      JS_PROXY_NAPI_TEST_SOURCE,
+    ],
+    defines: [],
+    prefix: 'napi-proxy-test-',
+    includeDirs: [NAPI_SHIM_INCLUDE_DIR, ENTRY_INCLUDE_DIR],
+    outputName: 'js_proxy_napi_test',
   }],
 ]);
 

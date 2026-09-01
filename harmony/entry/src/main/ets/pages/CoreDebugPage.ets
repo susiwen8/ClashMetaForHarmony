@@ -47,6 +47,7 @@ interface Phase2ProbeEntry {
   status: 'pass' | 'fail' | 'incomplete';
   detail: string;
   probe: Phase2ProbeResult;
+  probeRunId: string | null;
   requestId: string | null;
   originRequestId: string | null;
   appProbeId: string | null;
@@ -441,6 +442,7 @@ struct CoreDebugPage {
           status: passed ? 'pass' : 'fail',
           detail: passed ? probe.tracker.connectionId : `${probe.error.code}:${probe.error.detail}`,
           probe,
+          probeRunId: probe.probeRunId,
           requestId: probe.requestIdEcho,
           originRequestId: probe.requestIdEcho,
           appProbeId: request.probeRunId,

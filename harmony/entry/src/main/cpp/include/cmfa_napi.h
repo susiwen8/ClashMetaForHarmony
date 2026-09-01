@@ -93,6 +93,14 @@ struct OwnedRuntimeSnapshot {
   uint32_t mixed_port = 0;
 };
 
+struct OwnedProxyQueryContext {
+  std::string profile_hash;
+  std::string revision_hash;
+  std::string session_hash;
+  uint64_t generation = 0;
+  bool has_session = false;
+};
+
 struct OwnedTunCounters {
   uint64_t tx_packets = 0;
   uint64_t tx_bytes = 0;
@@ -115,6 +123,10 @@ struct OwnedTunTrace {
   std::string destination_address;
   std::string hashed_tuple;
   std::string correlation_hash;
+  std::string destination_hash;
+  std::string outbound_terminal_hash;
+  std::string outbound_chain_hash;
+  uint32_t outbound_chain_length = 0;
 };
 
 struct OwnedTunSnapshot {
@@ -148,6 +160,12 @@ enum class AsyncOp {
   PROBE_HTTPS,
   START_LOCAL,
   STOP_RUNTIME,
+  PROXY_GROUPS,
+  PROXY_GROUP,
+  PROXY_SELECT,
+  PROXY_DELAY_START,
+  PROXY_DELAY_SNAPSHOT,
+  PROXY_DELAY_CANCEL,
   START_TUN,
   STOP_TUN,
   CLOSE_STALE_OUTBOUND_CONNECTIONS,
@@ -159,6 +177,11 @@ struct AsyncInput {
   AsyncOp op = AsyncOp::CORE_VERSION;
   std::string path;
   OwnedLocalOptions local_options;
+  OwnedProxyQueryContext proxy_query_context;
+  bool proxy_selectable_only = false;
+  std::string proxy_group_name;
+  std::string proxy_member_name;
+  std::string proxy_delay_job_id;
   OwnedProbeRequest probe_request;
   int32_t tun_fd = -1;
   std::string tun_vpn_id;
@@ -293,6 +316,12 @@ napi_value load_configuration(napi_env env, napi_callback_info info);
 napi_value probe_https(napi_env env, napi_callback_info info);
 napi_value start_local(napi_env env, napi_callback_info info);
 napi_value stop_runtime(napi_env env, napi_callback_info info);
+napi_value query_proxy_groups(napi_env env, napi_callback_info info);
+napi_value query_proxy_group(napi_env env, napi_callback_info info);
+napi_value select_proxy(napi_env env, napi_callback_info info);
+napi_value start_proxy_delay_test(napi_env env, napi_callback_info info);
+napi_value read_proxy_delay_test(napi_env env, napi_callback_info info);
+napi_value cancel_proxy_delay_test(napi_env env, napi_callback_info info);
 napi_value start_tun(napi_env env, napi_callback_info info);
 napi_value stop_tun(napi_env env, napi_callback_info info);
 napi_value close_stale_outbound_connections(napi_env env, napi_callback_info info);
@@ -303,6 +332,8 @@ napi_value unsubscribe(napi_env env, napi_callback_info info);
 
 napi_value hello(napi_env env, napi_callback_info info);
 napi_value runtime_snapshot(napi_env env, napi_callback_info info);
+napi_value query_runtime_mode(napi_env env, napi_callback_info info);
+napi_value set_runtime_mode(napi_env env, napi_callback_info info);
 napi_status define_core_module(napi_env env, napi_value exports, AddonState *state);
 
 void emit_log_event(void *context, const cmfa_log_message *message) noexcept;

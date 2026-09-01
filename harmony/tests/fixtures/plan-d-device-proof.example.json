@@ -1,0 +1,53 @@
+{
+  "schemaVersion": "1.0.0",
+  "result": "incomplete",
+  "runId": "c76b37db-5c7d-4fdf-9c88-f1feef7a8a7b",
+  "timestamps": {
+    "startedAt": "2026-08-23T01:00:00.000Z",
+    "completedAt": "2026-08-23T01:00:00.000Z"
+  },
+  "packages": {
+    "production": {
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sizeBytes": 0
+    },
+    "probe": {
+      "sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+      "sizeBytes": 0
+    }
+  },
+  "layout": {
+    "groupCount": 0,
+    "nodeCount": 0,
+    "semanticIdsHash": "0000000000000000000000000000000000000000000000000000000000000000"
+  },
+  "selection": {
+    "initialResultKind": "not-run",
+    "initialRowCorrelationHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "postVpnRowCorrelationHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "relaunchResultKind": "not-run",
+    "relaunchRowCorrelationHash": "0000000000000000000000000000000000000000000000000000000000000000",
+    "startSelectionMatched": false,
+    "relaunchReplay": false
+  },
+  "network": {
+    "statusClass": "unknown",
+    "responseSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+    "httpsTraceMatched": false,
+    "selectedProxyMatched": false,
+    "tunIngress": false,
+    "counterDelta": 0,
+    "replayBeforeRunning": false
+  },
+  "cleanup": {
+    "phase4CleanupSucceeded": false,
+    "relaunchCleanupSucceeded": false,
+    "layoutTempRemoved": false
+  },
+  "failures": [
+    {
+      "code": "ARGUMENT_INVALID",
+      "stage": "arguments"
+    }
+  ]
+}

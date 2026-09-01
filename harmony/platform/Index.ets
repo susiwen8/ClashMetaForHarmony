@@ -7,6 +7,23 @@ export type {
   NetworkConnectionListener,
   NetworkConnectionRegistration
 } from './src/main/ets/network/NetworkConnectionDriver';
+export {
+  HarmonyRuntimeLogStore,
+  createHarmonyRuntimeLogStore,
+  runtimeLogCurrentPath,
+  runtimeLogClearRequestPath,
+  runtimeLogPreviousPath
+} from './src/main/ets/diagnostics/HarmonyRuntimeLogStore';
+export type { HarmonyRuntimeLogStoreDependencies } from './src/main/ets/diagnostics/HarmonyRuntimeLogStore';
+export {
+  HarmonyRuntimeLogExporter,
+  createHarmonyRuntimeLogExporter
+} from './src/main/ets/diagnostics/HarmonyRuntimeLogExporter';
+export type {
+  HarmonyRuntimeLogExporterDependencies,
+  RuntimeLogSaveOptions,
+  RuntimeLogSavePickerPort
+} from './src/main/ets/diagnostics/HarmonyRuntimeLogExporter';
 export { HarmonyVpnNotificationDriver } from './src/main/ets/background/HarmonyVpnNotificationDriver';
 export type {
   ContinuousTaskCancelInfo,
@@ -16,3 +33,12 @@ export type {
   PlatformAbilityIdentity,
   PlatformContinuousTaskContext
 } from './src/main/ets/background/ContinuousTaskDriver';
+export {
+  HarmonyVpnRpcCryptoFrameworkRandomPort,
+  HarmonyVpnRpcPlatformFactory
+} from './src/main/ets/vpn/HarmonyVpnRpcPlatformFactory';
+export type {
+  HarmonyVpnCryptoFrameworkRandomDriver,
+  HarmonyVpnRpcPlatformBundle,
+  HarmonyVpnRpcPlatformDependencies
+} from './src/main/ets/vpn/HarmonyVpnRpcPlatformFactory';

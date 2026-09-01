@@ -161,28 +161,60 @@ export default function harmonyNetworkMonitorTestsuite() {
       expect(driver.registration.registerCallCount).assertEqual(1);
 
       driver.registration.emitAvailable('net-101');
+      driver.registration.emitCapabilitiesChange('net-101', true);
       driver.registration.emitLost('net-101');
+      driver.registration.emitAvailable('net-102');
       driver.registration.emitCapabilitiesChange('net-102', true);
       driver.registration.emitCapabilitiesChange('net-103', false);
 
-      expect(firstEvents.length).assertEqual(4);
-      expect(secondEvents.length).assertEqual(4);
+      expect(firstEvents.length).assertEqual(3);
+      expect(secondEvents.length).assertEqual(3);
       assertStatus(firstEvents[0], 'net-101', true);
-      assertStatus(firstEvents[1], 'net-101', false);
+      assertStatus(firstEvents[1], '', false);
       assertStatus(firstEvents[2], 'net-102', true);
-      assertStatus(firstEvents[3], 'net-103', false);
       assertStatus(secondEvents[0], 'net-101', true);
-      assertStatus(secondEvents[1], 'net-101', false);
+      assertStatus(secondEvents[1], '', false);
       assertStatus(secondEvents[2], 'net-102', true);
-      assertStatus(secondEvents[3], 'net-103', false);
 
       firstEvents[0].networkId = 'mutated';
       firstEvents[0].usable = false;
       assertStatus(secondEvents[0], 'net-101', true);
-      assertStatus(monitor.currentNetwork(), 'net-103', false);
+      assertStatus(monitor.currentNetwork(), 'net-102', true);
 
       monitor.unsubscribeUsableNetwork(firstSubscription);
       monitor.unsubscribeUsableNetwork(secondSubscription);
+      await monitor.dispose();
+    });
+
+    it('ignoresLateLossAndUnusableCapabilitiesFromAReplacedDefaultNetwork', 0, async () => {
+      const driver = new FakeNetworkConnectionDriver();
+      driver.defaultNetwork = new DriverNetworkStateValue('net-100', true);
+      const monitor = new HarmonyNetworkMonitor(driver);
+      const received: NetworkStatus[] = [];
+
+      await monitor.initialize();
+      monitor.subscribeUsableNetwork((status: NetworkStatus) => {
+        received.push(cloneStatus(status));
+      });
+
+      driver.registration.emitAvailable('net-200');
+      driver.registration.emitCapabilitiesChange('net-200', true);
+      driver.registration.emitLost('net-100');
+      driver.registration.emitCapabilitiesChange('net-100', false);
+      driver.registration.emitCapabilitiesChange('net-100', true);
+
+      expect(received.length).assertEqual(1);
+      assertStatus(received[0], 'net-200', true);
+      assertStatus(monitor.currentNetwork(), 'net-200', true);
+
+      driver.registration.emitLost('net-200');
+      driver.registration.emitCapabilitiesChange('net-200', true);
+      expect(received.length).assertEqual(2);
+      assertStatus(received[1], '', false);
+      assertStatus(monitor.currentNetwork(), '', false);
+
+      driver.registration.emitUnavailable();
+      assertStatus(monitor.currentNetwork(), '', false);
       await monitor.dispose();
     });
 

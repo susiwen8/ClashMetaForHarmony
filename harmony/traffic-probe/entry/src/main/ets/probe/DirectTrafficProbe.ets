@@ -41,11 +41,18 @@ import {
   isCompleteProbeCommand,
   isValidIpv4Literal
 } from './ProbeModels';
+import {
+  createDefaultNativeSocketProbePort,
+  type NativeSocketProbePort,
+  type NativeSocketProbeResult
+} from './NativeSocketProbe';
 
 const DEFAULT_TIMEOUT_MS: number = 5_000;
 const MAX_EVIDENCE_LENGTH: number = 12_288;
 const LOOPBACK_V4: string = '127.0.0.1';
 const LOOPBACK_V6: string = '::1';
+const ANY_V4: string = '0.0.0.0';
+const ANY_V6: string = '::';
 
 const HTTPS_STEP_ID: string = 'https';
 const TCP_STEP_ID: string = 'tcp';
@@ -110,6 +117,7 @@ export interface DirectTrafficProbeDependencies {
   tcpDriver: TcpProbeDriver;
   udpDriver: UdpProbeDriver;
   dnsDriver: DnsProbeDriver;
+  nativeSocketPort: NativeSocketProbePort;
   clock: ProbeClock;
   fileDriver: ProbeFileDriver;
   timeoutMs?: number;
@@ -166,23 +174,18 @@ export class DirectTrafficProbe {
     const failures: Array<ProbeFailure> = [];
 
     await this.runDnsLookup(command, records, failures, reporter);
-    const addresses: OriginAddressSet = await this.resolveOriginAddresses(command.lanOrigin.host);
+    const lanAddresses: OriginAddressSet = await this.resolveOriginAddresses(command.lanOrigin.host);
+    const externalAddresses: OriginAddressSet = await this.resolveOriginAddresses(command.externalOrigin.host);
+    const externalTcpAddresses: OriginAddressSet = await this.resolveOriginAddresses(command.externalOrigin.tcpHost);
     await this.runHttpsProbe(command, records, failures, reporter);
-    await this.runTcpProbe(command, addresses, records, failures, reporter);
-    await this.runUdpProbe(command, addresses, false, records, failures, reporter);
-
-    const ipv6Available: boolean = await this.dependencies.dnsDriver.isIpv6Available();
-    if (ipv6Available) {
-      await this.runUdpProbe(command, addresses, true, records, failures, reporter);
-    }
-
-    await this.runDnsPacketProbe(command, addresses, false, records, failures, reporter);
-    if (ipv6Available) {
-      await this.runDnsPacketProbe(command, addresses, true, records, failures, reporter);
-    }
+    await this.runTcpProbe(command, externalTcpAddresses, records, failures, reporter);
+    await this.runUdpProbe(command, externalAddresses, false, records, failures, reporter);
+    await this.runUdpProbe(command, externalAddresses, true, records, failures, reporter);
+    await this.runDnsPacketProbe(command, externalAddresses, false, records, failures, reporter);
+    await this.runDnsPacketProbe(command, externalAddresses, true, records, failures, reporter);
 
     await this.runHttpConnectProbe(command, records, failures, reporter);
-    await this.runSocks5Probe(command, addresses, records, failures, reporter);
+    await this.runSocks5Probe(command, lanAddresses, records, failures, reporter);
 
     const completedAt: string = this.dependencies.clock.now();
     const outcome: string = failures.length === 0 ? 'pass' : 'fail';
@@ -318,72 +321,52 @@ export class DirectTrafficProbe {
     reporter?: ProbeProgressReporter
   ): Promise<void> {
     const targetAddress: string = requireString(addresses.ipv4, 'Missing IPv4 origin address.');
-    const connectOptions: ProbeTcpConnectOptions = createTcpConnectOptions(targetAddress, 1, command.lanOrigin.tcpPort);
     const payload: ArrayBuffer = encodeUtf8(buildTcpExpectedPayload(command));
     const startedAt: string = this.dependencies.clock.now();
-    let connectionRef: TcpProbeConnection | undefined = undefined;
+    let fixedFailureCode: string = 'TCP_DIRECT_FAILED';
     try {
-      connectionRef = await withTimeout(
-        this.dependencies.tcpDriver.connect(connectOptions),
-        'tcp-connect',
-        this.timeoutMs(),
-        async () => {
-          await this.dependencies.tcpDriver.cancelPendingConnect?.();
-        }
-      );
-      await withTimeout(connectionRef.send(payload), 'tcp-send', this.timeoutMs(), async () => {
-        await connectionRef?.close();
-      });
-      const response: ArrayBuffer = await withTimeout(connectionRef.receive(), 'tcp-receive', this.timeoutMs(), async () => {
-        connectionRef?.cancelReceiveWait?.();
-        await connectionRef?.close();
-      });
-      if (!arrayBuffersEqual(response, payload)) {
-        throw new Error('invalid-tcp-response');
+      const result: NativeSocketProbeResult = await this.dependencies.nativeSocketPort
+        .probe('tcpExchange', targetAddress, command.externalOrigin.tcpPort, payload, this.timeoutMs());
+      if (result.outcome !== 'pass') {
+        fixedFailureCode = mapNativeTcpFailureCode(result.failureCode);
+        throw new Error('native-tcp-failed');
       }
       records.push(new ProbeRecord(
         command.runId,
         command.sessionId,
         command.flowIds.tcp,
         TCP_STEP_ID,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'pass',
         'tcp',
-        command.lanOrigin.tcpPort,
+        command.externalOrigin.tcpPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(payload),
-        byteLength(response),
+        result.bytesSent,
+        result.bytesReceived,
         undefined,
         undefined
       ));
       reporter?.onStep(TCP_STEP_ID, 'pass');
     } catch (_) {
-      failures.push(new ProbeFailure('TCP_DIRECT_FAILED', PROBE_FAILURE_DETAIL_TCP_FAILED));
+      failures.push(new ProbeFailure(fixedFailureCode, PROBE_FAILURE_DETAIL_TCP_FAILED));
       records.push(new ProbeRecord(
         command.runId,
         command.sessionId,
         command.flowIds.tcp,
         TCP_STEP_ID,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'fail',
         'tcp',
-        command.lanOrigin.tcpPort,
+        command.externalOrigin.tcpPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(payload),
+        0,
         0,
         undefined,
         undefined
       ));
       reporter?.onStep(TCP_STEP_ID, 'fail');
-    } finally {
-      if (connectionRef !== undefined) {
-        try {
-          await connectionRef.close();
-        } catch (_) {
-        }
-      }
     }
   }
 
@@ -397,6 +380,10 @@ export class DirectTrafficProbe {
   ): Promise<void> {
     const stepId: string = ipv6 ? UDP_IPV6_STEP_ID : UDP_IPV4_STEP_ID;
     const flowId: string = ipv6 ? command.flowIds.udpIpv6 : command.flowIds.udpIpv4;
+    if (ipv6) {
+      this.recordNativeIpv6NotRun(command, flowId, stepId, 'udp', command.externalOrigin.udpPort, records, reporter);
+      return;
+    }
     const targetAddress: string | undefined = ipv6 ? addresses.ipv6 : addresses.ipv4;
     if (targetAddress === undefined) {
       records.push(new ProbeRecord(
@@ -404,10 +391,10 @@ export class DirectTrafficProbe {
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'not-run',
         'udp',
-        command.lanOrigin.udpPort,
+        command.externalOrigin.udpPort,
         this.dependencies.clock.now(),
         this.dependencies.clock.now(),
         0,
@@ -419,41 +406,27 @@ export class DirectTrafficProbe {
       return;
     }
 
-    const socketRef: UdpProbeSocket = this.dependencies.udpDriver.createSocket(ipv6 ? 'IPv6' : 'IPv4');
-    const bindAddress: ProbeSocketAddress = new ProbeSocketAddress(ipv6 ? LOOPBACK_V6 : LOOPBACK_V4, ipv6 ? 2 : 1, 0);
-    const sendOptions: ProbeUdpSendOptions = new ProbeUdpSendOptions();
-    sendOptions.data = encodeUtf8(buildUdpExpectedPayload(command, flowId));
-    sendOptions.address = new ProbeSocketAddress(targetAddress, ipv6 ? 2 : 1, command.lanOrigin.udpPort);
+    const payload: ArrayBuffer = encodeUtf8(buildUdpExpectedPayload(command, flowId));
     const startedAt: string = this.dependencies.clock.now();
     try {
-      await withTimeout(socketRef.bind(bindAddress), 'udp-bind', this.timeoutMs(), async () => {
-        await socketRef.close();
-      });
-      await withTimeout(socketRef.send(sendOptions), 'udp-send', this.timeoutMs(), async () => {
-        await socketRef.close();
-      });
-      const response: ProbeSocketMessage = await withTimeout(socketRef.receive(), 'udp-receive', this.timeoutMs(), async () => {
-        socketRef.cancelReceiveWait?.();
-        await socketRef.close();
-      });
-      if (!arrayBuffersEqual(response.message, sendOptions.data) ||
-        response.remoteInfo.address !== targetAddress ||
-        response.remoteInfo.port !== command.lanOrigin.udpPort) {
-        throw new Error('invalid-udp-response');
+      const result: NativeSocketProbeResult = await this.dependencies.nativeSocketPort
+        .probe('udpEcho', targetAddress, command.externalOrigin.udpPort, payload, this.timeoutMs());
+      if (result.outcome !== 'pass') {
+        throw new Error('native-udp-failed');
       }
       records.push(new ProbeRecord(
         command.runId,
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'pass',
         'udp',
-        command.lanOrigin.udpPort,
+        command.externalOrigin.udpPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(sendOptions.data),
-        byteLength(response.message),
+        result.bytesSent,
+        result.bytesReceived,
         undefined,
         undefined
       ));
@@ -465,23 +438,18 @@ export class DirectTrafficProbe {
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'fail',
         'udp',
-        command.lanOrigin.udpPort,
+        command.externalOrigin.udpPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(sendOptions.data),
+        0,
         0,
         undefined,
         undefined
       ));
       reporter?.onStep(stepId, 'fail');
-    } finally {
-      try {
-        await socketRef.close();
-      } catch (_) {
-      }
     }
   }
 
@@ -495,6 +463,10 @@ export class DirectTrafficProbe {
   ): Promise<void> {
     const stepId: string = ipv6 ? DNS_PACKET_IPV6_STEP_ID : DNS_PACKET_IPV4_STEP_ID;
     const flowId: string = ipv6 ? command.flowIds.dnsPacketIpv6 : command.flowIds.dnsPacketIpv4;
+    if (ipv6) {
+      this.recordNativeIpv6NotRun(command, flowId, stepId, 'dns-packet', command.externalOrigin.dnsPort, records, reporter);
+      return;
+    }
     const targetAddress: string | undefined = ipv6 ? addresses.ipv6 : addresses.ipv4;
     if (targetAddress === undefined) {
       records.push(new ProbeRecord(
@@ -502,10 +474,10 @@ export class DirectTrafficProbe {
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'not-run',
         'dns-packet',
-        command.lanOrigin.dnsPort,
+        command.externalOrigin.dnsPort,
         this.dependencies.clock.now(),
         this.dependencies.clock.now(),
         0,
@@ -519,41 +491,26 @@ export class DirectTrafficProbe {
 
     const label: string = buildHashedInvalidLabel(command.runId, flowId);
     const packet: ArrayBuffer = buildDnsQueryPacket(label);
-    const socketRef: UdpProbeSocket = this.dependencies.udpDriver.createSocket(ipv6 ? 'IPv6' : 'IPv4');
-    const bindAddress: ProbeSocketAddress = new ProbeSocketAddress(ipv6 ? LOOPBACK_V6 : LOOPBACK_V4, ipv6 ? 2 : 1, 0);
-    const sendOptions: ProbeUdpSendOptions = new ProbeUdpSendOptions();
-    sendOptions.data = packet;
-    sendOptions.address = new ProbeSocketAddress(targetAddress, ipv6 ? 2 : 1, command.lanOrigin.dnsPort);
     const startedAt: string = this.dependencies.clock.now();
     try {
-      await withTimeout(socketRef.bind(bindAddress), 'dns-bind', this.timeoutMs(), async () => {
-        await socketRef.close();
-      });
-      await withTimeout(socketRef.send(sendOptions), 'dns-send', this.timeoutMs(), async () => {
-        await socketRef.close();
-      });
-      const response: ProbeSocketMessage = await withTimeout(socketRef.receive(), 'dns-receive', this.timeoutMs(), async () => {
-        socketRef.cancelReceiveWait?.();
-        await socketRef.close();
-      });
-      if (!arrayBuffersEqual(response.message, packet) ||
-        response.remoteInfo.address !== targetAddress ||
-        response.remoteInfo.port !== command.lanOrigin.dnsPort) {
-        throw new Error('invalid-dns-response');
+      const result: NativeSocketProbeResult = await this.dependencies.nativeSocketPort
+        .probe('dnsUdpEcho', targetAddress, command.externalOrigin.dnsPort, packet, this.timeoutMs());
+      if (result.outcome !== 'pass') {
+        throw new Error('native-dns-failed');
       }
       records.push(new ProbeRecord(
         command.runId,
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'pass',
         'dns-shaped-udp-echo',
-        command.lanOrigin.dnsPort,
+        command.externalOrigin.dnsPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(packet),
-        byteLength(response.message),
+        result.bytesSent,
+        result.bytesReceived,
         undefined,
         `labelHash=${shortHash(label)}`
       ));
@@ -565,24 +522,47 @@ export class DirectTrafficProbe {
         command.sessionId,
         flowId,
         stepId,
-        'lan-origin-direct',
+        externalIngressExpectation(command),
         'fail',
         'dns-shaped-udp-echo',
-        command.lanOrigin.dnsPort,
+        command.externalOrigin.dnsPort,
         startedAt,
         this.dependencies.clock.now(),
-        byteLength(packet),
+        0,
         0,
         undefined,
         `labelHash=${shortHash(label)}`
       ));
       reporter?.onStep(stepId, 'fail');
-    } finally {
-      try {
-        await socketRef.close();
-      } catch (_) {
-      }
     }
+  }
+
+  private recordNativeIpv6NotRun(
+    command: ProbeCommand,
+    flowId: string,
+    stepId: string,
+    transport: string,
+    targetPort: number,
+    records: Array<ProbeRecord>,
+    reporter?: ProbeProgressReporter
+  ): void {
+    records.push(new ProbeRecord(
+      command.runId,
+      command.sessionId,
+      flowId,
+      stepId,
+      externalIngressExpectation(command),
+      'not-run',
+      transport,
+      targetPort,
+      this.dependencies.clock.now(),
+      this.dependencies.clock.now(),
+      0,
+      0,
+      undefined,
+      'native-ipv4-only'
+    ));
+    reporter?.onStep(stepId, 'not-run');
   }
 
   private async runHttpConnectProbe(
@@ -819,6 +799,7 @@ class HttpRequestOptionsRecord implements http.HttpRequestOptions {
   readTimeout?: number = DEFAULT_TIMEOUT_MS;
   maxLimit?: number = 4_096;
   maxRedirects?: number = 0;
+  caData?: string = '';
   header?: Object = new HttpHeaderRecord();
   certificatePinning?: http.CertificatePinning = new HttpCertificatePinningRecord('');
 }
@@ -849,6 +830,7 @@ export class HarmonyHttpProbeDriver implements HttpProbeDriver {
     requestOptions.readTimeout = options.readTimeout;
     requestOptions.maxLimit = options.maxLimit;
     requestOptions.maxRedirects = options.maxRedirects;
+    requestOptions.caData = options.caData;
     const headerRecord: HttpHeaderRecord = new HttpHeaderRecord();
     headerRecord.XCMFAProbeRunId = options.headers.runIdHeader;
     headerRecord.XCMFAProbeSessionId = options.headers.sessionIdHeader;
@@ -1030,6 +1012,7 @@ export class ProbeRuntimeFactory {
       tcpDriver: new HarmonyTcpProbeDriver(),
       udpDriver: new HarmonyUdpProbeDriver(),
       dnsDriver: new HarmonyDnsProbeDriver(),
+      nativeSocketPort: createDefaultNativeSocketProbePort(),
       clock: new HarmonyProbeClock(),
       fileDriver: new HarmonyProbeFileDriver()
     });
@@ -1076,6 +1059,24 @@ function withTimeout<T>(
   });
 }
 
+function externalIngressExpectation(command: ProbeCommand): string {
+  return command.captureMode === 'vpn' ? 'tun' : 'lan-origin-direct';
+}
+
+function mapNativeTcpFailureCode(failureCode?: string): string {
+  switch (failureCode) {
+    case 'INVALID_ARGUMENT':
+    case 'CONNECT_FAILED':
+    case 'SEND_FAILED':
+    case 'RECV_FAILED':
+    case 'TIMEOUT':
+    case 'PAYLOAD_MISMATCH':
+      return `TCP_DIRECT_${failureCode}`;
+    default:
+      return 'TCP_DIRECT_FAILED';
+  }
+}
+
 function createHttpOptions(command: ProbeCommand): ProbeHttpRequestOptions {
   const headers: ProbeHttpHeaders = new ProbeHttpHeaders();
   headers.runIdHeader = clampEvidenceString(command.runId, 128);
@@ -1083,7 +1084,7 @@ function createHttpOptions(command: ProbeCommand): ProbeHttpRequestOptions {
   headers.flowIdHeader = clampEvidenceString(command.flowIds.https, 128);
 
   const pinning: ProbeCertificatePinning = new ProbeCertificatePinning();
-  pinning.publicKeyHash = command.pinnedCertificateHash;
+  pinning.publicKeyHash = normalizeCertificatePinForHttp(command.pinnedCertificateHash);
 
   const options: ProbeHttpRequestOptions = new ProbeHttpRequestOptions();
   options.connectTimeout = DEFAULT_TIMEOUT_MS;
@@ -1092,9 +1093,15 @@ function createHttpOptions(command: ProbeCommand): ProbeHttpRequestOptions {
   options.maxRedirects = 0;
   options.usingCache = false;
   options.expectDataType = 'ARRAY_BUFFER';
+  options.caData = command.originCaPem;
   options.headers = headers;
   options.certificatePinning = pinning;
   return options;
+}
+
+export function normalizeCertificatePinForHttp(value: string): string {
+  const normalized: string = value.trim();
+  return normalized.startsWith('sha256/') ? normalized.substring('sha256/'.length) : normalized;
 }
 
 function createTcpConnectOptions(address: string, family: number, port: number): ProbeTcpConnectOptions {
@@ -1120,7 +1127,8 @@ export function buildHttpsExpectedBody(command: ProbeCommand): string {
 }
 
 export function buildTcpExpectedPayload(command: ProbeCommand): string {
-  return `${buildCorrelationToken('TCP', command.runId, command.sessionId, command.flowIds.tcp)}|${buildFlowMarker(command.flowIds.tcp)}`;
+  return `SSH-2.0-${buildFlowMarker(command.flowIds.tcp)} ` +
+    `${buildCorrelationToken('TCP', command.runId, command.sessionId, command.flowIds.tcp)}\r\n`;
 }
 
 export function buildUdpExpectedPayload(command: ProbeCommand, flowId: string): string {

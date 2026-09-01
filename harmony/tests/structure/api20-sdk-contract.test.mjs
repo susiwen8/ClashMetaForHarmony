@@ -14,8 +14,8 @@ const REAL_INTEGRATED_SDK_ROOT = '/Applications/DevEco-Studio.app/Contents/sdk/d
 
 const EXPECTED_TARGET = {
   name: 'HarmonyOS 6/API 20/arm64',
-  targetSdkVersion: '6.1.0(23)',
-  targetApiVersion: 23,
+  targetSdkVersion: '6.1.1(24)',
+  targetApiVersion: 24,
   compatibleSdkVersion: '6.0.0(20)',
   compatibleApiVersion: 20,
   runtimeOS: 'HarmonyOS',
@@ -23,24 +23,25 @@ const EXPECTED_TARGET = {
 };
 
 const EXPECTED_INSTALLED = {
-  devecoVersion: '6.1.0.860',
-  sdkVersion: '6.1.0.105',
-  sdkApiVersion: 23,
-  ndkVersion: '6.1.0.105',
-  ndkApiVersion: 23,
-  hvigorVersion: '6.23.7',
-  ohpmVersion: '6.1.1.830',
-  hdcVersion: '6.1.0.105'
+  devecoVersion: '6.1.1.300',
+  sdkVersion: '6.1.1.125',
+  sdkApiVersion: 24,
+  ndkVersion: '6.1.1.125',
+  ndkApiVersion: 24,
+  hvigorVersion: '6.24.4',
+  ohpmVersion: '6.1.2.285',
+  hdcVersion: '6.1.1.125'
 };
 
 const EXPECTED_ALLOWLIST = {
   schemaVersion: '1.0.0',
   architecture: 'arm64',
   source: {
-    sdkVersion: '6.1.0.105',
-    sdkApiVersion: 23
+    sdkVersion: '6.1.1.125',
+    sdkApiVersion: 24
   },
   goProbe: ['libc.so'],
+  probeAddon: ['libace_napi.z.so', 'libc.so'],
   mihomoCore: ['libc.so'],
   nodeAddon: ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so']
 };
@@ -124,7 +125,7 @@ test('the integrated SDK exposes declarations and executable native tools', asyn
   }
 });
 
-test('the integrated SDK declarations expose the API 20 to API 23 network and request surfaces used by Task 8', async () => {
+test('the integrated SDK declarations expose the API 20 to API 24 network and request surfaces used by Task 8', async () => {
   const [networkKit, requestApi, httpApi] = await Promise.all([
     fs.readFile(path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'kits', '@kit.NetworkKit.d.ts'), 'utf8'),
     fs.readFile(path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'api', '@ohos.request.d.ts'), 'utf8'),

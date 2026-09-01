@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"strings"
 	"testing"
@@ -59,33 +60,303 @@ func TestBuildInfoUsesUpstreamVersion(t *testing.T) {
 
 func TestValidateFileAcceptsMatchDirectFixture(t *testing.T) {
 	root := repoHarmonyRoot(t)
-	if err := configwrap.ValidateFile(root, fixtureRelPath("phase2-match-direct.yaml")); err != nil {
+	if err := configwrap.ValidateFileWithDeps(root, fixtureRelPath("phase2-match-direct.yaml"), configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+	}); err != nil {
 		t.Fatalf("ValidateFile returned error: %v", err)
+	}
+}
+
+func TestValidateFileWithDepsClassifiesGeoIPFixtureAsGeodataMissing(t *testing.T) {
+	root := repoHarmonyRoot(t)
+	expectedBody := mustReadFile(t, fixturePath(t, "phase5-geoip-rule.yaml"))
+
+	err := configwrap.ValidateFileWithDeps(root, fixtureRelPath("phase5-geoip-rule.yaml"), configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			if string(body) != expectedBody {
+				t.Fatalf("unexpected fixture bytes: %q", string(body))
+			}
+			return nil, errors.New("rules[0] line 4: GEOIP,CN,DIRECT can't find MMDB: /data/user/0/example/files/geoip.metadb")
+		},
+	})
+	if err == nil {
+		t.Fatal("ValidateFileWithDeps unexpectedly succeeded")
+	}
+
+	var validationErr *configwrap.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	if validationErr.Code != "GEODATA_MISSING" {
+		t.Fatalf("validation code = %q want GEODATA_MISSING", validationErr.Code)
+	}
+	if validationErr.Field != "geoip" {
+		t.Fatalf("validation field = %q want geoip", validationErr.Field)
+	}
+	if validationErr.Line == nil || *validationErr.Line != 4 {
+		t.Fatalf("validation line = %v want 4", validationErr.Line)
+	}
+	if text := err.Error(); strings.Contains(text, "/data/user/0/example/files/geoip.metadb") {
+		t.Fatalf("validation error leaked prepared-home path: %q", text)
+	}
+}
+
+func TestValidateFileWithDepsAcceptsGeoIPFixtureWhenPreparedHomeContainsPinnedGeoIP(t *testing.T) {
+	root := t.TempDir()
+	fixtureBody := mustReadFile(t, fixturePath(t, "phase5-geoip-rule.yaml"))
+	if err := os.WriteFile(filepath.Join(root, "phase5-geoip-rule.yaml"), []byte(fixtureBody), 0o644); err != nil {
+		t.Fatalf("write fixture copy: %v", err)
+	}
+
+	preparedRoot := ""
+	prepareCalls := 0
+	if err := configwrap.ValidateFileWithDeps(root, "phase5-geoip-rule.yaml", configwrap.ValidateDeps{
+		PrepareHome: func(homeRoot string) error {
+			prepareCalls++
+			preparedRoot = homeRoot
+			return os.WriteFile(filepath.Join(homeRoot, "geoip.metadb"), []byte("fixture"), 0o644)
+		},
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			if string(body) != fixtureBody {
+				t.Fatalf("unexpected fixture bytes: %q", string(body))
+			}
+			if preparedRoot == "" {
+				t.Fatal("parse ran before PrepareHome")
+			}
+			if _, err := os.Stat(filepath.Join(preparedRoot, "geoip.metadb")); err != nil {
+				t.Fatalf("expected prepared geoip.metadb: %v", err)
+			}
+			return &mihomocfg.Config{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("ValidateFileWithDeps returned error: %v", err)
+	}
+	if prepareCalls != 1 {
+		t.Fatalf("prepare calls = %d want 1", prepareCalls)
 	}
 }
 
 func TestValidateFileReturnsUsefulDetailsForInvalidFixture(t *testing.T) {
 	root := repoHarmonyRoot(t)
-	err := configwrap.ValidateFile(root, fixtureRelPath("phase2-invalid.yaml"))
+	err := configwrap.ValidateFileWithDeps(root, fixtureRelPath("phase2-invalid.yaml"), configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+	})
 	if err == nil {
 		t.Fatal("ValidateFile unexpectedly succeeded")
 	}
 
-	text := err.Error()
-	if !strings.Contains(text, "mixed-port") && !strings.Contains(strings.ToLower(text), "line") {
-		t.Fatalf("expected upstream detail in error, got %q", text)
+	var validationErr *configwrap.ValidationError
+	if !errors.As(err, &validationErr) {
+		t.Fatalf("expected ValidationError, got %T", err)
+	}
+	if validationErr.Code != "YAML_SYNTAX" {
+		t.Fatalf("validation code = %q want YAML_SYNTAX", validationErr.Code)
+	}
+	if errText := err.Error(); !strings.Contains(errText, "line=2") {
+		t.Fatalf("expected sanitized line detail, got %q", errText)
+	}
+}
+
+func TestValidateFileWithDepsPreparesStableHomeBeforeParse(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("mode: rule\nrules:\n  - MATCH,DIRECT\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	preparedRoot := ""
+	setHomeDirCalls := 0
+	manager := configwrap.NewHomeManager(func(path string) {
+		setHomeDirCalls++
+		preparedRoot = path
+	})
+
+	parseCalls := 0
+	if err := configwrap.ValidateFileWithDeps(root, "config.yaml", configwrap.ValidateDeps{
+		PrepareHome: manager.Prepare,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			parseCalls++
+			if preparedRoot == "" {
+				t.Fatal("parse ran before PrepareHome")
+			}
+			return &mihomocfg.Config{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("ValidateFileWithDeps failed: %v", err)
+	}
+
+	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: manager.Prepare,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			parseCalls++
+			if preparedRoot == "" {
+				t.Fatal("loader parse ran before PrepareHome")
+			}
+			return &mihomocfg.Config{}, nil
+		},
+		Apply: func(cfg *mihomocfg.Config, force bool) error { return nil },
+	})
+	if err := loader.Load("config.yaml"); err != nil {
+		t.Fatalf("Loader.Load failed: %v", err)
+	}
+
+	if setHomeDirCalls != 1 {
+		t.Fatalf("setHomeDir calls = %d want 1", setHomeDirCalls)
+	}
+	if parseCalls != 2 {
+		t.Fatalf("parse calls = %d want 2", parseCalls)
+	}
+}
+
+func TestValidateFileWithDepsRejectsForeignRootDriftBeforeParserRuns(t *testing.T) {
+	firstRoot := t.TempDir()
+	secondRoot := t.TempDir()
+	if err := os.WriteFile(filepath.Join(firstRoot, "self-test.yaml"), []byte("mode: rule\nrules:\n  - MATCH,DIRECT\n"), 0o644); err != nil {
+		t.Fatalf("write first config: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(secondRoot, "self-test.yaml"), []byte("mode: rule\nrules:\n  - MATCH,DIRECT\n"), 0o644); err != nil {
+		t.Fatalf("write second config: %v", err)
+	}
+
+	manager := configwrap.NewHomeManager(func(path string) {})
+	validateCalls := 0
+	if err := configwrap.ValidateFileWithDeps(firstRoot, "self-test.yaml", configwrap.ValidateDeps{
+		PrepareHome: manager.Prepare,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			validateCalls++
+			return &mihomocfg.Config{}, nil
+		},
+	}); err != nil {
+		t.Fatalf("ValidateFileWithDeps(first): %v", err)
+	}
+
+	loadCalls := 0
+	loader := configwrap.NewLoaderWithDeps(secondRoot, configwrap.LoaderDeps{
+		PrepareHome: manager.Prepare,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			loadCalls++
+			return &mihomocfg.Config{}, nil
+		},
+		Apply: func(cfg *mihomocfg.Config, force bool) error { return nil },
+	})
+
+	err := loader.Load("self-test.yaml")
+	if err == nil {
+		t.Fatal("Loader.Load(second) unexpectedly succeeded")
+	}
+	var driftErr *configwrap.HomeDriftError
+	if !errors.As(err, &driftErr) {
+		t.Fatalf("expected HomeDriftError, got %T", err)
+	}
+	if driftErr.Code != "GEODATA_HOME_DRIFT" {
+		t.Fatalf("drift code = %q want GEODATA_HOME_DRIFT", driftErr.Code)
+	}
+	if validateCalls != 1 {
+		t.Fatalf("validate calls = %d want 1", validateCalls)
+	}
+	if loadCalls != 0 {
+		t.Fatalf("load parse calls = %d want 0", loadCalls)
+	}
+}
+
+func TestValidateFileWithDepsSanitizesSecretBearingParserErrors(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "config.yaml"), []byte("mode: rule\nrules:\n  - MATCH,DIRECT\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	tests := []struct {
+		name         string
+		parseErr     string
+		wantCode     string
+		wantContains []string
+		wantAbsent   []string
+	}{
+		{
+			name:         "yaml syntax",
+			parseErr:     "yaml: unmarshal errors:\n  line 7: cannot unmarshal !!str 'token=abc123' into int",
+			wantCode:     "YAML_SYNTAX",
+			wantContains: []string{"YAML_SYNTAX", "line=7"},
+			wantAbsent:   []string{"abc123", "token="},
+		},
+		{
+			name:         "proxy invalid",
+			parseErr:     "proxy 3: server https://user:pass@example.com is invalid",
+			wantCode:     "PROXY_INVALID",
+			wantContains: []string{"PROXY_INVALID", "field=proxy", "index=3"},
+			wantAbsent:   []string{"user", "pass", "example.com"},
+		},
+		{
+			name:         "rule invalid",
+			parseErr:     "rules[5] [DOMAIN-SUFFIX,netflix.com,Proxy-Group] error: proxy [Proxy-Group] not found",
+			wantCode:     "RULE_INVALID",
+			wantContains: []string{"RULE_INVALID", "field=rules", "index=5"},
+			wantAbsent:   []string{"netflix.com", "Proxy-Group"},
+		},
+		{
+			name:         "geodata missing",
+			parseErr:     "load GeoIP dns fallback filter error, can't find MMDB: /data/user/0/app/files/geoip.metadb",
+			wantCode:     "GEODATA_MISSING",
+			wantContains: []string{"GEODATA_MISSING", "field=geoip"},
+			wantAbsent:   []string{"/data/user/0/app/files/geoip.metadb"},
+		},
+		{
+			name:         "unknown validation error",
+			parseErr:     "listen https://secret.example.com:443 failed for proxy node-01",
+			wantCode:     "VALIDATION_UNKNOWN",
+			wantContains: []string{"VALIDATION_UNKNOWN"},
+			wantAbsent:   []string{"secret.example.com", "node-01"},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			err := configwrap.ValidateFileWithDeps(root, "config.yaml", configwrap.ValidateDeps{
+				PrepareHome: noopPrepareHome,
+				ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+					return nil, errors.New(tt.parseErr)
+				},
+			})
+			if err == nil {
+				t.Fatal("ValidateFileWithDeps unexpectedly succeeded")
+			}
+
+			var validationErr *configwrap.ValidationError
+			if !errors.As(err, &validationErr) {
+				t.Fatalf("expected ValidationError, got %T", err)
+			}
+			if validationErr.Code != tt.wantCode {
+				t.Fatalf("validation code = %q want %q", validationErr.Code, tt.wantCode)
+			}
+
+			text := err.Error()
+			for _, want := range tt.wantContains {
+				if !strings.Contains(text, want) {
+					t.Fatalf("expected %q in %q", want, text)
+				}
+			}
+			for _, forbidden := range tt.wantAbsent {
+				if strings.Contains(text, forbidden) {
+					t.Fatalf("error leaked forbidden fragment %q in %q", forbidden, text)
+				}
+			}
+		})
 	}
 }
 
 func TestValidateFileRejectsContentURIAndOutsideSandbox(t *testing.T) {
 	root := repoHarmonyRoot(t)
 
-	if err := configwrap.ValidateFile(root, "content://profile/config.yaml"); err == nil {
+	if err := configwrap.ValidateFileWithDeps(root, "content://profile/config.yaml", configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+	}); err == nil {
 		t.Fatal("content:// path unexpectedly succeeded")
 	}
 
 	outside := filepath.Clean(filepath.Join(root, "..", "outside.yaml"))
-	err := configwrap.ValidateFile(root, outside)
+	err := configwrap.ValidateFileWithDeps(root, outside, configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+	})
 	if err == nil {
 		t.Fatal("outside-sandbox path unexpectedly succeeded")
 	}
@@ -94,9 +365,41 @@ func TestValidateFileRejectsContentURIAndOutsideSandbox(t *testing.T) {
 	}
 }
 
+func TestValidateFileTreatsDirectoryCandidateAsManagedConfigUnavailable(t *testing.T) {
+	root := t.TempDir()
+	dirCandidate := filepath.Join(root, "config.yaml")
+	if err := os.Mkdir(dirCandidate, 0o755); err != nil {
+		t.Fatalf("mkdir config dir: %v", err)
+	}
+
+	parseCalls := 0
+	err := configwrap.ValidateFileWithDeps(root, "config.yaml", configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
+			parseCalls++
+			return &mihomocfg.Config{}, nil
+		},
+	})
+	if err == nil {
+		t.Fatal("ValidateFileWithDeps unexpectedly succeeded")
+	}
+	if !errors.Is(err, configwrap.ErrManagedConfigUnavailable) {
+		t.Fatalf("expected ErrManagedConfigUnavailable, got %v", err)
+	}
+	if errors.Is(err, configwrap.ErrPathOutsideSandbox) {
+		t.Fatalf("directory candidate misclassified as outside sandbox: %v", err)
+	}
+	if parseCalls != 0 {
+		t.Fatalf("parse calls = %d want 0", parseCalls)
+	}
+	if got := err.Error(); got != "MANAGED_CONFIG_UNAVAILABLE" {
+		t.Fatalf("error text = %q want %q", got, "MANAGED_CONFIG_UNAVAILABLE")
+	}
+}
+
 func TestLoaderPreservesPreviousConfigWhenLoadFails(t *testing.T) {
 	root := repoHarmonyRoot(t)
-	loader := configwrap.NewLoader(root)
+	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{PrepareHome: noopPrepareHome})
 	valid := fixtureRelPath("phase2-match-direct.yaml")
 	invalid := fixtureRelPath("phase2-invalid.yaml")
 
@@ -124,6 +427,7 @@ func TestLoaderAppliesOnceAndPreservesStateOnInvalidLoad(t *testing.T) {
 	applyCalls := 0
 
 	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
 		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
 			parseCalls++
 			switch string(body) {
@@ -200,6 +504,85 @@ func TestLoaderAppliesOnceAndPreservesStateOnInvalidLoad(t *testing.T) {
 	}
 }
 
+func TestLoaderLoadForLocalProxyClearsConfigOwnedIngressBeforeApply(t *testing.T) {
+	root := t.TempDir()
+	configPath := filepath.Join(root, "profile.yaml")
+	if err := os.WriteFile(configPath, []byte("mode: rule\nrules:\n  - MATCH,DIRECT\n"), 0o644); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	parsed := &mihomocfg.Config{
+		General: &mihomocfg.General{
+			Inbound: mihomocfg.Inbound{
+				Port:              7890,
+				SocksPort:         7891,
+				RedirPort:         7892,
+				TProxyPort:        7893,
+				MixedPort:         7894,
+				ShadowSocksConfig: "shadow-server",
+				VmessConfig:       "vmess-server",
+				AllowLan:          true,
+				BindAddress:       "*",
+			},
+			IPv6: true,
+		},
+		DNS: &mihomocfg.DNS{
+			Enable:            true,
+			Listen:            "127.0.0.1:1053",
+			ListenRoutingMark: 123,
+		},
+		IPTables: &mihomocfg.IPTables{Enable: true},
+		Listeners: map[string]mihomoconstant.InboundListener{
+			"profile-owned": nil,
+		},
+	}
+	parsed.General.Tun.Enable = true
+	parsed.General.TuicServer.Enable = true
+
+	applyCalls := 0
+	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
+		ParseBytes: func([]byte) (*mihomocfg.Config, error) {
+			return parsed, nil
+		},
+		Apply: func(cfg *mihomocfg.Config, force bool) error {
+			applyCalls++
+			if !force {
+				t.Fatal("local proxy load must force reconfiguration")
+			}
+			if cfg.General == nil {
+				t.Fatal("general config was removed")
+			}
+			if !reflect.DeepEqual(cfg.General.Inbound, mihomocfg.Inbound{}) {
+				t.Fatalf("config-owned inbound survived: %#v", cfg.General.Inbound)
+			}
+			if cfg.DNS == nil || !cfg.DNS.Enable {
+				t.Fatal("DNS resolution policy must remain enabled")
+			}
+			if cfg.DNS.Listen != "" || cfg.DNS.ListenRoutingMark != 0 {
+				t.Fatalf("DNS listener survived: listen=%q mark=%d", cfg.DNS.Listen, cfg.DNS.ListenRoutingMark)
+			}
+			if cfg.IPTables == nil || cfg.IPTables.Enable {
+				t.Fatal("profile-owned iptables must be disabled")
+			}
+			if len(cfg.Listeners) != 0 {
+				t.Fatalf("custom listeners survived: %#v", cfg.Listeners)
+			}
+			if !cfg.General.IPv6 {
+				t.Fatal("unrelated general config was changed")
+			}
+			return nil
+		},
+	})
+
+	if err := loader.LoadForLocalProxy("profile.yaml"); err != nil {
+		t.Fatalf("LoadForLocalProxy failed: %v", err)
+	}
+	if applyCalls != 1 {
+		t.Fatalf("apply calls = %d want 1", applyCalls)
+	}
+}
+
 func mustReadFile(t *testing.T, filePath string) string {
 	t.Helper()
 	body, err := os.ReadFile(filePath)
@@ -211,7 +594,9 @@ func mustReadFile(t *testing.T, filePath string) string {
 
 func TestLoaderRejectsAbsoluteSandboxPath(t *testing.T) {
 	root := repoHarmonyRoot(t)
-	err := configwrap.ValidateFile(root, fixturePath(t, "phase2-match-direct.yaml"))
+	err := configwrap.ValidateFileWithDeps(root, fixturePath(t, "phase2-match-direct.yaml"), configwrap.ValidateDeps{
+		PrepareHome: noopPrepareHome,
+	})
 	if !errors.Is(err, configwrap.ErrPathOutsideSandbox) {
 		t.Fatalf("expected absolute path rejection, got %v", err)
 	}
@@ -231,6 +616,7 @@ func TestLoaderRejectsSymlinkEscapeWithoutParsingOrApplying(t *testing.T) {
 	parseCalls := 0
 	applyCalls := 0
 	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
 		ParseBytes: func([]byte) (*mihomocfg.Config, error) {
 			parseCalls++
 			return &mihomocfg.Config{}, nil
@@ -263,6 +649,7 @@ func TestLoaderParsesStableBytesAfterOnDiskMutation(t *testing.T) {
 
 	parseCalls := 0
 	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
 		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
 			parseCalls++
 			if string(body) != string(original) {
@@ -286,13 +673,14 @@ func TestLoaderParsesStableBytesAfterOnDiskMutation(t *testing.T) {
 
 func TestLoaderApplyFailurePreservesOldPathStateAndEmitsFailedEvent(t *testing.T) {
 	root := t.TempDir()
-	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{})
+	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{PrepareHome: noopPrepareHome})
 	lifecycle := runtimepkg.NewLifecycle()
 	sink := &eventspkg.Buffer{}
 	good := &mihomocfg.Config{}
 	bad := &mihomocfg.Config{}
 	applyCalls := 0
 	loader = configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
 		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
 			if strings.Contains(string(body), "bad") {
 				return bad, nil
@@ -353,6 +741,7 @@ func TestLoaderAtomicApplyPreventsTornSharedLifecycleTransition(t *testing.T) {
 	releaseApply := make(chan struct{})
 
 	loader := configwrap.NewLoaderWithDeps(root, configwrap.LoaderDeps{
+		PrepareHome: noopPrepareHome,
 		ParseBytes: func(body []byte) (*mihomocfg.Config, error) {
 			return &mihomocfg.Config{}, nil
 		},
@@ -387,4 +776,8 @@ func TestLoaderAtomicApplyPreventsTornSharedLifecycleTransition(t *testing.T) {
 	if events[len(events)-1].Kind != "config.load.applied" {
 		t.Fatalf("unexpected final event %#v", events[len(events)-1])
 	}
+}
+
+func noopPrepareHome(string) error {
+	return nil
 }

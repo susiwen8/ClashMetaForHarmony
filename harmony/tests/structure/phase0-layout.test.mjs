@@ -128,6 +128,18 @@ test('phase0 layout keeps Harmony isolated from the Android root project and wra
   await assert.rejects(fs.access(path.join(harmonyRoot, 'hvigorw.bat')));
 });
 
+test('phase0 native build copies the canonical core beside libentry before HAP packaging and signing', async () => {
+  const cmakeSource = await fs.readFile(
+    path.join(harmonyRoot, 'entry/src/main/cpp/CMakeLists.txt'),
+    'utf8'
+  );
+
+  assert.match(cmakeSource, /add_custom_command\(TARGET\s+entry\s+POST_BUILD/gu);
+  assert.match(cmakeSource, /\$\{CMAKE_COMMAND\}\s+-E\s+copy_if_different/gu);
+  assert.match(cmakeSource, /"\$\{CORE_LIBRARY_PATH\}"/gu);
+  assert.match(cmakeSource, /"\$<TARGET_FILE_DIR:entry>\/libcmfa_mihomo\.so"/gu);
+});
+
 test('phase0 wrapper is a POSIX adapter for the integrated DevEco hvigor wrapper', async () => {
   const wrapperPath = path.join(harmonyRoot, 'hvigorw');
   const stats = await fs.stat(wrapperPath);

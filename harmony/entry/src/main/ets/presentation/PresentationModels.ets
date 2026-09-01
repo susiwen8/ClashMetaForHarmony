@@ -4,7 +4,8 @@ import type {
   ProfileApplicationErrorSnapshot,
   ProfileApplicationProfileSnapshot,
   ProfileAvailability,
-  ProfileSourceKind
+  ProfileSourceKind,
+  CoreRuntimeMode
 } from '@cmfa/shared';
 import { redactSensitiveText } from '@cmfa/shared';
 
@@ -24,14 +25,6 @@ export interface ProfileSummaryState {
   updatedAt: string;
 }
 
-export interface LocalProxyState {
-  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
-  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY';
-  httpAddress?: string;
-  socksAddress?: string;
-  error?: SafeErrorState;
-}
-
 export interface VpnGlobalCaptureState {
   status: 'STOPPED' | 'AWAITING_CONSENT' | 'STARTING' | 'RUNNING' | 'RECOVERING' | 'STOPPING' | 'ERROR';
   action: 'DISABLED' | 'START' | 'STOP' | 'BUSY';
@@ -48,8 +41,18 @@ export interface VpnGlobalCaptureState {
 export interface HomeViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR';
   activeProfile?: ProfileSummaryState;
-  localProxy: LocalProxyState;
+  canManageProxies: boolean;
+  selectedProxyGroupName: string;
+  selectedProxyNodeName: string;
   vpnGlobalCapture: VpnGlobalCaptureState;
+  runtimeMode: RuntimeModeState;
+  error?: SafeErrorState;
+}
+
+export interface RuntimeModeState {
+  mode?: CoreRuntimeMode;
+  available: boolean;
+  pending: boolean;
   error?: SafeErrorState;
 }
 
@@ -60,7 +63,6 @@ export interface ProfileRowState {
   availability: ProfileAvailability;
   active: boolean;
   updatedAt: string;
-  actionsLockedByRuntime: boolean;
 }
 
 export interface ProfilesViewState {
@@ -91,7 +93,11 @@ export interface ProfileDetailViewState {
   canRefresh: boolean;
   canDelete: boolean;
   canReplaceSubscriptionUrl: boolean;
+  sourceRetryAvailable: boolean;
   sourceRepairRequired: boolean;
+  editing: boolean;
+  editNameIssue?: 'REQUIRED' | 'TOO_LONG';
+  editUrlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
   confirmingDelete: boolean;
   httpConfirmationHost?: string;
   error?: SafeErrorState;
@@ -116,16 +122,18 @@ class ProfileSummaryStateValue implements ProfileSummaryState {
 class HomeViewStateValue implements HomeViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   activeProfile?: ProfileSummaryState;
-  localProxy: LocalProxyState = new LocalProxyStateValue();
+  canManageProxies: boolean = false;
+  selectedProxyGroupName: string = '';
+  selectedProxyNodeName: string = '';
   vpnGlobalCapture: VpnGlobalCaptureState = new VpnGlobalCaptureStateValue();
+  runtimeMode: RuntimeModeState = new RuntimeModeStateValue();
   error?: SafeErrorState;
 }
 
-class LocalProxyStateValue implements LocalProxyState {
-  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR' = 'STOPPED';
-  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = 'DISABLED';
-  httpAddress?: string;
-  socksAddress?: string;
+class RuntimeModeStateValue implements RuntimeModeState {
+  mode?: CoreRuntimeMode;
+  available: boolean = false;
+  pending: boolean = false;
   error?: SafeErrorState;
 }
 
@@ -149,7 +157,6 @@ class ProfileRowStateValue implements ProfileRowState {
   availability: ProfileAvailability = 'INVALID';
   active: boolean = false;
   updatedAt: string = '';
-  actionsLockedByRuntime: boolean = false;
 }
 
 class ProfilesViewStateValue implements ProfilesViewState {
@@ -178,7 +185,11 @@ class ProfileDetailViewStateValue implements ProfileDetailViewState {
   canRefresh: boolean = false;
   canDelete: boolean = false;
   canReplaceSubscriptionUrl: boolean = false;
+  sourceRetryAvailable: boolean = false;
   sourceRepairRequired: boolean = false;
+  editing: boolean = false;
+  editNameIssue?: 'REQUIRED' | 'TOO_LONG';
+  editUrlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
   confirmingDelete: boolean = false;
   httpConfirmationHost?: string;
   error?: SafeErrorState;
@@ -235,8 +246,7 @@ export function cloneProfileSummaryState(profile: ProfileSummaryState | undefine
 
 export function createProfileRowState(
   profile: ProfileApplicationProfileSnapshot,
-  activeProfileId: string | undefined,
-  actionsLockedByRuntime: boolean
+  activeProfileId: string | undefined
 ): ProfileRowState {
   const row: ProfileRowStateValue = new ProfileRowStateValue();
   row.id = profile.id;
@@ -245,7 +255,6 @@ export function createProfileRowState(
   row.availability = profile.availability;
   row.active = activeProfileId === profile.id;
   row.updatedAt = profile.updatedAt;
-  row.actionsLockedByRuntime = actionsLockedByRuntime;
   return row;
 }
 
@@ -259,7 +268,6 @@ export function cloneProfileRowStates(rows: ProfileRowState[]): ProfileRowState[
     row.availability = rows[index].availability;
     row.active = rows[index].active;
     row.updatedAt = rows[index].updatedAt;
-    row.actionsLockedByRuntime = rows[index].actionsLockedByRuntime;
     cloned.push(row);
   }
   return cloned;
@@ -268,15 +276,23 @@ export function cloneProfileRowStates(rows: ProfileRowState[]): ProfileRowState[
 export function createHomeViewState(
   initialization: 'LOADING' | 'READY' | 'ERROR',
   activeProfile: ProfileSummaryState | undefined,
-  localProxy: LocalProxyState,
+  canManageProxies: boolean,
+  selectedProxyGroupName: string,
+  selectedProxyNodeName: string,
   vpnGlobalCapture: VpnGlobalCaptureState,
-  error: SafeErrorState | undefined
+  error: SafeErrorState | undefined,
+  runtimeMode?: RuntimeModeState
 ): HomeViewState {
   const state: HomeViewStateValue = new HomeViewStateValue();
   state.initialization = initialization;
   state.activeProfile = cloneProfileSummaryState(activeProfile);
-  state.localProxy = cloneLocalProxyState(localProxy);
+  state.canManageProxies = canManageProxies;
+  state.selectedProxyGroupName = selectedProxyGroupName;
+  state.selectedProxyNodeName = selectedProxyNodeName;
   state.vpnGlobalCapture = cloneVpnGlobalCaptureState(vpnGlobalCapture);
+  state.runtimeMode = runtimeMode === undefined
+    ? createRuntimeModeState(undefined, false, false, undefined)
+    : cloneRuntimeModeState(runtimeMode);
   state.error = cloneSafeErrorState(error);
   return state;
 }
@@ -285,36 +301,31 @@ export function cloneHomeViewState(state: HomeViewState): HomeViewState {
   return createHomeViewState(
     state.initialization,
     state.activeProfile,
-    state.localProxy,
+    state.canManageProxies,
+    state.selectedProxyGroupName,
+    state.selectedProxyNodeName,
     state.vpnGlobalCapture,
-    state.error
+    state.error,
+    state.runtimeMode
   );
 }
 
-export function createLocalProxyState(
-  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR',
-  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY',
-  httpAddress: string | undefined,
-  socksAddress: string | undefined,
+export function createRuntimeModeState(
+  mode: CoreRuntimeMode | undefined,
+  available: boolean,
+  pending: boolean,
   error: SafeErrorState | undefined
-): LocalProxyState {
-  const state: LocalProxyStateValue = new LocalProxyStateValue();
-  state.status = status;
-  state.action = action;
-  state.httpAddress = httpAddress;
-  state.socksAddress = socksAddress;
+): RuntimeModeState {
+  const state: RuntimeModeStateValue = new RuntimeModeStateValue();
+  state.mode = mode;
+  state.available = available;
+  state.pending = pending;
   state.error = cloneSafeErrorState(error);
   return state;
 }
 
-export function cloneLocalProxyState(state: LocalProxyState): LocalProxyState {
-  return createLocalProxyState(
-    state.status,
-    state.action,
-    state.httpAddress,
-    state.socksAddress,
-    state.error
-  );
+export function cloneRuntimeModeState(state: RuntimeModeState): RuntimeModeState {
+  return createRuntimeModeState(state.mode, state.available, state.pending, state.error);
 }
 
 export function createVpnGlobalCaptureState(
@@ -434,10 +445,14 @@ export function createProfileDetailViewState(
   canRefresh: boolean,
   canDelete: boolean,
   canReplaceSubscriptionUrl: boolean,
+  sourceRetryAvailable: boolean,
   sourceRepairRequired: boolean,
   confirmingDelete: boolean,
   httpConfirmationHost: string | undefined,
-  error: SafeErrorState | undefined
+  error: SafeErrorState | undefined,
+  editing: boolean = false,
+  editNameIssue: 'REQUIRED' | 'TOO_LONG' | undefined = undefined,
+  editUrlIssue: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME' | undefined = undefined
 ): ProfileDetailViewState {
   const state: ProfileDetailViewStateValue = new ProfileDetailViewStateValue();
   state.status = status;
@@ -446,7 +461,11 @@ export function createProfileDetailViewState(
   state.canRefresh = canRefresh;
   state.canDelete = canDelete;
   state.canReplaceSubscriptionUrl = canReplaceSubscriptionUrl;
+  state.sourceRetryAvailable = sourceRetryAvailable;
   state.sourceRepairRequired = sourceRepairRequired;
+  state.editing = editing;
+  state.editNameIssue = editNameIssue;
+  state.editUrlIssue = editUrlIssue;
   state.confirmingDelete = confirmingDelete;
   state.httpConfirmationHost = httpConfirmationHost;
   state.error = cloneSafeErrorState(error);
@@ -461,10 +480,14 @@ export function cloneProfileDetailViewState(state: ProfileDetailViewState): Prof
     state.canRefresh,
     state.canDelete,
     state.canReplaceSubscriptionUrl,
+    state.sourceRetryAvailable,
     state.sourceRepairRequired,
     state.confirmingDelete,
     state.httpConfirmationHost,
-    state.error
+    state.error,
+    state.editing,
+    state.editNameIssue,
+    state.editUrlIssue
   );
 }
 
@@ -490,12 +513,6 @@ export function isProfileStartEligible(profile: ProfileApplicationProfileSnapsho
     return false;
   }
   return profile.availability === 'VALID' || profile.availability === 'UPDATE_FAILED_USING_VALID';
-}
-
-export function areProfileActionsLocked(
-  runtime: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR'
-): boolean {
-  return runtime === 'STARTING' || runtime === 'RUNNING' || runtime === 'STOPPING';
 }
 
 export interface ParsedRemoteSourceInput {

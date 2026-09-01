@@ -1,0 +1,16 @@
+{
+  "schemaVersion": "1.0.0",
+  "result": "pass",
+  "packageSha256": "e5365cbdc7188d7c4ddf7e7937c94a952dbfe6740c0549ee10feb5470059420d",
+  "measurement": {
+    "totalCount": 4,
+    "testableCount": 3,
+    "availableCount": 1,
+    "timeoutCount": 1,
+    "failedCount": 1,
+    "minDelayMs": 81,
+    "medianDelayMs": 81,
+    "maxDelayMs": 81
+  },
+  "cancellationState": "CANCELLED"
+}

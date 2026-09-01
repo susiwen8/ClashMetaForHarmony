@@ -3,11 +3,16 @@ import type { ImportProfileResult, ImportProfileUseCase, RemoteImportCommand } f
 import type {
   LocalRuntimeCoordinator,
   LocalRuntimeCoordinatorListener,
-  LocalRuntimeCoordinatorSnapshot,
-  LocalRuntimeStartResult,
-  LocalRuntimeStopResult
+  LocalRuntimeCoordinatorSnapshot
 } from './LocalRuntimeCoordinator';
-import type { ManageDeleteResult, ManageEnableResult, ManageProfileUseCases, ManageReplaceResult } from './ManageProfileUseCases';
+import {
+  createManageProfileFailedResult,
+  type ManageDeleteResult,
+  type ManageEnableResult,
+  type ManageProfileUseCases,
+  type ManageReplaceResult,
+  type ManageUpdateResult
+} from './ManageProfileUseCases';
 import type { ProfileCommitService } from './ProfileCommitService';
 import type { IdGenerator, LocalAcquireCommand, ProfileRepository } from './ProfilePorts';
 import type { Profile, ProfileAvailability, ProfileSourceKind } from './ProfileModels';
@@ -20,12 +25,46 @@ import { redactSensitiveText } from './SecretRedactor';
 import {
   createVpnFailure,
   createVpnRuntimeSnapshot,
+  type VpnFailure,
   type VpnControllerStartResult,
   type VpnControllerStopResult,
   type VpnRuntimeSnapshot,
   type VpnRuntimeState
 } from '../vpn/VpnModels';
-import type { VpnControllerPort } from '../vpn/VpnPorts';
+import type { OneClickVpnConfirmationHandle, OneClickVpnConfirmationPort, VpnControllerPort } from '../vpn/VpnPorts';
+import type { OneClickVpnConfirmationResult } from '../vpn/VpnPorts';
+import type { CoreProxyGroupSnapshot, CoreProxyNodeSummary } from '../core/CoreProxyModels';
+import {
+  cloneProxyDelayResult,
+  type ProxyDelayResult
+} from '../proxy/ProxyDelayModels';
+import {
+  cloneProxyGroupListQueryResult,
+  cloneProxyGroupQueryResult,
+  cloneProxyReconcileResult,
+  cloneProxySelectionResult,
+  createProxyRejectedError,
+  createProxyRejectedResult,
+  type ProxyGroupListQueryResult,
+  type ProxyGroupQueryResult,
+  type ProxyRejectedResult,
+  type ProxyReconcileResult,
+  type ProxyRuntimeIdentity,
+  type ProxySelectionResult
+} from '../proxy/ProxyModels';
+import {
+  cloneOneClickVpnOperationSnapshot,
+  createOneClickVpnFailureResult,
+  createSelectNodeAndEnsureVpnSuccessResult,
+  createOneClickVpnOperationSnapshot,
+  type OneClickVpnOperationSnapshot,
+  type SelectNodeAndEnsureVpnResult
+} from '../proxy/ProxyOneClickVpnModels';
+import type {
+  OneClickVpnOperationListener,
+  ProxyApplicationPort,
+  ProxyOneClickVpnApplicationPort
+} from '../proxy/ProxyPorts';
 
 export interface ProfileApplicationDependencies {
   importUseCase: ImportProfileUseCase;
@@ -34,6 +73,8 @@ export interface ProfileApplicationDependencies {
   runtimeCoordinator: LocalRuntimeCoordinator;
   commitService: ProfileCommitService;
   repository: ProfileRepository;
+  oneClickVpnConfirmation: OneClickVpnConfirmationPort;
+  proxyService: ProxyApplicationPort;
   vpnController?: VpnControllerPort;
   idGenerator?: IdGenerator;
 }
@@ -43,6 +84,7 @@ export interface ProfileApplicationSnapshot {
   profiles: ProfileApplicationProfileSnapshot[];
   activeProfileId?: string;
   runtime: ProfileApplicationRuntimeSnapshot;
+  proxyReconciliation: ProxyReconcileResult | null;
   error: ProfileApplicationErrorSnapshot | null;
 }
 
@@ -54,6 +96,7 @@ export interface ProfileApplicationProfileSnapshot {
   availability: ProfileAvailability;
   updatedAt: string;
   hasCurrentRevision: boolean;
+  currentRevisionVersionId?: string;
   sourceRepairRequired: boolean;
   lastError: ProfileApplicationErrorSnapshot | null;
 }
@@ -81,7 +124,34 @@ export interface ProfileApplicationErrorSnapshot {
   retryable: boolean;
 }
 
+export interface HomeProxySelectionSummary {
+  groupName: string;
+  nodeName: string;
+}
+
+export interface UpdateProfileUpdatedResult {
+  kind: 'UPDATED';
+  profile: Profile;
+}
+
+export interface UpdateProfileRefreshFailedResult {
+  kind: 'UPDATED_REFRESH_FAILED';
+  profile: Profile;
+  error: AppError;
+}
+
+export interface UpdateProfileFailedResult {
+  kind: 'FAILED';
+  error: AppError;
+}
+
+export type UpdateProfileResult =
+  | UpdateProfileUpdatedResult
+  | UpdateProfileRefreshFailedResult
+  | UpdateProfileFailedResult;
+
 export type ProfileApplicationListener = (snapshot: ProfileApplicationSnapshot) => void;
+type AppRuntimeMutationOwner = 'NONE' | 'ONE_CLICK' | 'VPN' | 'PROFILE_EDIT';
 
 class RefreshFailedResultValue implements RefreshProfileFailedResult {
   kind: 'FAILED' = 'FAILED';
@@ -92,26 +162,64 @@ class RefreshFailedResultValue implements RefreshProfileFailedResult {
   }
 }
 
-export class ProfileApplication {
+class UpdateProfileUpdatedResultValue implements UpdateProfileUpdatedResult {
+  kind: 'UPDATED' = 'UPDATED';
+  profile: Profile;
+
+  constructor(profile: Profile) {
+    this.profile = profile;
+  }
+}
+
+class UpdateProfileRefreshFailedResultValue implements UpdateProfileRefreshFailedResult {
+  kind: 'UPDATED_REFRESH_FAILED' = 'UPDATED_REFRESH_FAILED';
+  profile: Profile;
+  error: AppError;
+
+  constructor(profile: Profile, error: AppError) {
+    this.profile = profile;
+    this.error = error;
+  }
+}
+
+class UpdateProfileFailedResultValue implements UpdateProfileFailedResult {
+  kind: 'FAILED' = 'FAILED';
+  error: AppError;
+
+  constructor(error: AppError) {
+    this.error = error;
+  }
+}
+
+export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
   private readonly importUseCase: ImportProfileUseCase;
   private readonly refreshUseCase: RefreshProfileUseCase;
   private readonly manageProfileUseCases: ManageProfileUseCases;
   private readonly runtimeCoordinator: LocalRuntimeCoordinator;
   private readonly commitService: ProfileCommitService;
   private readonly repository: ProfileRepository;
+  private readonly oneClickVpnConfirmation: OneClickVpnConfirmationPort;
+  private readonly proxyService: ProxyApplicationPort;
   private readonly vpnController?: VpnControllerPort;
   private readonly idGenerator?: IdGenerator;
   private readonly runtimeListener: LocalRuntimeCoordinatorListener;
   private readonly listeners: Map<number, ProfileApplicationListener> = new Map();
+  private readonly oneClickVpnOperationListeners: Map<number, OneClickVpnOperationListener> = new Map();
   private initializePromise?: Promise<void>;
   private nextListenerId: number = 0;
+  private nextOneClickVpnOperationListenerId: number = 0;
   private runtimeSubscriptionId: number;
   private disposed: boolean = false;
+  private closed: boolean = false;
+  private closePromise?: Promise<void>;
+  private runtimeMutationOwner: AppRuntimeMutationOwner = 'NONE';
+  private oneClickVpnOperationSnapshot: OneClickVpnOperationSnapshot = createOneClickVpnOperationSnapshot('IDLE', false, 'NONE');
   private snapshot: ProfileApplicationSnapshot = createProfileApplicationSnapshot(
     'LOADING',
     [],
     undefined,
     createProfileApplicationRuntimeSnapshot(thisRuntimeStoppedSnapshot()),
+    null,
     null
   );
 
@@ -122,6 +230,8 @@ export class ProfileApplication {
     this.runtimeCoordinator = dependencies.runtimeCoordinator;
     this.commitService = dependencies.commitService;
     this.repository = dependencies.repository;
+    this.oneClickVpnConfirmation = dependencies.oneClickVpnConfirmation;
+    this.proxyService = dependencies.proxyService;
     this.vpnController = dependencies.vpnController;
     this.idGenerator = dependencies.idGenerator;
     this.runtimeListener = (runtimeSnapshot: LocalRuntimeCoordinatorSnapshot): void => {
@@ -131,6 +241,7 @@ export class ProfileApplication {
           this.snapshot.profiles,
           this.snapshot.activeProfileId,
           createProfileApplicationRuntimeSnapshot(runtimeSnapshot),
+          this.snapshot.proxyReconciliation,
           this.snapshot.error
         )
       );
@@ -161,6 +272,20 @@ export class ProfileApplication {
     this.listeners.delete(id);
   }
 
+  currentOneClickVpnOperation(): OneClickVpnOperationSnapshot {
+    return cloneOneClickVpnOperationSnapshot(this.oneClickVpnOperationSnapshot);
+  }
+
+  subscribeOneClickVpnOperation(listener: OneClickVpnOperationListener): number {
+    this.nextOneClickVpnOperationListenerId += 1;
+    this.oneClickVpnOperationListeners.set(this.nextOneClickVpnOperationListenerId, listener);
+    return this.nextOneClickVpnOperationListenerId;
+  }
+
+  unsubscribeOneClickVpnOperation(id: number): void {
+    this.oneClickVpnOperationListeners.delete(id);
+  }
+
   async importLocal(command: LocalAcquireCommand): Promise<ImportProfileResult> {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
@@ -184,6 +309,10 @@ export class ProfileApplication {
       if (this.snapshot.status !== 'READY') {
         await this.initialize();
       }
+      const drainError: AppError | undefined = await this.requireDelayDrainAppError('RUNTIME_START');
+      if (drainError !== undefined) {
+        return new RefreshFailedResultValue(drainError);
+      }
       const admission = this.runtimeCoordinator.acquireMutationLease('REFRESH');
       if (admission.error !== undefined) {
         return new RefreshFailedResultValue(admission.error);
@@ -194,6 +323,9 @@ export class ProfileApplication {
           allowPlainHttp
         });
         await this.refreshSnapshotFromRepository(undefined);
+        if (result.kind === 'UPDATED') {
+          await this.maybeReconcileForActiveProfile(result.profile.id);
+        }
         return result;
       } finally {
         admission.lease?.release();
@@ -211,8 +343,15 @@ export class ProfileApplication {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('PERSISTENCE');
+    if (drainError !== undefined) {
+      return createManageProfileFailedResult(drainError);
+    }
     const result: ManageEnableResult = await this.manageProfileUseCases.enable(profileId);
     await this.refreshSnapshotFromRepository(undefined);
+    if (result.kind === 'ENABLED') {
+      await this.maybeReconcileForActiveProfile(result.profile.id);
+    }
     return result;
   }
 
@@ -220,79 +359,108 @@ export class ProfileApplication {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('PERSISTENCE');
+    if (drainError !== undefined) {
+      return createManageProfileFailedResult(drainError);
+    }
     const result: ManageDeleteResult = await this.manageProfileUseCases.delete(profileId);
     await this.refreshSnapshotFromRepository(undefined);
     return result;
   }
 
-  async replaceSubscriptionUrl(profileId: string, sourceUrl: string): Promise<ManageReplaceResult> {
+  async replaceSubscriptionUrl(
+    profileId: string,
+    sourceUrl: string,
+    allowPlainHttp: boolean = false
+  ): Promise<ManageReplaceResult> {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
-    const result: ManageReplaceResult = await this.manageProfileUseCases.replaceSubscriptionUrl(profileId, sourceUrl);
-    await this.refreshSnapshotFromRepository(undefined);
-    return result;
+    const result: UpdateProfileResult = await this.updateSourceChangingProfile(profileId, sourceUrl, allowPlainHttp);
+    if (result.kind !== 'UPDATED') {
+      return createManageProfileFailedResult(result.error);
+    }
+    return {
+      kind: 'REPLACED',
+      profile: result.profile
+    };
   }
 
-  async startLocal(): Promise<LocalRuntimeStartResult> {
+  async updateProfile(
+    profileId: string,
+    name: string,
+    sourceUrl?: string,
+    allowPlainHttp: boolean = false
+  ): Promise<UpdateProfileResult> {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
-    if (isVpnBlockingLocalStart(this.vpnController?.snapshot().state)) {
-      return {
-        kind: 'FAILED',
-        error: createAppError('RUNTIME_START', 'Stop VPN global capture before starting the local proxy.', {
-          code: 'CMFA_LOCAL_PROXY_BLOCKED_BY_VPN',
-          retryable: false,
-          timestamp: this.commitService.now(),
-          userMessageResource: 'error.local.blocked_by_vpn'
-        }),
-        snapshot: this.runtimeCoordinator.current()
-      };
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('PERSISTENCE');
+    if (drainError !== undefined) {
+      return new UpdateProfileFailedResultValue(drainError);
     }
-    const result: LocalRuntimeStartResult = await this.runtimeCoordinator.start();
-    await this.refreshSnapshotFromRepository(undefined);
-    return result;
-  }
 
-  async stopLocal(): Promise<LocalRuntimeStopResult> {
-    if (this.snapshot.status !== 'READY') {
-      await this.initialize();
+    const normalizedSourceUrl: string | undefined = normalizeOptionalSourceUrl(sourceUrl);
+    const sourceChanged: boolean = normalizedSourceUrl !== undefined;
+    if (!sourceChanged) {
+      const metadataResult: ManageUpdateResult = await this.manageProfileUseCases.updateMetadata(profileId, name, undefined);
+      await this.refreshSnapshotFromRepository(undefined);
+      if (metadataResult.kind === 'FAILED') {
+        return new UpdateProfileFailedResultValue(metadataResult.error);
+      }
+      return new UpdateProfileUpdatedResultValue(metadataResult.profile);
     }
-    const result: LocalRuntimeStopResult = await this.runtimeCoordinator.stop();
-    await this.refreshSnapshotFromRepository(undefined);
-    return result;
+    const sourceUrlForChange: string = normalizedSourceUrl ?? '';
+    return await this.updateSourceChangingProfile(profileId, sourceUrlForChange, allowPlainHttp, name);
   }
 
   async startVpnGlobalCapture(): Promise<VpnControllerStartResult> {
-    if (this.snapshot.status !== 'READY') {
-      await this.initialize();
-    }
     const controller: VpnControllerPort | undefined = this.vpnController;
-    if (controller === undefined) {
-      return {
-        kind: 'REJECTED',
-        snapshot: createStoppedVpnSnapshot(),
-        failure: createVpnFailure('VPN_CREATE_FAILED', 'VPN global capture is unavailable.')
-      };
+    if (!this.tryAcquireRuntimeMutationOwner('VPN')) {
+      return this.createStartVpnBusyResult(controller);
     }
-    const target: ActiveVpnProfile | undefined = await this.resolveActiveVpnProfile();
-    if (target === undefined) {
-      return {
-        kind: 'REJECTED',
-        snapshot: controller.snapshot(),
-        failure: createVpnFailure('VPN_PROFILE_UNAVAILABLE', 'No committed active profile is available for VPN global capture.')
-      };
+    try {
+      if (controller === undefined) {
+        return {
+          kind: 'REJECTED',
+          snapshot: createStoppedVpnSnapshot(),
+          failure: createVpnFailure('VPN_CREATE_FAILED', 'VPN global capture is unavailable.')
+        };
+      }
+      if (this.snapshot.status !== 'READY') {
+        return {
+          kind: 'REJECTED',
+          snapshot: controller.snapshot(),
+          failure: createVpnFailure('VPN_PROFILE_UNAVAILABLE', 'VPN global capture is unavailable until profile loading completes.')
+        };
+      }
+      const target: ActiveVpnProfile | undefined = this.resolveActiveVpnProfileFromSnapshot();
+      if (target === undefined) {
+        return {
+          kind: 'REJECTED',
+          snapshot: controller.snapshot(),
+          failure: createVpnFailure('VPN_PROFILE_UNAVAILABLE', 'No committed active profile is available for VPN global capture.')
+        };
+      }
+      const drainFailure: VpnFailure | undefined = await this.requireDelayDrainVpnFailure('VPN_CREATE_FAILED');
+      if (drainFailure !== undefined) {
+        return {
+          kind: 'REJECTED',
+          snapshot: controller.snapshot(),
+          failure: drainFailure
+        };
+      }
+      if (this.snapshot.runtime.state === 'STARTING' || this.snapshot.runtime.state === 'STOPPING') {
+        return {
+          kind: 'REJECTED',
+          snapshot: controller.snapshot(),
+          failure: createVpnFailure('VPN_CREATE_FAILED', 'VPN global capture could not be started.')
+        };
+      }
+      return controller.start(target.profileId, target.versionId, createFreshVpnSessionId(this.idGenerator, this.commitService.now()));
+    } finally {
+      this.releaseRuntimeMutationOwner('VPN');
     }
-    const localStopResult: LocalRuntimeStopResult = await this.stopLocal();
-    if (localStopResult.kind === 'FAILED' || localStopResult.snapshot.state !== 'STOPPED') {
-      return {
-        kind: 'REJECTED',
-        snapshot: controller.snapshot(),
-        failure: createVpnFailure('VPN_LOCAL_STOP_REQUIRED', 'Stop the local proxy before starting VPN global capture.')
-      };
-    }
-    return await controller.start(target.profileId, target.versionId, createFreshVpnSessionId(this.idGenerator, this.commitService.now()));
   }
 
   async stopVpnGlobalCapture(): Promise<VpnControllerStopResult> {
@@ -300,13 +468,166 @@ export class ProfileApplication {
       await this.initialize();
     }
     const controller: VpnControllerPort | undefined = this.vpnController;
-    if (controller === undefined) {
-      return {
-        kind: 'STOPPED',
-        snapshot: createStoppedVpnSnapshot()
-      };
+    if (!this.tryAcquireRuntimeMutationOwner('VPN')) {
+      return this.createStopVpnBusyResult(controller);
     }
-    return await controller.stop();
+    try {
+      if (controller === undefined) {
+        return {
+          kind: 'STOPPED',
+          snapshot: createStoppedVpnSnapshot()
+        };
+      }
+      const drainFailure: VpnFailure | undefined = await this.requireDelayDrainVpnFailure('VPN_STOP_FAILED');
+      if (drainFailure !== undefined) {
+        return {
+          kind: 'FAILED',
+          snapshot: controller.snapshot(),
+          failure: drainFailure
+        };
+      }
+      return await controller.stop();
+    } finally {
+      this.releaseRuntimeMutationOwner('VPN');
+    }
+  }
+
+  async listGroups(): Promise<ProxyGroupListQueryResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxyGroupListQueryResult(await this.proxyService.listGroups());
+  }
+
+  async queryGroup(groupName: string, groupPath?: string[]): Promise<ProxyGroupQueryResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxyGroupQueryResult(await this.proxyService.queryGroup(groupName, groupPath));
+  }
+
+  async queryHomeProxySelection(): Promise<HomeProxySelectionSummary | undefined> {
+    try {
+      const groupsResult: ProxyGroupListQueryResult = await this.listGroups();
+      if (groupsResult.kind !== 'SNAPSHOT' || groupsResult.groups.length === 0) {
+        return undefined;
+      }
+      const primaryGroupName: string = groupsResult.groups[0].name;
+      return await this.queryHomeProxySelectionFromGroup(primaryGroupName, groupsResult.identity, [primaryGroupName]);
+    } catch (_) {
+      return undefined;
+    }
+  }
+
+  async select(
+    groupName: string,
+    memberName: string,
+    snapshotGeneration: number,
+    groupPath?: string[]
+  ): Promise<ProxySelectionResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxySelectionResult(await this.proxyService.select(groupName, memberName, snapshotGeneration, groupPath));
+  }
+
+  async selectNodeAndEnsureVpn(
+    groupName: string,
+    memberName: string,
+    snapshotGeneration: number,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    if (!this.tryAcquireRuntimeMutationOwner('ONE_CLICK')) {
+      return createBusyOneClickVpnFailure();
+    }
+    let result: SelectNodeAndEnsureVpnResult | undefined;
+    try {
+      result = await this.selectNodeAndEnsureVpnInsideLease(groupName, memberName, snapshotGeneration, groupPath);
+      return result;
+    } finally {
+      this.finishOneClickVpnOperation(result);
+    }
+  }
+
+  async reconcileActiveSelections(): Promise<ProxyReconcileResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    const drainRejected: ProxyRejectedResult | undefined = await this.requireDelayDrainProxyRejected();
+    if (drainRejected !== undefined) {
+      this.publish(
+        createProfileApplicationSnapshot(
+          'READY',
+          this.snapshot.profiles,
+          this.snapshot.activeProfileId,
+          this.snapshot.runtime,
+          drainRejected,
+          this.snapshot.error
+        )
+      );
+      return cloneProxyReconcileResult(drainRejected);
+    }
+    const result: ProxyReconcileResult = await this.safeProxyReconciliation();
+    this.publish(
+      createProfileApplicationSnapshot(
+        'READY',
+        this.snapshot.profiles,
+        this.snapshot.activeProfileId,
+        this.snapshot.runtime,
+        result,
+        this.snapshot.error
+      )
+    );
+    return cloneProxyReconcileResult(result);
+  }
+
+  async startDelayTest(groupName: string, snapshotGeneration: number, groupPath?: string[]): Promise<ProxyDelayResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxyDelayResult(await this.proxyService.startDelayTest(groupName, snapshotGeneration, groupPath));
+  }
+
+  async readDelayTest(jobId: string): Promise<ProxyDelayResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxyDelayResult(await this.proxyService.readDelayTest(jobId));
+  }
+
+  async cancelDelayTest(jobId: string): Promise<ProxyDelayResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    return cloneProxyDelayResult(await this.proxyService.cancelDelayTest(jobId));
+  }
+
+  async cancelAndDrainDelayTest(): Promise<ProxyRejectedResult | undefined> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    const result: ProxyRejectedResult | undefined = await this.proxyService.cancelAndDrainDelayTest();
+    return result === undefined ? undefined : createProxyRejectedResult(result.error);
+  }
+
+  async close(): Promise<void> {
+    if (this.closed) {
+      return;
+    }
+    if (this.closePromise !== undefined) {
+      await this.closePromise;
+      return;
+    }
+    const closePromise: Promise<void> = this.closeInternal().finally(() => {
+      if (!this.closed) {
+        this.closePromise = undefined;
+      }
+    });
+    this.closePromise = closePromise;
+    await closePromise;
   }
 
   dispose(): void {
@@ -316,7 +637,7 @@ export class ProfileApplication {
     this.disposed = true;
     this.runtimeCoordinator.unsubscribe(this.runtimeSubscriptionId);
     this.listeners.clear();
-    this.runtimeCoordinator.dispose();
+    this.oneClickVpnOperationListeners.clear();
   }
 
   private async initializeInternal(): Promise<void> {
@@ -368,24 +689,196 @@ export class ProfileApplication {
         profiles,
         activeProfileId,
         createProfileApplicationRuntimeSnapshot(this.runtimeCoordinator.current()),
+        this.snapshot.proxyReconciliation,
         snapshotError
       )
     );
   }
 
-  private async resolveActiveVpnProfile(): Promise<ActiveVpnProfile | undefined> {
+  private async maybeReconcileForActiveProfile(profileId: string): Promise<void> {
+    if (this.snapshot.activeProfileId !== profileId) {
+      return;
+    }
+    const drainRejected: ProxyRejectedResult | undefined = await this.requireDelayDrainProxyRejected();
+    if (drainRejected !== undefined) {
+      this.publish(
+        createProfileApplicationSnapshot(
+          'READY',
+          this.snapshot.profiles,
+          this.snapshot.activeProfileId,
+          this.snapshot.runtime,
+          drainRejected,
+          this.snapshot.error
+        )
+      );
+      return;
+    }
+    const result: ProxyReconcileResult = await this.safeProxyReconciliation();
+    this.publish(
+      createProfileApplicationSnapshot(
+        'READY',
+        this.snapshot.profiles,
+        this.snapshot.activeProfileId,
+        this.snapshot.runtime,
+        result,
+        this.snapshot.error
+      )
+    );
+  }
+
+  private async safeProxyReconciliation(): Promise<ProxyReconcileResult> {
+    try {
+      return cloneProxyReconcileResult(await this.proxyService.reconcileActiveSelections());
+    } catch {
+      return createProxyRejectedResult(
+        createProxyRejectedError('PROXY_QUERY_FAILED', true, this.commitService.now())
+      );
+    }
+  }
+
+  private async closeInternal(): Promise<void> {
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('PERSISTENCE');
+    if (drainError !== undefined) {
+      throw new Error(drainError.technicalDetail);
+    }
+    this.dispose();
+    this.runtimeCoordinator.dispose();
+    this.closed = true;
+  }
+
+  private async requireDelayDrainAppError(stage: AppErrorStage): Promise<AppError | undefined> {
+    const rejected: ProxyRejectedResult | undefined = await this.requireDelayDrainProxyRejected();
+    if (rejected === undefined) {
+      return undefined;
+    }
+    return createDelayDrainAppError(stage, this.commitService.now());
+  }
+
+  private async requireDelayDrainProxyRejected(): Promise<ProxyRejectedResult | undefined> {
+    try {
+      const rejected: ProxyRejectedResult | undefined = await this.proxyService.cancelAndDrainDelayTest();
+      return rejected === undefined ? undefined : createProxyRejectedResult(rejected.error);
+    } catch (_) {
+      return createDelayDrainProxyRejected(this.commitService.now());
+    }
+  }
+
+  private async requireDelayDrainVpnFailure(code: 'VPN_CREATE_FAILED' | 'VPN_STOP_FAILED'): Promise<VpnFailure | undefined> {
+    const rejected: ProxyRejectedResult | undefined = await this.requireDelayDrainProxyRejected();
+    if (rejected === undefined) {
+      return undefined;
+    }
+    return createVpnFailure(code, 'Proxy delay drain must finish before changing VPN global capture.');
+  }
+
+  private resolveActiveVpnProfileFromSnapshot(): ActiveVpnProfile | undefined {
     const activeProfileId: string | undefined = this.snapshot.activeProfileId;
     if (activeProfileId === undefined) {
       return undefined;
     }
-    const profile: Profile | undefined = await this.repository.get(activeProfileId);
-    if (profile === undefined || profile.currentRevision === null) {
-      return undefined;
+    for (let index: number = 0; index < this.snapshot.profiles.length; index += 1) {
+      const profile: ProfileApplicationProfileSnapshot = this.snapshot.profiles[index];
+      if (profile.id !== activeProfileId || profile.currentRevisionVersionId === undefined) {
+        continue;
+      }
+      if (profile.availability !== 'VALID' && profile.availability !== 'UPDATE_FAILED_USING_VALID') {
+        return undefined;
+      }
+      return new ActiveVpnProfile(profile.id, profile.currentRevisionVersionId);
     }
-    if (profile.availability !== 'VALID' && profile.availability !== 'UPDATE_FAILED_USING_VALID') {
-      return undefined;
+    return undefined;
+  }
+
+  private async resolveLatestProfile(profileId: string, fallback: Profile): Promise<Profile> {
+    try {
+      const latest: Profile | undefined = await this.repository.get(profileId);
+      return latest ?? fallback;
+    } catch (_) {
+      return fallback;
     }
-    return new ActiveVpnProfile(profile.id, profile.currentRevision.validatedAt);
+  }
+
+  private async updateSourceChangingProfile(
+    profileId: string,
+    sourceUrl: string,
+    allowPlainHttp: boolean,
+    explicitName?: string
+  ): Promise<UpdateProfileResult> {
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('PERSISTENCE');
+    if (drainError !== undefined) {
+      return new UpdateProfileFailedResultValue(drainError);
+    }
+    if (!this.tryAcquireRuntimeMutationOwner('PROFILE_EDIT')) {
+      return new UpdateProfileFailedResultValue(createProfileEditBusyError(this.commitService.now()));
+    }
+    try {
+      if (isPlainHttpUrl(sourceUrl) && !allowPlainHttp) {
+        return new UpdateProfileFailedResultValue(createPlainHttpUpdateError(this.commitService.now()));
+      }
+      const vpnSnapshot: VpnRuntimeSnapshot = this.vpnController?.snapshot() ?? createStoppedVpnSnapshot();
+      if (vpnSnapshot.state !== 'STOPPED') {
+        return new UpdateProfileFailedResultValue(createSourceEditWhileVpnRunningError(this.commitService.now()));
+      }
+      const effectiveNameResult: ResolvedProfileNameResult = await this.resolveProfileNameForSourceEdit(profileId, explicitName);
+      if (effectiveNameResult.error !== undefined) {
+        return new UpdateProfileFailedResultValue(effectiveNameResult.error);
+      }
+      const metadataResult: ManageUpdateResult =
+        await this.manageProfileUseCases.updateMetadata(profileId, effectiveNameResult.name, sourceUrl);
+      await this.refreshSnapshotFromRepository(undefined);
+      if (metadataResult.kind === 'FAILED') {
+        return new UpdateProfileFailedResultValue(metadataResult.error);
+      }
+      return await this.completeSourceChangingRefresh(profileId, allowPlainHttp, metadataResult.profile);
+    } finally {
+      this.releaseRuntimeMutationOwner('PROFILE_EDIT');
+    }
+  }
+
+  private async completeSourceChangingRefresh(
+    profileId: string,
+    allowPlainHttp: boolean,
+    metadataProfile: Profile
+  ): Promise<UpdateProfileResult> {
+    const refreshResult: RefreshProfileResult = await this.refresh(profileId, allowPlainHttp);
+    const latestProfile: Profile = await this.resolveLatestProfile(profileId, metadataProfile);
+    if (refreshResult.kind === 'UPDATED') {
+      if (refreshResult.profile.availability === 'UPDATE_FAILED_USING_VALID' || refreshResult.profile.lastError !== null) {
+        return new UpdateProfileRefreshFailedResultValue(
+          latestProfile,
+          cloneAppError(refreshResult.profile.lastError ?? createUpdateRefreshCancelledError(this.commitService.now()))
+        );
+      }
+      return new UpdateProfileUpdatedResultValue(latestProfile);
+    }
+    if (refreshResult.kind === 'FAILED') {
+      return new UpdateProfileRefreshFailedResultValue(latestProfile, cloneAppError(refreshResult.error));
+    }
+    return new UpdateProfileRefreshFailedResultValue(latestProfile, createUpdateRefreshCancelledError(this.commitService.now()));
+  }
+
+  private async resolveProfileNameForSourceEdit(
+    profileId: string,
+    explicitName?: string
+  ): Promise<ResolvedProfileNameResult> {
+    if (explicitName !== undefined) {
+      return new ResolvedProfileNameResultValue(explicitName, undefined);
+    }
+    try {
+      const profile: Profile | undefined = await this.repository.get(profileId);
+      if (profile === undefined) {
+        return new ResolvedProfileNameResultValue('', createAppError('PERSISTENCE', 'Profile was not found.', {
+          retryable: false,
+          timestamp: this.commitService.now()
+        }));
+      }
+      return new ResolvedProfileNameResultValue(profile.name, undefined);
+    } catch (error) {
+      return new ResolvedProfileNameResultValue('', createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
+        retryable: false,
+        timestamp: this.commitService.now()
+      }));
+    }
   }
 
   private publish(snapshot: ProfileApplicationSnapshot): void {
@@ -401,6 +894,288 @@ export class ProfileApplication {
       listeners[index](cloneProfileApplicationSnapshot(this.snapshot));
     }
   }
+
+  private finishOneClickVpnOperation(result: SelectNodeAndEnsureVpnResult | undefined): void {
+    const outcome: 'SUCCEEDED' | 'FAILED' = result !== undefined &&
+      result.kind !== 'FAILED' &&
+      result.kind !== 'SAVED_VPN_START_FAILED'
+      ? 'SUCCEEDED'
+      : 'FAILED';
+    this.releaseRuntimeMutationOwner('ONE_CLICK');
+    this.publishOneClickVpnOperation(createOneClickVpnOperationSnapshot('IDLE', false, outcome));
+  }
+
+  private publishOneClickVpnOperation(snapshot: OneClickVpnOperationSnapshot): void {
+    this.oneClickVpnOperationSnapshot = cloneOneClickVpnOperationSnapshot(snapshot);
+    if (this.oneClickVpnOperationListeners.size === 0) {
+      return;
+    }
+    const listeners: OneClickVpnOperationListener[] = [];
+    this.oneClickVpnOperationListeners.forEach((listener: OneClickVpnOperationListener): void => {
+      listeners.push(listener);
+    });
+    for (let index = 0; index < listeners.length; index += 1) {
+      try {
+        listeners[index](cloneOneClickVpnOperationSnapshot(this.oneClickVpnOperationSnapshot));
+      } catch (_) {
+      }
+    }
+  }
+
+  private async selectNodeAndEnsureVpnInsideLease(
+    groupName: string,
+    memberName: string,
+    snapshotGeneration: number,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    const vpnSnapshot: VpnRuntimeSnapshot = this.vpnController?.snapshot() ?? createStoppedVpnSnapshot();
+    if (this.snapshot.runtime.state === 'STARTING' ||
+      this.snapshot.runtime.state === 'STOPPING' ||
+      isVpnOneClickBusyState(vpnSnapshot.state)) {
+      return createBusyOneClickVpnFailure();
+    }
+    if (vpnSnapshot.state === 'RUNNING') {
+      return await this.applySelectionToRunningVpn(groupName, memberName, snapshotGeneration, vpnSnapshot, groupPath);
+    }
+    return await this.selectAndStartVpn(groupName, memberName, snapshotGeneration, groupPath);
+  }
+
+  private async applySelectionToRunningVpn(
+    groupName: string,
+    memberName: string,
+    snapshotGeneration: number,
+    vpnSnapshot: VpnRuntimeSnapshot,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    const queryResult: ProxyGroupQueryResult = await this.proxyService.queryGroup(groupName, groupPath);
+    if (queryResult.kind === 'REJECTED') {
+      return mapOneClickQueryRejectedResult(queryResult, false);
+    }
+    const activeSessionId: string | null = vpnSnapshot.activeRequest?.sessionId ?? null;
+    if (activeSessionId === null || queryResult.snapshot.identity.sessionId !== activeSessionId) {
+      return createOneClickVpnFailureResult('VPN_CONFIRMATION', 'VPN_SESSION_CHANGED', true, 'proxies_error_session_changed', true);
+    }
+    const selectedNode = findProxyGroupNode(queryResult.snapshot.group, memberName);
+    if (queryResult.snapshot.group.selectedName === memberName && selectedNode !== undefined && selectedNode.selected) {
+      return createSelectNodeAndEnsureVpnSuccessResult('ALREADY_ACTIVE');
+    }
+    this.publishOneClickVpnOperation(createOneClickVpnOperationSnapshot('SWITCHING_VPN', true, 'NONE'));
+    const selectionResult: ProxySelectionResult =
+      await this.proxyService.select(groupName, memberName, snapshotGeneration, groupPath);
+    if (selectionResult.kind === 'APPLIED_NOW') {
+      return createSelectNodeAndEnsureVpnSuccessResult('APPLIED_TO_RUNNING_VPN');
+    }
+    if (selectionResult.kind === 'APPLIED_NOT_PERSISTED') {
+      return createSelectNodeAndEnsureVpnSuccessResult('APPLIED_TO_RUNNING_VPN_NOT_PERSISTED');
+    }
+    if (selectionResult.kind === 'REJECTED') {
+      return mapProxySelectionRejected(selectionResult, false);
+    }
+    return createOneClickVpnFailureResult(
+      'SELECTION',
+      'PROXY_PERSISTENCE_FAILED',
+      true,
+      'proxies_error_persistence_failed',
+      false
+    );
+  }
+
+  private async selectAndStartVpn(
+    groupName: string,
+    memberName: string,
+    snapshotGeneration: number,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    this.publishOneClickVpnOperation(createOneClickVpnOperationSnapshot('SAVING_SELECTION', true, 'NONE'));
+    const selectionResult: ProxySelectionResult =
+      await this.proxyService.select(groupName, memberName, snapshotGeneration, groupPath);
+    if (selectionResult.kind === 'REJECTED') {
+      return mapProxySelectionRejected(selectionResult, false);
+    }
+    if (selectionResult.kind === 'APPLIED_NOT_PERSISTED') {
+      return createOneClickVpnFailureResult(
+        'SELECTION',
+        'PROXY_PERSISTENCE_FAILED',
+        selectionResult.error.retryable,
+        'proxies_error_persistence_failed',
+        false
+      );
+    }
+    return await this.startVpnAfterSelection(groupName, memberName, true, groupPath);
+  }
+
+  private async startVpnAfterSelection(
+    groupName: string,
+    memberName: string,
+    savedForNextStart: boolean,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    const controller: VpnControllerPort | undefined = this.vpnController;
+    if (controller === undefined) {
+      return createOneClickVpnFailureResult('VPN_START', 'VPN_PROFILE_UNAVAILABLE', false, 'error_vpn_profile_unavailable', savedForNextStart);
+    }
+    const target: ActiveVpnProfile | undefined = this.resolveActiveVpnProfileFromSnapshot();
+    if (target === undefined) {
+      return createOneClickVpnFailureResult('VPN_START', 'VPN_PROFILE_UNAVAILABLE', false, 'error_vpn_profile_unavailable', savedForNextStart);
+    }
+    const sessionId: string = createFreshVpnSessionId(this.idGenerator, this.commitService.now());
+    let confirmationHandle: OneClickVpnConfirmationHandle | undefined;
+    try {
+      confirmationHandle = this.oneClickVpnConfirmation.arm(sessionId, ONE_CLICK_VPN_CONFIRMATION_TIMEOUT_MS);
+      this.publishOneClickVpnOperation(createOneClickVpnOperationSnapshot('STARTING_VPN', true, 'NONE'));
+      let startResult: VpnControllerStartResult;
+      try {
+        startResult = await controller.start(target.profileId, target.versionId, sessionId);
+      } catch (_) {
+        return createSelectNodeAndEnsureVpnSuccessResult('SAVED_VPN_START_FAILED');
+      }
+      if (startResult.kind !== 'STARTED') {
+        return createSelectNodeAndEnsureVpnSuccessResult('SAVED_VPN_START_FAILED');
+      }
+      this.publishOneClickVpnOperation(createOneClickVpnOperationSnapshot('CONFIRMING_SELECTION', true, 'NONE'));
+      try {
+        confirmationHandle.markStartAccepted();
+      } catch (_) {
+        return createSelectNodeAndEnsureVpnSuccessResult('SAVED_VPN_START_FAILED');
+      }
+      let confirmationResult: OneClickVpnConfirmationResult;
+      try {
+        confirmationResult = await confirmationHandle.wait();
+      } catch (_) {
+        return createSelectNodeAndEnsureVpnSuccessResult('SAVED_VPN_START_FAILED');
+      }
+      return await this.finishVpnConfirmation(
+        groupName,
+        memberName,
+        controller,
+        target,
+        sessionId,
+        confirmationResult,
+        savedForNextStart,
+        groupPath
+      );
+    } catch (_) {
+      return createSelectNodeAndEnsureVpnSuccessResult('SAVED_VPN_START_FAILED');
+    } finally {
+      confirmationHandle?.cancel();
+    }
+  }
+
+  private async finishVpnConfirmation(
+    groupName: string,
+    memberName: string,
+    controller: VpnControllerPort,
+    target: ActiveVpnProfile,
+    sessionId: string,
+    confirmationResult: OneClickVpnConfirmationResult,
+    savedForNextStart: boolean,
+    groupPath?: string[]
+  ): Promise<SelectNodeAndEnsureVpnResult> {
+    if (confirmationResult.kind === 'RUNNING') {
+      const queryResult: ProxyGroupQueryResult = await this.proxyService.queryGroup(groupName, groupPath);
+      if (queryResult.kind === 'REJECTED') {
+        return mapOneClickQueryRejectedResult(queryResult, savedForNextStart);
+      }
+      if (queryResult.snapshot.identity.sessionId !== sessionId ||
+        queryResult.snapshot.identity.profileId !== target.profileId ||
+        queryResult.snapshot.identity.revisionId !== target.versionId) {
+        return createOneClickVpnFailureResult('VPN_CONFIRMATION', 'VPN_SESSION_CHANGED', true, 'proxies_error_session_changed', savedForNextStart);
+      }
+      const selectedNode = findProxyGroupNode(queryResult.snapshot.group, memberName);
+      if (queryResult.snapshot.group.selectedName !== memberName || selectedNode === undefined || !selectedNode.selected) {
+        return createOneClickVpnFailureResult('VPN_CONFIRMATION', 'VPN_SESSION_CHANGED', true, 'proxies_error_session_changed', savedForNextStart);
+      }
+      return createSelectNodeAndEnsureVpnSuccessResult('VPN_STARTED');
+    }
+    if (confirmationResult.kind === 'STOPPED') {
+      return createOneClickVpnFailureResult('VPN_START', 'VPN_STOPPED_BEFORE_RUNNING', true, 'error_vpn_start_failed', savedForNextStart);
+    }
+    if (confirmationResult.kind === 'TIMEOUT') {
+      return createOneClickVpnFailureResult(
+        'VPN_CONFIRMATION',
+        'VPN_CONFIRMATION_TIMEOUT',
+        true,
+        'proxies_one_click_confirmation_timeout',
+        savedForNextStart
+      );
+    }
+    if (confirmationResult.kind === 'SESSION_CHANGED' || confirmationResult.kind === 'CANCELLED') {
+      return createOneClickVpnFailureResult('VPN_CONFIRMATION', 'VPN_SESSION_CHANGED', true, 'proxies_error_session_changed', savedForNextStart);
+    }
+    if (controller.snapshot().lastFailure?.code === 'VPN_PERMISSION_DENIED') {
+      return createOneClickVpnFailureResult('VPN_START', 'VPN_PERMISSION_DENIED', true, 'error_vpn_permission_denied', savedForNextStart);
+    }
+    return createOneClickVpnFailureResult('VPN_START', 'VPN_START_FAILED', true, 'error_vpn_start_failed', savedForNextStart);
+  }
+
+  private async queryHomeProxySelectionFromGroup(
+    primaryGroupName: string,
+    expectedIdentity: ProxyRuntimeIdentity,
+    groupPath: string[]
+  ): Promise<HomeProxySelectionSummary | undefined> {
+    if (groupPath.length === 0 || groupPath.length > HOME_PROXY_SELECTION_MAX_GROUP_PATH_SEGMENTS) {
+      return undefined;
+    }
+    const targetGroupName: string = groupPath[groupPath.length - 1];
+    let queryResult: ProxyGroupQueryResult;
+    try {
+      queryResult = await this.queryGroup(targetGroupName, groupPath);
+    } catch (_) {
+      return undefined;
+    }
+    if (queryResult.kind !== 'SNAPSHOT' ||
+      !sameProxyRuntimeIdentity(queryResult.snapshot.identity, expectedIdentity) ||
+      queryResult.snapshot.group.name !== targetGroupName) {
+      return undefined;
+    }
+    const selectedNode: CoreProxyNodeSummary | undefined = findStrictSelectedProxyGroupNode(queryResult.snapshot.group);
+    if (selectedNode === undefined) {
+      return undefined;
+    }
+    if (!selectedNode.isGroup) {
+      return {
+        groupName: primaryGroupName,
+        nodeName: selectedNode.name
+      };
+    }
+    if (groupPath.length >= HOME_PROXY_SELECTION_MAX_GROUP_PATH_SEGMENTS || groupPath.includes(selectedNode.name)) {
+      return undefined;
+    }
+    const nextGroupPath: string[] = groupPath.slice();
+    nextGroupPath.push(selectedNode.name);
+    return await this.queryHomeProxySelectionFromGroup(primaryGroupName, expectedIdentity, nextGroupPath);
+  }
+
+  private tryAcquireRuntimeMutationOwner(owner: AppRuntimeMutationOwner): boolean {
+    if (this.runtimeMutationOwner !== 'NONE') {
+      return false;
+    }
+    this.runtimeMutationOwner = owner;
+    return true;
+  }
+
+  private releaseRuntimeMutationOwner(owner: AppRuntimeMutationOwner): void {
+    if (this.runtimeMutationOwner !== owner) {
+      return;
+    }
+    this.runtimeMutationOwner = 'NONE';
+  }
+
+  private createStartVpnBusyResult(controller: VpnControllerPort | undefined): VpnControllerStartResult {
+    return {
+      kind: 'REJECTED',
+      snapshot: controller?.snapshot() ?? createStoppedVpnSnapshot(),
+      failure: createVpnFailure('VPN_CREATE_FAILED', 'Another app runtime mutation is already in progress.')
+    };
+  }
+
+  private createStopVpnBusyResult(controller: VpnControllerPort | undefined): VpnControllerStopResult {
+    return {
+      kind: 'FAILED',
+      snapshot: controller?.snapshot() ?? createStoppedVpnSnapshot(),
+      failure: createVpnFailure('VPN_STOP_FAILED', 'Another app runtime mutation is already in progress.')
+    };
+  }
 }
 
 class ActiveVpnProfile {
@@ -413,6 +1188,21 @@ class ActiveVpnProfile {
   }
 }
 
+class ResolvedProfileNameResultValue implements ResolvedProfileNameResult {
+  name: string;
+  error?: AppError;
+
+  constructor(name: string, error: AppError | undefined) {
+    this.name = name;
+    this.error = error;
+  }
+}
+
+interface ResolvedProfileNameResult {
+  name: string;
+  error?: AppError;
+}
+
 class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfileSnapshot {
   id: string = '';
   name: string = '';
@@ -421,6 +1211,7 @@ class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfil
   availability: ProfileAvailability = 'INVALID';
   updatedAt: string = '';
   hasCurrentRevision: boolean = false;
+  currentRevisionVersionId?: string;
   sourceRepairRequired: boolean = false;
   lastError: ProfileApplicationErrorSnapshot | null = null;
 }
@@ -430,6 +1221,7 @@ class ProfileApplicationSnapshotValue implements ProfileApplicationSnapshot {
   profiles: ProfileApplicationProfileSnapshot[] = [];
   activeProfileId?: string;
   runtime: ProfileApplicationRuntimeSnapshot = createProfileApplicationRuntimeSnapshot(thisRuntimeStoppedSnapshot());
+  proxyReconciliation: ProxyReconcileResult | null = null;
   error: ProfileApplicationErrorSnapshot | null = null;
 }
 
@@ -496,6 +1288,7 @@ function createProfileApplicationProfileSnapshot(profile: Profile): ProfileAppli
   snapshot.availability = profile.availability;
   snapshot.updatedAt = profile.updatedAt;
   snapshot.hasCurrentRevision = profile.currentRevision !== null;
+  snapshot.currentRevisionVersionId = profile.currentRevision === null ? undefined : profile.currentRevision.validatedAt;
   snapshot.sourceRepairRequired = isSourceRepairRequired(profile);
   snapshot.lastError = profile.lastError === null ? null : createProfileApplicationErrorSnapshot(profile.lastError);
   return snapshot;
@@ -506,6 +1299,7 @@ function createProfileApplicationSnapshot(
   profiles: ProfileApplicationProfileSnapshot[],
   activeProfileId: string | undefined,
   runtime: ProfileApplicationRuntimeSnapshot,
+  proxyReconciliation: ProxyReconcileResult | null,
   error: ProfileApplicationErrorSnapshot | null
 ): ProfileApplicationSnapshot {
   const snapshot: ProfileApplicationSnapshotValue = new ProfileApplicationSnapshotValue();
@@ -513,6 +1307,7 @@ function createProfileApplicationSnapshot(
   snapshot.profiles = cloneProfileApplicationProfiles(profiles);
   snapshot.activeProfileId = activeProfileId;
   snapshot.runtime = cloneProfileApplicationRuntimeSnapshot(runtime);
+  snapshot.proxyReconciliation = proxyReconciliation === null ? null : cloneProxyReconcileResult(proxyReconciliation);
   snapshot.error = error === null ? null : cloneProfileApplicationErrorSnapshot(error);
   return snapshot;
 }
@@ -523,6 +1318,7 @@ function cloneProfileApplicationSnapshot(snapshot: ProfileApplicationSnapshot): 
     snapshot.profiles,
     snapshot.activeProfileId,
     snapshot.runtime,
+    snapshot.proxyReconciliation,
     snapshot.error
   );
 }
@@ -539,6 +1335,7 @@ function cloneProfileApplicationProfiles(profiles: ProfileApplicationProfileSnap
     snapshot.availability = source.availability;
     snapshot.updatedAt = source.updatedAt;
     snapshot.hasCurrentRevision = source.hasCurrentRevision;
+    snapshot.currentRevisionVersionId = source.currentRevisionVersionId;
     snapshot.sourceRepairRequired = source.sourceRepairRequired;
     snapshot.lastError = source.lastError === null ? null : cloneProfileApplicationErrorSnapshot(source.lastError);
     cloned.push(snapshot);
@@ -625,21 +1422,175 @@ function createStoppedVpnSnapshot(): VpnRuntimeSnapshot {
   });
 }
 
-function isVpnBlockingLocalStart(state: VpnRuntimeState | undefined): boolean {
-  if (state === undefined) {
-    return false;
-  }
-  return state === 'AWAITING_CONSENT' ||
-    state === 'STARTING' ||
-    state === 'RUNNING' ||
-    state === 'RECOVERING' ||
-    state === 'STOPPING';
-}
-
 function createFreshVpnSessionId(idGenerator: IdGenerator | undefined, timestamp: string): string {
   const rawId: string = idGenerator?.nextId().trim() ?? timestamp;
   const normalized: string = rawId.replace(/[^0-9A-Za-z_-]/g, '-').replace(/-+/g, '-').replace(/^-|-$/g, '');
   return `vpn-session-${normalized.length > 0 ? normalized : 'current'}`;
+}
+
+function createDelayDrainProxyRejected(timestamp: string): ProxyRejectedResult {
+  return createProxyRejectedResult(createProxyRejectedError('PROXY_DELAY_DRAIN_FAILED', true, timestamp));
+}
+
+function createDelayDrainAppError(stage: AppErrorStage, timestamp: string): AppError {
+  return createAppError(stage, 'Proxy delay drain must finish before this operation can continue.', {
+    code: 'CMFA_PROXY_DELAY_DRAIN_FAILED',
+    retryable: true,
+    timestamp,
+    userMessageResource: 'error.proxy.delay_drain'
+  });
+}
+
+function createPlainHttpUpdateError(timestamp: string): AppError {
+  return createAppError('IMPORT', 'Remote profile URL updates require HTTPS or explicit plain HTTP approval.', {
+    retryable: false,
+    timestamp
+  });
+}
+
+function createSourceEditWhileVpnRunningError(timestamp: string): AppError {
+  return createAppError('RUNTIME_STOP', 'VPN global capture must be stopped before editing the profile source.', {
+    retryable: false,
+    timestamp
+  });
+}
+
+function createProfileEditBusyError(timestamp: string): AppError {
+  return createAppError('RUNTIME_STOP', 'Another app runtime mutation is already in progress.', {
+    retryable: true,
+    timestamp
+  });
+}
+
+function createUpdateRefreshCancelledError(timestamp: string): AppError {
+  return createAppError('DOWNLOAD', 'Profile metadata was saved, but the source refresh did not complete.', {
+    code: 'CMFA_PROFILE_REFRESH_INCOMPLETE',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.download'
+  });
+}
+
+function normalizeOptionalSourceUrl(sourceUrl: string | undefined): string | undefined {
+  if (sourceUrl === undefined) {
+    return undefined;
+  }
+  const normalized: string = sourceUrl.trim();
+  return normalized.length === 0 ? undefined : normalized;
+}
+
+function isPlainHttpUrl(sourceUrl: string): boolean {
+  return sourceUrl.trim().startsWith('http://');
+}
+
+function cloneAppError(error: AppError): AppError {
+  return createAppError(error.stage, error.technicalDetail, {
+    code: error.code,
+    retryable: error.retryable,
+    timestamp: error.timestamp,
+    userMessageResource: error.userMessageResource
+  });
+}
+
+const ONE_CLICK_VPN_CONFIRMATION_TIMEOUT_MS: number = 15_000;
+const HOME_PROXY_SELECTION_MAX_GROUP_PATH_SEGMENTS: number = 16;
+
+function createBusyOneClickVpnFailure(): SelectNodeAndEnsureVpnResult {
+  return createOneClickVpnFailureResult(
+    'ADMISSION',
+    'OPERATION_BUSY',
+    true,
+    'proxies_one_click_busy',
+    false
+  );
+}
+
+function isVpnOneClickBusyState(state: VpnRuntimeState): boolean {
+  return state === 'AWAITING_CONSENT' ||
+    state === 'STARTING' ||
+    state === 'RECOVERING' ||
+    state === 'STOPPING';
+}
+
+function mapProxySelectionRejected(result: ProxyRejectedResult, savedForNextStart: boolean): SelectNodeAndEnsureVpnResult {
+  if (result.error.code === 'PROXY_SELECTION_STALE') {
+    return createOneClickVpnFailureResult('SELECTION', 'PROXY_SELECTION_STALE', true, 'proxies_error_selection_stale', false);
+  }
+  if (result.error.code === 'PROXY_PERSISTENCE_FAILED') {
+    return createOneClickVpnFailureResult(
+      'SELECTION',
+      'PROXY_PERSISTENCE_FAILED',
+      result.error.retryable,
+      'proxies_error_persistence_failed',
+      false
+    );
+  }
+  return createOneClickVpnFailureResult(
+    'SELECTION',
+    'PROXY_SELECTION_FAILED',
+    result.error.retryable,
+    'proxies_error_selection_failed',
+    savedForNextStart
+  );
+}
+
+function mapOneClickQueryRejectedResult(
+  result: ProxyRejectedResult,
+  savedForNextStart: boolean
+): SelectNodeAndEnsureVpnResult {
+  if (result.error.code === 'VPN_SESSION_CHANGED') {
+    return createOneClickVpnFailureResult(
+      'VPN_CONFIRMATION',
+      'VPN_SESSION_CHANGED',
+      true,
+      'proxies_error_session_changed',
+      savedForNextStart
+    );
+  }
+  return createOneClickVpnFailureResult(
+    'SELECTION',
+    'PROXY_SELECTION_FAILED',
+    result.error.retryable,
+    'proxies_error_selection_failed',
+    false
+  );
+}
+
+function findProxyGroupNode(group: CoreProxyGroupSnapshot, memberName: string): CoreProxyNodeSummary | undefined {
+  for (let index = 0; index < group.nodes.length; index += 1) {
+    if (group.nodes[index].name === memberName) {
+      return group.nodes[index];
+    }
+  }
+  return undefined;
+}
+
+function findStrictSelectedProxyGroupNode(group: CoreProxyGroupSnapshot): CoreProxyNodeSummary | undefined {
+  if (group.selectedName.length === 0) {
+    return undefined;
+  }
+  let selectedNode: CoreProxyNodeSummary | undefined;
+  for (let index = 0; index < group.nodes.length; index += 1) {
+    const node: CoreProxyNodeSummary = group.nodes[index];
+    if (!node.selected) {
+      continue;
+    }
+    if (selectedNode !== undefined) {
+      return undefined;
+    }
+    selectedNode = node;
+  }
+  if (selectedNode === undefined || selectedNode.name !== group.selectedName) {
+    return undefined;
+  }
+  return selectedNode;
+}
+
+function sameProxyRuntimeIdentity(left: ProxyRuntimeIdentity, right: ProxyRuntimeIdentity): boolean {
+  return left.profileId === right.profileId &&
+    left.revisionId === right.revisionId &&
+    left.revisionHash === right.revisionHash &&
+    left.sessionId === right.sessionId;
 }
 
 function resolveErrorMessage(error: Object | undefined, fallback: string): string {

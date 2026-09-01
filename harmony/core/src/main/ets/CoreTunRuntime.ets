@@ -16,6 +16,8 @@ import {
   createVpnIngressTrace
 } from '@cmfa/shared';
 import type {
+  BoundedDelaySchedulerPort,
+  CancelableDelayTask,
   TunHandle,
   TunRuntimeEvent,
   TunRuntimeFailure,
@@ -25,6 +27,29 @@ import type {
   TunStartOptions,
   VpnIngressTrace
 } from '@cmfa/shared';
+
+const TUN_EVIDENCE_POLL_INTERVAL_MS: number = 250;
+
+class CoreTunPollingTask implements CancelableDelayTask {
+  private readonly timerId: number;
+
+  constructor(timerId: number) {
+    this.timerId = timerId;
+  }
+
+  cancel(): void {
+    clearTimeout(this.timerId);
+  }
+}
+
+class CoreTunPollingScheduler implements BoundedDelaySchedulerPort {
+  schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask {
+    const timerId: number = setTimeout(() => {
+      void runner();
+    }, delayMs);
+    return new CoreTunPollingTask(timerId);
+  }
+}
 
 export interface CoreTunRuntimeConfig {
   configPath: string;
@@ -43,7 +68,11 @@ function cloneNativeTrace(trace: InternalTunNativeTrace): InternalTunNativeTrace
     sourceAddress: trace.sourceAddress,
     destinationAddress: trace.destinationAddress,
     hashedTuple: trace.hashedTuple,
-    correlationHash: trace.correlationHash
+    correlationHash: trace.correlationHash,
+    destinationHash: trace.destinationHash,
+    outboundTerminalHash: trace.outboundTerminalHash,
+    outboundChainHash: trace.outboundChainHash,
+    outboundChainLength: trace.outboundChainLength
   };
 }
 
@@ -76,7 +105,6 @@ function mapNativeFailureToTunFailure(operation: string, nativeCode: string, det
       code = 'VPN_SOCKET_PROTECT_FAILED';
       break;
     case 'CMFA_BUSY':
-      code = 'VPN_TUN_START_FAILED';
       break;
     default:
       break;
@@ -105,7 +133,11 @@ function traceToIngressTrace(trace: InternalTunNativeTrace): VpnIngressTrace {
     ingress: trace.ingress,
     protocol: trace.protocol,
     hashedTuple: trace.hashedTuple,
-    correlationHash: trace.correlationHash
+    correlationHash: trace.correlationHash,
+    destinationHash: trace.destinationHash,
+    outboundTerminalHash: trace.outboundTerminalHash,
+    outboundChainHash: trace.outboundChainHash,
+    outboundChainLength: trace.outboundChainLength
   });
 }
 
@@ -140,9 +172,49 @@ function cloneEventSnapshot(snapshot: TunRuntimeSnapshot): TunRuntimeSnapshot {
   return cloneSnapshot(snapshot);
 }
 
+function isSameTunEvidence(left: TunRuntimeSnapshot, right: TunRuntimeSnapshot): boolean {
+  if (left.sessionId !== right.sessionId || left.state !== right.state ||
+    left.counters.txPackets !== right.counters.txPackets || left.counters.txBytes !== right.counters.txBytes ||
+    left.counters.rxPackets !== right.counters.rxPackets || left.counters.rxBytes !== right.counters.rxBytes ||
+    left.failure?.code !== right.failure?.code || left.failure?.detail !== right.failure?.detail ||
+    left.ingressTraces.length !== right.ingressTraces.length) {
+    return false;
+  }
+  for (let index: number = 0; index < left.ingressTraces.length; index += 1) {
+    const leftTrace: VpnIngressTrace = left.ingressTraces[index];
+    const rightTrace: VpnIngressTrace = right.ingressTraces[index];
+    if (leftTrace.sequence !== rightTrace.sequence || leftTrace.traceId !== rightTrace.traceId ||
+      leftTrace.ingress !== rightTrace.ingress || leftTrace.protocol !== rightTrace.protocol ||
+      leftTrace.correlationHash !== rightTrace.correlationHash || leftTrace.destinationHash !== rightTrace.destinationHash ||
+      leftTrace.outboundTerminalHash !== rightTrace.outboundTerminalHash ||
+      leftTrace.outboundChainHash !== rightTrace.outboundChainHash ||
+      leftTrace.outboundChainLength !== rightTrace.outboundChainLength) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function resolveTunPacketDiagnosticStage(event: InternalNativeRuntimeEvent): string | undefined {
+  if (event.ingress !== 'diagnostic' || event.message !== event.protocol) {
+    return undefined;
+  }
+  switch (event.protocol) {
+    case 'tun.packet.read-loop-enter':
+    case 'tun.packet.read-would-block':
+    case 'tun.packet.read-failed':
+    case 'tun.packet.raw-read':
+    case 'tun.packet.gvisor-inject':
+      return event.protocol;
+    default:
+      return undefined;
+  }
+}
+
 export class CoreTunRuntime implements TunRuntimePort {
   private readonly nativeModule: InternalTunNativeModule;
   private readonly config: CoreTunRuntimeConfig;
+  private readonly pollingScheduler: BoundedDelaySchedulerPort;
   private readonly consumedSessions: Set<string> = new Set();
   private readonly listeners: Map<number, (event: TunRuntimeEvent) => void> = new Map();
   private nextListenerId: number = 1;
@@ -151,7 +223,10 @@ export class CoreTunRuntime implements TunRuntimePort {
   private snapshotValue: TunRuntimeSnapshot = defaultSnapshot('tun-runtime');
   private traceValue: InternalTunNativeTrace[] = [];
   private disposed: boolean = false;
+  private acceptingNativeEvents: boolean = false;
   private generation: number = 0;
+  private pollingEpoch: number = 0;
+  private pollingTask?: CancelableDelayTask;
 
   private static buildCaptureConfig(options: TunStartOptions): InternalTunNativeCaptureConfig {
     return {
@@ -167,7 +242,11 @@ export class CoreTunRuntime implements TunRuntimePort {
     };
   }
 
-  constructor(config: CoreTunRuntimeConfig, nativeModule?: InternalTunNativeModule) {
+  constructor(
+    config: CoreTunRuntimeConfig,
+    nativeModule?: InternalTunNativeModule,
+    pollingScheduler?: BoundedDelaySchedulerPort
+  ) {
     this.config = {
       configPath: config.configPath,
       mixedPort: config.mixedPort,
@@ -175,6 +254,7 @@ export class CoreTunRuntime implements TunRuntimePort {
       processProtected: config.processProtected
     };
     this.nativeModule = nativeModule ?? getInternalNativeModule();
+    this.pollingScheduler = pollingScheduler ?? new CoreTunPollingScheduler();
   }
 
   async start(handle: TunHandle, options: TunStartOptions): Promise<TunRuntimeSnapshot> {
@@ -217,6 +297,8 @@ export class CoreTunRuntime implements TunRuntimePort {
       this.activeSessionId = handle.sessionId;
       const traces: InternalTunNativeTrace[] = await this.readTunTraces(0);
       this.snapshotValue = snapshotFromNative(snapshot, traces);
+      this.acceptingNativeEvents = true;
+      this.startEvidencePolling();
       return cloneSnapshot(this.snapshotValue);
     } catch (error) {
       if (error instanceof TunRuntimePortError) {
@@ -233,6 +315,8 @@ export class CoreTunRuntime implements TunRuntimePort {
     if (this.snapshotValue.state === 'STOPPED' || this.snapshotValue.state === 'IDLE') {
       return;
     }
+    this.acceptingNativeEvents = false;
+    this.stopEvidencePolling();
     try {
       const snapshot: InternalTunNativeSnapshot = await this.invokeNativeSnapshot('stopTun', (): Promise<InternalTunNativeSnapshot> => {
         if (typeof this.nativeModule.stopTun !== 'function') {
@@ -244,6 +328,10 @@ export class CoreTunRuntime implements TunRuntimePort {
       this.snapshotValue = snapshotFromNative(snapshot, []);
       this.activeSessionId = snapshot.sessionId;
     } catch (error) {
+      this.acceptingNativeEvents = this.snapshotValue.state !== 'STOPPED' && this.snapshotValue.state !== 'IDLE';
+      if (this.acceptingNativeEvents) {
+        this.startEvidencePolling();
+      }
       throw this.normalizeTunError('stopTun', error as Object | Error | undefined);
     }
   }
@@ -279,6 +367,8 @@ export class CoreTunRuntime implements TunRuntimePort {
     this.activeSessionId = sessionId;
     const traces: InternalTunNativeTrace[] = await this.readTunTraces(0);
     this.snapshotValue = snapshotFromNative(snapshot, traces);
+    this.acceptingNativeEvents = true;
+    this.startEvidencePolling();
     return cloneSnapshot(this.snapshotValue);
   }
 
@@ -323,7 +413,9 @@ export class CoreTunRuntime implements TunRuntimePort {
       return;
     }
     this.disposed = true;
+    this.acceptingNativeEvents = false;
     this.generation += 1;
+    this.stopEvidencePolling();
     this.listeners.clear();
     if (this.nativeSubscriptionId !== 0) {
       try {
@@ -348,8 +440,61 @@ export class CoreTunRuntime implements TunRuntimePort {
     });
   }
 
+  private startEvidencePolling(): void {
+    this.stopEvidencePolling();
+    this.scheduleEvidencePoll(this.pollingEpoch);
+  }
+
+  private stopEvidencePolling(): void {
+    this.pollingEpoch += 1;
+    this.pollingTask?.cancel();
+    this.pollingTask = undefined;
+  }
+
+  private scheduleEvidencePoll(epoch: number): void {
+    if (this.disposed || epoch !== this.pollingEpoch || this.activeSessionId === 'tun-runtime' ||
+      this.snapshotValue.state === 'IDLE' || this.snapshotValue.state === 'STOPPED') {
+      return;
+    }
+    this.pollingTask = this.pollingScheduler.schedule(TUN_EVIDENCE_POLL_INTERVAL_MS, async (): Promise<void> => {
+      this.pollingTask = undefined;
+      await this.pollNativeEvidence(epoch);
+    });
+  }
+
+  private async pollNativeEvidence(epoch: number): Promise<void> {
+    if (this.disposed || epoch !== this.pollingEpoch || this.activeSessionId === 'tun-runtime') {
+      return;
+    }
+    const sessionId: string = this.activeSessionId;
+    try {
+      const snapshot: InternalTunNativeSnapshot = await this.invokeNativeSnapshot('tunSnapshot', (): Promise<InternalTunNativeSnapshot> => {
+        if (typeof this.nativeModule.tunSnapshot !== 'function') {
+          return Promise.reject(new Error('Tun snapshot surface is unavailable.'));
+        }
+        return this.nativeModule.tunSnapshot();
+      });
+      if (this.disposed || epoch !== this.pollingEpoch || snapshot.sessionId !== sessionId) {
+        return;
+      }
+      const traces: InternalTunNativeTrace[] = await this.readTunTraces(0);
+      if (this.disposed || epoch !== this.pollingEpoch) {
+        return;
+      }
+      const nextSnapshot: TunRuntimeSnapshot = snapshotFromNative(snapshot, traces);
+      const changed: boolean = !isSameTunEvidence(this.snapshotValue, nextSnapshot);
+      this.snapshotValue = nextSnapshot;
+      if (changed) {
+        this.emitSnapshotEvent();
+      }
+    } catch (_error) {
+    } finally {
+      this.scheduleEvidencePoll(epoch);
+    }
+  }
+
   private async handleNativeEvent(event: InternalNativeRuntimeEvent): Promise<void> {
-    if (this.disposed || event.type !== 'runtime') {
+    if (this.disposed || !this.acceptingNativeEvents || event.type !== 'runtime') {
       return;
     }
     const sessionId: string = typeof event.sessionId === 'string' && event.sessionId.trim().length > 0
@@ -361,6 +506,11 @@ export class CoreTunRuntime implements TunRuntimePort {
     if (this.activeSessionId !== 'tun-runtime' && this.activeSessionId !== sessionId) {
       return;
     }
+    const diagnosticStage: string | undefined = resolveTunPacketDiagnosticStage(event);
+    if (diagnosticStage !== undefined) {
+      this.emitSnapshotEvent(diagnosticStage, sessionId);
+      return;
+    }
     const generation: number = this.generation;
     try {
       const snapshot: InternalTunNativeSnapshot = await this.invokeNativeSnapshot('tunSnapshot', (): Promise<InternalTunNativeSnapshot> => {
@@ -369,11 +519,11 @@ export class CoreTunRuntime implements TunRuntimePort {
         }
         return this.nativeModule.tunSnapshot();
       });
-      if (this.disposed || generation !== this.generation || snapshot.sessionId !== sessionId) {
+      if (this.disposed || !this.acceptingNativeEvents || generation !== this.generation || snapshot.sessionId !== sessionId) {
         return;
       }
       const traces: InternalTunNativeTrace[] = await this.readTunTraces(0);
-      if (this.disposed || generation !== this.generation) {
+      if (this.disposed || !this.acceptingNativeEvents || generation !== this.generation) {
         return;
       }
       this.snapshotValue = snapshotFromNative(snapshot, traces);
@@ -382,15 +532,16 @@ export class CoreTunRuntime implements TunRuntimePort {
     }
   }
 
-  private emitSnapshotEvent(): void {
+  private emitSnapshotEvent(diagnosticStage?: string, sessionId?: string): void {
     const listeners: Array<(event: TunRuntimeEvent) => void> = [];
     this.listeners.forEach((listener: (event: TunRuntimeEvent) => void): void => {
       listeners.push(listener);
     });
     for (let index = 0; index < listeners.length; index += 1) {
       listeners[index]({
-        sessionId: this.snapshotValue.sessionId,
-        snapshot: cloneEventSnapshot(this.snapshotValue)
+        sessionId: sessionId ?? this.snapshotValue.sessionId,
+        snapshot: cloneEventSnapshot(this.snapshotValue),
+        diagnosticStage: diagnosticStage
       });
     }
   }
@@ -410,14 +561,17 @@ export class CoreTunRuntime implements TunRuntimePort {
   }
 
   private extractErrorDetail(error: Object | Error | undefined): string {
-    if (error instanceof Error) {
-      return error.message;
-    }
     if (error === undefined) {
       return '';
     }
     const record = error as Record<string, string | undefined>;
-    return typeof record['detail'] === 'string' ? (record['detail'] as string) : '';
+    if (typeof record['detail'] === 'string' && record['detail']!.trim().length > 0) {
+      return record['detail'] as string;
+    }
+    if (error instanceof Error) {
+      return error.message;
+    }
+    return '';
   }
 
   private extractErrorCode(error: Object | Error | undefined): string {

@@ -1,16 +1,16 @@
 package main
 
 import (
-	"net"
-	"net/netip"
+	"errors"
+	"strings"
 	"testing"
 	"time"
 
+	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 	adapterinbound "github.com/metacubex/mihomo/adapter/inbound"
 	"github.com/metacubex/mihomo/component/dialer"
 	constantpkg "github.com/metacubex/mihomo/constant"
 	LC "github.com/metacubex/mihomo/listener/config"
-	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
 )
 
 type testListener struct {
@@ -46,11 +46,21 @@ func TestBuildTunStartOptionsSupportsCleanProcessStart(t *testing.T) {
 	if options.Base.HTTPListenAddress != "127.0.0.1:7890" {
 		t.Fatalf("HTTP address = %q", options.Base.HTTPListenAddress)
 	}
-	if options.Base.SOCKSListenAddress != "127.0.0.1:0" {
+	if options.Base.SOCKSListenAddress != "127.0.0.1:7891" {
 		t.Fatalf("SOCKS address = %q", options.Base.SOCKSListenAddress)
 	}
 	if options.PlatformAPILevel != 23 || !options.ProcessProtected {
 		t.Fatalf("platform flags = %#v", options)
+	}
+}
+
+func TestBuildTunStartOptionsFallsBackToEphemeralSOCKSPortAtUint16Maximum(t *testing.T) {
+	options := buildTunStartOptions("configs/phase4.yaml", 65535, "session-1", 42, 23, true)
+	if options.Base.HTTPListenAddress != "127.0.0.1:65535" {
+		t.Fatalf("HTTP address = %q", options.Base.HTTPListenAddress)
+	}
+	if options.Base.SOCKSListenAddress != "127.0.0.1:0" {
+		t.Fatalf("SOCKS address = %q", options.Base.SOCKSListenAddress)
 	}
 }
 
@@ -96,40 +106,14 @@ func TestBackendHostEventSinkPublishesTraceFields(t *testing.T) {
 	}
 	t.Cleanup(func() { hostRuntimeEventBridge = previous })
 
-	var wrappedTunnel constantpkg.Tunnel
-	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
-		Prepare:     func(string) error { return nil },
-		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
-		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
-			return &testListener{address: "127.0.0.1:19090"}, nil
-		},
-		Events: backendHostEventSink{},
-		TunFactory: func(options LC.Tun, tunnel constantpkg.Tunnel, additions ...adapterinbound.Addition) (runtimepkg.TunListenerHandle, error) {
-			wrappedTunnel = tunnel
-			return &testTunListener{address: "CMFA-TUN"}, nil
-		},
-	})
-
-	if _, err := localProxy.StartTun(buildTunStartOptions("configs/phase4.yaml", 7890, "session-1", 42, 23, true)); err != nil {
-		t.Fatalf("StartTun error: %v", err)
-	}
-	if wrappedTunnel == nil {
-		t.Fatal("wrappedTunnel is nil")
-	}
-
-	left, right := net.Pipe()
-	go func() {
-		_, _ = right.Write([]byte("GET / HTTP/1.1\r\nHost: controlled.invalid\r\nX-CMFA-Flow: cmfa-flow-1\r\n\r\n"))
-		_ = right.Close()
-	}()
-	wrappedTunnel.HandleTCPConn(left, &constantpkg.Metadata{
-		Type:    constantpkg.TUN,
-		NetWork: constantpkg.TCP,
-		SrcIP:   netip.MustParseAddr("10.111.222.2"),
-		SrcPort: 40000,
-		DstIP:   netip.MustParseAddr("1.1.1.1"),
-		DstPort: 443,
-		Host:    "controlled.invalid",
+	backendHostEventSink{}.Publish(runtimepkg.RuntimeEvent{
+		Kind:      "tun.ingress",
+		State:     runtimepkg.RuntimeRunning,
+		Message:   "tcp",
+		TraceID:   strings.Repeat("a", 64),
+		SessionID: "session-1",
+		Ingress:   "tun",
+		Protocol:  "tcp",
 	})
 
 	if captured.SessionID != "session-1" {
@@ -171,6 +155,37 @@ func TestBackendHostEventSinkPublishesProtectFailureWithoutTraceID(t *testing.T)
 	}
 	if captured.TraceID != "" {
 		t.Fatalf("traceID = %q want empty", captured.TraceID)
+	}
+}
+
+func TestBackendHostEventSinkFallsBackToRuntimeLogForTunDiagnostic(t *testing.T) {
+	previousBridge := hostRuntimeEventBridge
+	previousLogs := runtimeLogs
+	hostRuntimeEventBridge = func(runtimepkg.RuntimeEvent) error {
+		return errors.New("host runtime event bridge unavailable")
+	}
+	runtimeLogs = runtimepkg.NewLogBuffer(4)
+	t.Cleanup(func() {
+		hostRuntimeEventBridge = previousBridge
+		runtimeLogs = previousLogs
+	})
+
+	backendHostEventSink{}.Publish(runtimepkg.RuntimeEvent{
+		Kind:      "tun.diagnostic",
+		State:     runtimepkg.RuntimeRunning,
+		Message:   "tun.packet.read-loop-enter",
+		TraceID:   "fixed-trace",
+		SessionID: "session-1",
+		Ingress:   "diagnostic",
+		Protocol:  "tun.packet.read-loop-enter",
+	})
+
+	log, ok := runtimeLogs.Take()
+	if !ok {
+		t.Fatal("missing fixed fallback runtime log")
+	}
+	if log.Category != "runtime.tun.packet-diagnostic" || log.Message != "tun.packet.read-loop-enter" {
+		t.Fatalf("fallback log = %#v want fixed packet diagnostic", log)
 	}
 }
 
@@ -246,7 +261,7 @@ func TestCloseStaleTunConnectionsExportMapsBusyWhenCleanupAlreadyInFlight(t *tes
 	blocked := make(chan struct{})
 	release := make(chan struct{})
 	withTestLocalProxy(t, runtimepkg.LocalProxyDeps{
-		Prepare: func(string) error { return nil },
+		Prepare:     func(string) error { return nil },
 		HTTPFactory: func(addr string) (runtimepkg.ListenerHandle, error) { return &testListener{address: addr}, nil },
 		SOCKSFactory: func(addr string) (runtimepkg.ListenerHandle, error) {
 			return &testListener{address: "127.0.0.1:19090"}, nil
@@ -280,5 +295,33 @@ func TestCloseStaleTunConnectionsExportMapsBusyWhenCleanupAlreadyInFlight(t *tes
 	firstStatus := <-done
 	if firstStatus != closeStaleTunStatusOK() {
 		t.Fatalf("first close stale status = %d want ok", firstStatus)
+	}
+}
+
+func TestWriteTunTraceExportsDestinationAndOutboundProofHashes(t *testing.T) {
+	exported := encodeTunTraceForTest(runtimepkg.TunTrace{
+		SessionID:            "session-1",
+		TraceID:              "trace-1",
+		Ingress:              "tun",
+		Protocol:             "tcp",
+		HashedTuple:          "tuple-hash",
+		CorrelationHash:      "flow-hash",
+		DestinationHash:      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		OutboundTerminalHash: "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+		OutboundChainHash:    "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+		OutboundChainLength:  2,
+	})
+
+	if exported.DestinationHash != "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" {
+		t.Fatalf("destination hash = %q want exported destination hash", exported.DestinationHash)
+	}
+	if exported.OutboundTerminalHash != "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb" {
+		t.Fatalf("terminal hash = %q want exported terminal hash", exported.OutboundTerminalHash)
+	}
+	if exported.OutboundChainHash != "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc" {
+		t.Fatalf("chain hash = %q want exported chain hash", exported.OutboundChainHash)
+	}
+	if exported.OutboundChainLength != 2 {
+		t.Fatalf("chain length = %d want 2", exported.OutboundChainLength)
 	}
 }

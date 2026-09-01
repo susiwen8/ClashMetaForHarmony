@@ -2,10 +2,16 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   type AppError,
   createProfile,
+  createProxyRuntimeNotReadyError,
   createProfileRevision,
   LocalRuntimeCoordinator,
   type Clock,
   type CoreEvent,
+  type CoreProxyDelaySnapshot,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied,
   type CoreService,
   type LocalRuntimeCoordinatorDependencies,
   type LocalRuntimeCoordinatorSnapshot,
@@ -244,6 +250,34 @@ class FakeCoreService implements CoreService {
   runtimeSnapshot(): RuntimeSnapshot {
     this.log.push('core.runtimeSnapshot');
     return cloneRuntimeSnapshot(this.runtimeSnapshotValue);
+  }
+
+  async queryProxyGroups(_context: CoreProxyQueryContext, _selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroups'));
+  }
+
+  async queryProxyGroup(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyGroupResult> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroup'));
+  }
+
+  async selectProxy(
+    _context: CoreProxyQueryContext,
+    _groupName: string,
+    _memberName: string
+  ): Promise<CoreProxySelectionApplied> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('selectProxy'));
+  }
+
+  async startProxyDelayTest(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('startProxyDelayTest'));
+  }
+
+  async readProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('readProxyDelayTest'));
+  }
+
+  async cancelProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('cancelProxyDelayTest'));
   }
 
   subscribe(callback: (event: CoreEvent) => void): number {

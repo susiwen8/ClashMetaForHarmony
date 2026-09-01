@@ -66,7 +66,7 @@ HarmonyOS default-network queries and registrations require
 `NetConnection.register()`. Network identity/capabilities are therefore an
 optional injected hint, not a production dependency. After `NETWORK_LOST`,
 the TUN runtime's own `recover(sessionId)` call is the reachability probe and
-is attempted with the bounded delays `250/500/1000/2000/4000 ms`; success
+is attempted with the bounded delays `250/500/1000/2000/4000/8000 ms`; success
 returns to `RUNNING`, while exhaustion performs fail-closed cleanup.
 
 The entry module declares a non-exported VPN extension ability with type
@@ -478,10 +478,20 @@ The probe produces correlated, non-secret checks for:
 - Wi-Fi loss/recovery and, when safely available, Wi-Fi/cellular transition;
 - stop cleanup and ordinary-network restoration.
 
-The probe does not configure an HTTP, SOCKS, PAC, application, or Wi-Fi proxy;
-its global-capture checks use direct NetworkKit/socket calls. Each TCP and UDP
-flow carries a generated probe flow ID to a controlled origin. DNS uses a
-generated query label whose SHA-256 is recorded instead of the clear query.
+The probe does not configure an HTTP, SOCKS, PAC, application, or Wi-Fi proxy.
+HTTPS and local HTTP/SOCKS checks use the controlled LAN origin. Global TCP
+exchange, UDP, and DNS-format UDP checks use ordinary POSIX sockets and a
+separately documented public TCP exchange endpoint plus public exact-echo
+targets, because the phone's more-specific connected-LAN route legitimately
+bypasses both VPN default routes. Each public flow carries a generated probe
+flow ID; DNS uses a DNS-shaped packet and its dedicated correlation hash
+rather than a clear query label.
+
+Connected-LAN traffic is diagnostic-only and cannot satisfy the global-capture
+release gate. A temporary private `/32` route and a historical probe-only
+trusted-app allowlist experiment were both observed on the physical phone
+without changing LAN routing; those experiments were removed. Production remains exactly two default routes,
+an empty trusted-app list, and self-only exclusion.
 
 At TUN ingress, the data plane emits a redacted trace containing
 `ingress: "tun"`, protocol, session ID, probe flow ID or DNS query hash, and a
@@ -495,6 +505,12 @@ The proof is accepted only when the external probe result, a matching
 share the same session and flow correlation. A counter increase by itself, a
 local-listener event, or an in-app request from the excluded VPN bundle cannot
 satisfy this gate.
+
+The public TCP exchange endpoint and exact-echo targets must pass before VPN
+start. If TCP fails during the VPN round, the runner confirms runtime stop and
+checks the same endpoint once more before force-stop and origin teardown. Only
+a passing post-stop check may preserve a VPN failure; a failed check is
+classified as external-origin reachability, not as a VPN regression.
 
 The runner writes `harmony/artifacts/phase4-device-proof.json` containing:
 

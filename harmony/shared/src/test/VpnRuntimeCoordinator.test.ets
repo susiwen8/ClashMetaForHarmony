@@ -28,9 +28,11 @@ import type {
   VpnCaptureConfig,
   VpnControllerStartResult,
   VpnControllerStopResult,
+  VpnProxyRuntimeLifecyclePort,
   VpnPlatformErrorCode,
   VpnPlatformSessionPort,
-  VpnRuntimeCoordinatorDependencies
+  VpnRuntimeCoordinatorDependencies,
+  VpnStartRequest
 } from '../../Index';
 
 class FakeClock implements ClockPort {
@@ -70,6 +72,7 @@ class FakeResolver implements CommittedProfileResolverPort {
 
 class FakePlatform implements VpnPlatformSessionPort {
   readonly log: string[] = [];
+  sharedLog?: string[];
   protectProcessError?: Error;
   createError?: Error;
   destroyError?: Error;
@@ -79,6 +82,7 @@ class FakePlatform implements VpnPlatformSessionPort {
 
   async create(_config: VpnCaptureConfig): Promise<TunHandle> {
     this.log.push(`platform.create:${this.nextHandle.sessionId}`);
+    this.sharedLog?.push(`platform.create:${this.nextHandle.sessionId}`);
     if (this.useDeferredCreate) {
       await this.createGate.promise;
     }
@@ -90,6 +94,7 @@ class FakePlatform implements VpnPlatformSessionPort {
 
   async protectProcess(): Promise<void> {
     this.log.push('platform.protectProcess');
+    this.sharedLog?.push('platform.protectProcess');
     if (this.protectProcessError !== undefined) {
       throw this.protectProcessError;
     }
@@ -97,10 +102,12 @@ class FakePlatform implements VpnPlatformSessionPort {
 
   async protectSocket(fd: number): Promise<void> {
     this.log.push(`platform.protectSocket:${fd}`);
+    this.sharedLog?.push(`platform.protectSocket:${fd}`);
   }
 
   async destroy(vpnId: string): Promise<void> {
     this.log.push(`platform.destroy:${vpnId}`);
+    this.sharedLog?.push(`platform.destroy:${vpnId}`);
     if (this.destroyError !== undefined) {
       throw this.destroyError;
     }
@@ -109,16 +116,21 @@ class FakePlatform implements VpnPlatformSessionPort {
 
 class FakeTunRuntime implements TunRuntimePort {
   readonly log: string[] = [];
+  sharedLog?: string[];
   readonly startCalls: string[] = [];
   readonly stopCalls: number[] = [];
   readonly closeStaleCalls: string[] = [];
   readonly recoverCalls: string[] = [];
   private readonly listeners: Map<number, (event: TunRuntimeEvent) => void> = new Map();
   private nextListenerId: number = 1;
+  subscribeCalls: number = 0;
+  unsubscribeCalls: number = 0;
+  lastUnsubscribedId: number = 0;
   snapshotValue: TunRuntimeSnapshot = buildTunSnapshot('session-1', 'IDLE');
   recoverSnapshotValue: TunRuntimeSnapshot = buildTunSnapshot('session-1', 'READY');
   startError?: Error;
   startPortError?: TunRuntimePortError;
+  stopPortError?: TunRuntimePortError;
   stopError?: Error;
   closeStaleError?: TunRuntimePortError;
   recoverPortError?: TunRuntimePortError;
@@ -130,6 +142,7 @@ class FakeTunRuntime implements TunRuntimePort {
 
   async start(handle: TunHandle, _options: TunStartOptions): Promise<TunRuntimeSnapshot> {
     this.log.push(`tun.start:${handle.sessionId}`);
+    this.sharedLog?.push(`tun.start:${handle.sessionId}`);
     this.startCalls.push(handle.sessionId);
     if (this.startPortError !== undefined) {
       throw this.startPortError;
@@ -145,7 +158,11 @@ class FakeTunRuntime implements TunRuntimePort {
 
   async stop(): Promise<void> {
     this.log.push('tun.stop');
+    this.sharedLog?.push('tun.stop');
     this.stopCalls.push(this.stopCalls.length + 1);
+    if (this.stopPortError !== undefined) {
+      throw this.stopPortError;
+    }
     if (this.stopError !== undefined) {
       throw this.stopError;
     }
@@ -157,6 +174,7 @@ class FakeTunRuntime implements TunRuntimePort {
 
   async closeStaleOutboundConnections(sessionId: string): Promise<void> {
     this.log.push(`tun.closeStale:${sessionId}`);
+    this.sharedLog?.push(`tun.closeStale:${sessionId}`);
     this.closeStaleCalls.push(sessionId);
     if (this.closeStaleError !== undefined) {
       throw this.closeStaleError;
@@ -165,6 +183,7 @@ class FakeTunRuntime implements TunRuntimePort {
 
   async recover(sessionId: string): Promise<TunRuntimeSnapshot> {
     this.log.push(`tun.recover:${sessionId}`);
+    this.sharedLog?.push(`tun.recover:${sessionId}`);
     this.recoverCalls.push(sessionId);
     if (this.recoverPortError !== undefined) {
       throw this.recoverPortError;
@@ -182,11 +201,18 @@ class FakeTunRuntime implements TunRuntimePort {
     const subscriptionId: number = this.nextListenerId;
     this.nextListenerId += 1;
     this.listeners.set(subscriptionId, listener);
+    this.subscribeCalls += 1;
     return subscriptionId;
   }
 
   unsubscribe(subscriptionId: number): void {
     this.listeners.delete(subscriptionId);
+    this.unsubscribeCalls += 1;
+    this.lastUnsubscribedId = subscriptionId;
+  }
+
+  dispose(): void {
+    this.listeners.clear();
   }
 
   emit(snapshot: TunRuntimeSnapshot): void {
@@ -208,6 +234,10 @@ class FakeNetworkRecovery implements NetworkRecoveryPort {
   private nextListenerId: number = 1;
   status: NetworkStatus = { usable: false, networkId: '' };
   currentNetworkCalls: number = 0;
+  subscribeCalls: number = 0;
+  unsubscribeCalls: number = 0;
+  disposeCalls: number = 0;
+  lastUnsubscribedId: number = 0;
 
   currentNetwork(): NetworkStatus {
     this.currentNetworkCalls += 1;
@@ -221,15 +251,32 @@ class FakeNetworkRecovery implements NetworkRecoveryPort {
     const subscriptionId: number = this.nextListenerId;
     this.nextListenerId += 1;
     this.listeners.set(subscriptionId, listener);
+    this.subscribeCalls += 1;
     return subscriptionId;
   }
 
   unsubscribeUsableNetwork(subscriptionId: number): void {
     this.listeners.delete(subscriptionId);
+    this.unsubscribeCalls += 1;
+    this.lastUnsubscribedId = subscriptionId;
+  }
+
+  async dispose(): Promise<void> {
+    this.disposeCalls += 1;
+    this.listeners.clear();
   }
 
   emitUsable(networkId: string): void {
     this.status = { usable: true, networkId };
+    this.emitCurrent();
+  }
+
+  emitUnavailable(networkId: string): void {
+    this.status = { usable: false, networkId };
+    this.emitCurrent();
+  }
+
+  private emitCurrent(): void {
     const listeners: Array<(status: NetworkStatus) => void> = [];
     this.listeners.forEach((listener) => {
       listeners.push(listener);
@@ -243,13 +290,18 @@ class FakeNetworkRecovery implements NetworkRecoveryPort {
 class FakeNotification implements ContinuousNotificationPort {
   readonly log: string[] = [];
   readonly stopCalls: string[] = [];
+  sharedLog?: string[];
   startError?: Error;
   stopError?: Error;
   private readonly listeners: Map<number, (sessionId: string) => void> = new Map();
   private nextListenerId: number = 1;
+  subscribeCalls: number = 0;
+  unsubscribeCalls: number = 0;
+  lastUnsubscribedId: number = 0;
 
   async start(sessionId: string): Promise<void> {
     this.log.push(`notification.start:${sessionId}`);
+    this.sharedLog?.push(`notification.start:${sessionId}`);
     if (this.startError !== undefined) {
       throw this.startError;
     }
@@ -257,21 +309,32 @@ class FakeNotification implements ContinuousNotificationPort {
 
   async stop(sessionId: string): Promise<void> {
     this.log.push(`notification.stop:${sessionId}`);
+    this.sharedLog?.push(`notification.stop:${sessionId}`);
     this.stopCalls.push(sessionId);
     if (this.stopError !== undefined) {
       throw this.stopError;
     }
   }
 
+  async updateTraffic(
+    _sessionId: string,
+    _uploadBytesPerSecond: number,
+    _downloadBytesPerSecond: number
+  ): Promise<void> {
+  }
+
   subscribeCancellation(listener: (sessionId: string) => void): number {
     const subscriptionId: number = this.nextListenerId;
     this.nextListenerId += 1;
     this.listeners.set(subscriptionId, listener);
+    this.subscribeCalls += 1;
     return subscriptionId;
   }
 
   unsubscribeCancellation(subscriptionId: number): void {
     this.listeners.delete(subscriptionId);
+    this.unsubscribeCalls += 1;
+    this.lastUnsubscribedId = subscriptionId;
   }
 
   emitCancellation(sessionId: string): void {
@@ -281,6 +344,68 @@ class FakeNotification implements ContinuousNotificationPort {
     });
     for (let index = 0; index < listeners.length; index += 1) {
       listeners[index](sessionId);
+    }
+  }
+}
+
+class FakeProxyLifecycle implements VpnProxyRuntimeLifecyclePort {
+  readonly log: string[] = [];
+  readonly activateCalls: VpnStartRequest[] = [];
+  readonly invalidateCalls: string[] = [];
+  readonly deactivateCalls: string[] = [];
+  readonly drainCalls: string[] = [];
+  sharedLog?: string[];
+  activateError?: Error;
+  deactivateError?: Error;
+  drainError?: Error;
+  throwUndefinedOnDeactivate: boolean = false;
+  throwUndefinedOnDrain: boolean = false;
+  useDeferredDrain: boolean = false;
+  drainDeferred = createDeferred<void>();
+
+  async activate(request: VpnStartRequest): Promise<void> {
+    this.log.push(`proxy.activate:${request.sessionId}`);
+    this.sharedLog?.push(`proxy.activate:${request.sessionId}`);
+    this.activateCalls.push({
+      profileId: request.profileId,
+      versionId: request.versionId,
+      sessionId: request.sessionId
+    });
+    if (this.activateError !== undefined) {
+      throw this.activateError;
+    }
+  }
+
+  invalidate(sessionId: string): void {
+    this.log.push(`proxy.invalidate:${sessionId}`);
+    this.sharedLog?.push(`proxy.invalidate:${sessionId}`);
+    this.invalidateCalls.push(sessionId);
+  }
+
+  async deactivate(sessionId: string): Promise<void> {
+    this.log.push(`proxy.deactivate:${sessionId}`);
+    this.sharedLog?.push(`proxy.deactivate:${sessionId}`);
+    this.deactivateCalls.push(sessionId);
+    if (this.throwUndefinedOnDeactivate) {
+      await Promise.reject();
+    }
+    if (this.deactivateError !== undefined) {
+      throw this.deactivateError;
+    }
+  }
+
+  async cancelAndDrainDelayTest(sessionId: string): Promise<void> {
+    this.log.push(`proxy.drain:${sessionId}`);
+    this.sharedLog?.push(`proxy.drain:${sessionId}`);
+    this.drainCalls.push(sessionId);
+    if (this.useDeferredDrain) {
+      await this.drainDeferred.promise;
+    }
+    if (this.throwUndefinedOnDrain) {
+      await Promise.reject();
+    }
+    if (this.drainError !== undefined) {
+      throw this.drainError;
     }
   }
 }
@@ -323,14 +448,33 @@ class FakeScheduler implements BoundedDelaySchedulerPort {
   }
 }
 
+class RecordingStageReporter {
+  readonly stages: string[] = [];
+  throwOnReport: boolean = false;
+
+  report(stage: string): void {
+    this.stages.push(stage);
+    if (this.throwOnReport) {
+      throw new Error(`reporter failed at ${stage}`);
+    }
+  }
+}
+
+interface BackendStopFailureStageCase {
+  detail: string;
+  expectedStage: string;
+}
+
 class DependencyBag implements VpnRuntimeCoordinatorDependencies {
   readonly resolver: FakeResolver;
   readonly platform: FakePlatform;
   readonly tunRuntime: FakeTunRuntime;
   readonly networkRecovery: FakeNetworkRecovery;
   readonly notification: FakeNotification;
+  readonly proxyLifecycle: FakeProxyLifecycle;
   readonly scheduler: FakeScheduler;
   readonly clock: FakeClock;
+  readonly reportStageLifecycle?: (stage: string) => void;
 
   constructor(
     resolver: FakeResolver,
@@ -338,16 +482,20 @@ class DependencyBag implements VpnRuntimeCoordinatorDependencies {
     tunRuntime: FakeTunRuntime,
     networkRecovery: FakeNetworkRecovery,
     notification: FakeNotification,
+    proxyLifecycle: FakeProxyLifecycle,
     scheduler: FakeScheduler,
-    clock: FakeClock
+    clock: FakeClock,
+    reportStageLifecycle?: (stage: string) => void
   ) {
     this.resolver = resolver;
     this.platform = platform;
     this.tunRuntime = tunRuntime;
     this.networkRecovery = networkRecovery;
     this.notification = notification;
+    this.proxyLifecycle = proxyLifecycle;
     this.scheduler = scheduler;
     this.clock = clock;
+    this.reportStageLifecycle = reportStageLifecycle;
   }
 }
 
@@ -404,8 +552,14 @@ function createCoordinator(
   networkRecovery: FakeNetworkRecovery,
   notification: FakeNotification,
   scheduler: FakeScheduler,
-  times: number[]
+  times: number[],
+  proxyLifecycleOrReporter?: FakeProxyLifecycle | ((stage: string) => void),
+  reportStageLifecycle?: (stage: string) => void
 ): VpnRuntimeCoordinator {
+  const proxyLifecycle: FakeProxyLifecycle =
+    proxyLifecycleOrReporter instanceof FakeProxyLifecycle ? proxyLifecycleOrReporter : new FakeProxyLifecycle();
+  const reporter: ((stage: string) => void) | undefined =
+    typeof proxyLifecycleOrReporter === 'function' ? proxyLifecycleOrReporter : reportStageLifecycle;
   return new VpnRuntimeCoordinator(
     new DependencyBag(
       resolver,
@@ -413,8 +567,10 @@ function createCoordinator(
       tunRuntime,
       networkRecovery,
       notification,
+      proxyLifecycle,
       scheduler,
-      new FakeClock(times)
+      new FakeClock(times),
+      reporter
     )
   );
 }
@@ -486,6 +642,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
       const notification = new FakeNotification();
       const scheduler = new FakeScheduler();
+      const reporter = new RecordingStageReporter();
       const coordinator = createCoordinator(
         resolver,
         platform,
@@ -493,7 +650,8 @@ export default function vpnRuntimeCoordinatorTestsuite() {
         new FakeNetworkRecovery(),
         notification,
         scheduler,
-        [1, 2, 3, 4]
+        [1, 2, 3, 4],
+        (stage: string) => reporter.report(stage)
       );
 
       const result: VpnControllerStartResult = await coordinator.start('profile-1', 'version-1', 'session-1');
@@ -503,6 +661,80 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(platform.log.join('>')).assertEqual('platform.protectProcess>platform.create:session-1');
       expect(tunRuntime.log.join('>')).assertEqual('tun.start:session-1');
       expect(notification.log.join('>')).assertEqual('notification.start:session-1');
+      expect(reporter.stages.join('>')).assertEqual(
+        'coordinator.resolve.begin>coordinator.resolve.ok>platform.protect.begin>platform.protect.ok>platform.create.begin>platform.create.ok>tun.start.begin>tun.start.ok>proxy.activate.begin>proxy.activate.ok>notification.start.begin>notification.start.ok'
+      );
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+    });
+
+    it('reportsResolverFailureAsStageOnlyDiagnostics', 0, async () => {
+      const resolver = new FakeResolver();
+      resolver.resolveError = new Error('resolve failed');
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        resolver,
+        new FakePlatform(),
+        new FakeTunRuntime(),
+        new FakeNetworkRecovery(),
+        new FakeNotification(),
+        new FakeScheduler(),
+        [6, 7, 8, 9],
+        (stage: string) => reporter.report(stage)
+      );
+
+      const result: VpnControllerStartResult = await coordinator.start('profile-1', 'version-1', 'session-1');
+
+      expect(result.kind).assertEqual('FAILED');
+      expect(reporter.stages.join('>')).assertEqual('coordinator.resolve.begin>coordinator.resolve.failed');
+    });
+
+    it('reportsTunStartFailureBeforeAnyNotificationStage', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.startError = new Error('tun start failed');
+      const notification = new FakeNotification();
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [10, 11, 12, 13],
+        (stage: string) => reporter.report(stage)
+      );
+
+      const result: VpnControllerStartResult = await coordinator.start('profile-1', 'version-1', 'session-1');
+
+      expect(result.kind).assertEqual('FAILED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'coordinator.resolve.begin>coordinator.resolve.ok>platform.protect.begin>platform.protect.ok>platform.create.begin>platform.create.ok>tun.start.begin>tun.start.failed>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.ok>platform.destroy.begin>platform.destroy.ok'
+      );
+      expect(notification.log.length).assertEqual(0);
+    });
+
+    it('keepsStartedResultWhenStageReporterThrows', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const reporter = new RecordingStageReporter();
+      reporter.throwOnReport = true;
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        new FakeNotification(),
+        new FakeScheduler(),
+        [14, 15, 16, 17],
+        (stage: string) => reporter.report(stage)
+      );
+
+      const result: VpnControllerStartResult = await coordinator.start('profile-1', 'version-1', 'session-1');
+
+      expect(result.kind).assertEqual('STARTED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'coordinator.resolve.begin>coordinator.resolve.ok>platform.protect.begin>platform.protect.ok>platform.create.begin>platform.create.ok>tun.start.begin>tun.start.ok>proxy.activate.begin>proxy.activate.ok>notification.start.begin>notification.start.ok'
+      );
       expect(coordinator.snapshot().state).assertEqual('RUNNING');
     });
 
@@ -584,8 +816,381 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(secondStop.kind).assertEqual('STOPPED');
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(platform.log.includes('platform.destroy:vpn-1')).assertTrue();
-      expect(notification.stopCalls.join('>')).assertEqual('session-1');
+      expect(notification.log.includes('notification.start:session-1')).assertFalse();
+      expect(notification.stopCalls.length).assertEqual(0);
       expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('invalidatesAndDrainsBeforeTerminalStopCleanup', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [36, 37, 38, 39],
+        proxyLifecycle
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      await coordinator.stop('session-1');
+
+      assertSubsequence(proxyLifecycle.log, ['proxy.invalidate:session-1', 'proxy.drain:session-1', 'proxy.deactivate:session-1']);
+      assertSubsequence(tunRuntime.log, ['tun.start:session-1', 'tun.stop']);
+      expect(platform.log.join('>')).assertContain('platform.destroy:vpn-1');
+      expect(notification.log.join('>')).assertContain('notification.stop:session-1');
+    });
+
+    it('reportsFixedStopCleanupStagesInHappyPathOrder', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [37, 38, 39, 40],
+        proxyLifecycle,
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.ok>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+    });
+
+    it('reportsFixedFailedStopCleanupStageAndContinuesLaterCleanup', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      proxyLifecycle.deactivateError = new Error('raw deactivate secret 9');
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [38, 39, 40, 41],
+        proxyLifecycle,
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('FAILED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.failed>tun.stop.begin>tun.stop.ok>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+    });
+
+    it('reportsBusyClassificationStageWhenTunStopFailsWithBusyNativeCode', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.stopPortError = new TunRuntimePortError('VPN_TUN_START_FAILED', 'tun stop busy detail', 'CMFA_BUSY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [39, 40, 41, 42],
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('FAILED');
+      if (stopResult.kind === 'FAILED') {
+        expect(stopResult.failure.detail).assertContain('tun stop busy detail');
+      }
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.failed>tun.stop.failure.busy>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+    });
+
+    it('mapsFixedBackendStopFailurePrefixesWithoutLeakingDynamicDetail', 0, async () => {
+      const cases: BackendStopFailureStageCase[] = [
+        {
+          detail: 'TUN_STOP_LISTENER_FAILED_BAD_FD: listener sec' + 'ret=raw-bad-fd',
+          expectedStage: 'tun.stop.failure.backend-listener-bad-fd'
+        },
+        {
+          detail: 'TUN_STOP_LISTENER_FAILED_OTHER: listener sec' + 'ret=raw-other',
+          expectedStage: 'tun.stop.failure.backend-listener-other'
+        },
+        {
+          detail: 'TUN_STOP_HTTP_LISTENER_FAILED_ERROR: http listener sec' + 'ret=raw-http',
+          expectedStage: 'tun.stop.failure.backend-http-listener'
+        },
+        {
+          detail: 'TUN_STOP_SOCKS_LISTENER_FAILED_ERROR: socks listener sec' + 'ret=raw-socks',
+          expectedStage: 'tun.stop.failure.backend-socks-listener'
+        },
+        {
+          detail: 'TUN_STOP_CONNECTIONS_FAILED_ERROR: connections sec' + 'ret=raw-connections',
+          expectedStage: 'tun.stop.failure.backend-connections'
+        },
+        {
+          detail: 'TUN_STOP_EXECUTOR_FAILED_ERROR: executor sec' + 'ret=raw-executor',
+          expectedStage: 'tun.stop.failure.backend-executor'
+        },
+        {
+          detail: 'TUN_STOP_CONTRACT_BACKEND_FAILED: backend contract sec' + 'ret=raw-contract-backend',
+          expectedStage: 'tun.stop.failure.contract-backend'
+        },
+        {
+          detail: 'TUN_STOP_CONTRACT_SNAPSHOT_FAILED: snapshot contract sec' + 'ret=raw-contract-snapshot',
+          expectedStage: 'tun.stop.failure.contract-snapshot'
+        },
+        {
+          detail: 'TUN_STOP_CONTRACT_TRACES_FAILED: traces contract sec' + 'ret=raw-contract-traces',
+          expectedStage: 'tun.stop.failure.contract-traces'
+        },
+        {
+          detail: 'TUN_STOP_CONTRACT_EMPTY: empty contract sec' + 'ret=raw-contract-empty',
+          expectedStage: 'tun.stop.failure.contract-empty'
+        },
+        {
+          detail: 'TUN_STOP_CONTRACT_OTHER: other contract sec' + 'ret=raw-contract-other',
+          expectedStage: 'tun.stop.failure.contract-other'
+        },
+        {
+          detail: 'TUN_STOP_PROXY_DELAY_DRAIN_FAILED: proxy delay drain sec' + 'ret=raw-delay-drain',
+          expectedStage: 'tun.stop.failure.proxy-delay-drain'
+        }
+      ];
+
+      for (let index = 0; index < cases.length; index += 1) {
+        const testCase = cases[index];
+        const tunRuntime = new FakeTunRuntime();
+        tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+        tunRuntime.stopPortError = new TunRuntimePortError('VPN_TUN_START_FAILED', testCase.detail, 'CMFA_BACKEND_ERROR');
+        const platform = new FakePlatform();
+        const notification = new FakeNotification();
+        const reporter = new RecordingStageReporter();
+        const coordinator = createCoordinator(
+          new FakeResolver(),
+          platform,
+          tunRuntime,
+          new FakeNetworkRecovery(),
+          notification,
+          new FakeScheduler(),
+          [40 + index, 41 + index, 42 + index, 43 + index],
+          (stage: string) => reporter.report(stage)
+        );
+
+        await coordinator.start('profile-1', 'version-1', 'session-1');
+        reporter.stages.length = 0;
+
+        const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+        expect(stopResult.kind).assertEqual('FAILED');
+        expect(reporter.stages.join('>')).assertEqual(
+          `proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.failed>${testCase.expectedStage}>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok`
+        );
+        expect(reporter.stages.join('>').includes(testCase.detail)).assertFalse();
+        expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+        expect(notification.stopCalls.length).assertEqual(1);
+      }
+    });
+
+    it('fallsBackToBackendErrorForPseudoContractOtherPrefixWithoutLeakingDynamicCode', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.stopPortError = new TunRuntimePortError(
+        'VPN_TUN_START_FAILED',
+        'TUN_STOP_CONTRACT_OTHER_DYNAMIC: tun stop unknown detail sec' + 'ret=raw-dynamic',
+        'CMFA_BACKEND_ERROR'
+      );
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [40, 41, 42, 43],
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('FAILED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.failed>tun.stop.failure.backend-error>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+      expect(reporter.stages.join('>').includes('TUN_STOP_CONTRACT_OTHER_DYNAMIC')).assertFalse();
+      expect(reporter.stages.join('>').includes('raw-dynamic')).assertFalse();
+      expect(reporter.stages.includes('tun.stop.failure.backend-error')).assertTrue();
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+    });
+
+    it('treatsUndefinedThrownByCleanupStageAsFailureAndKeepsFallbackDetail', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      proxyLifecycle.throwUndefinedOnDeactivate = true;
+      const reporter = new RecordingStageReporter();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [39, 40, 41, 42],
+        proxyLifecycle,
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('FAILED');
+      if (stopResult.kind === 'FAILED') {
+        expect(stopResult.failure.detail).assertEqual('Proxy lifecycle deactivate failed.');
+      }
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.failed>tun.stop.begin>tun.stop.ok>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+    });
+
+    it('keepsStoppedResultWhenStopStageReporterThrows', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      const reporter = new RecordingStageReporter();
+      reporter.throwOnReport = true;
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [39, 40, 41, 42],
+        proxyLifecycle,
+        (stage: string) => reporter.report(stage)
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      reporter.stages.length = 0;
+
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('STOPPED');
+      expect(reporter.stages.join('>')).assertEqual(
+        'proxy.drain.begin>proxy.drain.ok>proxy.deactivate.begin>proxy.deactivate.ok>tun.stop.begin>tun.stop.ok>platform.destroy.begin>platform.destroy.ok>notification.stop.begin>notification.stop.ok'
+      );
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('drainFailureBlocksTerminalStopCleanupAndKeepsSessionOwnedForRetry', 0, async () => {
+      const sharedLog: string[] = [];
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.sharedLog = sharedLog;
+      const platform = new FakePlatform();
+      platform.sharedLog = sharedLog;
+      const notification = new FakeNotification();
+      notification.sharedLog = sharedLog;
+      const proxyLifecycle = new FakeProxyLifecycle();
+      proxyLifecycle.sharedLog = sharedLog;
+      proxyLifecycle.drainError = new Error('delay drain leaked session-1');
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [39, 40, 41, 42],
+        proxyLifecycle
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      const stopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(stopResult.kind).assertEqual('FAILED');
+      expect(coordinator.snapshot().state).assertEqual('ERROR');
+      expect(coordinator.snapshot().activeRequest?.sessionId ?? '').assertEqual('session-1');
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(proxyLifecycle.deactivateCalls.length).assertEqual(0);
+
+      proxyLifecycle.drainError = undefined;
+      const retryStopResult: VpnControllerStopResult = await coordinator.stop('session-1');
+
+      expect(retryStopResult.kind).assertEqual('STOPPED');
+      assertSubsequence(sharedLog, [
+        'proxy.invalidate:session-1',
+        'proxy.drain:session-1',
+        'proxy.deactivate:session-1',
+        'tun.stop',
+        'platform.destroy:vpn-1',
+        'notification.stop:session-1'
+      ]);
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(notification.stopCalls.length).assertEqual(1);
+      expect(proxyLifecycle.deactivateCalls.length).assertEqual(1);
     });
 
     it('settlesStopWhileAwaitingReadyWithoutRequiringALaterTunEvent', 0, async () => {
@@ -614,7 +1219,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
         stopSettled = true;
         return result;
       });
-      await waitForCondition(() => startSettled && stopSettled);
+      await waitForCondition(() => startSettled && stopSettled, 40);
       const startResult: VpnControllerStartResult = await startPromise;
       const stopResult: VpnControllerStopResult = await stopPromise;
 
@@ -624,7 +1229,8 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(stopResult.kind).assertEqual('STOPPED');
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
-      expect(notification.stopCalls.length).assertEqual(1);
+      expect(notification.log.includes('notification.start:session-1')).assertFalse();
+      expect(notification.stopCalls.length).assertEqual(0);
     });
 
     it('reversesCleanupWithoutSkippingLaterStepsAcrossPartialStartFailures', 0, async () => {
@@ -974,6 +1580,111 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       expect(scheduler.tasks.length).assertEqual(1);
     });
 
+    it('entersRecoveryWhenThePlatformDefaultNetworkBecomesUnavailableAndReturnsToRunning', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.recoverSnapshotValue = buildTunSnapshot('session-1', 'READY');
+      const network = new FakeNetworkRecovery();
+      network.status = { usable: true, networkId: '100' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        network,
+        new FakeNotification(),
+        scheduler,
+        [181, 182, 183, 184, 185]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+
+      network.emitUnavailable('100');
+      expect(coordinator.snapshot().state).assertEqual('RECOVERING');
+      await waitForCondition(() => scheduler.tasks.length === 1);
+
+      network.emitUsable('200');
+      await scheduler.latest().run();
+      await waitForCondition(() => coordinator.snapshot().state === 'RUNNING');
+
+      expect(tunRuntime.closeStaleCalls.join('>')).assertEqual('session-1');
+      expect(tunRuntime.recoverCalls.join('>')).assertEqual('session-1');
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+    });
+
+    it('invalidatesAndDrainsBeforeRecoveryCloseStaleAndRecover', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      tunRuntime.recoverSnapshotValue = buildTunSnapshot('session-1', 'READY');
+      const proxyLifecycle = new FakeProxyLifecycle();
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        new FakeNotification(),
+        scheduler,
+        [84, 85, 86, 87],
+        proxyLifecycle
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => tunRuntime.closeStaleCalls.length === 1);
+      await waitForCondition(() => proxyLifecycle.drainCalls.length === 1);
+      await waitForCondition(() => coordinator.snapshot().scheduledRetryDelayMs === 250);
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      await scheduler.latest().run();
+      await waitForCondition(() => tunRuntime.recoverCalls.length === 1);
+
+      assertSubsequence(proxyLifecycle.log, ['proxy.invalidate:session-1', 'proxy.drain:session-1']);
+      assertSubsequence(tunRuntime.log, ['tun.closeStale:session-1', 'tun.recover:session-1']);
+    });
+
+    it('drainFailureBlocksRecoveryCleanupAndRetainsTheSessionForRetry', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const network = new FakeNetworkRecovery();
+      const platform = new FakePlatform();
+      const notification = new FakeNotification();
+      const scheduler = new FakeScheduler();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      proxyLifecycle.drainError = new Error('delay drain leaked session-1');
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        network,
+        notification,
+        scheduler,
+        [87, 88, 89, 90],
+        proxyLifecycle
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      await waitForCondition(() => coordinator.snapshot().state === 'ERROR');
+
+      expect(coordinator.snapshot().activeRequest?.sessionId ?? '').assertEqual('session-1');
+      expect(tunRuntime.closeStaleCalls.length).assertEqual(0);
+      expect(tunRuntime.recoverCalls.length).assertEqual(0);
+      expect(tunRuntime.stopCalls.length).assertEqual(0);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(0);
+      expect(notification.stopCalls.length).assertEqual(0);
+      expect(scheduler.tasks.length).assertEqual(0);
+
+      proxyLifecycle.drainError = undefined;
+      network.emitUsable('wifi-1');
+      await waitForCondition(() => scheduler.tasks.length === 1);
+      await scheduler.latest().run();
+      await waitForCondition(() => tunRuntime.recoverCalls.length === 1);
+
+      expect(tunRuntime.closeStaleCalls.length).assertEqual(1);
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+    });
+
     it('failsClosedWhenCloseStaleOutboundConnectionsErrorsDuringRecovery', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
@@ -994,8 +1705,8 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await coordinator.start('profile-1', 'version-1', 'session-1');
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
       await waitForCondition(() => tunRuntime.closeStaleCalls.length === 1);
-      await waitForCondition(() => coordinator.snapshot().state === 'ERROR');
-      await waitForCondition(() => notification.stopCalls.length === 1);
+      await waitForCondition(() => coordinator.snapshot().state === 'ERROR', 24);
+      await waitForCondition(() => notification.stopCalls.length === 1, 24);
 
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
@@ -1056,17 +1767,19 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await coordinator.start('profile-1', 'version-1', 'session-1');
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
       network.emitUsable('wifi-1');
+      await waitForCondition(() => scheduler.tasks.length === 1);
       await scheduler.latest().run();
       await waitForCondition(() => coordinator.snapshot().activeRequest === null);
 
       expect(coordinator.snapshot().state).assertEqual('ERROR');
+      expect(coordinator.snapshot().lastFailure?.detail.includes('old-session') ?? false).assertFalse();
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
       expect(notification.stopCalls.length).assertEqual(1);
       expect(coordinator.snapshot().activeRequest).assertEqual(null);
     });
 
-    it('exhaustsFiveRecoveryAttemptsThenCleansUpExactlyOnce', 0, async () => {
+    it('exhaustsSixRecoveryAttemptsThenCleansUpExactlyOnce', 0, async () => {
       const tunRuntime = new FakeTunRuntime();
       tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
       tunRuntime.recoverPortError = new TunRuntimePortError('NETWORK_LOST', 'recover lost');
@@ -1087,13 +1800,13 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await coordinator.start('profile-1', 'version-1', 'session-1');
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
 
-      for (let index = 0; index < 5; index += 1) {
+      for (let index = 0; index < 6; index += 1) {
         await waitForCondition(() => scheduler.tasks.length === index + 1);
         await scheduler.tasks[index].run();
       }
 
-      expect(scheduler.delays.join(',')).assertEqual('250,500,1000,2000,4000');
-      expect(tunRuntime.recoverCalls.length).assertEqual(5);
+      expect(scheduler.delays.join(',')).assertEqual('250,500,1000,2000,4000,8000');
+      expect(tunRuntime.recoverCalls.length).assertEqual(6);
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
       expect(notification.stopCalls.length).assertEqual(1);
@@ -1257,6 +1970,7 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       await coordinator.start('profile-1', 'version-1', 'session-1');
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
       network.emitUsable('wifi-1');
+      await waitForCondition(() => scheduler.tasks.length === 1);
       const scheduled: FakeDelayTask = scheduler.latest();
       const stopResult: VpnControllerStopResult = await coordinator.stop();
       const recoverCallCount: number = tunRuntime.recoverCalls.length;
@@ -1293,12 +2007,180 @@ export default function vpnRuntimeCoordinatorTestsuite() {
       tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'VPN_TUN_START_FAILED'));
 
       assertSubsequence(states, ['RUNNING', 'ERROR']);
-      await waitForCondition(() => coordinator.snapshot().activeRequest === null);
+      await waitForCondition(() => coordinator.snapshot().activeRequest === null, 24);
       expect(tunRuntime.stopCalls.length).assertEqual(1);
       expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
       expect(notification.stopCalls.length).assertEqual(1);
       expect(coordinator.snapshot().activeRequest).assertEqual(null);
       expect(coordinator.snapshot().state).assertEqual('ERROR');
+    });
+
+    it('replaysStoppedProxySelectionsBeforeNotificationStartAndRunning', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.useDeferredStart = true;
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [121, 122, 123, 124],
+        proxyLifecycle
+      );
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1');
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
+      expect(proxyLifecycle.activateCalls.length).assertEqual(0);
+      expect(notification.log.length).assertEqual(0);
+
+      tunRuntime.startDeferred.resolve(buildTunSnapshot('session-1', 'STARTING'));
+      await settleMicrotasks();
+      expect(proxyLifecycle.activateCalls.length).assertEqual(0);
+      expect(notification.log.length).assertEqual(0);
+
+      tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
+      const result: VpnControllerStartResult = await startPromise;
+
+      expect(result.kind).assertEqual('STARTED');
+      assertSubsequence(
+        tunRuntime.log.concat(proxyLifecycle.log, notification.log),
+        ['tun.start:session-1', 'proxy.activate:session-1', 'notification.start:session-1']
+      );
+      expect(notification.log.join('>')).assertEqual('notification.start:session-1');
+      expect(coordinator.snapshot().state).assertEqual('RUNNING');
+    });
+
+    it('failsClosedWhenProxyReplayActivationFailsBeforeNotificationOrRunning', 0, async () => {
+      const platform = new FakePlatform();
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.useDeferredStart = true;
+      const notification = new FakeNotification();
+      const proxyLifecycle = new FakeProxyLifecycle();
+      proxyLifecycle.activateError = new Error('raw replay secret 7');
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        platform,
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        notification,
+        new FakeScheduler(),
+        [125, 126, 127, 128],
+        proxyLifecycle
+      );
+
+      const startPromise: Promise<VpnControllerStartResult> = coordinator.start('profile-1', 'version-1', 'session-1');
+      await waitForCondition(() => tunRuntime.startCalls.length === 1);
+      tunRuntime.startDeferred.resolve(buildTunSnapshot('session-1', 'STARTING'));
+      tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
+      const result: VpnControllerStartResult = await startPromise;
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind === 'FAILED') {
+        expect(result.failure.code).assertEqual('VPN_PROXY_REPLAY_FAILED');
+        expect(result.failure.detail).assertEqual('Proxy selection replay failed.');
+      }
+      expect(notification.log.length).assertEqual(0);
+      expect(tunRuntime.stopCalls.length).assertEqual(1);
+      expect(countArrayEntry(platform.log, 'platform.destroy:vpn-1')).assertEqual(1);
+      expect(proxyLifecycle.deactivateCalls.length).assertEqual(1);
+      expect(coordinator.snapshot().state).assertEqual('STOPPED');
+    });
+
+    it('removesUnsubscribedCoordinatorListenersFromLaterRuntimeEvents', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        new FakeNetworkRecovery(),
+        new FakeNotification(),
+        new FakeScheduler(),
+        [129, 130, 131, 132]
+      );
+      const observedStates: string[] = [];
+
+      const subscriptionId = coordinator.subscribe((event) => {
+        observedStates.push(event.snapshot.state);
+      });
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      const receivedBeforeRemoval: number = observedStates.length;
+      coordinator.unsubscribe(subscriptionId);
+
+      tunRuntime.emit(buildTunSnapshot('session-1', 'READY'));
+
+      expect(observedStates.length).assertEqual(receivedBeforeRemoval);
+    });
+
+    it('disposeUnsubscribesTunNetworkAndNotificationExactlyOnceAndIgnoresLateSignals', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const networkRecovery = new FakeNetworkRecovery();
+      const notification = new FakeNotification();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        networkRecovery,
+        notification,
+        new FakeScheduler(),
+        [133, 134, 135, 136]
+      );
+      const observedStates: string[] = [];
+      coordinator.subscribe((event) => {
+        observedStates.push(event.snapshot.state);
+      });
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      const statesBeforeDispose: number = observedStates.length;
+
+      await coordinator.dispose();
+      await coordinator.dispose();
+
+      expect(tunRuntime.subscribeCalls).assertEqual(1);
+      expect(tunRuntime.unsubscribeCalls).assertEqual(1);
+      expect(networkRecovery.subscribeCalls).assertEqual(1);
+      expect(networkRecovery.unsubscribeCalls).assertEqual(1);
+      expect(networkRecovery.disposeCalls).assertEqual(0);
+      expect(notification.subscribeCalls).assertEqual(1);
+      expect(notification.unsubscribeCalls).assertEqual(1);
+
+      tunRuntime.emit(buildTunSnapshot('session-1', 'ERROR', 'NETWORK_LOST'));
+      networkRecovery.emitUsable('late-net');
+      notification.emitCancellation('session-1');
+
+      expect(observedStates.length).assertEqual(statesBeforeDispose);
+    });
+
+    it('disposeCancelsScheduledRecoveryAndPreventsTheQueuedRunnerFromRecovering', 0, async () => {
+      const tunRuntime = new FakeTunRuntime();
+      tunRuntime.snapshotValue = buildTunSnapshot('session-1', 'READY');
+      const networkRecovery = new FakeNetworkRecovery();
+      networkRecovery.status = { usable: true, networkId: '100' };
+      const scheduler = new FakeScheduler();
+      const coordinator = createCoordinator(
+        new FakeResolver(),
+        new FakePlatform(),
+        tunRuntime,
+        networkRecovery,
+        new FakeNotification(),
+        scheduler,
+        [137, 138, 139, 140]
+      );
+
+      await coordinator.start('profile-1', 'version-1', 'session-1');
+      networkRecovery.emitUnavailable('100');
+      await waitForCondition(() => scheduler.tasks.length === 1);
+
+      await coordinator.dispose();
+      expect(scheduler.latest().cancelled).assertTrue();
+      await scheduler.latest().run();
+
+      expect(tunRuntime.recoverCalls.length).assertEqual(0);
     });
   });
 }

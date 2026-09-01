@@ -12,11 +12,18 @@ import {
   type CreateVpnCaptureConfigInput
 } from '@cmfa/shared';
 import type {
+  BoundedDelaySchedulerPort,
+  CancelableDelayTask,
   TunHandle,
+  TunRuntimeEvent,
   TunRuntimeSnapshot,
   TunStartOptions,
   VpnCaptureConfig
 } from '@cmfa/shared';
+
+const DESTINATION_HASH: string = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const OUTBOUND_TERMINAL_HASH: string = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const OUTBOUND_CHAIN_HASH: string = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
 
 interface NativeTunCountersShape {
   txPackets: number;
@@ -47,6 +54,10 @@ interface NativeTunTraceShape {
   destinationAddress: string;
   hashedTuple: string;
   correlationHash: string;
+  destinationHash: string;
+  outboundTerminalHash: string;
+  outboundChainHash: string;
+  outboundChainLength: number;
 }
 
 interface NativeRuntimeEventShape {
@@ -81,6 +92,44 @@ class NativeBridgeFailure extends Error {
     super(detail);
     this.code = code;
     this.detail = detail;
+  }
+}
+
+class NativeBridgeErrorWithGenericMessage extends NativeBridgeFailure {
+  constructor(code: string, message: string, detail: string) {
+    super(code, detail);
+    this.message = message;
+  }
+}
+
+class ManualDelayTask implements CancelableDelayTask {
+  readonly delayMs: number;
+  readonly runner: () => Promise<void>;
+  canceled: boolean = false;
+
+  constructor(delayMs: number, runner: () => Promise<void>) {
+    this.delayMs = delayMs;
+    this.runner = runner;
+  }
+
+  cancel(): void {
+    this.canceled = true;
+  }
+
+  async run(): Promise<void> {
+    if (!this.canceled) {
+      await this.runner();
+    }
+  }
+}
+
+class ManualDelayScheduler implements BoundedDelaySchedulerPort {
+  readonly tasks: ManualDelayTask[] = [];
+
+  schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask {
+    const task = new ManualDelayTask(delayMs, runner);
+    this.tasks.push(task);
+    return task;
   }
 }
 
@@ -140,7 +189,11 @@ function buildNativeTrace(sequence: number, sessionId: string, protocol: string 
     sourceAddress: '10.111.222.1:12345',
     destinationAddress: '1.1.1.1:443',
     hashedTuple: `hash-${sequence}`,
-    correlationHash: `corr-${sequence}`
+    correlationHash: `corr-${sequence}`,
+    destinationHash: DESTINATION_HASH,
+    outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+    outboundChainHash: OUTBOUND_CHAIN_HASH,
+    outboundChainLength: sequence
   };
 }
 
@@ -150,6 +203,24 @@ async function flushTasks(): Promise<void> {
       resolve();
     }, 0);
   });
+}
+
+interface DeferredPromise<T> {
+  promise: Promise<T>;
+  resolve: (value: T) => void;
+}
+
+function createDeferredPromise<T>(): DeferredPromise<T> {
+  let resolveRef: ((value: T) => void) | undefined = undefined;
+  const promise: Promise<T> = new Promise<T>((resolve: (value: T) => void): void => {
+    resolveRef = resolve;
+  });
+  return {
+    promise,
+    resolve: (value: T): void => {
+      resolveRef!(value);
+    }
+  };
 }
 
 async function expectTunFailure(
@@ -244,7 +315,11 @@ class FakeNativeTunModule implements InternalTunNativeModule {
       sourceAddress: trace.sourceAddress,
       destinationAddress: trace.destinationAddress,
       hashedTuple: trace.hashedTuple,
-      correlationHash: trace.correlationHash
+      correlationHash: trace.correlationHash,
+      destinationHash: trace.destinationHash,
+      outboundTerminalHash: trace.outboundTerminalHash,
+      outboundChainHash: trace.outboundChainHash,
+      outboundChainLength: trace.outboundChainLength
     };
   }
 
@@ -371,6 +446,40 @@ class MutableSurfaceNativeModule implements InternalTunNativeModule {
   }
 }
 
+class DeferredSnapshotNativeTunModule extends FakeNativeTunModule {
+  snapshotPromise?: Promise<NativeTunSnapshotShape>;
+  stopSnapshot?: NativeTunSnapshotShape;
+
+  async tunSnapshot(): Promise<NativeTunSnapshotShape> {
+    if (this.snapshotPromise !== undefined) {
+      return await this.snapshotPromise;
+    }
+    return await super.tunSnapshot();
+  }
+
+  async stopTun(): Promise<NativeTunSnapshotShape> {
+    if (this.stopSnapshot !== undefined) {
+      return {
+        sessionId: this.stopSnapshot.sessionId,
+        state: this.stopSnapshot.state,
+        counters: {
+          txPackets: this.stopSnapshot.counters.txPackets,
+          txBytes: this.stopSnapshot.counters.txBytes,
+          rxPackets: this.stopSnapshot.counters.rxPackets,
+          rxBytes: this.stopSnapshot.counters.rxBytes
+        },
+        failure: this.stopSnapshot.failure === null
+          ? null
+          : {
+            code: this.stopSnapshot.failure.code,
+            detail: this.stopSnapshot.failure.detail
+          }
+      };
+    }
+    return await super.stopTun();
+  }
+}
+
 export default function coreTunRuntimeTestsuite() {
   describe('CoreTunRuntimeTest', () => {
     it('startTransfersEachSessionFdExactlyOnceAndKeepsExactTunPolicy', 0, async () => {
@@ -452,6 +561,10 @@ export default function coreTunRuntimeTestsuite() {
       expect(latestSnapshot.ingressTraces[0].protocol).assertEqual('udp');
       expect(latestSnapshot.ingressTraces[0].hashedTuple).assertEqual('hash-1');
       expect(latestSnapshot.ingressTraces[0].correlationHash).assertEqual('corr-1');
+      expect(latestSnapshot.ingressTraces[0].destinationHash).assertEqual(DESTINATION_HASH);
+      expect(latestSnapshot.ingressTraces[0].outboundTerminalHash).assertEqual(OUTBOUND_TERMINAL_HASH);
+      expect(latestSnapshot.ingressTraces[0].outboundChainHash).assertEqual(OUTBOUND_CHAIN_HASH);
+      expect(latestSnapshot.ingressTraces[0].outboundChainLength).assertEqual(1);
       expect(latestTraces[0].protocol).assertEqual('udp');
       runtime.dispose();
     });
@@ -480,6 +593,79 @@ export default function coreTunRuntimeTestsuite() {
         'VPN_STOP_FAILED',
         'stop failed'
       );
+      runtime.dispose();
+    });
+
+    it('mapsBusyStopFailuresToVpnStopFailedWhilePreservingNativeCode', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-busy', 'READY');
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+
+      await runtime.start(buildHandle('session-stop-busy'), buildStartOptions());
+      nativeModule.stopError = new NativeBridgeFailure('CMFA_BUSY', 'stop busy detail');
+
+      const stopError: TunRuntimePortError = await captureTunFailure(async () => {
+        await runtime.stop();
+      });
+
+      expect(stopError.failure.code).assertEqual('VPN_STOP_FAILED');
+      expect(stopError.failure.detail).assertContain('stop busy detail');
+      expect(stopError.nativeCode).assertEqual('CMFA_BUSY');
+      runtime.dispose();
+    });
+
+    it('keepsBusyStartFailuresMappedToVpnTunStartFailedWhilePreservingNativeCode', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.startError = new NativeBridgeFailure('CMFA_BUSY', 'start busy detail');
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+
+      const startError: TunRuntimePortError = await captureTunFailure(async () => {
+        await runtime.start(buildHandle('session-start-busy'), buildStartOptions());
+      });
+
+      expect(startError.failure.code).assertEqual('VPN_TUN_START_FAILED');
+      expect(startError.failure.detail).assertContain('start busy detail');
+      expect(startError.nativeCode).assertEqual('CMFA_BUSY');
+      runtime.dispose();
+    });
+
+    it('keepsAcceptingNativeEventsWhenStopFailsAndTheSessionRemainsActive', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-error', 'READY');
+      nativeModule.traceValues = [buildNativeTrace(1, 'session-stop-error')];
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+      const received: TunRuntimeSnapshot[] = [];
+      runtime.subscribe((event: TunRuntimeEvent): void => {
+        received.push(event.snapshot);
+      });
+
+      await runtime.start(buildHandle('session-stop-error'), buildStartOptions());
+      nativeModule.stopError = new NativeBridgeFailure('CMFA_BACKEND_ERROR', 'stop failed');
+      await expectTunFailure(
+        async () => {
+          await runtime.stop();
+        },
+        'VPN_STOP_FAILED',
+        'stop failed'
+      );
+
+      nativeModule.stopError = undefined;
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-error', 'READY');
+      nativeModule.snapshotValue.counters.rxPackets = 29;
+      nativeModule.emitRuntime({
+        type: 'runtime',
+        state: 'RUNNING',
+        message: 'retry-event',
+        code: 'CMFA_OK',
+        sessionId: 'session-stop-error',
+        traceId: 'trace-stop-error',
+        ingress: 'tun',
+        protocol: 'tcp'
+      });
+      await flushTasks();
+
+      expect(received.length).assertEqual(1);
+      expect(received[0].counters.rxPackets).assertEqual(29);
       runtime.dispose();
     });
 
@@ -517,6 +703,10 @@ export default function coreTunRuntimeTestsuite() {
       expect(received[0].ingressTraces[1].traceId).assertEqual('trace-2');
       expect(received[0].ingressTraces[1].protocol).assertEqual('dns');
       expect(received[0].ingressTraces[1].correlationHash).assertEqual('corr-2');
+      expect(received[0].ingressTraces[1].destinationHash).assertEqual(DESTINATION_HASH);
+      expect(received[0].ingressTraces[1].outboundTerminalHash).assertEqual(OUTBOUND_TERMINAL_HASH);
+      expect(received[0].ingressTraces[1].outboundChainHash).assertEqual(OUTBOUND_CHAIN_HASH);
+      expect(received[0].ingressTraces[1].outboundChainLength).assertEqual(2);
       received[0].counters.rxPackets = 0;
       expect(runtime.snapshot().counters.rxPackets).assertEqual(17);
 
@@ -536,6 +726,121 @@ export default function coreTunRuntimeTestsuite() {
       expect(nativeModule.unsubscribeCalls.length).assertEqual(1);
     });
 
+    it('forwardsOnlyFixedTunPacketDiagnosticsWithoutNativePayloads', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-diagnostic', 'READY');
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+      const received: TunRuntimeEvent[] = [];
+      runtime.subscribe((event: TunRuntimeEvent): void => {
+        received.push(event);
+      });
+      await runtime.start(buildHandle('session-diagnostic'), buildStartOptions());
+      nativeModule.snapshotError = new NativeBridgeFailure('CMFA_BUSY', 'snapshot unavailable during start');
+
+      nativeModule.emitRuntime({
+        type: 'runtime',
+        state: 'RUNNING',
+        message: 'tun.packet.read-loop-enter',
+        code: 'CMFA_OK',
+        sessionId: 'session-diagnostic',
+        traceId: 'private-trace',
+        ingress: 'diagnostic',
+        protocol: 'tun.packet.read-loop-enter'
+      });
+      await flushTasks();
+
+      expect(received.length).assertEqual(1);
+      expect(received[0].diagnosticStage).assertEqual('tun.packet.read-loop-enter');
+      nativeModule.snapshotError = undefined;
+
+      nativeModule.emitRuntime({
+        type: 'runtime',
+        state: 'RUNNING',
+        message: 'private-payload',
+        code: 'CMFA_OK',
+        sessionId: 'session-diagnostic',
+        traceId: 'private-trace',
+        ingress: 'diagnostic',
+        protocol: 'private-payload'
+      });
+      await flushTasks();
+
+      expect(received.length).assertEqual(2);
+      expect(received[1].diagnosticStage === undefined).assertTrue();
+      runtime.dispose();
+    });
+
+    it('pollsLiveNativeTunEvidenceWithoutDependingOnRuntimeEventDeliveryAndCancelsOnStop', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-poll', 'READY');
+      const scheduler = new ManualDelayScheduler();
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule, scheduler);
+      const received: TunRuntimeEvent[] = [];
+      runtime.subscribe((event: TunRuntimeEvent): void => {
+        received.push(event);
+      });
+
+      await runtime.start(buildHandle('session-poll'), buildStartOptions());
+      expect(scheduler.tasks.length).assertEqual(1);
+      expect(scheduler.tasks[0].delayMs).assertEqual(250);
+
+      nativeModule.snapshotValue = buildNativeSnapshot('session-poll', 'READY');
+      nativeModule.snapshotValue.counters.rxPackets = 29;
+      nativeModule.traceValues = [buildNativeTrace(1, 'session-poll', 'udp')];
+      await scheduler.tasks[0].run();
+      await flushTasks();
+
+      expect(received.length).assertEqual(1);
+      expect(received[0].snapshot.counters.rxPackets).assertEqual(29);
+      expect(received[0].snapshot.ingressTraces.length).assertEqual(1);
+      expect(scheduler.tasks.length).assertEqual(2);
+
+      nativeModule.snapshotValue = buildNativeSnapshot('session-poll', 'STOPPED');
+      await runtime.stop();
+      expect(scheduler.tasks[1].canceled).assertTrue();
+      runtime.dispose();
+    });
+
+    it('restartsPollingAfterStopFailsAndContinuesPublishingEvidence', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-failed-poll', 'READY');
+      const scheduler = new ManualDelayScheduler();
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule, scheduler);
+      const received: TunRuntimeEvent[] = [];
+      runtime.subscribe((event: TunRuntimeEvent): void => {
+        received.push(event);
+      });
+
+      await runtime.start(buildHandle('session-stop-failed-poll'), buildStartOptions());
+      expect(scheduler.tasks.length).assertEqual(1);
+      expect(scheduler.tasks[0].canceled).assertFalse();
+
+      nativeModule.stopError = new NativeBridgeFailure('CMFA_BACKEND_ERROR', 'stop failed');
+      await expectTunFailure(
+        async () => {
+          await runtime.stop();
+        },
+        'VPN_STOP_FAILED',
+        'stop failed'
+      );
+
+      expect(scheduler.tasks[0].canceled).assertTrue();
+      expect(scheduler.tasks.length).assertEqual(2);
+      expect(scheduler.tasks[1].canceled).assertFalse();
+      expect(scheduler.tasks[1].delayMs).assertEqual(250);
+
+      nativeModule.stopError = undefined;
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-failed-poll', 'READY');
+      nativeModule.snapshotValue.counters.rxPackets = 43;
+      nativeModule.traceValues = [buildNativeTrace(1, 'session-stop-failed-poll', 'udp')];
+      await scheduler.tasks[1].run();
+      await flushTasks();
+
+      expect(received.length).assertEqual(1);
+      expect(received[0].snapshot.counters.rxPackets).assertEqual(43);
+      runtime.dispose();
+    });
+
     it('stopsSafelyMoreThanOnce', 0, async () => {
       const nativeModule = new FakeNativeTunModule();
       nativeModule.snapshotValue = buildNativeSnapshot('session-stop', 'READY');
@@ -549,6 +854,99 @@ export default function coreTunRuntimeTestsuite() {
       expect(nativeModule.stopCalls.length).assertEqual(1);
       expect(runtime.snapshot().state).assertEqual('STOPPED');
       runtime.unsubscribe(9999);
+      runtime.dispose();
+    });
+
+    it('ignoresLateNativeRuntimeEventsAfterStopBeginsForTheSameSession', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-late', 'READY');
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+      await runtime.start(buildHandle('session-stop-late'), buildStartOptions());
+
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-late', 'STOPPED');
+      const stopPromise: Promise<void> = runtime.stop();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-late', 'READY');
+      nativeModule.emitRuntime({
+        type: 'runtime',
+        state: 'RUNNING',
+        message: 'late-after-stop',
+        code: 'CMFA_OK',
+        sessionId: 'session-stop-late',
+        traceId: 'trace-late-stop',
+        ingress: 'tun',
+        protocol: 'tcp'
+      });
+      await stopPromise;
+      await flushTasks();
+
+      expect(runtime.snapshot().state).assertEqual('STOPPED');
+      runtime.dispose();
+    });
+
+    it('ignoresInFlightNativeRuntimeSnapshotsThatResolveAfterStopFinishes', 0, async () => {
+      const nativeModule = new DeferredSnapshotNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-inflight', 'READY');
+      const deferredSnapshot: DeferredPromise<NativeTunSnapshotShape> = createDeferredPromise<NativeTunSnapshotShape>();
+      nativeModule.snapshotPromise = deferredSnapshot.promise;
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+      await runtime.start(buildHandle('session-stop-inflight'), buildStartOptions());
+
+      nativeModule.emitRuntime({
+        type: 'runtime',
+        state: 'RUNNING',
+        message: 'inflight-before-stop',
+        code: 'CMFA_OK',
+        sessionId: 'session-stop-inflight',
+        traceId: 'trace-stop-inflight',
+        ingress: 'tun',
+        protocol: 'tcp'
+      });
+      await flushTasks();
+
+      nativeModule.stopSnapshot = buildNativeSnapshot('session-stop-inflight', 'STOPPED');
+      await runtime.stop();
+
+      deferredSnapshot.resolve(buildNativeSnapshot('session-stop-inflight', 'READY'));
+      await flushTasks();
+
+      expect(runtime.snapshot().state).assertEqual('STOPPED');
+      runtime.dispose();
+    });
+
+    it('restartsPollingAfterRecoverAndCancelsThePreviousPendingTask', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-recover-poll', 'READY');
+      const scheduler = new ManualDelayScheduler();
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule, scheduler);
+      const received: TunRuntimeEvent[] = [];
+      runtime.subscribe((event: TunRuntimeEvent): void => {
+        received.push(event);
+      });
+
+      await runtime.start(buildHandle('session-recover-poll'), buildStartOptions());
+      expect(scheduler.tasks.length).assertEqual(1);
+      await scheduler.tasks[0].run();
+      await flushTasks();
+      expect(scheduler.tasks.length).assertEqual(2);
+      expect(scheduler.tasks[1].canceled).assertFalse();
+
+      nativeModule.snapshotValue = buildNativeSnapshot('session-recover-poll', 'READY');
+      nativeModule.snapshotValue.counters.rxPackets = 61;
+      await runtime.recover('session-recover-poll');
+
+      expect(scheduler.tasks[1].canceled).assertTrue();
+      expect(scheduler.tasks.length).assertEqual(3);
+      expect(scheduler.tasks[2].canceled).assertFalse();
+      expect(scheduler.tasks[2].delayMs).assertEqual(250);
+
+      nativeModule.snapshotValue = buildNativeSnapshot('session-recover-poll', 'READY');
+      nativeModule.snapshotValue.counters.rxPackets = 77;
+      nativeModule.traceValues = [buildNativeTrace(1, 'session-recover-poll', 'udp')];
+      await scheduler.tasks[2].run();
+      await flushTasks();
+
+      expect(received.length).assertEqual(1);
+      expect(received[0].snapshot.counters.rxPackets).assertEqual(77);
       runtime.dispose();
     });
 
@@ -687,6 +1085,28 @@ export default function coreTunRuntimeTestsuite() {
       runtimeSecond.dispose();
       runtimeUnknown.dispose();
       runtimeStop.dispose();
+    });
+
+    it('prefersStructuredDetailOverGenericErrorMessageWhenNormalizingTunFailures', 0, async () => {
+      const nativeModule = new FakeNativeTunModule();
+      nativeModule.snapshotValue = buildNativeSnapshot('session-stop-structured-detail', 'READY');
+      const runtime = new CoreTunRuntime(CONFIG, nativeModule);
+
+      await runtime.start(buildHandle('session-stop-structured-detail', 94), buildStartOptions());
+      nativeModule.stopError = new NativeBridgeErrorWithGenericMessage(
+        'CMFA_BACKEND_ERROR',
+        'Native core operation failed',
+        'TUN_STOP_EXECUTOR_FAILED_ERROR'
+      );
+
+      const stopError: TunRuntimePortError = await captureTunFailure(async () => {
+        await runtime.stop();
+      });
+
+      expect(stopError.failure.code).assertEqual('VPN_STOP_FAILED');
+      expect(stopError.failure.detail).assertEqual('TUN_STOP_EXECUTOR_FAILED_ERROR');
+      expect(stopError.nativeCode).assertEqual('CMFA_BACKEND_ERROR');
+      runtime.dispose();
     });
 
     it('closeStaleOutboundConnectionsForwardsThroughNativeWithoutStoppingTun', 0, async () => {

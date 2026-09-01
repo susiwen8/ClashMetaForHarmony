@@ -1,0 +1,9 @@
+{
+  "schemaVersion": "2.0.0",
+  "result": "incomplete",
+  "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "stoppedToVpnState": "NOT_PROVEN",
+  "runningSwitchState": "NOT_PROVEN",
+  "recreationState": "NOT_PROVEN",
+  "cleanupState": "NOT_PROVEN"
+}

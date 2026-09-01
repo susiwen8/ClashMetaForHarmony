@@ -7,6 +7,7 @@
     "schemaVersion",
     "phase",
     "result",
+    "stubDetected",
     "runId",
     "outputPath",
     "timestamps",
@@ -24,6 +25,7 @@
     "schemaVersion": { "const": "4.0.0" },
     "phase": { "const": 4 },
     "result": { "const": "pass" },
+    "stubDetected": { "const": false },
     "runId": {
       "type": "string",
       "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
@@ -225,17 +227,16 @@
       "additionalProperties": false,
       "required": ["bundleName"],
       "properties": {
-        "bundleName": { "const": "com.github.kr328.clash.harmony.trafficprobe" }
+        "bundleName": { "const": "com.cmfa.phase4.trafficprobe" }
       }
     },
     "trafficTcp": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "required": ["result", "correlated", "captureTrace", "coreEvent"],
       "properties": {
         "result": { "const": "pass" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 },
+        "correlated": { "const": true },
         "captureTrace": {
           "type": "object",
           "additionalProperties": false,
@@ -258,11 +259,10 @@
     "trafficUdp": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "required": ["result", "correlated", "captureTrace", "coreEvent"],
       "properties": {
         "result": { "const": "pass" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 },
+        "correlated": { "const": true },
         "captureTrace": {
           "type": "object",
           "additionalProperties": false,
@@ -285,11 +285,10 @@
     "trafficDns": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "required": ["result", "correlated", "captureTrace", "coreEvent"],
       "properties": {
         "result": { "const": "pass" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 },
+        "correlated": { "const": true },
         "captureTrace": {
           "type": "object",
           "additionalProperties": false,
@@ -312,11 +311,10 @@
     "trafficIpv4": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+      "required": ["result", "correlated", "captureTrace", "coreEvent"],
       "properties": {
         "result": { "const": "pass" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 },
+        "correlated": { "const": true },
         "captureTrace": {
           "type": "object",
           "additionalProperties": false,
@@ -341,11 +339,10 @@
         {
           "type": "object",
           "additionalProperties": false,
-          "required": ["result", "sessionId", "traceId", "captureTrace", "coreEvent"],
+          "required": ["result", "correlated", "captureTrace", "coreEvent"],
           "properties": {
             "result": { "const": "pass" },
-            "sessionId": { "type": "string", "minLength": 1 },
-            "traceId": { "type": "string", "minLength": 1 },
+            "correlated": { "const": true },
             "captureTrace": {
               "type": "object",
               "additionalProperties": false,
@@ -379,23 +376,21 @@
     "localHttpEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "ingress", "sessionId", "traceId"],
+      "required": ["result", "ingress", "correlated"],
       "properties": {
         "result": { "const": "pass" },
         "ingress": { "const": "local-http" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 }
+        "correlated": { "const": true }
       }
     },
     "localSocksEvidence": {
       "type": "object",
       "additionalProperties": false,
-      "required": ["result", "ingress", "sessionId", "traceId"],
+      "required": ["result", "ingress", "correlated"],
       "properties": {
         "result": { "const": "pass" },
         "ingress": { "const": "local-socks" },
-        "sessionId": { "type": "string", "minLength": 1 },
-        "traceId": { "type": "string", "minLength": 1 }
+        "correlated": { "const": true }
       }
     },
     "passResult": {

@@ -87,6 +87,7 @@ test('Task 8 ArkTS modules use local oh-package source dependencies instead of c
   assert.equal(entryPkg.dependencies?.['libentry.so'], 'file:./src/main/cpp/types/libentry');
 
   assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreModels['"]/u);
+  assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreProxyModels['"]/u);
   assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreService['"]/u);
   assert.match(sharedIndex, /export .* from ['"]\.\/src\/main\/ets\/core\/CoreErrors['"]/u);
 
@@ -196,4 +197,11 @@ test('CoreDebugPage observes new Want contexts and runs each self-test runId at 
   assert.match(page, /probeHttpsForSelfTest/u);
   assert.match(page, /this\.coreService\.startLocal/u);
   assert.match(page, /this\.coreService\.stopRuntime/u);
+});
+
+test('CoreDebugPage writes probeRunId at the canonical Phase 2 probe-entry level', async () => {
+  const page = await readText('entry/src/main/ets/pages/CoreDebugPage.ets');
+
+  assert.match(page, /interface\s+Phase2ProbeEntry\s*\{[\s\S]*probeRunId:\s*string\s*\|\s*null;/u);
+  assert.match(page, /const\s+probeEntry:\s*Phase2ProbeEntry\s*=\s*\{[\s\S]*probeRunId:\s*probe\.probeRunId,/u);
 });

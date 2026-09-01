@@ -23,7 +23,6 @@ export type VpnFailureCode =
   | 'VPN_PERMISSION_DENIED'
   | 'VPN_ALREADY_ACTIVE'
   | 'VPN_PROFILE_UNAVAILABLE'
-  | 'VPN_LOCAL_STOP_REQUIRED'
   | 'VPN_CONFIG_INVALID'
   | 'VPN_CREATE_FAILED'
   | 'VPN_TUN_FD_INVALID'
@@ -31,6 +30,7 @@ export type VpnFailureCode =
   | 'VPN_SOCKET_PROTECT_FAILED'
   | 'VPN_LOCAL_PORT_CONFLICT'
   | 'VPN_BACKGROUND_TASK_FAILED'
+  | 'VPN_PROXY_REPLAY_FAILED'
   | 'VPN_SYSTEM_REVOKED'
   | 'VPN_STOP_FAILED';
 
@@ -40,7 +40,6 @@ export const VPN_FAILURE_CODES: VpnFailureCode[] = [
   'VPN_PERMISSION_DENIED',
   'VPN_ALREADY_ACTIVE',
   'VPN_PROFILE_UNAVAILABLE',
-  'VPN_LOCAL_STOP_REQUIRED',
   'VPN_CONFIG_INVALID',
   'VPN_CREATE_FAILED',
   'VPN_TUN_FD_INVALID',
@@ -48,9 +47,13 @@ export const VPN_FAILURE_CODES: VpnFailureCode[] = [
   'VPN_SOCKET_PROTECT_FAILED',
   'VPN_LOCAL_PORT_CONFLICT',
   'VPN_BACKGROUND_TASK_FAILED',
+  'VPN_PROXY_REPLAY_FAILED',
   'VPN_SYSTEM_REVOKED',
   'VPN_STOP_FAILED'
 ];
+
+const SHA256_PATTERN: RegExp = /^[0-9a-f]{64}$/u;
+const MAX_OUTBOUND_CHAIN_LENGTH: number = 16;
 
 export interface VpnStartRequest {
   profileId: string;
@@ -111,6 +114,10 @@ export interface CreateVpnIngressTraceInput {
   protocol?: string;
   hashedTuple?: string;
   correlationHash?: string;
+  destinationHash?: string;
+  outboundTerminalHash?: string;
+  outboundChainHash?: string;
+  outboundChainLength?: number;
 }
 
 export interface VpnIngressTrace {
@@ -124,6 +131,10 @@ export interface VpnIngressTrace {
   protocol: string;
   hashedTuple: string;
   correlationHash: string;
+  destinationHash: string;
+  outboundTerminalHash: string;
+  outboundChainHash: string;
+  outboundChainLength: number;
 }
 
 export interface VpnFailure {
@@ -302,7 +313,11 @@ function cloneIngressTraces(traces: VpnIngressTrace[]): VpnIngressTrace[] {
       ingress: traces[index].ingress,
       protocol: traces[index].protocol,
       hashedTuple: traces[index].hashedTuple,
-      correlationHash: traces[index].correlationHash
+      correlationHash: traces[index].correlationHash,
+      destinationHash: traces[index].destinationHash,
+      outboundTerminalHash: traces[index].outboundTerminalHash,
+      outboundChainHash: traces[index].outboundChainHash,
+      outboundChainLength: traces[index].outboundChainLength
     }));
   }
   return clones;
@@ -466,6 +481,29 @@ export function createVpnIngressTrace(input: CreateVpnIngressTraceInput): VpnIng
   const protocol: string = `${input.protocol ?? stage.split('/')[1] ?? ''}`.trim();
   const hashedTuple: string = `${input.hashedTuple ?? ''}`.trim();
   const correlationHash: string = `${input.correlationHash ?? ''}`.trim();
+  const destinationHash: string = `${input.destinationHash ?? ''}`.trim();
+  const outboundTerminalHash: string = `${input.outboundTerminalHash ?? ''}`.trim();
+  const outboundChainHash: string = `${input.outboundChainHash ?? ''}`.trim();
+  const outboundChainLength: number = input.outboundChainLength ?? 0;
+  if (destinationHash.length > 0 && !SHA256_PATTERN.test(destinationHash)) {
+    throw new Error('Vpn ingress destination hash must be exactly 64 lowercase hexadecimal characters.');
+  }
+  if (outboundTerminalHash.length > 0 && !SHA256_PATTERN.test(outboundTerminalHash)) {
+    throw new Error('Vpn ingress outbound terminal hash must be exactly 64 lowercase hexadecimal characters.');
+  }
+  if (outboundChainHash.length > 0 && !SHA256_PATTERN.test(outboundChainHash)) {
+    throw new Error('Vpn ingress outbound chain hash must be exactly 64 lowercase hexadecimal characters.');
+  }
+  const hasOutboundTerminalHash: boolean = outboundTerminalHash.length > 0;
+  const hasOutboundChainHash: boolean = outboundChainHash.length > 0;
+  const hasOutboundChainLength: boolean = outboundChainLength > 0;
+  if ((hasOutboundTerminalHash || hasOutboundChainHash || hasOutboundChainLength) &&
+    !(hasOutboundTerminalHash && hasOutboundChainHash && hasOutboundChainLength)) {
+    throw new Error('Vpn ingress outbound proof must provide terminal hash, chain hash, and positive chain length together.');
+  }
+  if (outboundChainLength < 0 || outboundChainLength > MAX_OUTBOUND_CHAIN_LENGTH || !Number.isInteger(outboundChainLength)) {
+    throw new Error(`Vpn ingress outbound chain length must be an integer within 0..${MAX_OUTBOUND_CHAIN_LENGTH}.`);
+  }
   return {
     sequence,
     sessionId,
@@ -476,7 +514,11 @@ export function createVpnIngressTrace(input: CreateVpnIngressTraceInput): VpnIng
     ingress,
     protocol,
     hashedTuple,
-    correlationHash
+    correlationHash,
+    destinationHash,
+    outboundTerminalHash,
+    outboundChainHash,
+    outboundChainLength
   };
 }
 

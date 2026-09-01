@@ -4,6 +4,11 @@ import { spawn as spawnChild } from 'node:child_process';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  CORE_EXPORTS,
+  RAW_PROXY_DELAY_EXPORTS,
+  RAW_PROXY_EXPORTS
+} from '../../tools/lib/native-provenance.mjs';
 
 const probeHelperPath = new URL('../../tools/build-go-ohos-probe.mjs', import.meta.url);
 const coreHelperPath = new URL('../../tools/build-mihomo-ohos.mjs', import.meta.url);
@@ -12,26 +17,14 @@ const upstreamLockPath = new URL('../../core/go/upstream.lock.json', import.meta
 const upstreamApiLockPath = new URL('../../core/go/upstream.api-lock.json', import.meta.url);
 const probeModulePath = new URL('../../core/go/probe/go.mod', import.meta.url);
 const coreMainPath = new URL('../../core/go/cmd/cmfa_core/main.go', import.meta.url);
+const tunExportTestHelperPath = new URL('../../core/go/cmd/cmfa_core/tun_exports_test_helper.go', import.meta.url);
+const ohosRuntimeTlsPath = new URL('../../core/go/ohos-runtime-overlay/go1.26.2/src/runtime/tls_arm64.s', import.meta.url);
+const ohosRuntimeCgoPath = new URL('../../core/go/ohos-runtime-overlay/go1.26.2/src/runtime/cgo/gcc_linux_arm64.c', import.meta.url);
+const ohosRuntimeRt0Path = new URL('../../core/go/ohos-runtime-overlay/go1.26.2/src/runtime/rt0_linux_arm64.s', import.meta.url);
 const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const EXPECTED_BUILD_INFO_JSON = '{"version":"v1.19.29","upstreamCommit":"e26714a181ac0e2fa803453c0a8e9a9ce94e31cb","abiVersion":"cmfa-harmony-v1","buildId":"ea041f1758f53faf"}';
-const CORE_EXPORTS = [
-  'cmfa_mihomo_close_stale_tun_connections_v1',
-  BUILD_INFO_EXPORT,
-  RAW_VERSION_EXPORT,
-  'cmfa_mihomo_probe_cancel_v1',
-  'cmfa_mihomo_probe_https_v1',
-  'cmfa_mihomo_runtime_state_v1',
-  'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_start_tun_v1',
-  'cmfa_mihomo_stop_tun_v1',
-  'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1',
-  'cmfa_mihomo_tun_copy_traces_ring_v1',
-  'cmfa_mihomo_tun_copy_traces_v1',
-  'cmfa_mihomo_tun_runtime_state_v1'
-];
 const FIXED_HOST_BRIDGE_SYMBOLS = [
   'cmfa_host_emit_runtime_event_bridge_v1',
   'cmfa_host_protect_socket_bridge_v1'
@@ -46,16 +39,13 @@ const fakeToolchainReadelfPath = joinFragments(['/sd', 'k/default/openharmony/na
 const fakeHostClangPath = joinFragments(['/us', 'r/bin/clang']);
 const fakeAttackerPath = joinFragments(['/tm', 'p/attacker-bin']);
 const fakeTrustedGoPath = joinFragments(['/tr', 'usted/toolchains/go/bin/go']);
+const fakeTrustedGoRoot = joinFragments(['/tr', 'usted/toolchains/go']);
 const fakeUsrBinPath = joinFragments(['/us', 'r/bin']);
 const fakeSecretUrl = joinFragments(['https://', 'user', ':', 'token', '@example.invalid/private.zip']);
 const fakeWindowsSdkPath = joinFragments(['C:\\', 'Users\\me\\sdk']);
 const task9GoModCache = process.env.GOMODCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-mod-cache-task9']);
 const task9GoBuildCache = process.env.GOCACHE || joinFragments(['/pri', 'vate/tmp/cmfa-go-build-cache-task9']);
 const task9GoProxy = process.env.GOPROXY || `file://${path.join(task9GoModCache, 'cache', 'download')}`;
-
-test.afterEach(() => {
-  process.exitCode = undefined;
-});
 
 function createGoRunner(envOverrides = {}) {
   return (args) => new Promise((resolve) => {
@@ -83,7 +73,12 @@ function createGoRunner(envOverrides = {}) {
 }
 
 function assertGoOhosWithGvisorBuildArgs(args, artifactPath, packagePath = '.') {
-  assert.deepEqual(args, ['build', '-mod=readonly', '-tags', 'ohos,with_gvisor', '-buildmode=c-shared', '-o', artifactPath, packagePath]);
+  assert.equal(args[0], 'build');
+  assert.deepEqual(args.slice(1, 5), ['-mod=readonly', '-tags', 'ohos,with_gvisor', '-buildmode=c-shared']);
+  assert.equal(args[5], '-overlay');
+  assert.ok(args[6] === '<path>' || /go-ohos-runtime-overlay\.json$/u.test(args[6]));
+  assert.equal(args[7], '-asmflags=runtime=-D=CMFA_GOOS_OHOS');
+  assert.deepEqual(args.slice(8), ['-o', artifactPath, packagePath]);
 }
 
 test('Task 5 build surfaces exist and export the documented entry points', async () => {
@@ -110,6 +105,49 @@ test('Task 5 keeps probe as an independent Go module', async () => {
   assert.doesNotMatch(probeMainRaw, /internal\/version/u);
 });
 
+test('Task 12 replaces Go ELF TLS with an OHOS pthread-key g bridge', async () => {
+  const [tlsAssembly, cgoBridge, rt0Assembly] = await Promise.all([
+    fs.readFile(ohosRuntimeTlsPath, 'utf8').catch(() => ''),
+    fs.readFile(ohosRuntimeCgoPath, 'utf8').catch(() => ''),
+    fs.readFile(ohosRuntimeRt0Path, 'utf8').catch(() => '')
+  ]);
+
+  assert.match(tlsAssembly, /#ifdef CMFA_GOOS_OHOS/u);
+  assert.match(tlsAssembly, /x_cgo_ohos_load_g\(SB\)/u);
+  assert.match(tlsAssembly, /x_cgo_ohos_save_g\(SB\)/u);
+  assert.match(tlsAssembly, /GLOBL runtime·tls_g\+0\(SB\), NOPTR, \$8/u);
+  assert.match(cgoBridge, /static pthread_key_t cmfa_ohos_go_g_key/u);
+  assert.match(cgoBridge, /pthread_key_create\(&cmfa_ohos_go_g_key, NULL\)/u);
+  assert.match(cgoBridge, /pthread_getspecific\(cmfa_ohos_go_g_key\)/u);
+  assert.match(cgoBridge, /pthread_setspecific\(cmfa_ohos_go_g_key, g\)/u);
+  for (const [left, right] of [[1, 2], [3, 4], [5, 6], [7, 8], [9, 10], [11, 12], [13, 14], [15, 16]]) {
+    assert.equal(
+      [...tlsAssembly.matchAll(new RegExp(`STP\\s+\\(R${left}, R${right}\\),`, 'gu'))].length,
+      2,
+      `load_g and save_g must both preserve R${left}/R${right} around the C helper`
+    );
+    assert.equal(
+      [...tlsAssembly.matchAll(new RegExp(`LDP\\s+[^\\n]+, \\(R${left}, R${right}\\)`, 'gu'))].length,
+      2,
+      `load_g and save_g must both restore R${left}/R${right} after the C helper`
+    );
+  }
+  assert.equal([...tlsAssembly.matchAll(/MOVD\s+R17, 128\(RSP\)/gu)].length, 2);
+  assert.equal([...tlsAssembly.matchAll(/MOVD\s+128\(RSP\), R17/gu)].length, 2);
+  assert.doesNotMatch(tlsAssembly, /R18/u);
+  assert.equal([...tlsAssembly.matchAll(/SUB\s+\$144, RSP/gu)].length, 2);
+  assert.equal([...tlsAssembly.matchAll(/ADD\s+\$144, RSP/gu)].length, 2);
+  assert.doesNotMatch(cgoBridge, /preserve_all/u);
+  assert.match(cgoBridge, /x_cgo_ohos_load_g/u);
+  assert.match(cgoBridge, /x_cgo_ohos_save_g/u);
+  assert.doesNotMatch(cgoBridge, /__thread|tls_model|dlopen|dlsym|TLS_SLOT/u);
+  assert.match(rt0Assembly, /#ifdef CMFA_GOOS_OHOS/u);
+  assert.match(rt0Assembly, /MOVW\s+\$1, R0/u);
+  assert.match(rt0Assembly, /MOVD\s+\$_rt0_arm64_ohos_argv\(SB\), R1/u);
+  assert.match(rt0Assembly, /DATA _rt0_arm64_ohos_argv\+0x08\(SB\)\/8,\$0/u);
+  assert.match(rt0Assembly, /JMP\s+_rt0_arm64_lib\(SB\)/u);
+});
+
 test('Task 7 gives the real Go version getter one backend-private export', async () => {
   const coreMainRaw = await fs.readFile(coreMainPath, 'utf8');
 
@@ -117,6 +155,28 @@ test('Task 7 gives the real Go version getter one backend-private export', async
   assert.match(coreMainRaw, new RegExp(String.raw`//export ${BUILD_INFO_EXPORT}\b`, 'u'));
   assert.match(coreMainRaw, /version\.BuildInfoJSON\(\)/u);
   assert.doesNotMatch(coreMainRaw, /\/\/export cmfa_core_version\b/u);
+  assert.ok(CORE_EXPORTS.includes(RAW_VERSION_EXPORT));
+  assert.ok(CORE_EXPORTS.includes(BUILD_INFO_EXPORT));
+});
+
+test('Task 14 native provenance keeps delay exports exact, disjoint, and lexically sorted in the core contract', () => {
+  assert.deepEqual(RAW_PROXY_DELAY_EXPORTS, [
+    'cmfa_mihomo_proxy_delay_start_v1',
+    'cmfa_mihomo_proxy_delay_snapshot_v1',
+    'cmfa_mihomo_proxy_delay_cancel_v1'
+  ]);
+  assert.equal(new Set(RAW_PROXY_DELAY_EXPORTS).size, RAW_PROXY_DELAY_EXPORTS.length);
+  for (const symbol of RAW_PROXY_DELAY_EXPORTS) {
+    assert.equal(RAW_PROXY_EXPORTS.includes(symbol), false, `${symbol} must stay outside the raw selection export set`);
+    assert.equal(CORE_EXPORTS.includes(symbol), true, `${symbol} must stay inside the production core export set`);
+  }
+  assert.deepEqual([...CORE_EXPORTS].sort(), [...CORE_EXPORTS], 'CORE_EXPORTS must stay lexically sorted for provenance/package proofs');
+});
+
+test('Plan D keeps C ABI test helpers out of the OHOS production shared library', async () => {
+  const helperSource = await fs.readFile(tunExportTestHelperPath, 'utf8');
+
+  assert.match(helperSource, /^\/\/go:build !ohos\n\npackage main\n/u);
 });
 
 test('Task 9 audit output is deterministic and omits volatile timestamps', async () => {
@@ -506,9 +566,9 @@ test('Task 5 pins mihomo upstream metadata and never leaks absolute host paths i
           compatibleApiVersion: 20
         },
         installed: {
-          devecoVersion: '6.1.0.860',
-          sdkVersion: '6.1.0.105',
-          ndkVersion: '6.1.0.105'
+          devecoVersion: '6.1.1.300',
+          sdkVersion: '6.1.1.125',
+          ndkVersion: '6.1.1.125'
         },
         failures: [
           {
@@ -557,10 +617,10 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
   await fs.mkdir(fakeArtifactsRoot, { recursive: true });
   await fs.writeFile(path.join(fakeHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -576,7 +636,7 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
           schemaVersion: '1.0.0',
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20 },
-          installed: { devecoVersion: '6.1.0.860', sdkVersion: '6.1.0.105', ndkVersion: '6.1.0.105' },
+          installed: { devecoVersion: '6.1.1.300', sdkVersion: '6.1.1.125', ndkVersion: '6.1.1.125' },
           failures: []
         },
         resolved: {
@@ -587,8 +647,28 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
         }
       }),
       readGoVersionImpl: async () => 'go1.26.2',
+      readGoRootImpl: async () => fakeTrustedGoRoot,
       runCommandImpl: async (input) => {
         observed = input;
+        const overlay = JSON.parse(await fs.readFile(input.args[6], 'utf8'));
+        const mappings = Object.entries(overlay.Replace);
+        assert.equal(mappings.length, 3);
+        assert.deepEqual(
+          mappings.map(([source]) => source).sort(),
+          [
+            path.join(fakeTrustedGoRoot, 'src', 'runtime', 'cgo', 'gcc_linux_arm64.c'),
+            path.join(fakeTrustedGoRoot, 'src', 'runtime', 'rt0_linux_arm64.s'),
+            path.join(fakeTrustedGoRoot, 'src', 'runtime', 'tls_arm64.s')
+          ].sort()
+        );
+        assert.deepEqual(
+          mappings.map(([, replacement]) => path.relative(harmonyRoot, replacement)).sort(),
+          [
+            'core/go/ohos-runtime-overlay/go1.26.2/src/runtime/cgo/gcc_linux_arm64.c',
+            'core/go/ohos-runtime-overlay/go1.26.2/src/runtime/rt0_linux_arm64.s',
+            'core/go/ohos-runtime-overlay/go1.26.2/src/runtime/tls_arm64.s'
+          ].sort()
+        );
         await fs.writeFile(fakeArtifactPath, 'fake-so', 'utf8');
         await fs.writeFile(fakeHeaderPath, 'const char *cmfa_probe_version(void);\nint32_t cmfa_probe_add(int32_t left, int32_t right);\n', 'utf8');
         return { command: input.command, args: input.args, exitCode: 0, stdout: '', stderr: '', error: null, timedOut: false };
@@ -615,7 +695,7 @@ test('Task 5 probe helper locks the documented Go env and build args without dup
     assert.equal(observed.env.CC, 'aarch64-unknown-linux-ohos-clang');
     assert.equal(observed.env.CXX, 'aarch64-unknown-linux-ohos-clang++');
     assert.equal(observed.cwd, path.join(fakeHarmonyRoot, 'core', 'go', 'probe'));
-    assert.equal('CGO_CFLAGS' in observed.env, false);
+    assert.equal(observed.env.CGO_CFLAGS, '-fno-emulated-tls');
     assert.equal('CGO_LDFLAGS' in observed.env, false);
     assertGoOhosWithGvisorBuildArgs(proof.components.probe.build.command.slice(1), '<path>');
   } finally {
@@ -684,10 +764,10 @@ test('Task 5 probe helper does not allow caller options to override the probe bu
   await fs.mkdir(fakeArtifactsRoot, { recursive: true });
   await fs.writeFile(path.join(fakeHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -705,7 +785,7 @@ test('Task 5 probe helper does not allow caller options to override the probe bu
           schemaVersion: '1.0.0',
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20 },
-          installed: { devecoVersion: '6.1.0.860', sdkVersion: '6.1.0.105', ndkVersion: '6.1.0.105' },
+          installed: { devecoVersion: '6.1.1.300', sdkVersion: '6.1.1.125', ndkVersion: '6.1.1.125' },
           failures: []
         },
         resolved: {
@@ -716,6 +796,7 @@ test('Task 5 probe helper does not allow caller options to override the probe bu
         }
       }),
       readGoVersionImpl: async () => 'go1.26.2',
+      readGoRootImpl: async () => fakeTrustedGoRoot,
       runCommandImpl: async (input) => {
         observed.build = input;
         await fs.writeFile(fakeProbeLibPath, 'fake-probe-so', 'utf8');
@@ -765,10 +846,10 @@ test('Task 5 build helpers resolve an absolute trusted go binary and ignore env 
   await fs.mkdir(fakeArtifactsRoot, { recursive: true });
   await fs.writeFile(path.join(fakeHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -784,7 +865,7 @@ test('Task 5 build helpers resolve an absolute trusted go binary and ignore env 
           schemaVersion: '1.0.0',
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20 },
-          installed: { devecoVersion: '6.1.0.860', sdkVersion: '6.1.0.105', ndkVersion: '6.1.0.105' },
+          installed: { devecoVersion: '6.1.1.300', sdkVersion: '6.1.1.125', ndkVersion: '6.1.1.125' },
           failures: []
         },
         resolved: {
@@ -802,6 +883,7 @@ test('Task 5 build helpers resolve an absolute trusted go binary and ignore env 
         versionInput = input;
         return 'go1.26.2';
       },
+      readGoRootImpl: async () => fakeTrustedGoRoot,
       runCommandImpl: async (input) => {
         buildInput = input;
         await fs.writeFile(fakeProbeLibPath, 'fake-probe-so', 'utf8');
@@ -841,10 +923,10 @@ test('Task 5 build helper redacts URL userinfo from build failures', async () =>
   await fs.mkdir(path.join(fakeHarmonyRoot, 'artifacts'), { recursive: true });
   await fs.writeFile(path.join(fakeHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -856,7 +938,7 @@ test('Task 5 build helper redacts URL userinfo from build failures', async () =>
           schemaVersion: '1.0.0',
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20 },
-          installed: { devecoVersion: '6.1.0.860', sdkVersion: '6.1.0.105', ndkVersion: '6.1.0.105' },
+          installed: { devecoVersion: '6.1.1.300', sdkVersion: '6.1.1.125', ndkVersion: '6.1.1.125' },
           failures: []
         },
         resolved: {
@@ -868,6 +950,7 @@ test('Task 5 build helper redacts URL userinfo from build failures', async () =>
       }),
       resolveGoBinaryImpl: async () => fakeTrustedGoPath,
       readGoVersionImpl: async () => 'go1.26.2',
+      readGoRootImpl: async () => fakeTrustedGoRoot,
       runCommandImpl: async (input) => ({
         command: input.command,
         args: input.args,
@@ -882,6 +965,58 @@ test('Task 5 build helper redacts URL userinfo from build failures', async () =>
     const serialized = JSON.stringify(proof);
     assert.match(serialized, /https:\/\/<redacted-userinfo>@example\.invalid\/private\.zip/u);
     assert.doesNotMatch(serialized, /user:token/u);
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('Task 12 rejects Go versions that do not match the runtime overlay sources', async () => {
+  const [{ buildGoOhosProbe }] = await Promise.all([
+    import(probeHelperPath)
+  ]);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'go-ohos-version-gate-'));
+  const fakeHarmonyRoot = path.join(tempRoot, 'harmony');
+  let buildStarted = false;
+
+  await fs.mkdir(path.join(fakeHarmonyRoot, 'artifacts'), { recursive: true });
+  await fs.writeFile(path.join(fakeHarmonyRoot, 'toolchain.lock.json'), JSON.stringify({
+    installed: {
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hdcVersion: '6.1.1.125'
+    }
+  }), 'utf8');
+
+  try {
+    const proof = await buildGoOhosProbe({
+      harmonyRoot: fakeHarmonyRoot,
+      toolchainInspectorImpl: async () => ({
+        report: {
+          schemaVersion: '1.0.0',
+          result: 'pass',
+          target: { architecture: 'arm64', compatibleApiVersion: 20 },
+          installed: { devecoVersion: '6.1.1.300', sdkVersion: '6.1.1.125', ndkVersion: '6.1.1.125' },
+          failures: []
+        },
+        resolved: {
+          paths: {
+            clang: fakeToolchainClangPath,
+            llvmReadelf: fakeToolchainReadelfPath
+          }
+        }
+      }),
+      readGoVersionImpl: async () => 'go1.26.3',
+      readGoRootImpl: async () => fakeTrustedGoRoot,
+      runCommandImpl: async () => {
+        buildStarted = true;
+        return { exitCode: 0, stdout: '', stderr: '', error: null, timedOut: false };
+      }
+    });
+
+    assert.equal(buildStarted, false);
+    assert.equal(proof.components.probe.result, 'fail');
+    assert.ok(proof.components.probe.failures.some((entry) => entry.code === 'GO_VERSION_UNSUPPORTED_FOR_RUNTIME_OVERLAY'));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
@@ -1209,6 +1344,7 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     });
     assert.equal(validInspection.result, 'pass');
     assert.deepEqual(validInspection.exportedSymbols, CORE_EXPORTS);
+    assert.deepEqual(validInspection.requiredExports, CORE_EXPORTS);
     assert.equal(validInspection.buildInfo?.version, 'v1.19.29');
     assert.deepEqual(validInspection.failures, []);
 
@@ -1227,6 +1363,16 @@ test('Task 7 mihomo ELF rejects conflicting, sentinel, and libdl exports', async
     assert.equal(missingTunExportInspection.result, 'fail');
     assert.ok(missingTunExportInspection.failures.some((entry) => entry.code === 'EXPORT_MISSING' && entry.detail === 'cmfa_mihomo_tun_runtime_state_v1'));
     assert.ok(missingTunExportInspection.failures.some((entry) => entry.code === 'EXPORT_SET_MISMATCH'));
+
+    for (const missingDelayExport of RAW_PROXY_DELAY_EXPORTS) {
+      const missingDelayInspection = await inspectSynthetic({
+        neededLibraries: ['libc.so'],
+        exportedSymbols: CORE_EXPORTS.filter((entry) => entry !== missingDelayExport)
+      });
+      assert.equal(missingDelayInspection.result, 'fail');
+      assert.ok(missingDelayInspection.failures.some((entry) => entry.code === 'EXPORT_MISSING' && entry.detail === missingDelayExport), missingDelayExport);
+      assert.ok(missingDelayInspection.failures.some((entry) => entry.code === 'EXPORT_SET_MISMATCH'), missingDelayExport);
+    }
 
     const forbiddenInspection = await inspectSynthetic({
       neededLibraries: ['libc.so'],

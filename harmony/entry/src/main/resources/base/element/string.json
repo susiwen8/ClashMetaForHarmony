@@ -22,11 +22,11 @@
     },
     {
       "name": "home_title",
-      "value": "Local proxy and VPN global capture"
+      "value": "VPN global capture"
     },
     {
       "name": "home_subtitle",
-      "value": "Use explicit local listeners or a TUN-based VPN capture session."
+      "value": "Use the TUN-based VPN capture session to route traffic through the active profile."
     },
     {
       "name": "home_profile_title",
@@ -49,88 +49,16 @@
       "value": "›"
     },
     {
-      "name": "home_runtime_title",
-      "value": "运行状态"
-    },
-    {
-      "name": "home_runtime_status_stopped",
-      "value": "本地代理未启动"
-    },
-    {
-      "name": "home_runtime_status_starting",
-      "value": "本地代理启动中"
-    },
-    {
-      "name": "home_runtime_status_running",
-      "value": "本地代理运行中"
-    },
-    {
-      "name": "home_runtime_status_stopping",
-      "value": "本地代理停止中"
-    },
-    {
-      "name": "home_runtime_status_error",
-      "value": "本地代理异常"
-    },
-    {
-      "name": "home_runtime_primary_start",
-      "value": "启动本地代理"
-    },
-    {
-      "name": "home_runtime_primary_stop",
-      "value": "停止本地代理"
-    },
-    {
       "name": "home_runtime_primary_busy",
       "value": "处理中"
-    },
-    {
-      "name": "home_runtime_missing_profile",
-      "value": "请先启用一个有效配置"
-    },
-    {
-      "name": "home_local_title",
-      "value": "Local proxy"
     },
     {
       "name": "home_vpn_title",
       "value": "VPN global capture"
     },
     {
-      "name": "home_local_http_label",
-      "value": "HTTP listener"
-    },
-    {
-      "name": "home_local_socks_label",
-      "value": "SOCKS listener"
-    },
-    {
       "name": "home_runtime_listener_placeholder",
       "value": "—"
-    },
-    {
-      "name": "home_local_status_stopped",
-      "value": "Local listener stopped"
-    },
-    {
-      "name": "home_local_status_starting",
-      "value": "Starting local listeners"
-    },
-    {
-      "name": "home_local_status_running",
-      "value": "Local listeners active"
-    },
-    {
-      "name": "home_local_status_stopping",
-      "value": "Stopping local listeners"
-    },
-    {
-      "name": "home_local_status_error",
-      "value": "Local listener error"
-    },
-    {
-      "name": "home_local_boundary_note",
-      "value": "Only the explicit local HTTP and SOCKS listeners started here are supported."
     },
     {
       "name": "home_vpn_status_stopped",
@@ -169,14 +97,6 @@
       "value": "Stop VPN global capture"
     },
     {
-      "name": "home_local_primary_start",
-      "value": "Start Local proxy"
-    },
-    {
-      "name": "home_local_primary_stop",
-      "value": "Stop Local proxy"
-    },
-    {
       "name": "home_vpn_ipv4_label",
       "value": "IPv4"
     },
@@ -195,6 +115,14 @@
     {
       "name": "home_vpn_notification_label",
       "value": "Continuous notification"
+    },
+    {
+      "name": "home_vpn_proxy_group_label",
+      "value": "Proxy group"
+    },
+    {
+      "name": "home_vpn_proxy_node_label",
+      "value": "Current node"
     },
     {
       "name": "home_vpn_recovery_label",
@@ -229,6 +157,122 @@
       "value": "TUN capture is limited to traffic handled by this app session."
     },
     {
+      "name": "home_mode_title",
+      "value": "运行模式"
+    },
+    {
+      "name": "home_mode_rule",
+      "value": "Rule"
+    },
+    {
+      "name": "home_mode_global",
+      "value": "Global"
+    },
+    {
+      "name": "home_mode_direct",
+      "value": "Direct"
+    },
+    {
+      "name": "home_mode_loading",
+      "value": "正在读取当前模式"
+    },
+    {
+      "name": "home_mode_switching",
+      "value": "正在切换模式"
+    },
+    {
+      "name": "home_mode_unavailable",
+      "value": "启动 VPN 后可以切换当前会话模式"
+    },
+    {
+      "name": "home_mode_rule_description",
+      "value": "按当前配置中的规则决定直连或代理"
+    },
+    {
+      "name": "home_mode_global_description",
+      "value": "所有流量使用全局代理组"
+    },
+    {
+      "name": "home_mode_direct_description",
+      "value": "所有流量直接连接，不使用代理节点"
+    },
+    {
+      "name": "home_mode_rule_note",
+      "value": "Rule 是否实现国内直连取决于当前配置中的规则和 Rule Provider。切换仅对本次 VPN 会话生效。"
+    },
+    {
+      "name": "error_runtime_mode",
+      "value": "无法读取或切换当前 VPN 运行模式。"
+    },
+    {
+      "name": "home_logs_open",
+      "value": "日志与诊断"
+    },
+    {
+      "name": "logs_title",
+      "value": "日志与诊断"
+    },
+    {
+      "name": "logs_search_placeholder",
+      "value": "搜索日志"
+    },
+    {
+      "name": "logs_filter_all",
+      "value": "全部"
+    },
+    {
+      "name": "logs_filter_debug",
+      "value": "Debug"
+    },
+    {
+      "name": "logs_filter_info",
+      "value": "Info"
+    },
+    {
+      "name": "logs_filter_warn",
+      "value": "Warn"
+    },
+    {
+      "name": "logs_filter_error",
+      "value": "Error"
+    },
+    {
+      "name": "logs_refresh",
+      "value": "刷新"
+    },
+    {
+      "name": "logs_export",
+      "value": "导出"
+    },
+    {
+      "name": "logs_clear",
+      "value": "清空"
+    },
+    {
+      "name": "logs_empty",
+      "value": "还没有运行日志。启动 VPN 后会在这里显示。"
+    },
+    {
+      "name": "logs_failed",
+      "value": "日志操作失败，请重试。"
+    },
+    {
+      "name": "logs_processing",
+      "value": "处理中"
+    },
+    {
+      "name": "logs_exported",
+      "value": "日志已导出"
+    },
+    {
+      "name": "logs_export_cancelled",
+      "value": "已取消导出"
+    },
+    {
+      "name": "logs_cleared",
+      "value": "日志已清空"
+    },
+    {
       "name": "error_vpn_permission_denied",
       "value": "VPN permission was denied."
     },
@@ -258,27 +302,7 @@
     },
     {
       "name": "error_vpn_recovering",
-      "value": "VPN global capture is recovering after a network change."
-    },
-    {
-      "name": "error_vpn_requires_local_stop",
-      "value": "Stop the local proxy before starting VPN global capture."
-    },
-    {
-      "name": "error_local_blocked_by_vpn",
-      "value": "Stop VPN global capture before starting the local proxy."
-    },
-    {
-      "name": "home_info_title",
-      "value": "从配置开始"
-    },
-    {
-      "name": "home_info_body",
-      "value": "支持从文件或订阅地址导入，敏感地址不会显示在配置列表和错误详情中。"
-    },
-    {
-      "name": "home_info_indicator",
-      "value": "i"
+      "value": "VPN global capture state is being restored."
     },
     {
       "name": "home_runtime_indicator",
@@ -301,10 +325,6 @@
       "value": "从文件或 URL 导入后，配置会显示在这里。"
     },
     {
-      "name": "profiles_locked_message",
-      "value": "请先停止本地代理，再切换或删除配置。"
-    },
-    {
       "name": "profiles_badge_active",
       "value": "当前"
     },
@@ -319,6 +339,158 @@
     {
       "name": "profiles_badge_update_failed",
       "value": "更新失败"
+    },
+    {
+      "name": "proxies_title",
+      "value": "代理节点"
+    },
+    {
+      "name": "proxies_back",
+      "value": "返回首页"
+    },
+    {
+      "name": "proxies_loading",
+      "value": "正在加载代理组和节点。"
+    },
+    {
+      "name": "proxies_empty",
+      "value": "当前配置没有可用的代理组。"
+    },
+    {
+      "name": "proxies_retry",
+      "value": "重新加载"
+    },
+    {
+      "name": "proxies_selected",
+      "value": "当前生效"
+    },
+    {
+      "name": "proxies_saved_for_next_start",
+      "value": "下次启动生效"
+    },
+    {
+      "name": "proxies_applied_not_persisted",
+      "value": "当前选择已临时生效，但未成功保存到下次启动。"
+    },
+    {
+      "name": "proxies_activation_starting_vpn",
+      "value": "正在启动 VPN"
+    },
+    {
+      "name": "proxies_activation_switching_vpn",
+      "value": "正在切换到 VPN"
+    },
+    {
+      "name": "proxies_activation_transitioning",
+      "value": "切换中"
+    },
+    {
+      "name": "proxies_nested_group",
+      "value": "进入子组"
+    },
+    {
+      "name": "proxies_one_click_busy",
+      "value": "已有节点切换正在进行，请稍后再试。"
+    },
+    {
+      "name": "proxies_error_profile_unavailable",
+      "value": "当前配置没有可用的代理数据。"
+    },
+    {
+      "name": "proxies_error_runtime_not_ready",
+      "value": "代理运行时尚未就绪，请稍后再试。"
+    },
+    {
+      "name": "proxies_error_query_failed",
+      "value": "读取代理节点失败，请重试。"
+    },
+    {
+      "name": "proxies_error_selection_stale",
+      "value": "代理节点列表已过期，请重新加载后再试。"
+    },
+    {
+      "name": "proxies_error_selection_failed",
+      "value": "切换代理节点失败。"
+    },
+    {
+      "name": "proxies_error_persistence_failed",
+      "value": "代理节点切换已应用，但保存失败。"
+    },
+    {
+      "name": "proxies_error_session_changed",
+      "value": "当前运行会话已变化，请重新加载代理节点。"
+    },
+    {
+      "name": "proxies_one_click_confirmation_timeout",
+      "value": "VPN 已启动，但确认当前生效节点超时，请重试。"
+    },
+    {
+      "name": "proxies_delay_action_start",
+      "value": "测速全部节点"
+    },
+    {
+      "name": "proxies_delay_action_cancel",
+      "value": "取消测速"
+    },
+    {
+      "name": "proxies_delay_progress",
+      "value": "已完成 %d / %d"
+    },
+    {
+      "name": "proxies_delay_summary_available",
+      "value": "可用 %d / %d"
+    },
+    {
+      "name": "proxies_delay_summary_timeout",
+      "value": "超时 %d"
+    },
+    {
+      "name": "proxies_delay_summary_failed",
+      "value": "不可用 %d"
+    },
+    {
+      "name": "proxies_delay_summary_cancelled",
+      "value": "已取消 %d"
+    },
+    {
+      "name": "proxies_delay_summary_unsupported",
+      "value": "不支持 %d"
+    },
+    {
+      "name": "proxies_delay_fastest_marker",
+      "value": "最快"
+    },
+    {
+      "name": "proxies_delay_fastest_summary",
+      "value": "最快 %s %d ms"
+    },
+    {
+      "name": "proxies_delay_waiting",
+      "value": "等待"
+    },
+    {
+      "name": "proxies_delay_testing",
+      "value": "测速中"
+    },
+    {
+      "name": "proxies_delay_timeout",
+      "value": "超时"
+    },
+    {
+      "name": "proxies_delay_failed",
+      "value": "不可用"
+    },
+    {
+      "name": "proxies_delay_cancelled",
+      "value": "已取消"
+    },
+    {
+      "name": "proxies_delay_unsupported",
+      "value": "不支持"
+    },
+    {
+      "name": "proxies_delay_ms",
+      "value": "%d ms"
     },
     {
       "name": "import_title",
@@ -409,8 +581,64 @@
       "value": "最近更新"
     },
     {
+      "name": "detail_edit",
+      "value": "编辑配置"
+    },
+    {
+      "name": "detail_edit_name_label",
+      "value": "名称"
+    },
+    {
+      "name": "detail_edit_url_label",
+      "value": "订阅地址"
+    },
+    {
+      "name": "detail_edit_url_hint",
+      "value": "留空则保留当前 URL；填写新 URL 后会自动重新获取节点。"
+    },
+    {
+      "name": "detail_edit_cancel",
+      "value": "取消编辑"
+    },
+    {
+      "name": "detail_edit_save",
+      "value": "保存修改"
+    },
+    {
+      "name": "detail_edit_issue_required",
+      "value": "此项不能为空"
+    },
+    {
+      "name": "detail_edit_issue_name_too_long",
+      "value": "名称长度不能超过 80 个字符"
+    },
+    {
+      "name": "detail_edit_issue_url_invalid",
+      "value": "请输入有效的 URL"
+    },
+    {
+      "name": "detail_edit_issue_url_invalid_scheme",
+      "value": "仅支持 http:// 或 https://"
+    },
+    {
       "name": "detail_enable",
       "value": "启用配置"
+    },
+    {
+      "name": "detail_proxy_title",
+      "value": "代理节点"
+    },
+    {
+      "name": "detail_proxy_manage",
+      "value": "管理节点"
+    },
+    {
+      "name": "detail_proxy_collapse",
+      "value": "收起"
+    },
+    {
+      "name": "detail_proxy_requires_active",
+      "value": "请先启用此配置，并等待 VPN 状态稳定后管理对应节点。"
     },
     {
       "name": "detail_refresh",
@@ -445,8 +673,20 @@
       "value": "复制错误详情"
     },
     {
+      "name": "detail_operation_processing",
+      "value": "处理中…"
+    },
+    {
+      "name": "detail_operation_completed",
+      "value": "操作已完成"
+    },
+    {
       "name": "detail_source_repair_required",
       "value": "当前保存的订阅来源不可用，请替换后再试。"
+    },
+    {
+      "name": "detail_source_retry_or_replace",
+      "value": "当前保存的订阅来源暂时无法读取，可重试刷新或通过编辑配置更新订阅地址。"
     },
     {
       "name": "error_import",
@@ -470,11 +710,11 @@
     },
     {
       "name": "error_runtime_start",
-      "value": "启动本地代理失败"
+      "value": "启动运行服务失败"
     },
     {
       "name": "error_runtime_stop",
-      "value": "停止本地代理失败"
+      "value": "停止运行服务失败"
     }
   ]
 }

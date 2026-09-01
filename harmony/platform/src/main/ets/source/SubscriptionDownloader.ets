@@ -29,6 +29,7 @@ const MAX_REDIRECTS: number = 5;
 const STAGING_SUFFIX: string = '.yaml';
 const REDIRECT_STATUS_CODES: number[] = [301, 302, 303, 307, 308];
 const SAFE_STAGE_ID_PATTERN: RegExp = /^[A-Za-z0-9._-]+$/u;
+const SUBSCRIPTION_USER_AGENT: string = 'ClashMetaForAndroid/HarmonyOS';
 
 class AcquiredRemoteProfileValue implements RemoteProfileAcquisitionSuccess {
   readonly kind: 'ACQUIRED' = 'ACQUIRED';
@@ -145,7 +146,8 @@ export class SubscriptionDownloader {
         response = await transport.fetch({
           url: current.requestUrl,
           timeoutMs: DOWNLOAD_TIMEOUT_MS,
-          maxResponseBytes: MAX_BODY_BYTES
+          maxResponseBytes: MAX_BODY_BYTES,
+          userAgent: SUBSCRIPTION_USER_AGENT
         });
       } catch (error) {
         const mapped: TransportFailureMapping = mapTransportFailure(error as Object | undefined, current.requestUrl);
@@ -262,7 +264,7 @@ export class SubscriptionDownloader {
     let handle: FileToken | undefined = undefined;
     let closeFailure: Error | undefined = undefined;
     try {
-      await this.fileDriver.mkdir(stageDirectory, true);
+      await this.ensureStageDirectory(stageDirectory);
       handle = await this.fileDriver.open(stagePath, FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_CREATE | FILE_OPEN_MODE_TRUNC);
       await writeFully(this.fileDriver, handle.fd, body);
       closeFailure = await this.tryCloseHandle(handle);
@@ -285,6 +287,17 @@ export class SubscriptionDownloader {
       await this.cleanupStage(stagePath);
       throw (error as Error) ?? closeFailure ?? new Error('Subscription stage failed.');
     }
+  }
+
+  private async ensureStageDirectory(stageDirectory: string): Promise<void> {
+    const existing = await this.fileDriver.statIfPresent(stageDirectory);
+    if (existing !== undefined) {
+      if (!existing.isDirectory) {
+        throw new Error('Subscription staging path was not a directory.');
+      }
+      return;
+    }
+    await this.fileDriver.mkdir(stageDirectory, true);
   }
 
   private async tryCloseHandle(handle?: FileToken): Promise<Error | undefined> {

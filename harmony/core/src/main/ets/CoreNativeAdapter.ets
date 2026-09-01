@@ -1,8 +1,16 @@
 import {
+  cancelProxyDelayTest as nativeCancelProxyDelayTest,
   coreVersion as nativeCoreVersion,
   hello as nativeHello,
   loadConfiguration as nativeLoadConfiguration,
+  queryProxyGroup as nativeQueryProxyGroup,
+  queryProxyGroups as nativeQueryProxyGroups,
+  queryRuntimeMode as nativeQueryRuntimeMode,
+  readProxyDelayTest as nativeReadProxyDelayTest,
   runtimeSnapshot as nativeRuntimeSnapshot,
+  selectProxy as nativeSelectProxy,
+  setRuntimeMode as nativeSetRuntimeMode,
+  startProxyDelayTest as nativeStartProxyDelayTest,
   startLocal as nativeStartLocal,
   stopRuntime as nativeStopRuntime,
   subscribe as nativeSubscribe,
@@ -11,8 +19,24 @@ import {
 } from 'libentry.so';
 import * as nativeEntry from 'libentry.so';
 
-import { normalizeCoreError } from '@cmfa/shared';
-import type { CoreError, CoreEvent, CoreService, LocalOptions, RuntimeSnapshot } from '@cmfa/shared';
+import {
+  cloneCoreProxyDelaySnapshot,
+  cloneCoreProxyQueryContext,
+  normalizeCoreRuntimeMode,
+  normalizeCoreError,
+  type CoreProxyDelaySnapshot,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied
+} from '@cmfa/shared';
+import type { CoreError, CoreEvent, CoreRuntimeMode, CoreService, LocalOptions, RuntimeSnapshot } from '@cmfa/shared';
+import { decodeProxyGroupList, decodeProxyGroupResult, decodeProxySelectionApplied } from './ProxyNativeCodec';
+import {
+  decodeCancelProxyDelayTest,
+  decodeReadProxyDelayTest,
+  decodeStartProxyDelayTest
+} from './ProxyDelayNativeCodec';
 
 interface InternalProbeRequest {
   probeRunId: string;
@@ -100,6 +124,10 @@ export interface InternalTunNativeTrace {
   destinationAddress: string;
   hashedTuple: string;
   correlationHash: string;
+  destinationHash: string;
+  outboundTerminalHash: string;
+  outboundChainHash: string;
+  outboundChainLength: number;
 }
 
 export interface InternalTunNativeCaptureConfig {
@@ -127,6 +155,14 @@ export interface InternalTunNativeStartOptions {
 }
 
 export interface InternalTunNativeModule extends InternalProbeNativeModule {
+  queryRuntimeMode?: () => string;
+  setRuntimeMode?: (mode: CoreRuntimeMode) => string;
+  queryProxyGroups?: (context: CoreProxyQueryContext, selectableOnly: boolean) => Promise<string>;
+  queryProxyGroup?: (context: CoreProxyQueryContext, groupName: string) => Promise<string>;
+  selectProxy?: (context: CoreProxyQueryContext, groupName: string, memberName: string) => Promise<string>;
+  startProxyDelayTest?: (context: CoreProxyQueryContext, groupName: string) => Promise<string>;
+  readProxyDelayTest?: (jobId: string) => Promise<string>;
+  cancelProxyDelayTest?: (jobId: string) => Promise<string>;
   subscribe?: (callback: (event: InternalNativeRuntimeEvent) => void) => number;
   unsubscribe?: (subscriptionId: number) => void;
   startTun?: (options: InternalTunNativeStartOptions) => Promise<InternalTunNativeSnapshot>;
@@ -152,7 +188,13 @@ export function wrapNativeAsync<T>(operation: string, invoke: () => Promise<T>):
   }
 }
 
-class CoreNativeAdapter implements CoreService {
+export class CoreNativeAdapter implements CoreService {
+  private readonly proxyModule: InternalTunNativeModule;
+
+  constructor(proxyModule: InternalTunNativeModule = getInternalNativeModule()) {
+    this.proxyModule = proxyModule;
+  }
+
   hello(): string {
     try {
       return nativeHello();
@@ -187,6 +229,101 @@ class CoreNativeAdapter implements CoreService {
     } catch (error) {
       throw normalizeCoreError('runtimeSnapshot', error as Object | Error | undefined);
     }
+  }
+
+  queryRuntimeMode(): CoreRuntimeMode {
+    try {
+      const rawMode: string = this.proxyModule.queryRuntimeMode !== undefined
+        ? this.proxyModule.queryRuntimeMode()
+        : nativeQueryRuntimeMode();
+      return normalizeCoreRuntimeMode(rawMode);
+    } catch (error) {
+      throw normalizeCoreError('queryRuntimeMode', error as Object | Error | undefined);
+    }
+  }
+
+  setRuntimeMode(mode: CoreRuntimeMode): CoreRuntimeMode {
+    const normalizedMode: CoreRuntimeMode = normalizeCoreRuntimeMode(mode);
+    try {
+      const rawMode: string = this.proxyModule.setRuntimeMode !== undefined
+        ? this.proxyModule.setRuntimeMode(normalizedMode)
+        : nativeSetRuntimeMode(normalizedMode);
+      return normalizeCoreRuntimeMode(rawMode);
+    } catch (error) {
+      throw normalizeCoreError('setRuntimeMode', error as Object | Error | undefined);
+    }
+  }
+
+  queryProxyGroups(context: CoreProxyQueryContext, selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    const expectedContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    const nativeContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    return wrapNativeAsync<string>('queryProxyGroups', (): Promise<string> =>
+      this.proxyModule.queryProxyGroups !== undefined
+        ? this.proxyModule.queryProxyGroups(nativeContext, selectableOnly)
+        : nativeQueryProxyGroups(nativeContext, selectableOnly)
+    )
+      .then((raw: string): CoreProxyGroupList => decodeProxyGroupList(raw, expectedContext));
+  }
+
+  queryProxyGroup(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyGroupResult> {
+    const expectedContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    const nativeContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    return wrapNativeAsync<string>('queryProxyGroup', (): Promise<string> =>
+      this.proxyModule.queryProxyGroup !== undefined
+        ? this.proxyModule.queryProxyGroup(nativeContext, groupName)
+        : nativeQueryProxyGroup(nativeContext, groupName)
+    )
+      .then((raw: string): CoreProxyGroupResult => decodeProxyGroupResult(raw, expectedContext));
+  }
+
+  selectProxy(
+    context: CoreProxyQueryContext,
+    groupName: string,
+    memberName: string
+  ): Promise<CoreProxySelectionApplied> {
+    const expectedContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    const nativeContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    return wrapNativeAsync<string>('selectProxy', (): Promise<string> =>
+      this.proxyModule.selectProxy !== undefined
+        ? this.proxyModule.selectProxy(nativeContext, groupName, memberName)
+        : nativeSelectProxy(nativeContext, groupName, memberName)
+    )
+      .then((raw: string): CoreProxySelectionApplied => decodeProxySelectionApplied(raw, expectedContext));
+  }
+
+  startProxyDelayTest(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyDelaySnapshot> {
+    const expectedContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    const nativeContext: CoreProxyQueryContext = cloneCoreProxyQueryContext(context);
+    return wrapNativeAsync<string>('startProxyDelayTest', (): Promise<string> =>
+      this.proxyModule.startProxyDelayTest !== undefined
+        ? this.proxyModule.startProxyDelayTest(nativeContext, groupName)
+        : nativeStartProxyDelayTest(nativeContext, groupName)
+    )
+      .then((raw: string): CoreProxyDelaySnapshot =>
+        cloneCoreProxyDelaySnapshot(decodeStartProxyDelayTest(raw, expectedContext, groupName))
+      );
+  }
+
+  readProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return wrapNativeAsync<string>('readProxyDelayTest', (): Promise<string> =>
+      this.proxyModule.readProxyDelayTest !== undefined
+        ? this.proxyModule.readProxyDelayTest(jobId)
+        : nativeReadProxyDelayTest(jobId)
+    )
+      .then((raw: string): CoreProxyDelaySnapshot =>
+        cloneCoreProxyDelaySnapshot(decodeReadProxyDelayTest(raw, jobId))
+      );
+  }
+
+  cancelProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return wrapNativeAsync<string>('cancelProxyDelayTest', (): Promise<string> =>
+      this.proxyModule.cancelProxyDelayTest !== undefined
+        ? this.proxyModule.cancelProxyDelayTest(jobId)
+        : nativeCancelProxyDelayTest(jobId)
+    )
+      .then((raw: string): CoreProxyDelaySnapshot =>
+        cloneCoreProxyDelaySnapshot(decodeCancelProxyDelayTest(raw, jobId))
+      );
   }
 
   subscribe(callback: (event: CoreEvent) => void): number {

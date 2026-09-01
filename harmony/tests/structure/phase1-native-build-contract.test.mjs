@@ -1,10 +1,16 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import crypto from 'node:crypto';
+import fsSync from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { EventEmitter } from 'node:events';
+import {
+  CORE_EXPORTS,
+  NODE_ADDON_ALLOWED_EXPORTS,
+  RAW_PROXY_EXPORTS
+} from '../../tools/lib/native-provenance.mjs';
 
 const buildModulePath = new URL('../bin/build-phase1-native.mjs', import.meta.url);
 const provenanceModulePath = new URL('../../tools/lib/native-provenance.mjs', import.meta.url);
@@ -13,28 +19,6 @@ const harmonyRoot = path.resolve(new URL('../..', import.meta.url).pathname);
 const repoRoot = path.resolve(harmonyRoot, '..');
 const defaultManifestPath = path.join(harmonyRoot, 'artifacts', 'phase1-native-provenance.json');
 const defaultRawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
-const CORE_EXPORTS = [
-  'cmfa_mihomo_close_stale_tun_connections_v1',
-  'cmfa_mihomo_core_build_info_json_cstr_v1',
-  'cmfa_mihomo_core_version_cstr_v1',
-  'cmfa_mihomo_probe_cancel_v1',
-  'cmfa_mihomo_probe_https_v1',
-  'cmfa_mihomo_runtime_state_v1',
-  'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_start_tun_v1',
-  'cmfa_mihomo_stop_tun_v1',
-  'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1',
-  'cmfa_mihomo_tun_copy_traces_ring_v1',
-  'cmfa_mihomo_tun_copy_traces_v1',
-  'cmfa_mihomo_tun_runtime_state_v1'
-];
-const NODE_ADDON_ALLOWED_EXPORTS = [
-  '_fini',
-  '_init',
-  'cmfa_host_emit_runtime_event_bridge_v1',
-  'cmfa_host_protect_socket_bridge_v1'
-];
 const defaultPrePackageCorePath = path.join(
   harmonyRoot,
   'entry',
@@ -68,6 +52,9 @@ const defaultHapPath = path.join(
   'default',
   'entry-default-unsigned.hap'
 );
+const canonicalGeodataAsset = JSON.parse(
+  fsSync.readFileSync(path.join(harmonyRoot, 'geodata.lock.json'), 'utf8')
+).assets[0];
 
 const signingFixtureExtensions = Object.freeze([
   joinFragments(['p', '12']),
@@ -99,22 +86,22 @@ const TOOLCHAIN_LOCK_TEMPLATE = {
   schemaVersion: '1.0.0',
   target: {
     name: 'HarmonyOS 6/API 20/arm64',
-    targetSdkVersion: '6.1.0(23)',
-    targetApiVersion: 23,
+    targetSdkVersion: '6.1.1(24)',
+    targetApiVersion: 24,
     compatibleSdkVersion: '6.0.0(20)',
     compatibleApiVersion: 20,
     runtimeOS: 'HarmonyOS',
     architecture: 'arm64'
   },
   installed: {
-    devecoVersion: '6.1.0.860',
-    sdkVersion: '6.1.0.105',
-    sdkApiVersion: 23,
-    ndkVersion: '6.1.0.105',
-    ndkApiVersion: 23,
-    hvigorVersion: '6.23.7',
-    ohpmVersion: '6.1.1.830',
-    hdcVersion: '6.1.0.105'
+    devecoVersion: '6.1.1.300',
+    sdkVersion: '6.1.1.125',
+    sdkApiVersion: 24,
+    ndkVersion: '6.1.1.125',
+    ndkApiVersion: 24,
+    hvigorVersion: '6.24.4',
+    ohpmVersion: '6.1.2.285',
+    hdcVersion: '6.1.1.125'
   }
 };
 
@@ -144,6 +131,15 @@ function createPhase2SelfTestEvidence(enabled = false) {
     activation: enabled ? 'explicit' : 'default',
     purpose: enabled ? 'test-only' : 'production',
     releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
+function createCanonicalGeodataEvidence() {
+  return {
+    result: 'pass',
+    path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+    sha256: canonicalGeodataAsset.sha256,
+    sizeBytes: canonicalGeodataAsset.sizeBytes
   };
 }
 
@@ -844,7 +840,7 @@ test('strict manifest validator requires the canonical harmony/toolchain.lock.js
   assert.match(invalid.errors.join('\n'), /toolchainLock\.path|harmony\/toolchain\.lock\.json/u);
 });
 
-test('strict manifest validator requires the canonical 14-symbol core export contract and rejects missing or extra public exports', async () => {
+test('strict manifest validator requires the canonical core export contract and rejects missing or extra public exports', async () => {
   const { validatePhase1NativeManifest } = await import(provenanceModulePath);
 
   const exactCanonicalManifest = createStrictManifest();
@@ -858,8 +854,8 @@ test('strict manifest validator requires the canonical 14-symbol core export con
         'harmony/artifacts/libcmfa_mihomo.so',
         'core-bytes',
         createElfReport('mihomoCore', {
-          exportedSymbols: CORE_EXPORTS.filter((symbol) => symbol !== 'cmfa_mihomo_tun_runtime_state_v1'),
-          requiredExports: CORE_EXPORTS.filter((symbol) => symbol !== 'cmfa_mihomo_tun_runtime_state_v1')
+          exportedSymbols: CORE_EXPORTS.filter((symbol) => symbol !== RAW_PROXY_EXPORTS[0]),
+          requiredExports: CORE_EXPORTS.filter((symbol) => symbol !== RAW_PROXY_EXPORTS[0])
         })
       )
     }
@@ -882,6 +878,22 @@ test('strict manifest validator requires the canonical 14-symbol core export con
   }));
   assert.equal(extraPublicExport.valid, false);
   assert.match(extraPublicExport.errors.join('\n'), /exportedSymbols must not expose extra cmfa_\* symbols/u);
+
+  const staleRequiredSet = validatePhase1NativeManifest(createStrictManifest({
+    artifacts: {
+      ...createStrictManifest().artifacts,
+      rawCore: createArtifact(
+        'harmony/artifacts/libcmfa_mihomo.so',
+        'core-bytes',
+        createElfReport('mihomoCore', {
+          exportedSymbols: CORE_EXPORTS,
+          requiredExports: CORE_EXPORTS.filter((symbol) => !RAW_PROXY_EXPORTS.includes(symbol))
+        })
+      )
+    }
+  }));
+  assert.equal(staleRequiredSet.valid, false);
+  assert.match(staleRequiredSet.errors.join('\n'), /requiredExports must match the core export contract/u);
 });
 
 test('strict manifest validator requires the canonical four-symbol addon export contract and rejects missing or extra exports', async () => {
@@ -1536,7 +1548,7 @@ test('buildPhase1Native passes HAP helper event callbacks through the real bound
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -1580,6 +1592,7 @@ test('buildPhase1Native passes HAP helper event callbacks through the real bound
         await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
         return {
           result: 'incomplete',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
             sha256: sha256('hap-bytes'),
@@ -1704,7 +1717,7 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -1747,6 +1760,7 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
         await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
         return {
           result: 'incomplete',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
             sha256: sha256('hap-bytes'),
@@ -1795,6 +1809,63 @@ test('buildPhase1Native redacts signing material filenames from persisted comman
   });
 });
 
+test('buildPhase1Native clears stale ArkTS cache before toolchain inspection begins', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+
+  await withTempDir('phase1-native-cache-clean-', async (tempRoot) => {
+    const fakeRepoRoot = path.join(tempRoot, 'repo');
+    const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+    const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+    const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+    const cacheFilePath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'cache', 'debug', 'ets', 'stale.abc');
+    const outsideSentinelPath = path.join(tempRoot, 'outside-sentinel.txt');
+    const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+    const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+    const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+    let cleanupObserved = false;
+
+    await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+    await fs.mkdir(path.dirname(cacheFilePath), { recursive: true });
+    await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+    await fs.writeFile(cacheFilePath, 'stale-arkts-cache', 'utf8');
+    await fs.writeFile(outsideSentinelPath, 'outside', 'utf8');
+
+    const manifest = await buildPhase1Native({
+      harmonyRoot: fakeHarmonyRoot,
+      repoRoot: fakeRepoRoot,
+      outputPath,
+      inspectToolchainImpl: async () => {
+        cleanupObserved = true;
+        await assert.rejects(fs.access(path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'cache')), { code: 'ENOENT' });
+        assert.equal(await fs.readFile(outsideSentinelPath, 'utf8'), 'outside');
+        return {
+          report: {
+            schemaVersion: '1.0.0',
+            result: 'fail',
+            target: TOOLCHAIN_LOCK_TEMPLATE.target,
+            installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+            tools: {
+              nativeCmake: { found: true, version: '3.22.1' },
+              hdc: { found: true, version: '6.1.1.125' }
+            },
+            failures: [{ code: 'SYNTHETIC_TOOLCHAIN_STOP', detail: 'stop after cleanup check' }]
+          },
+          resolved: {
+            paths: {
+              cmakeExecutable,
+              hdc: hdcPath
+            }
+          }
+        };
+      }
+    });
+
+    assert.equal(cleanupObserved, true);
+    assert.equal(manifest.result, 'fail');
+    assert.ok(manifest.failures.some((entry) => entry.code === 'TOOLCHAIN_INSPECTION_FAILED'));
+  });
+});
+
 test('buildPhase1Native taskTree parser keeps column-zero hvigor connectors inside the compileNative branch and stops before sibling roots', async () => {
   const { buildPhase1Native } = await import(buildModulePath);
 
@@ -1824,7 +1895,7 @@ test('buildPhase1Native taskTree parser keeps column-zero hvigor connectors insi
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -1878,7 +1949,7 @@ test('buildPhase1Native taskTree parser keeps column-zero hvigor connectors insi
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -1950,7 +2021,7 @@ test('buildPhase1Native taskTree parser still forbids PackageHap inside the comp
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -1990,7 +2061,7 @@ test('buildPhase1Native taskTree parser still forbids PackageHap inside the comp
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2029,7 +2100,7 @@ test('buildPhase1Native taskTree parser still forbids PackageHap inside the comp
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2054,7 +2125,7 @@ test('buildPhase1Native taskTree parser still forbids PackageHap inside the comp
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2108,7 +2179,7 @@ test('buildPhase1Native requires a fresh addon mtime and stops before device dis
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2243,7 +2314,7 @@ test('buildPhase1Native uses the exact hvigor argv for taskTree and compileNativ
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2376,7 +2447,7 @@ test('buildPhase1Native stamps strict self-test provenance, forwards explicit la
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2433,12 +2504,12 @@ test('buildPhase1Native stamps strict self-test provenance, forwards explicit la
             },
             toolchain: {
               nodeVersion: process.version.replace(/^v/u, ''),
-              devecoVersion: '6.1.0.860',
-              sdkVersion: '6.1.0.105',
-              ndkVersion: '6.1.0.105',
-              hvigorVersion: '6.23.7',
-              ohpmVersion: '6.1.1.830',
-              hdcVersion: '6.1.0.105'
+              devecoVersion: '6.1.1.300',
+              sdkVersion: '6.1.1.125',
+              ndkVersion: '6.1.1.125',
+              hvigorVersion: '6.24.4',
+              ohpmVersion: '6.1.2.285',
+              hdcVersion: '6.1.1.125'
             },
             wrapper: {
               path: 'harmony/hvigorw',
@@ -2529,7 +2600,7 @@ test('buildPhase1Native rejects buildHap reports that omit strict phase2 self-te
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2583,12 +2654,12 @@ test('buildPhase1Native rejects buildHap reports that omit strict phase2 self-te
           },
           toolchain: {
             nodeVersion: process.version.replace(/^v/u, ''),
-            devecoVersion: '6.1.0.860',
-            sdkVersion: '6.1.0.105',
-            ndkVersion: '6.1.0.105',
-            hvigorVersion: '6.23.7',
-            ohpmVersion: '6.1.1.830',
-            hdcVersion: '6.1.0.105'
+            devecoVersion: '6.1.1.300',
+            sdkVersion: '6.1.1.125',
+            ndkVersion: '6.1.1.125',
+            hvigorVersion: '6.24.4',
+            ohpmVersion: '6.1.2.285',
+            hdcVersion: '6.1.1.125'
           },
           wrapper: {
             path: 'harmony/hvigorw',
@@ -2629,6 +2700,465 @@ test('buildPhase1Native rejects buildHap reports that omit strict phase2 self-te
     assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_REPORT_INVALID' && entry.stage === 'package-hap'));
     assert.equal(validatePhase1NativeManifest(manifest).valid, true);
   });
+});
+
+test('buildPhase1Native accepts a geodata preparation failure report without collapsing it into PACKAGE_HAP_REPORT_INVALID', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  await withTempDir('phase1-native-geodata-prepare-fail-', async (tempRoot) => {
+    const fakeRepoRoot = path.join(tempRoot, 'repo');
+    const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+    const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+    const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+    const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+    const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+    const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+    const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+    const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+    let buildHapCalls = 0;
+
+    await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+    await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+    await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+    await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+    await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+    const manifest = await buildPhase1Native({
+      harmonyRoot: fakeHarmonyRoot,
+      repoRoot: fakeRepoRoot,
+      outputPath,
+      inspectToolchainImpl: async () => ({
+        report: {
+          schemaVersion: '1.0.0',
+          result: 'pass',
+          target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+          installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
+          failures: []
+        },
+        resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+      }),
+      inspectTaskTreeImpl: async () => ({
+        rootTask: ':entry:compileNative',
+        hasBuildNativeWithCmake: true,
+        hasPackageHap: false,
+        exitCode: 0,
+        stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+        stderr: ''
+      }),
+      buildMihomoOhosImpl: async () => {
+        await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+        await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+        return {
+          result: 'pass',
+          components: {
+            mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+          },
+          failures: []
+        };
+      },
+      runCommandImpl: async ({ command, args }) => {
+        if (args.includes('compileNative')) {
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.includes('--build')) {
+          await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+          await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.join(' ') === 'list targets') {
+          throw new Error('device discovery must not run after geodata preparation fails');
+        }
+        throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+      },
+      buildHapImpl: async (options) => {
+        buildHapCalls += 1;
+        assert.equal(options.phase2SelfTestEnabled, false);
+        return {
+          schemaVersion: '1.0.0',
+          phase: 0,
+          result: 'fail',
+          harmonyRoot: 'harmony',
+          outputPath: 'harmony/artifacts/phase0-build-evidence.json',
+          timestamps: {
+            startedAt: isoAt(0),
+            completedAt: isoAt(1)
+          },
+          toolchain: {
+            nodeVersion: process.version.replace(/^v/u, ''),
+            devecoVersion: '6.1.1.300',
+            sdkVersion: '6.1.1.125',
+            ndkVersion: '6.1.1.125',
+            hvigorVersion: '6.24.4',
+            ohpmVersion: '6.1.2.285',
+            hdcVersion: '6.1.1.125'
+          },
+          wrapper: {
+            path: 'harmony/hvigorw',
+            executable: true
+          },
+          phase2SelfTest: createPhase2SelfTestEvidence(false),
+          geodata: {
+            result: 'fail',
+            path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+            sha256: null,
+            sizeBytes: null
+          },
+          commands: [
+            {
+              stage: 'prepare-geodata',
+              result: 'fail',
+              command: ['prepare-geodata'],
+              exitCode: 1,
+              stdout: '',
+              stderr: ''
+            }
+          ],
+          hap: {
+            path: null,
+            sha256: null,
+            sizeBytes: null
+          },
+          failures: [
+            {
+              code: 'GEODATA_PREPARE_FAILED',
+              detail: 'geoip digest mismatch',
+              stage: 'prepare-geodata'
+            }
+          ]
+        };
+      },
+      inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+      inspectHapNativeEntriesImpl: async () => {
+        throw new Error('archive inspection must not run when buildHap fails before hvigor');
+      }
+    });
+
+    assert.equal(buildHapCalls, 1);
+    assert.equal(manifest.builds.hap.command[0], 'prepare-geodata');
+    assert.equal(manifest.builds.hap.exitCode, 1);
+    assert.ok(manifest.failures.some((entry) => entry.code === 'GEODATA_PREPARE_FAILED' && entry.stage === 'prepare-geodata'));
+    assert.ok(manifest.failures.every((entry) => entry.code !== 'PACKAGE_HAP_REPORT_INVALID'));
+    assert.equal(validatePhase1NativeManifest(manifest).valid, true);
+  });
+});
+
+test('buildPhase1Native accepts canonical geodata pass evidence without PACKAGE_HAP_REPORT_INVALID', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  await withTempDir('phase1-native-geodata-pass-', async (tempRoot) => {
+    const fakeRepoRoot = path.join(tempRoot, 'repo');
+    const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+    const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+    const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+    const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+    const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+    const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+    const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+    const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+
+    await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+    await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+    await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+    await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+    await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+    const manifest = await buildPhase1Native({
+      harmonyRoot: fakeHarmonyRoot,
+      repoRoot: fakeRepoRoot,
+      outputPath,
+      inspectToolchainImpl: async () => ({
+        report: {
+          schemaVersion: '1.0.0',
+          result: 'pass',
+          target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+          installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
+          failures: []
+        },
+        resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+      }),
+      inspectTaskTreeImpl: async () => ({
+        rootTask: ':entry:compileNative',
+        hasBuildNativeWithCmake: true,
+        hasPackageHap: false,
+        exitCode: 0,
+        stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+        stderr: ''
+      }),
+      buildMihomoOhosImpl: async () => {
+        await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+        await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+        return {
+          result: 'pass',
+          components: {
+            mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+          },
+          failures: []
+        };
+      },
+      runCommandImpl: async ({ command, args }) => {
+        if (args.includes('compileNative')) {
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.includes('--build')) {
+          await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+          await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.join(' ') === 'list targets') {
+          throw new Error('device discovery must not run when package-hap already failed');
+        }
+        throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+      },
+      buildHapImpl: async () => ({
+        schemaVersion: '1.0.0',
+        phase: 0,
+        result: 'fail',
+        harmonyRoot: 'harmony',
+        outputPath: 'harmony/artifacts/phase0-build-evidence.json',
+        timestamps: {
+          startedAt: isoAt(0),
+          completedAt: isoAt(1)
+        },
+        toolchain: {
+          nodeVersion: process.version.replace(/^v/u, ''),
+          devecoVersion: '6.1.1.300',
+          sdkVersion: '6.1.1.125',
+          ndkVersion: '6.1.1.125',
+          hvigorVersion: '6.24.4',
+          ohpmVersion: '6.1.2.285',
+          hdcVersion: '6.1.1.125'
+        },
+        wrapper: {
+          path: 'harmony/hvigorw',
+          executable: true
+        },
+        phase2SelfTest: createPhase2SelfTestEvidence(false),
+        geodata: createCanonicalGeodataEvidence(),
+        commands: [
+          {
+            stage: 'module',
+            command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
+            exitCode: 1,
+            stdout: '',
+            stderr: ''
+          }
+        ],
+        hap: {
+          path: null,
+          sha256: null,
+          sizeBytes: null
+        },
+        failures: [
+          {
+            code: 'BUILD_COMMAND_FAILED',
+            detail: 'assembleHap exited 1',
+            stage: 'module'
+          }
+        ]
+      }),
+      inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+      inspectHapNativeEntriesImpl: async () => {
+        throw new Error('archive inspection must not run when buildHap result is fail');
+      }
+    });
+
+    assert.ok(manifest.failures.every((entry) => entry.code !== 'PACKAGE_HAP_REPORT_INVALID'));
+    assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_FAILED'));
+    assert.equal(validatePhase1NativeManifest(manifest).valid, true);
+  });
+});
+
+test('buildPhase1Native rejects malformed geodata buildHap evidence as PACKAGE_HAP_REPORT_INVALID', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  for (const variant of [
+    {
+      label: 'missing-geodata',
+      geodata: undefined
+    },
+    {
+      label: 'pass-null-digest',
+      geodata: {
+        result: 'pass',
+        path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+        sha256: null,
+        sizeBytes: 8593535
+      }
+    },
+    {
+      label: 'fail-nonnull-size',
+      geodata: {
+        result: 'fail',
+        path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+        sha256: null,
+        sizeBytes: 1
+      }
+    },
+    {
+      label: 'wrong-path',
+      geodata: {
+        result: 'pass',
+        path: 'harmony/artifacts/geodata/geoip.metadb',
+        sha256: 'e'.repeat(64),
+        sizeBytes: canonicalGeodataAsset.sizeBytes
+      }
+    },
+    {
+      label: 'unpinned-digest',
+      geodata: {
+        result: 'pass',
+        path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+        sha256: `0${canonicalGeodataAsset.sha256.slice(1)}`,
+        sizeBytes: canonicalGeodataAsset.sizeBytes
+      }
+    },
+    {
+      label: 'wrong-positive-size',
+      geodata: {
+        result: 'pass',
+        path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+        sha256: canonicalGeodataAsset.sha256,
+        sizeBytes: canonicalGeodataAsset.sizeBytes + 1
+      }
+    }
+  ]) {
+    await withTempDir(`phase1-native-geodata-invalid-${variant.label}-`, async (tempRoot) => {
+      const fakeRepoRoot = path.join(tempRoot, 'repo');
+      const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+      const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+      const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+      const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+      const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+      const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+      const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+      const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+      let archiveCalled = false;
+
+      await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+      await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+      await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+      await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+      await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+      await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+      const manifest = await buildPhase1Native({
+        harmonyRoot: fakeHarmonyRoot,
+        repoRoot: fakeRepoRoot,
+        outputPath,
+        inspectToolchainImpl: async () => ({
+          report: {
+            schemaVersion: '1.0.0',
+            result: 'pass',
+            target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+            installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
+            failures: []
+          },
+          resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+        }),
+        inspectTaskTreeImpl: async () => ({
+          rootTask: ':entry:compileNative',
+          hasBuildNativeWithCmake: true,
+          hasPackageHap: false,
+          exitCode: 0,
+          stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+          stderr: ''
+        }),
+        buildMihomoOhosImpl: async () => {
+          await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+          await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+          return {
+            result: 'pass',
+            components: {
+              mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+            },
+            failures: []
+          };
+        },
+        runCommandImpl: async ({ command, args }) => {
+          if (args.includes('compileNative')) {
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (args.includes('--build')) {
+            await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+            await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+            return { command, args, exitCode: 0, stdout: '', stderr: '' };
+          }
+          if (args.join(' ') === 'list targets') {
+            throw new Error('device discovery must not run after malformed geodata evidence');
+          }
+          throw new Error(`unexpected command: ${command} ${args.join(' ')}`);
+        },
+        buildHapImpl: async () => ({
+          schemaVersion: '1.0.0',
+          phase: 0,
+          result: 'fail',
+          harmonyRoot: 'harmony',
+          outputPath: 'harmony/artifacts/phase0-build-evidence.json',
+          timestamps: {
+            startedAt: isoAt(0),
+            completedAt: isoAt(1)
+          },
+          toolchain: {
+            nodeVersion: process.version.replace(/^v/u, ''),
+            devecoVersion: '6.1.1.300',
+            sdkVersion: '6.1.1.125',
+            ndkVersion: '6.1.1.125',
+            hvigorVersion: '6.24.4',
+            ohpmVersion: '6.1.2.285',
+            hdcVersion: '6.1.1.125'
+          },
+          wrapper: {
+            path: 'harmony/hvigorw',
+            executable: true
+          },
+          phase2SelfTest: createPhase2SelfTestEvidence(false),
+          ...(variant.geodata === undefined ? {} : { geodata: variant.geodata }),
+          commands: [
+            {
+              stage: 'prepare-geodata',
+              result: 'fail',
+              command: ['prepare-geodata'],
+              exitCode: 1,
+              stdout: '',
+              stderr: ''
+            }
+          ],
+          hap: {
+            path: null,
+            sha256: null,
+            sizeBytes: null
+          },
+          failures: [
+            {
+              code: 'GEODATA_PREPARE_FAILED',
+              detail: 'geoip digest mismatch',
+              stage: 'prepare-geodata'
+            }
+          ]
+        }),
+        inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+        inspectHapNativeEntriesImpl: async () => {
+          archiveCalled = true;
+          throw new Error('archive inspection must not run when geodata evidence is malformed');
+        }
+      });
+
+      assert.equal(archiveCalled, false, `${variant.label} should stop before archive inspection`);
+      assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_REPORT_INVALID' && entry.stage === 'package-hap'), `${variant.label} should record PACKAGE_HAP_REPORT_INVALID`);
+      assert.equal(validatePhase1NativeManifest(manifest).valid, true, `${variant.label} should still persist a strict-valid fail manifest`);
+    });
+  }
 });
 
 test('inspectHapNativeEntries keeps extracted files present through inspect, emits real ordered events, and removes the run temp dir on inspect failure', async () => {
@@ -2726,7 +3256,7 @@ test('buildPhase1Native turns raw-core ELF contract drift into a stable native f
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2811,7 +3341,7 @@ test('buildPhase1Native turns HAP addon ELF contract drift into a stable archive
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2855,6 +3385,7 @@ test('buildPhase1Native turns HAP addon ELF contract drift into a stable archive
         await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
         return {
           result: 'incomplete',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
             sha256: sha256('hap-bytes'),
@@ -2940,7 +3471,7 @@ test('buildPhase1Native records a strict-valid package failure when buildHap fai
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -2984,6 +3515,7 @@ test('buildPhase1Native records a strict-valid package failure when buildHap fai
         await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
         return {
           result: 'fail',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
             sha256: sha256('hap-bytes'),
@@ -3016,6 +3548,133 @@ test('buildPhase1Native records a strict-valid package failure when buildHap fai
     assert.equal(manifest.builds.hap.exitCode, 17);
     assert.equal(manifest.signing.result, 'pass');
     assert.equal(manifest.artifacts.hap, null);
+    assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_FAILED' && entry.stage === 'package-hap'));
+    assert.ok(!manifest.failures.some((entry) => entry.code === 'PHASE1_MANIFEST_INVALID'));
+    assert.equal(validatePhase1NativeManifest(manifest).valid, true);
+  });
+});
+
+test('buildPhase1Native nulls persisted hap exitCode when buildHap semantically fails with an exitCode 0 report', async () => {
+  const { buildPhase1Native } = await import(buildModulePath);
+  const { validatePhase1NativeManifest } = await import(provenanceModulePath);
+
+  await withTempDir('phase1-native-package-fail-exit0-', async (tempRoot) => {
+    const fakeRepoRoot = path.join(tempRoot, 'repo');
+    const fakeHarmonyRoot = path.join(fakeRepoRoot, 'harmony');
+    const artifactsRoot = path.join(fakeHarmonyRoot, 'artifacts');
+    const rawCorePath = path.join(artifactsRoot, 'libcmfa_mihomo.so');
+    const preCorePath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libcmfa_mihomo.so');
+    const preAddonPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
+    const hapPath = path.join(fakeHarmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-unsigned.hap');
+    const toolchainLockPath = path.join(fakeHarmonyRoot, 'toolchain.lock.json');
+    const cmakeExecutable = path.join(fakeHarmonyRoot, 'sdk', 'native', 'build-tools', 'cmake', 'bin', 'cmake');
+    const hdcPath = path.join(fakeHarmonyRoot, 'sdk', 'toolchains', 'hdc');
+    const outputPath = path.join(artifactsRoot, 'phase1-native-provenance.json');
+    let archiveCalled = false;
+    let discoverDeviceCalled = false;
+
+    await fs.mkdir(path.dirname(preCorePath), { recursive: true });
+    await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+    await fs.mkdir(path.dirname(hapPath), { recursive: true });
+    await fs.mkdir(path.dirname(toolchainLockPath), { recursive: true });
+    await fs.mkdir(path.dirname(cmakeExecutable), { recursive: true });
+    await fs.mkdir(path.dirname(hdcPath), { recursive: true });
+    await fs.writeFile(toolchainLockPath, `${JSON.stringify(TOOLCHAIN_LOCK_TEMPLATE, null, 2)}\n`, 'utf8');
+    await fs.writeFile(path.join(fakeHarmonyRoot, 'hvigorw'), '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(cmakeExecutable, '#!/bin/sh\n', 'utf8');
+    await fs.writeFile(hdcPath, '#!/bin/sh\n', 'utf8');
+
+    const manifest = await buildPhase1Native({
+      harmonyRoot: fakeHarmonyRoot,
+      repoRoot: fakeRepoRoot,
+      outputPath,
+      inspectToolchainImpl: async () => ({
+        report: {
+          schemaVersion: '1.0.0',
+          result: 'pass',
+          target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
+          installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
+          failures: []
+        },
+        resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
+      }),
+      inspectTaskTreeImpl: async () => ({
+        rootTask: ':entry:compileNative',
+        hasBuildNativeWithCmake: true,
+        hasPackageHap: false,
+        exitCode: 0,
+        stdout: ':entry:compileNative\n  +--- :default@BuildNativeWithCmake\n',
+        stderr: ''
+      }),
+      buildMihomoOhosImpl: async () => {
+        await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+        await fs.writeFile(rawCorePath, 'core-bytes', 'utf8');
+        return {
+          result: 'pass',
+          components: {
+            mihomoCore: { result: 'pass', artifactPath: rawCorePath }
+          },
+          failures: []
+        };
+      },
+      runCommandImpl: async ({ command, args }) => {
+        if (args.includes('compileNative')) {
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.includes('--build')) {
+          await fs.mkdir(path.dirname(preAddonPath), { recursive: true });
+          await fs.writeFile(preCorePath, 'core-bytes', 'utf8');
+          await fs.writeFile(preAddonPath, 'addon-bytes', 'utf8');
+          return { command, args, exitCode: 0, stdout: '', stderr: '' };
+        }
+        if (args.join(' ') === 'list targets') {
+          discoverDeviceCalled = true;
+          return { command, args, exitCode: 0, stdout: 'SERIAL123\n', stderr: '' };
+        }
+        throw new Error(`unexpected command: ${args.join(' ')}`);
+      },
+      buildHapImpl: async () => {
+        await fs.mkdir(path.dirname(hapPath), { recursive: true });
+        await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
+        return {
+          result: 'fail',
+          phase2SelfTest: createPhase2SelfTestEvidence(false),
+          geodata: createCanonicalGeodataEvidence(),
+          hap: {
+            path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
+            sha256: sha256('hap-bytes'),
+            sizeBytes: Buffer.byteLength('hap-bytes')
+          },
+          failures: [
+            { code: 'MODULE_BUILD_FAILED', detail: 'semantic fail after selecting hap', stage: 'package-hap' }
+          ],
+          commands: [
+            {
+              stage: 'module',
+              result: 'fail',
+              command: ['harmony/hvigorw', '--mode', 'module', 'assembleHap'],
+              exitCode: 0,
+              stdout: 'stdout kept',
+              stderr: 'semantic failure from hvigor'
+            }
+          ]
+        };
+      },
+      inspectNativeLibraryImpl: async ({ component }) => createElfReport(component),
+      inspectHapNativeEntriesImpl: async () => {
+        archiveCalled = true;
+        throw new Error('archive should not run after semantic package fail');
+      }
+    });
+
+    assert.equal(archiveCalled, false);
+    assert.equal(discoverDeviceCalled, false);
+    assert.equal(manifest.builds.hap.result, 'fail');
+    assert.equal(manifest.builds.hap.exitCode, null);
+    assert.equal(manifest.builds.hap.stdout, 'stdout kept');
+    assert.equal(manifest.builds.hap.stderr, 'semantic failure from hvigor');
+    assert.ok(manifest.failures.some((entry) => entry.code === 'MODULE_BUILD_FAILED' && entry.detail === 'semantic fail after selecting hap' && entry.stage === 'package-hap'));
     assert.ok(manifest.failures.some((entry) => entry.code === 'PACKAGE_HAP_FAILED' && entry.stage === 'package-hap'));
     assert.ok(!manifest.failures.some((entry) => entry.code === 'PHASE1_MANIFEST_INVALID'));
     assert.equal(validatePhase1NativeManifest(manifest).valid, true);
@@ -3061,7 +3720,7 @@ test('buildPhase1Native rejects repo-external hap paths before archive hashing a
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3102,6 +3761,7 @@ test('buildPhase1Native rejects repo-external hap paths before archive hashing a
       },
       buildHapImpl: async () => ({
         result: 'pass',
+        geodata: createCanonicalGeodataEvidence(),
         hap: {
           path: outsideHapPath,
           sha256: sha256('hap-bytes'),
@@ -3175,7 +3835,7 @@ test('buildPhase1Native rejects repo-internal canonical hap symlinks that resolv
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3219,6 +3879,7 @@ test('buildPhase1Native rejects repo-internal canonical hap symlinks that resolv
         await fs.symlink(outsideHapPath, insideHapPath);
         return {
           result: 'pass',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: 'harmony/entry/build/default/outputs/default/entry-default-unsigned.hap',
             sha256: sha256('hap-bytes'),
@@ -3335,7 +3996,7 @@ test('buildPhase1Native snapshots the selected HAP before hash/archive so post-v
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3378,6 +4039,7 @@ test('buildPhase1Native snapshots the selected HAP before hash/archive so post-v
         await fs.writeFile(insideHapPath, insideBytes, 'utf8');
         return {
           result: 'pass',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: 'harmony/entry/build/default/outputs/default/entry-default-unsigned.hap',
             sha256: sha256(insideBytes),
@@ -3456,7 +4118,7 @@ test('buildPhase1Native cleans up HAP snapshot files after archive exceptions an
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3499,6 +4161,7 @@ test('buildPhase1Native cleans up HAP snapshot files after archive exceptions an
         await fs.writeFile(insideHapPath, 'hap-bytes', 'utf8');
         return {
           result: 'pass',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: 'harmony/entry/build/default/outputs/default/entry-default-unsigned.hap',
             sha256: sha256('hap-bytes'),
@@ -3596,7 +4259,7 @@ test('buildPhase1Native rejects repo-internal non-canonical hap paths before has
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3637,6 +4300,7 @@ test('buildPhase1Native rejects repo-internal non-canonical hap paths before has
         },
         buildHapImpl: async () => ({
           result: variant.buildHapResult,
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: variant.hapPath,
             sha256: sha256('hap-bytes'),
@@ -3777,7 +4441,7 @@ test('buildPhase1Native restores a live-verifiable pre-package core after buildH
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -3829,6 +4493,7 @@ test('buildPhase1Native restores a live-verifiable pre-package core after buildH
           return {
             result: 'incomplete',
             phase2SelfTest: createPhase2SelfTestEvidence(variant.phase2SelfTestEnabled),
+            geodata: createCanonicalGeodataEvidence(),
             hap: {
               path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
               sha256: sha256('hap-bytes'),
@@ -3968,7 +4633,7 @@ test('buildPhase1Native rejects missing or invalid resolved hdc paths without PA
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: variant.hdcPath } }
@@ -4058,7 +4723,7 @@ test('buildPhase1Native rejects missing or invalid resolved cmake executable pat
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable: variant.cmakeExecutable, hdc: hdcPath } }
@@ -4238,7 +4903,7 @@ test('buildPhase1Native stops after legal non-pass inspectToolchain reports and 
             result: variant.result,
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: [
               {
                 code: 'SDK_METADATA_MISSING',
@@ -4495,7 +5160,7 @@ test('buildPhase1Native rejects malformed buildHap reports before hash/archive a
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -4738,7 +5403,7 @@ test('buildPhase1Native rejects malformed archive reports before copying values 
             result: 'pass',
             target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
             installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+            tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
             failures: []
           },
           resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -4782,6 +5447,7 @@ test('buildPhase1Native rejects malformed archive reports before copying values 
           await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
           return {
             result: 'incomplete',
+            geodata: createCanonicalGeodataEvidence(),
             hap: {
               path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
               sha256: sha256('hap-bytes'),
@@ -4901,7 +5567,7 @@ test('buildPhase1Native normalizes full ELF reports before validation and persis
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -4945,6 +5611,7 @@ test('buildPhase1Native normalizes full ELF reports before validation and persis
         await fs.writeFile(hapPath, 'hap-bytes', 'utf8');
         return {
           result: 'incomplete',
+          geodata: createCanonicalGeodataEvidence(),
           hap: {
             path: path.relative(fakeRepoRoot, hapPath).split(path.sep).join('/'),
             sha256: sha256('hap-bytes'),
@@ -5167,7 +5834,7 @@ test('buildPhase1Native records TOOLCHAIN_LOCK_FAILED and still persists a stric
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }
@@ -5221,7 +5888,7 @@ test('buildPhase1Native adds a matching build-core failure when early core failu
           result: 'pass',
           target: { architecture: 'arm64', compatibleApiVersion: 20, runtimeOS: 'HarmonyOS', name: 'HarmonyOS 6/API 20/arm64' },
           installed: TOOLCHAIN_LOCK_TEMPLATE.installed,
-          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.0.105' } },
+          tools: { nativeCmake: { found: true, version: null }, hdc: { found: true, version: '6.1.1.125' } },
           failures: []
         },
         resolved: { paths: { cmakeExecutable, hdc: hdcPath } }

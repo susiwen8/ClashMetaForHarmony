@@ -13,18 +13,28 @@ const DEFAULT_GO_CACHE_PATH = path.join(HARMONY_ROOT, 'artifacts', 'go-build-cac
 const DEFAULT_GO_MOD_CACHE_PATH = path.join(HARMONY_ROOT, 'artifacts', 'go-mod-cache');
 const PROOF_SCHEMA_VERSION = '1.0.0';
 const GO_BUILD_TIMEOUT_MS = 10 * 60 * 1000;
+const GO_RUNTIME_OVERLAY_VERSION = 'go1.26.2';
+const GO_RUNTIME_OVERLAY_FILE_NAME = 'go-ohos-runtime-overlay.json';
+const GO_RUNTIME_OVERLAY_RELATIVE_FILES = [
+  path.join('src', 'runtime', 'rt0_linux_arm64.s'),
+  path.join('src', 'runtime', 'tls_arm64.s'),
+  path.join('src', 'runtime', 'cgo', 'gcc_linux_arm64.c')
+];
+const REQUIRED_CGO_CFLAG = '-fno-emulated-tls';
 const HOST_CLANG_PATTERN = /(^|\/)clang(\+\+)?$/u;
 const ANDROID_PATTERN = /android|ndk/iu;
 const TARGET_NAME = 'HarmonyOS 6/API 20/arm64';
 const CORE_PRIVATE_EXPORTS = [
   'cmfa_mihomo_core_build_info_json_cstr_v1',
   'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_load_config_v1',
   'cmfa_mihomo_probe_cancel_v1',
   'cmfa_mihomo_probe_https_v1',
   'cmfa_mihomo_runtime_state_v1',
   'cmfa_mihomo_start_local_v1',
   'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
+  'cmfa_mihomo_take_runtime_log_v1',
+  'cmfa_mihomo_validate_config_v1'
 ];
 
 const COMPONENT_CONFIG = {
@@ -190,6 +200,25 @@ async function readGoVersion({ cwd, env, runCommandImpl = runCommand, spawnImpl 
 
   const match = `${result.stdout}\n${result.stderr}`.match(/go version (go[^\s]+)/u);
   return match?.[1] ?? null;
+}
+
+async function readGoRoot({ cwd, env, runCommandImpl = runCommand, spawnImpl = spawnChild }) {
+  const goBinaryPath = arguments[0].goBinaryPath ?? 'go';
+  const result = await runCommandImpl({
+    command: goBinaryPath,
+    args: ['env', 'GOROOT'],
+    cwd,
+    env,
+    spawnImpl,
+    timeoutMs: 15_000
+  });
+
+  if (result.error || result.exitCode !== 0) {
+    return null;
+  }
+
+  const goRoot = result.stdout.trim();
+  return path.isAbsolute(goRoot) ? goRoot : null;
 }
 
 async function isExecutableFile(candidatePath, fsApi = fs) {
@@ -364,6 +393,38 @@ async function cleanupArtifacts({ artifactPath, headerPath, fsApi = fs }) {
   await fsApi.rm(headerPath, { force: true });
 }
 
+function appendRequiredCompilerFlag(value, requiredFlag) {
+  const current = value?.trim() ?? '';
+  const escaped = requiredFlag.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+  if (new RegExp(`(?:^|\\s)${escaped}(?:\\s|$)`, 'u').test(current)) {
+    return current;
+  }
+  return current ? `${current} ${requiredFlag}` : requiredFlag;
+}
+
+async function writeGoRuntimeOverlay({
+  goRoot,
+  harmonyRoot,
+  runtimeOverlayRoot = path.join(HARMONY_ROOT, 'core', 'go', 'ohos-runtime-overlay', GO_RUNTIME_OVERLAY_VERSION),
+  fsApi = fs
+}) {
+  const replace = {};
+  for (const relativeFile of GO_RUNTIME_OVERLAY_RELATIVE_FILES) {
+    const replacementPath = path.join(runtimeOverlayRoot, relativeFile);
+    if (!await pathExists(replacementPath, fsApi)) {
+      throw Object.assign(new Error(`Missing Go runtime overlay source: ${replacementPath}`), {
+        code: 'GO_RUNTIME_OVERLAY_SOURCE_MISSING'
+      });
+    }
+    replace[path.join(goRoot, relativeFile)] = replacementPath;
+  }
+
+  const overlayPath = path.join(harmonyRoot, 'artifacts', GO_RUNTIME_OVERLAY_FILE_NAME);
+  await fsApi.mkdir(path.dirname(overlayPath), { recursive: true });
+  await fsApi.writeFile(overlayPath, `${JSON.stringify({ Replace: replace }, null, 2)}\n`, 'utf8');
+  return overlayPath;
+}
+
 export async function buildGoComponent(options) {
   const {
     component,
@@ -381,8 +442,10 @@ export async function buildGoComponent(options) {
     toolchainInspectorImpl = inspectToolchain,
     inspectNativeLibraryImpl,
     readGoVersionImpl = readGoVersion,
+    readGoRootImpl = readGoRoot,
     readToolchainVersionsImpl = readToolchainVersions,
-    resolveGoBinaryImpl = resolveTrustedGoBinary
+    resolveGoBinaryImpl = resolveTrustedGoBinary,
+    runtimeOverlayRoot
   } = options;
 
   const artifactPath = path.join(harmonyRoot, 'artifacts', artifactFileName);
@@ -437,7 +500,8 @@ export async function buildGoComponent(options) {
     CXX: resolvedToolchain.cxxBinary,
     PATH: `${resolvedToolchain.clangDirectory}${path.delimiter}${env.PATH ?? process.env.PATH ?? ''}`,
     GOCACHE: goCachePath,
-    GOMODCACHE: goModCachePath
+    GOMODCACHE: goModCachePath,
+    CGO_CFLAGS: appendRequiredCompilerFlag(env.CGO_CFLAGS ?? process.env.CGO_CFLAGS, REQUIRED_CGO_CFLAG)
   };
   let goBinaryPath;
   try {
@@ -450,7 +514,45 @@ export async function buildGoComponent(options) {
   componentProof.toolVersions.goBinary = normalizePathForReport(REPO_ROOT, goBinaryPath);
   componentProof.toolVersions.goVersion = await readGoVersionImpl({ cwd: moduleAbsolutePath, env: buildEnv, runCommandImpl, spawnImpl, goBinaryPath });
 
-  const buildArgs = ['build', '-mod=readonly', '-tags', 'ohos,with_gvisor', '-buildmode=c-shared', '-o', artifactPath, ...extraGoArgs, packagePath];
+  if (componentProof.toolVersions.goVersion !== GO_RUNTIME_OVERLAY_VERSION) {
+    componentProof.checks.build = { result: 'fail', detail: `Go ${GO_RUNTIME_OVERLAY_VERSION} is required by the OHOS runtime overlay.` };
+    componentProof.failures.push(createFailure(
+      'GO_VERSION_UNSUPPORTED_FOR_RUNTIME_OVERLAY',
+      `Expected ${GO_RUNTIME_OVERLAY_VERSION}, received ${componentProof.toolVersions.goVersion ?? 'unknown'}`
+    ));
+    return finalizeComponentProof(componentProof, 'fail');
+  }
+
+  const goRoot = await readGoRootImpl({ cwd: moduleAbsolutePath, env: buildEnv, runCommandImpl, spawnImpl, goBinaryPath });
+  if (!goRoot || !path.isAbsolute(goRoot)) {
+    componentProof.checks.build = { result: 'incomplete', detail: 'Failed to resolve the trusted Go GOROOT.' };
+    componentProof.failures.push(createFailure('GO_ROOT_UNAVAILABLE', 'go env GOROOT did not return an absolute path.'));
+    return finalizeComponentProof(componentProof, 'incomplete');
+  }
+
+  let overlayPath;
+  try {
+    overlayPath = await writeGoRuntimeOverlay({ goRoot, harmonyRoot, runtimeOverlayRoot, fsApi });
+  } catch (error) {
+    componentProof.checks.build = { result: 'fail', detail: 'Failed to prepare the Go OHOS runtime overlay.' };
+    componentProof.failures.push(createFailure(error?.code ?? 'GO_RUNTIME_OVERLAY_PREPARE_FAILED', sanitizeError(error, replacements)));
+    return finalizeComponentProof(componentProof, 'fail');
+  }
+
+  const buildArgs = [
+    'build',
+    '-mod=readonly',
+    '-tags',
+    'ohos,with_gvisor',
+    '-buildmode=c-shared',
+    '-overlay',
+    overlayPath,
+    '-asmflags=runtime=-D=CMFA_GOOS_OHOS',
+    '-o',
+    artifactPath,
+    ...extraGoArgs,
+    packagePath
+  ];
   componentProof.build.command = [normalizePathForReport(REPO_ROOT, goBinaryPath), ...buildArgs];
   componentProof.build.env = {
     GOOS: buildEnv.GOOS,
@@ -458,6 +560,7 @@ export async function buildGoComponent(options) {
     CGO_ENABLED: buildEnv.CGO_ENABLED,
     CC: buildEnv.CC,
     CXX: buildEnv.CXX,
+    CGO_CFLAGS: buildEnv.CGO_CFLAGS,
     GOCACHE: normalizePathForReport(REPO_ROOT, buildEnv.GOCACHE),
     GOMODCACHE: normalizePathForReport(REPO_ROOT, buildEnv.GOMODCACHE)
   };
@@ -561,8 +664,10 @@ export async function buildGoOhosProbe(options = {}) {
       toolchainInspectorImpl: options.toolchainInspectorImpl,
       inspectNativeLibraryImpl: options.inspectNativeLibraryImpl,
       readGoVersionImpl: options.readGoVersionImpl,
+      readGoRootImpl: options.readGoRootImpl,
       readToolchainVersionsImpl: options.readToolchainVersionsImpl,
-      resolveGoBinaryImpl: options.resolveGoBinaryImpl
+      resolveGoBinaryImpl: options.resolveGoBinaryImpl,
+      runtimeOverlayRoot: options.runtimeOverlayRoot
     });
     mergeComponentResult(aggregateProof, componentProof);
     return await persistAggregateProof(finalizeAggregateProof(aggregateProof, deriveProbeOverallResult(componentProof)), proofPath, replacements, options.fsApi ?? fs);

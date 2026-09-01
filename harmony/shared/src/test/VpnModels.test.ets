@@ -24,6 +24,10 @@ import type {
   VpnRuntimeSnapshot
 } from '../../Index';
 
+const DESTINATION_HASH: string = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+const OUTBOUND_TERMINAL_HASH: string = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+const OUTBOUND_CHAIN_HASH: string = 'cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc';
+
 function buildExactCaptureConfig(): VpnCaptureConfig {
   return createVpnCaptureConfig({
     addresses: ['10.111.222.1/30', 'fd00:111:222::1/126'],
@@ -54,7 +58,11 @@ function buildRuntimeSnapshot(sessionId: string): TunRuntimeSnapshot {
         ingress: 'tun',
         protocol: 'tcp',
         hashedTuple: 'hash-22',
-        correlationHash: 'corr-22'
+        correlationHash: 'corr-22',
+        destinationHash: DESTINATION_HASH,
+        outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+        outboundChainHash: OUTBOUND_CHAIN_HASH,
+        outboundChainLength: 2
       })
     ]
   });
@@ -67,7 +75,7 @@ export default function vpnModelsTestsuite() {
         'STOPPED,AWAITING_CONSENT,STARTING,RUNNING,RECOVERING,STOPPING,ERROR'
       );
       expect(VPN_FAILURE_CODES.join(',')).assertEqual(
-        'VPN_PERMISSION_DENIED,VPN_ALREADY_ACTIVE,VPN_PROFILE_UNAVAILABLE,VPN_LOCAL_STOP_REQUIRED,VPN_CONFIG_INVALID,VPN_CREATE_FAILED,VPN_TUN_FD_INVALID,VPN_TUN_START_FAILED,VPN_SOCKET_PROTECT_FAILED,VPN_LOCAL_PORT_CONFLICT,VPN_BACKGROUND_TASK_FAILED,VPN_SYSTEM_REVOKED,VPN_STOP_FAILED'
+        'VPN_PERMISSION_DENIED,VPN_ALREADY_ACTIVE,VPN_PROFILE_UNAVAILABLE,VPN_CONFIG_INVALID,VPN_CREATE_FAILED,VPN_TUN_FD_INVALID,VPN_TUN_START_FAILED,VPN_SOCKET_PROTECT_FAILED,VPN_LOCAL_PORT_CONFLICT,VPN_BACKGROUND_TASK_FAILED,VPN_PROXY_REPLAY_FAILED,VPN_SYSTEM_REVOKED,VPN_STOP_FAILED'
       );
     });
 
@@ -266,7 +274,11 @@ export default function vpnModelsTestsuite() {
         ingress: 'tun',
         protocol: 'tcp',
         hashedTuple: 'hash-99',
-        correlationHash: 'corr-99'
+        correlationHash: 'corr-99',
+        destinationHash: DESTINATION_HASH,
+        outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+        outboundChainHash: OUTBOUND_CHAIN_HASH,
+        outboundChainLength: 1
       });
       const baselineRedacted: string = redactSensitiveText(rawDetail);
 
@@ -294,7 +306,11 @@ export default function vpnModelsTestsuite() {
         ingress: 'tun',
         protocol: 'udp',
         hashedTuple: 'hash-100',
-        correlationHash: 'corr-100'
+        correlationHash: 'corr-100',
+        destinationHash: DESTINATION_HASH,
+        outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+        outboundChainHash: OUTBOUND_CHAIN_HASH,
+        outboundChainLength: 2
       });
 
       expect(failure.detail.includes('vpnId')).assertTrue();
@@ -317,7 +333,11 @@ export default function vpnModelsTestsuite() {
         ingress: 'tun',
         protocol: 'tcp',
         hashedTuple: 'hash-7',
-        correlationHash: 'corr-7'
+        correlationHash: 'corr-7',
+        destinationHash: DESTINATION_HASH,
+        outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+        outboundChainHash: OUTBOUND_CHAIN_HASH,
+        outboundChainLength: 3
       });
 
       expect(trace.sequence).assertEqual(7);
@@ -326,6 +346,88 @@ export default function vpnModelsTestsuite() {
       expect(trace.protocol).assertEqual('tcp');
       expect(trace.hashedTuple).assertEqual('hash-7');
       expect(trace.correlationHash).assertEqual('corr-7');
+      expect(trace.destinationHash).assertEqual(DESTINATION_HASH);
+      expect(trace.outboundTerminalHash).assertEqual(OUTBOUND_TERMINAL_HASH);
+      expect(trace.outboundChainHash).assertEqual(OUTBOUND_CHAIN_HASH);
+      expect(trace.outboundChainLength).assertEqual(3);
+    });
+
+    it('rejectsPartialOutboundProofAndNonPositiveChainLength', 0, () => {
+      expectThrowsMessage(() => {
+        createVpnIngressTrace({
+          sequence: 8,
+          sessionId: 'session-12',
+          stage: 'tun/tcp',
+          detail: 'partial',
+          atMs: 8,
+          traceId: 'trace-8',
+          ingress: 'tun',
+          protocol: 'tcp',
+          hashedTuple: 'hash-8',
+          correlationHash: 'corr-8',
+          destinationHash: DESTINATION_HASH,
+          outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+          outboundChainHash: '',
+          outboundChainLength: 1
+        });
+      }, 'outbound');
+      expectThrowsMessage(() => {
+        createVpnIngressTrace({
+          sequence: 9,
+          sessionId: 'session-13',
+          stage: 'tun/tcp',
+          detail: 'zero',
+          atMs: 9,
+          traceId: 'trace-9',
+          ingress: 'tun',
+          protocol: 'tcp',
+          hashedTuple: 'hash-9',
+          correlationHash: 'corr-9',
+          destinationHash: DESTINATION_HASH,
+          outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+          outboundChainHash: OUTBOUND_CHAIN_HASH,
+          outboundChainLength: 0
+        });
+      }, 'outbound');
+    });
+
+    it('rejectsMalformedOrUnboundedOutboundProofHashes', 0, () => {
+      expectThrowsMessage(() => {
+        createVpnIngressTrace({
+          sequence: 10,
+          sessionId: 'session-14',
+          stage: 'tun/tcp',
+          detail: 'invalid destination hash',
+          atMs: 10,
+          destinationHash: 'not-a-digest'
+        });
+      }, 'destination');
+      expectThrowsMessage(() => {
+        createVpnIngressTrace({
+          sequence: 11,
+          sessionId: 'session-15',
+          stage: 'tun/tcp',
+          detail: 'invalid outbound hash',
+          atMs: 11,
+          destinationHash: DESTINATION_HASH,
+          outboundTerminalHash: 'not-a-digest',
+          outboundChainHash: OUTBOUND_CHAIN_HASH,
+          outboundChainLength: 1
+        });
+      }, 'outbound');
+      expectThrowsMessage(() => {
+        createVpnIngressTrace({
+          sequence: 12,
+          sessionId: 'session-16',
+          stage: 'tun/tcp',
+          detail: 'unbounded outbound chain',
+          atMs: 12,
+          destinationHash: DESTINATION_HASH,
+          outboundTerminalHash: OUTBOUND_TERMINAL_HASH,
+          outboundChainHash: OUTBOUND_CHAIN_HASH,
+          outboundChainLength: 17
+        });
+      }, 'outbound');
     });
   });
 }

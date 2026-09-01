@@ -1,12 +1,36 @@
+//go:build !ohos
+
 package main
 
 /*
 #include <stdlib.h>
 #include "../../../abi/include/cmfa_types.h"
+
+static char *cmfa_test_tun_trace_destination_hash(cmfa_tun_trace *trace) {
+	return trace->destination_hash;
+}
+
+static char *cmfa_test_tun_trace_outbound_terminal_hash(cmfa_tun_trace *trace) {
+	return trace->outbound_terminal_hash;
+}
+
+static char *cmfa_test_tun_trace_outbound_chain_hash(cmfa_tun_trace *trace) {
+	return trace->outbound_chain_hash;
+}
 */
 import "C"
 
-import "unsafe"
+import (
+	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
+	"unsafe"
+)
+
+type encodedTunTraceForTest struct {
+	DestinationHash     string
+	OutboundTerminalHash string
+	OutboundChainHash    string
+	OutboundChainLength  uint32
+}
 
 func callCloseStaleTunConnectionsForTest(sessionID string) int {
 	cSessionID := C.CString(sessionID)
@@ -29,4 +53,15 @@ func closeStaleTunStatusInvalidArgument() int {
 
 func closeStaleTunStatusBackendError() int {
 	return int(C.CMFA_BACKEND_ERROR)
+}
+
+func encodeTunTraceForTest(source runtimepkg.TunTrace) encodedTunTraceForTest {
+	var trace C.cmfa_tun_trace
+	writeTunTrace(&trace, source)
+	return encodedTunTraceForTest{
+		DestinationHash:      C.GoString(C.cmfa_test_tun_trace_destination_hash(&trace)),
+		OutboundTerminalHash: C.GoString(C.cmfa_test_tun_trace_outbound_terminal_hash(&trace)),
+		OutboundChainHash:    C.GoString(C.cmfa_test_tun_trace_outbound_chain_hash(&trace)),
+		OutboundChainLength:  uint32(trace.outbound_chain_length),
+	}
 }

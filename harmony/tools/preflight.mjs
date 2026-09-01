@@ -12,8 +12,8 @@ function createFallbackReport(error) {
     result: 'incomplete',
     target: {
       name: 'HarmonyOS 6/API 20/arm64',
-      targetSdkVersion: '6.1.0(23)',
-      targetApiVersion: 23,
+      targetSdkVersion: '6.1.1(24)',
+      targetApiVersion: 24,
       compatibleSdkVersion: '6.0.0(20)',
       compatibleApiVersion: 20,
       runtimeOS: 'HarmonyOS',

@@ -24,6 +24,13 @@ import {
   type RequestAgentRedirectTransportDependencies
 } from '../main/ets/source/RequestAgentRedirectTransport';
 import {
+  NetworkKitHttpTransport,
+  type NetworkKitHeaderRecord,
+  type NetworkKitClientPort,
+  type NetworkKitRequestOptions,
+  type NetworkKitResponsePort
+} from '../main/ets/source/NetworkKitHttpTransport';
+import {
   FakeFileDriver,
   SequenceClock,
   SequenceIdGenerator,
@@ -197,6 +204,7 @@ class FakeRequestAgentTask implements RequestAgentTaskPort {
 
 class FakeRequestAgentModule implements RequestAgentModulePort {
   readonly log: string[];
+  readonly createConfigs: RequestAgentCreateConfig[] = [];
   task?: FakeRequestAgentTask;
 
   constructor(log?: string[]) {
@@ -205,8 +213,9 @@ class FakeRequestAgentModule implements RequestAgentModulePort {
 
   async create(
     _context: common.BaseContext | undefined,
-    _config: RequestAgentCreateConfig
+    config: RequestAgentCreateConfig
   ): Promise<RequestAgentTaskPort> {
+    this.createConfigs.push(config);
     this.log.push('create');
     if (this.task === undefined) {
       throw new Error('Task was not seeded.');
@@ -265,6 +274,62 @@ class FakeRequestAgentTimer implements RequestAgentTimerPort {
   }
 }
 
+class EmptyObjectRecord {
+}
+
+interface UserAgentHeaderObject {
+  'User-Agent'?: string;
+  Authorization?: string;
+  authorization?: string;
+  Cookie?: string;
+  cookie?: string;
+}
+
+interface NetworkKitRequestOptionsWithHeader {
+  header?: NetworkKitHeaderRecord;
+}
+
+interface RequestAgentCreateConfigWithHeaders {
+  headers?: UserAgentHeaderObject;
+}
+
+class FakeNetworkKitClientResponseRecord implements NetworkKitResponsePort {
+  readonly responseCode: number;
+  readonly header: Object;
+  readonly result: string | Object | ArrayBuffer;
+
+  constructor(
+    responseCode: number,
+    header: Object,
+    result: string | Object | ArrayBuffer
+  ) {
+    this.responseCode = responseCode;
+    this.header = header;
+    this.result = result;
+  }
+}
+
+class FakeNetworkKitClient implements NetworkKitClientPort {
+  readonly requestedUrls: string[] = [];
+  readonly requestOptions: NetworkKitRequestOptions[] = [];
+  destroyCount: number = 0;
+  response: NetworkKitResponsePort = new FakeNetworkKitClientResponseRecord(
+    200,
+    new EmptyObjectRecord(),
+    utf8Bytes('network-kit response').buffer
+  );
+
+  async request(url: string, options: NetworkKitRequestOptions): Promise<NetworkKitResponsePort> {
+    this.requestedUrls.push(url);
+    this.requestOptions.push(options);
+    return this.response;
+  }
+
+  destroy(): void {
+    this.destroyCount += 1;
+  }
+}
+
 class RequestAgentDependencyShape implements RequestAgentRedirectTransportDependencies {
   readonly context?: undefined;
   readonly fileDriver: FakeFileDriver;
@@ -314,6 +379,25 @@ class FakeHttpTransport implements HttpTransport {
   }
 }
 
+class CompatibilityNegotiatingTransport implements HttpTransport {
+  readonly requests: HttpTransportRequest[] = [];
+  readonly missingUserAgentBody: Uint8Array;
+  readonly productYamlBody: Uint8Array;
+
+  constructor(missingUserAgentBody: Uint8Array, productYamlBody: Uint8Array) {
+    this.missingUserAgentBody = missingUserAgentBody;
+    this.productYamlBody = productYamlBody;
+  }
+
+  async fetch(request: HttpTransportRequest): Promise<HttpTransportResponse> {
+    this.requests.push(request);
+    const body: Uint8Array = request.userAgent === 'ClashMetaForAndroid/HarmonyOS'
+      ? this.productYamlBody
+      : this.missingUserAgentBody;
+    return new HttpTransportResponseRecord(200, body);
+  }
+}
+
 class DownloaderDependencyShape implements SubscriptionDownloaderDependencies {
   readonly sdkApiVersion: number;
   readonly networkKitTransport: HttpTransport;
@@ -343,8 +427,8 @@ class DownloaderDependencyShape implements SubscriptionDownloaderDependencies {
 
 function buildDownloader(
   sdkApiVersion: number,
-  networkKitTransport: FakeHttpTransport,
-  requestAgentTransport: FakeHttpTransport,
+  networkKitTransport: HttpTransport,
+  requestAgentTransport: HttpTransport,
   fileDriver: FakeFileDriver,
   timestamps: string[] = ['2026-08-11T13:00:00.000Z'],
   ids: string[] = ['download-stage']
@@ -420,6 +504,19 @@ function buildRequestAgentTransport(
   );
 }
 
+function assertRequestContractShape(request: HttpTransportRequest): void {
+  expect(Object.keys(request as Object).sort().join(',')).assertEqual('maxResponseBytes,timeoutMs,url,userAgent');
+}
+
+function requireHeaderObject(value: Object | undefined): UserAgentHeaderObject {
+  expect(value === undefined).assertFalse();
+  return value as UserAgentHeaderObject;
+}
+
+function assertExactUserAgentHeader(headers: UserAgentHeaderObject): void {
+  expect(JSON.stringify(headers as Object)).assertEqual('{"User-Agent":"ClashMetaForAndroid/HarmonyOS"}');
+}
+
 async function flushAsyncTurns(count: number = 2): Promise<void> {
   let remaining: number = count;
   while (remaining > 0) {
@@ -470,6 +567,87 @@ export default function subscriptionDownloaderTestsuite() {
       expect(networkTransport.requests[0].maxResponseBytes).assertEqual(EXACT_LIMIT_BYTES);
       expect(requestTransport.requestedUrls.length).assertEqual(0);
       assertBytesEqual(fileDriver.readFileBytes(staged.validationPath), payload);
+    });
+
+    it('sendsExactSubscriptionUserAgentOnInitialHttpsAndEveryRedirectViaNetworkKit', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      networkTransport.enqueueResponse(302, utf8Bytes('ignored redirect body'), buildHeaders([['location', ['/next.yaml#ignored']]]));
+      networkTransport.enqueueResponse(302, utf8Bytes('ignored redirect body'), buildHeaders([['location', ['https://profiles.example.com/final.yaml#also-ignored']]]));
+      networkTransport.enqueueResponse(200, utf8Bytes('mode: rule\n'));
+      const downloader = buildDownloader(23, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:21:00.000Z'], ['ua-network-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/start.yaml#fragment'));
+      requireSuccess(result);
+
+      expect(networkTransport.requests.length).assertEqual(3);
+      expect(networkTransport.requests[0].url).assertEqual('https://profiles.example.com/start.yaml');
+      expect(networkTransport.requests[1].url).assertEqual('https://profiles.example.com/next.yaml');
+      expect(networkTransport.requests[2].url).assertEqual('https://profiles.example.com/final.yaml');
+      for (let index = 0; index < networkTransport.requests.length; index += 1) {
+        expect(networkTransport.requests[index].userAgent).assertEqual('ClashMetaForAndroid/HarmonyOS');
+        assertRequestContractShape(networkTransport.requests[index]);
+      }
+      expect(requestTransport.requests.length).assertEqual(0);
+    });
+
+    it('sendsExactSubscriptionUserAgentOnInitialHttpsAndEveryRedirectViaRequestAgent', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      requestTransport.enqueueResponse(302, utf8Bytes('ignored redirect body'), buildHeaders([['location', ['/next.yaml#ignored']]]));
+      requestTransport.enqueueResponse(302, utf8Bytes('ignored redirect body'), buildHeaders([['location', ['https://profiles.example.com/final.yaml#also-ignored']]]));
+      requestTransport.enqueueResponse(200, utf8Bytes('mode: rule\n'));
+      const downloader = buildDownloader(22, networkTransport, requestTransport, fileDriver, ['2026-08-11T13:21:30.000Z'], ['ua-request-agent-stage']);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/start.yaml#fragment'));
+      requireSuccess(result);
+
+      expect(requestTransport.requests.length).assertEqual(3);
+      expect(requestTransport.requests[0].url).assertEqual('https://profiles.example.com/start.yaml');
+      expect(requestTransport.requests[1].url).assertEqual('https://profiles.example.com/next.yaml');
+      expect(requestTransport.requests[2].url).assertEqual('https://profiles.example.com/final.yaml');
+      for (let index = 0; index < requestTransport.requests.length; index += 1) {
+        expect(requestTransport.requests[index].userAgent).assertEqual('ClashMetaForAndroid/HarmonyOS');
+        assertRequestContractShape(requestTransport.requests[index]);
+      }
+      expect(networkTransport.requests.length).assertEqual(0);
+    });
+
+    it('keepsResponseNegotiationBranchesSeparatedAndStagesOnlyTheProductYamlPayload', 0, async () => {
+      const base64ClassBody = utf8Bytes('QkFTRTY0X0NMQVNTX09OTFk=');
+      const yamlBody = utf8Bytes('mixed-port: 7890\nmode: rule\nrules:\n  - GEOIP,CN,DIRECT\n  - MATCH,DIRECT\n');
+      const transport = new CompatibilityNegotiatingTransport(base64ClassBody, yamlBody);
+      const fileDriver = new FakeFileDriver();
+      const downloader = buildDownloader(23, transport, new FakeHttpTransport(), fileDriver, ['2026-08-21T10:00:00.000Z'], ['compatibility-stage']);
+
+      const wrongUserAgentResponse = await transport.fetch({
+        url: 'https://profiles.example.com/compatibility.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: 'WrongAgent/0'
+      });
+      assertBytesEqual(new Uint8Array(wrongUserAgentResponse.body), base64ClassBody);
+
+      const missingUserAgentResponse = await transport.fetch({
+        url: 'https://profiles.example.com/compatibility.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: ''
+      });
+      assertBytesEqual(new Uint8Array(missingUserAgentResponse.body), base64ClassBody);
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord('https://profiles.example.com/compatibility.yaml'));
+      const acquired = requireSuccess(result);
+
+      expect(transport.requests.length).assertEqual(3);
+      expect(transport.requests[2].userAgent).assertEqual('ClashMetaForAndroid/HarmonyOS');
+      assertBytesEqual(fileDriver.readFileBytes(acquired.staged.validationPath), yamlBody);
+      expect(acquired.staged.byteLength).assertEqual(yamlBody.length);
+      expect(acquired.staged.validationPath).assertEqual(`${FILES_DIR}/tmp/compatibility-stage.yaml`);
+      const stagedBytes = fileDriver.readFileBytes(acquired.staged.validationPath);
+      expect(stagedBytes.length === base64ClassBody.length).assertFalse();
     });
 
     it('rejectsNonHttpSchemesBeforeAnyTransportCall', 0, async () => {
@@ -636,6 +814,36 @@ export default function subscriptionDownloaderTestsuite() {
       assertBytesEqual(fileDriver.readFileBytes(acquired.staged.validationPath), payload);
     });
 
+    it('reusesAnExistingStagingDirectoryWithoutAttemptingToRecreateIt', 0, async () => {
+      const networkTransport = new FakeHttpTransport();
+      const requestTransport = new FakeHttpTransport();
+      const fileDriver = new FakeFileDriver();
+      const payload = utf8Bytes('mixed-port: 7890\n');
+      networkTransport.enqueueResponse(200, payload);
+      const downloader = buildDownloader(
+        23,
+        networkTransport,
+        requestTransport,
+        fileDriver,
+        ['2026-08-11T13:40:30.000Z'],
+        ['existing-directory-stage']
+      );
+      fileDriver.injectFailure(
+        'mkdir',
+        `${FILES_DIR}/tmp`,
+        new Error('Existing directory must not be recreated.')
+      );
+
+      const result = await downloader.acquire(new RemoteAcquireCommandRecord(
+        'https://profiles.example.com/existing-directory.yaml'
+      ));
+      const acquired = requireSuccess(result);
+
+      expect(acquired.staged.byteLength).assertEqual(payload.length);
+      assertBytesEqual(fileDriver.readFileBytes(acquired.staged.validationPath), payload);
+      expect(fileDriver.operationLog.includes(`mkdir:${FILES_DIR}/tmp:recursive`)).assertFalse();
+    });
+
     it('cleansUpTheStageWhenWriteFails', 0, async () => {
       const networkTransport = new FakeHttpTransport();
       const requestTransport = new FakeHttpTransport();
@@ -787,6 +995,62 @@ export default function subscriptionDownloaderTestsuite() {
       expect(requestTransport.requestedUrls[0]).assertEqual('https://profiles.example.com/api22.yaml');
     });
 
+    it('buildsExactlyOneUserAgentHeaderForNetworkKitRequests', 0, async () => {
+      const client = new FakeNetworkKitClient();
+      const transport = new NetworkKitHttpTransport(() => client);
+
+      await transport.fetch({
+        url: 'https://profiles.example.com/subscription.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: 'ClashMetaForAndroid/HarmonyOS'
+      });
+
+      expect(client.requestedUrls.length).assertEqual(1);
+      expect(client.requestOptions.length).assertEqual(1);
+      const optionRecord: NetworkKitRequestOptionsWithHeader = client.requestOptions[0] as NetworkKitRequestOptionsWithHeader;
+      const headerRecord: UserAgentHeaderObject = requireHeaderObject(optionRecord.header);
+      assertExactUserAgentHeader(headerRecord);
+      expect(client.destroyCount).assertEqual(1);
+    });
+
+    it('rejectsBlankOrControlCharacterUserAgentBeforeNetworkKitRequest', 0, async () => {
+      const blankClient = new FakeNetworkKitClient();
+      const blankTransport = new NetworkKitHttpTransport(() => blankClient);
+      let blankDetail: string = '';
+      try {
+        await blankTransport.fetch({
+          url: 'https://profiles.example.com/subscription.yaml',
+          timeoutMs: 30000,
+          maxResponseBytes: EXACT_LIMIT_BYTES,
+          userAgent: ' '
+        });
+      } catch (error) {
+        blankDetail = `${(error as Error).message}`;
+      }
+      expect(blankDetail.length > 0).assertTrue();
+      expect(blankDetail.includes(' ')).assertFalse();
+      expect(blankClient.requestedUrls.length).assertEqual(0);
+
+      const controlClient = new FakeNetworkKitClient();
+      const controlTransport = new NetworkKitHttpTransport(() => controlClient);
+      let controlDetail: string = '';
+      try {
+        await controlTransport.fetch({
+          url: 'https://profiles.example.com/subscription.yaml',
+          timeoutMs: 30000,
+          maxResponseBytes: EXACT_LIMIT_BYTES,
+          userAgent: 'Bad\nAgent'
+        });
+      } catch (error) {
+        controlDetail = `${(error as Error).message}`;
+      }
+      expect(controlDetail.length > 0).assertTrue();
+      expect(controlDetail.includes('Bad\\nAgent')).assertFalse();
+      expect(controlDetail.includes('Bad\nAgent')).assertFalse();
+      expect(controlClient.requestedUrls.length).assertEqual(0);
+    });
+
     it('requestAgentWaitsForStopBeforeRemovingTaskAndUnlinkingOnTimeout', 0, async () => {
       const sharedLog: string[] = [];
       const fileDriver = new OrderedFakeFileDriver(sharedLog);
@@ -803,7 +1067,8 @@ export default function subscriptionDownloaderTestsuite() {
       const fetchPromise = transport.fetch({
         url: 'https://profiles.example.com/timeout.yaml',
         timeoutMs: 30000,
-        maxResponseBytes: EXACT_LIMIT_BYTES
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: 'ClashMetaForAndroid/HarmonyOS'
       }).then(() => {
         settled = true;
       }, () => {
@@ -841,7 +1106,8 @@ export default function subscriptionDownloaderTestsuite() {
       const fetchPromise = transport.fetch({
         url: 'https://profiles.example.com/redirect.yaml',
         timeoutMs: 30000,
-        maxResponseBytes: EXACT_LIMIT_BYTES
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: 'ClashMetaForAndroid/HarmonyOS'
       });
       await waitForCondition(() => sharedLog.join(',') === 'create,start' && timer.hasPendingTimer());
       modulePort.task.emitResponse(302, buildHeaders([['location', ['/next.yaml']]]));
@@ -853,6 +1119,78 @@ export default function subscriptionDownloaderTestsuite() {
       expect(fileDriver.operationLog.some((entry: string) => entry === `open:${FILES_DIR}/tmp/redirect-task.download:0`)).assertFalse();
       expect(fileDriver.operationLog.some((entry: string) => entry === `read:${FILES_DIR}/tmp/redirect-task.download`)).assertFalse();
       expect(modulePort.log.includes('remove:tid-redirect')).assertTrue();
+    });
+
+    it('createsRequestAgentConfigWithExactlyOneUserAgentHeader', 0, async () => {
+      const sharedLog: string[] = [];
+      const fileDriver = new OrderedFakeFileDriver(sharedLog);
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      fileDriver.seedFile(`${FILES_DIR}/tmp/ua-task.download`, utf8Bytes('mode: rule\n'));
+      const modulePort = new FakeRequestAgentModule(sharedLog);
+      const timer = new FakeRequestAgentTimer();
+      const stopDeferred = new DeferredVoid();
+      modulePort.task = new FakeRequestAgentTask('tid-user-agent', sharedLog, stopDeferred);
+      const transport = buildRequestAgentTransport(fileDriver, modulePort, timer, ['ua-task']);
+
+      const fetchPromise = transport.fetch({
+        url: 'https://profiles.example.com/subscription.yaml',
+        timeoutMs: 30000,
+        maxResponseBytes: EXACT_LIMIT_BYTES,
+        userAgent: 'ClashMetaForAndroid/HarmonyOS'
+      });
+      await waitForCondition(() => sharedLog.join(',') === 'create,start' && timer.hasPendingTimer());
+      modulePort.task.emitResponse(200);
+      modulePort.task.emitCompleted(11);
+      stopDeferred.resolve();
+      await fetchPromise;
+
+      expect(modulePort.createConfigs.length).assertEqual(1);
+      const configRecord: RequestAgentCreateConfigWithHeaders = modulePort.createConfigs[0] as RequestAgentCreateConfigWithHeaders;
+      const headerRecord: UserAgentHeaderObject = requireHeaderObject(configRecord.headers);
+      assertExactUserAgentHeader(headerRecord);
+    });
+
+    it('rejectsBlankOrControlCharacterUserAgentBeforeRequestAgentCreate', 0, async () => {
+      const fileDriver = new FakeFileDriver();
+      fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(`${FILES_DIR}/tmp`);
+      const blankModulePort = new FakeRequestAgentModule();
+      const blankTransport = buildRequestAgentTransport(fileDriver, blankModulePort, new FakeRequestAgentTimer(), ['blank-task']);
+
+      let blankDetail: string = '';
+      try {
+        await blankTransport.fetch({
+          url: 'https://profiles.example.com/subscription.yaml',
+          timeoutMs: 30000,
+          maxResponseBytes: EXACT_LIMIT_BYTES,
+          userAgent: ' '
+        });
+      } catch (error) {
+        blankDetail = `${(error as Error).message}`;
+      }
+      expect(blankDetail.length > 0).assertTrue();
+      expect(blankDetail.includes(' ')).assertFalse();
+      expect(blankModulePort.createConfigs.length).assertEqual(0);
+
+      const controlModulePort = new FakeRequestAgentModule();
+      const controlTransport = buildRequestAgentTransport(fileDriver, controlModulePort, new FakeRequestAgentTimer(), ['control-task']);
+
+      let controlDetail: string = '';
+      try {
+        await controlTransport.fetch({
+          url: 'https://profiles.example.com/subscription.yaml',
+          timeoutMs: 30000,
+          maxResponseBytes: EXACT_LIMIT_BYTES,
+          userAgent: 'Bad\nAgent'
+        });
+      } catch (error) {
+        controlDetail = `${(error as Error).message}`;
+      }
+      expect(controlDetail.length > 0).assertTrue();
+      expect(controlDetail.includes('Bad\\nAgent')).assertFalse();
+      expect(controlDetail.includes('Bad\nAgent')).assertFalse();
+      expect(controlModulePort.createConfigs.length).assertEqual(0);
     });
   });
 }

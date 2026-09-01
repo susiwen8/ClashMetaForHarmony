@@ -1,0 +1,52 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Harmony Proxy Delay Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "result",
+    "packageSha256",
+    "measurement",
+    "cancellationState"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "result": {
+      "enum": ["pass", "incomplete"]
+    },
+    "packageSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "measurement": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "totalCount",
+        "testableCount",
+        "availableCount",
+        "timeoutCount",
+        "failedCount",
+        "minDelayMs",
+        "medianDelayMs",
+        "maxDelayMs"
+      ],
+      "properties": {
+        "totalCount": { "type": "integer", "minimum": 0 },
+        "testableCount": { "type": "integer", "minimum": 0 },
+        "availableCount": { "type": "integer", "minimum": 0 },
+        "timeoutCount": { "type": "integer", "minimum": 0 },
+        "failedCount": { "type": "integer", "minimum": 0 },
+        "minDelayMs": { "type": "integer", "minimum": 0 },
+        "medianDelayMs": { "type": "integer", "minimum": 0 },
+        "maxDelayMs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "cancellationState": {
+      "enum": ["CANCELLED", "NOT_PROVEN"]
+    }
+  }
+}

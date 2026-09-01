@@ -24,14 +24,24 @@ class ConnectionEventBridge implements NetworkConnectionListener {
   }
 
   netAvailable(networkId: string): void {
-    this.monitor.publish(new NetworkStatusValue(networkId, true));
+    this.monitor.markCandidateNetwork(networkId);
   }
 
   netLost(networkId: string): void {
-    this.monitor.publish(new NetworkStatusValue(networkId, false));
+    const wasCurrent: boolean = this.monitor.isCurrentNetwork(networkId);
+    if (!wasCurrent && !this.monitor.isCandidateNetwork(networkId)) {
+      return;
+    }
+    this.monitor.forgetCandidateNetwork(networkId);
+    if (wasCurrent) {
+      this.monitor.publish(new NetworkStatusValue('', false));
+    }
   }
 
   netCapabilitiesChange(state: DriverNetworkState): void {
+    if (!this.monitor.isCurrentNetwork(state.networkId) && !this.monitor.isCandidateNetwork(state.networkId)) {
+      return;
+    }
     this.monitor.publish(new NetworkStatusValue(state.networkId, state.hasInternet));
   }
 
@@ -39,7 +49,8 @@ class ConnectionEventBridge implements NetworkConnectionListener {
     if (this.monitor.isDisposed()) {
       return;
     }
-    this.monitor.updateCurrentStatus(new NetworkStatusValue('', false));
+    this.monitor.clearCandidateNetwork();
+    this.monitor.publish(new NetworkStatusValue('', false));
   }
 }
 
@@ -69,6 +80,7 @@ export class HarmonyNetworkMonitor implements NetworkRecoveryPort {
   private readonly connectionListener: NetworkConnectionListener;
   private nextSubscriptionId: number = 1;
   private currentStatusValue: NetworkStatus = new NetworkStatusValue('', false);
+  private candidateNetworkId: string = '';
   private registration?: NetworkConnectionRegistration;
   private initializePromise?: Promise<void>;
   private disposePromise?: Promise<void>;
@@ -87,7 +99,7 @@ export class HarmonyNetworkMonitor implements NetworkRecoveryPort {
       return Promise.resolve();
     }
     const initializePromise: Promise<void> = this.initializeInternal().catch(() => {
-      this.currentStatusValue = new NetworkStatusValue('', false);
+      this.updateCurrentStatus(new NetworkStatusValue('', false));
     });
     this.initializePromise = initializePromise;
     return initializePromise;
@@ -146,9 +158,9 @@ export class HarmonyNetworkMonitor implements NetworkRecoveryPort {
       if (this.disposed) {
         return;
       }
-      this.currentStatusValue = toNetworkStatus(currentState);
+      this.updateCurrentStatus(toNetworkStatus(currentState));
     } catch (_) {
-      this.currentStatusValue = new NetworkStatusValue('', false);
+      this.updateCurrentStatus(new NetworkStatusValue('', false));
     }
   }
 
@@ -156,8 +168,34 @@ export class HarmonyNetworkMonitor implements NetworkRecoveryPort {
     return this.disposed;
   }
 
+  isCurrentNetwork(networkId: string): boolean {
+    return networkId.length > 0 && this.currentStatusValue.networkId === networkId;
+  }
+
+  isCandidateNetwork(networkId: string): boolean {
+    return networkId.length > 0 && this.candidateNetworkId === networkId;
+  }
+
+  markCandidateNetwork(networkId: string): void {
+    if (this.disposed || networkId.length === 0) {
+      return;
+    }
+    this.candidateNetworkId = networkId;
+  }
+
+  forgetCandidateNetwork(networkId: string): void {
+    if (this.candidateNetworkId === networkId) {
+      this.candidateNetworkId = '';
+    }
+  }
+
+  clearCandidateNetwork(): void {
+    this.candidateNetworkId = '';
+  }
+
   updateCurrentStatus(status: NetworkStatus): void {
     this.currentStatusValue = cloneStatus(status);
+    this.candidateNetworkId = status.networkId;
   }
 
   publish(status: NetworkStatus): void {

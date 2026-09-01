@@ -14,6 +14,43 @@ export interface CoreError {
   context?: CoreErrorContext;
 }
 
+class CoreErrorContextValue implements CoreErrorContext {
+  operation: string;
+  status: number;
+
+  constructor(operation: string, status: number) {
+    this.operation = operation;
+    this.status = status;
+  }
+}
+
+class StaticCoreErrorValue extends Error {
+  code: string;
+  category: 'CoreError' | 'StateError';
+  detail: string;
+  retryable: boolean;
+  action: string;
+  context: CoreErrorContext;
+
+  constructor(
+    message: string,
+    code: string,
+    detail: string,
+    retryable: boolean,
+    action: string,
+    context: CoreErrorContext,
+    category: 'CoreError' | 'StateError' = 'CoreError'
+  ) {
+    super(message);
+    this.code = code;
+    this.category = category;
+    this.detail = detail;
+    this.retryable = retryable;
+    this.action = action;
+    this.context = context;
+  }
+}
+
 export class CoreErrorException extends Error implements CoreError {
   name: 'CoreError' = 'CoreError';
   code: string;
@@ -75,4 +112,32 @@ export function isCoreError(value: Object | undefined): boolean {
 
 export function normalizeCoreError(operation: string, value: Error | Object | undefined): CoreErrorException {
   return new CoreErrorException(operation, value as Error | Record<string, Object> | undefined);
+}
+
+export function createProxyBridgeInvalidError(operation: string): CoreErrorException {
+  return new CoreErrorException(
+    operation,
+    new StaticCoreErrorValue(
+      'Proxy bridge payload is invalid.',
+      'PROXY_BRIDGE_INVALID',
+      `Proxy bridge payload for ${operation} is invalid.`,
+      false,
+      'Refresh runtime state and retry the proxy operation.',
+      new CoreErrorContextValue(operation, -1)
+    )
+  );
+}
+
+export function createProxyRuntimeNotReadyError(operation: string): CoreErrorException {
+  return new CoreErrorException(
+    operation,
+    new StaticCoreErrorValue(
+      'Proxy runtime is not ready.',
+      'PROXY_RUNTIME_NOT_READY',
+      `Proxy runtime is not ready for ${operation}.`,
+      false,
+      'Start the runtime before using proxy operations.',
+      new CoreErrorContextValue(operation, -1)
+    )
+  );
 }

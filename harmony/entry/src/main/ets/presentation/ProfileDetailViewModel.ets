@@ -2,20 +2,20 @@ import {
   ProfileApplication,
   type ManageDeleteResult,
   type ManageEnableResult,
-  type ManageReplaceResult,
   type ProfileApplicationListener,
   type ProfileApplicationProfileSnapshot,
   type ProfileApplicationSnapshot,
-  type RefreshProfileResult
+  type RefreshProfileResult,
+  type UpdateProfileResult
 } from '@cmfa/shared';
 import {
-  areProfileActionsLocked,
   cloneProfileDetailViewState,
   createProfileDetailProfileState,
   createProfileDetailViewState,
   createSafeErrorState,
   isProfileStartEligible,
   parseRemoteSourceInput,
+  resolveNameIssue,
   resolveRemoteUrlIssue,
   safeRemoteHostFromUrl,
   type ParsedRemoteSourceInput,
@@ -64,8 +64,14 @@ export class ProfileDetailViewModel {
   private confirmingDelete: boolean = false;
   private httpConfirmationHost?: string;
   private pendingPlainHttpRefresh: boolean = false;
-  private replacementUrlDraft: string = '';
+  private pendingPlainHttpEdit?: ParsedRemoteSourceInput;
+  private pendingPlainHttpEditName?: string;
   private fallbackError?: SafeErrorState;
+  private editing: boolean = false;
+  private editNameDraft: string = '';
+  private editUrlDraft: string = '';
+  private editNameIssue?: 'REQUIRED' | 'TOO_LONG';
+  private editUrlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
 
   constructor(application: ProfileApplication, profileId: string) {
     this.application = application;
@@ -84,8 +90,16 @@ export class ProfileDetailViewModel {
     return cloneProfileDetailViewState(this.state);
   }
 
+  currentEditNameDraft(): string {
+    return this.editNameDraft;
+  }
+
+  currentEditUrlDraft(): string {
+    return this.editUrlDraft;
+  }
+
   currentReplacementUrlDraft(): string {
-    return this.replacementUrlDraft;
+    return this.currentEditUrlDraft();
   }
 
   subscribe(listener: ProfileDetailViewListener): number {
@@ -118,6 +132,134 @@ export class ProfileDetailViewModel {
     this.effectListeners.delete(id);
   }
 
+  requestEdit(): void {
+    if (this.status === 'SUBMITTING') {
+      return;
+    }
+    const profile: ProfileApplicationProfileSnapshot | undefined = this.findProfile(this.application.current());
+    if (profile === undefined) {
+      return;
+    }
+    this.editing = true;
+    this.editNameDraft = profile.name;
+    this.editUrlDraft = '';
+    this.editNameIssue = undefined;
+    this.editUrlIssue = undefined;
+    this.confirmingDelete = false;
+    this.pendingPlainHttpRefresh = false;
+    this.clearPendingPlainHttpEdit();
+    this.httpConfirmationHost = undefined;
+    this.fallbackError = undefined;
+    this.status = 'IDLE';
+    this.publish(this.buildState());
+  }
+
+  cancelEdit(): void {
+    if (!this.editing && this.pendingPlainHttpEdit === undefined) {
+      return;
+    }
+    this.editing = false;
+    this.clearEditDrafts();
+    this.confirmingDelete = false;
+    this.pendingPlainHttpRefresh = false;
+    this.clearPendingPlainHttpEdit();
+    this.httpConfirmationHost = undefined;
+    this.fallbackError = undefined;
+    this.status = 'IDLE';
+    this.publish(this.buildState());
+  }
+
+  updateEditNameDraft(value: string): void {
+    this.editNameDraft = value;
+    this.editNameIssue = undefined;
+    this.clearStaleEditCommandError();
+    if (this.pendingPlainHttpEdit !== undefined) {
+      this.clearPendingPlainHttpEdit();
+      this.httpConfirmationHost = undefined;
+      this.status = 'IDLE';
+    }
+    if (this.status !== 'SUBMITTING') {
+      this.publish(this.buildState());
+    }
+  }
+
+  updateEditUrlDraft(value: string): void {
+    this.editUrlDraft = value;
+    this.editUrlIssue = undefined;
+    this.clearStaleEditCommandError();
+    if (this.pendingPlainHttpEdit !== undefined) {
+      this.clearPendingPlainHttpEdit();
+      this.httpConfirmationHost = undefined;
+      this.status = 'IDLE';
+    }
+    if (this.status !== 'SUBMITTING') {
+      this.publish(this.buildState());
+    }
+  }
+
+  updateReplacementUrlDraft(value: string): void {
+    if (!this.editing) {
+      this.requestEdit();
+    }
+    this.updateEditUrlDraft(value);
+  }
+
+  async requestSaveEdits(): Promise<void> {
+    if (this.status === 'SUBMITTING' || !this.editing) {
+      return;
+    }
+    this.editNameIssue = resolveNameIssue(this.editNameDraft, true);
+    this.editUrlIssue = undefined;
+
+    let parsedSource: ParsedRemoteSourceInput | undefined = undefined;
+    const profile: ProfileApplicationProfileSnapshot | undefined = this.findProfile(this.application.current());
+    const sourceRepairRequired: boolean = profile?.sourceRepairRequired === true;
+    const trimmedUrl: string = this.editUrlDraft.trim();
+    if (trimmedUrl.length === 0) {
+      if (sourceRepairRequired) {
+        this.editUrlIssue = 'REQUIRED';
+      }
+    } else {
+      this.editUrlIssue = resolveRemoteUrlIssue(this.editUrlDraft);
+      if (this.editUrlIssue === undefined) {
+        parsedSource = parseRemoteSourceInput(this.editUrlDraft);
+        if (parsedSource === undefined) {
+          this.editUrlIssue = 'INVALID_URL';
+        }
+      }
+    }
+
+    if (this.editNameIssue !== undefined || this.editUrlIssue !== undefined) {
+      this.clearPendingPlainHttpEdit();
+      this.httpConfirmationHost = undefined;
+      this.fallbackError = undefined;
+      this.status = 'IDLE';
+      this.publish(this.buildState());
+      return;
+    }
+
+    const normalizedName: string = normalizeRequiredName(this.editNameDraft);
+    if (parsedSource?.plainHttp === true) {
+      this.pendingPlainHttpEdit = parsedSource;
+      this.pendingPlainHttpEditName = normalizedName;
+      this.pendingPlainHttpRefresh = false;
+      this.httpConfirmationHost = parsedSource.host;
+      this.fallbackError = undefined;
+      this.status = 'CONFIRMING_HTTP';
+      this.publish(this.buildState());
+      return;
+    }
+
+    await this.executeUpdate(normalizedName, parsedSource?.sourceUrl, false);
+  }
+
+  async requestReplaceSubscriptionUrl(): Promise<void> {
+    if (!this.editing) {
+      this.requestEdit();
+    }
+    await this.requestSaveEdits();
+  }
+
   async requestEnable(): Promise<void> {
     if (this.status === 'SUBMITTING' || !this.state.canEnable) {
       return;
@@ -141,6 +283,7 @@ export class ProfileDetailViewModel {
     }
     if (profile.sourceKind === 'REMOTE_URL' && profile.sourceDisplay.startsWith('http://')) {
       this.pendingPlainHttpRefresh = true;
+      this.clearPendingPlainHttpEdit();
       this.httpConfirmationHost = sanitizeRefreshHost(profile.sourceDisplay);
       this.status = 'CONFIRMING_HTTP';
       this.publish(this.buildState());
@@ -156,54 +299,42 @@ export class ProfileDetailViewModel {
   }
 
   cancelPlainHttpConfirmation(): void {
-    if (!this.pendingPlainHttpRefresh) {
+    if (!this.pendingPlainHttpRefresh && this.pendingPlainHttpEdit === undefined) {
       return;
     }
     this.pendingPlainHttpRefresh = false;
+    this.clearPendingPlainHttpEdit();
     this.httpConfirmationHost = undefined;
     this.status = 'IDLE';
     this.publish(this.buildState());
   }
 
-  async confirmPlainHttpRefresh(): Promise<void> {
-    if (!this.pendingPlainHttpRefresh) {
+  async confirmPlainHttpAction(): Promise<void> {
+    if (this.pendingPlainHttpRefresh) {
+      this.pendingPlainHttpRefresh = false;
+      this.httpConfirmationHost = undefined;
+      const token: number = this.beginCommand();
+      const result: RefreshProfileResult = await this.application.refresh(this.profileId, true);
+      this.completeCommand(
+        token,
+        resolveRefreshStatus(result),
+        result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
+      );
       return;
     }
-    this.pendingPlainHttpRefresh = false;
+
+    const pendingEdit: ParsedRemoteSourceInput | undefined = this.pendingPlainHttpEdit;
+    const pendingName: string | undefined = this.pendingPlainHttpEditName;
+    if (pendingEdit === undefined || pendingName === undefined) {
+      return;
+    }
+    this.clearPendingPlainHttpEdit();
     this.httpConfirmationHost = undefined;
-    const token: number = this.beginCommand();
-    const result: RefreshProfileResult = await this.application.refresh(this.profileId, true);
-    this.completeCommand(
-      token,
-      resolveRefreshStatus(result),
-      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
-    );
+    await this.executeUpdate(pendingName, pendingEdit.sourceUrl, true);
   }
 
-  updateReplacementUrlDraft(value: string): void {
-    this.replacementUrlDraft = value;
-  }
-
-  async requestReplaceSubscriptionUrl(): Promise<void> {
-    if (this.status === 'SUBMITTING' || !this.state.canReplaceSubscriptionUrl) {
-      return;
-    }
-    const issue = resolveRemoteUrlIssue(this.replacementUrlDraft);
-    if (issue !== undefined) {
-      return;
-    }
-    const parsed: ParsedRemoteSourceInput | undefined = parseRemoteSourceInput(this.replacementUrlDraft);
-    if (parsed === undefined) {
-      return;
-    }
-    this.replacementUrlDraft = '';
-    const token: number = this.beginCommand();
-    const result: ManageReplaceResult = await this.application.replaceSubscriptionUrl(this.profileId, parsed.sourceUrl);
-    this.completeCommand(
-      token,
-      resolveManageStatus(result),
-      result.kind === 'FAILED' ? createSafeErrorState(result.error) : undefined
-    );
+  async confirmPlainHttpRefresh(): Promise<void> {
+    await this.confirmPlainHttpAction();
   }
 
   requestDelete(): void {
@@ -266,10 +397,38 @@ export class ProfileDetailViewModel {
     this.effectListeners.clear();
   }
 
+  private async executeUpdate(name: string, sourceUrl?: string, allowPlainHttp: boolean = false): Promise<void> {
+    const token: number = this.beginCommand();
+    const result: UpdateProfileResult = await this.application.updateProfile(this.profileId, name, sourceUrl, allowPlainHttp);
+    if (token !== this.commandToken) {
+      return;
+    }
+    if (result.kind === 'UPDATED') {
+      this.fallbackError = undefined;
+      this.editing = false;
+      this.clearEditDrafts();
+      this.status = 'COMPLETED';
+      this.publish(this.buildState());
+      return;
+    }
+    if (result.kind === 'UPDATED_REFRESH_FAILED') {
+      this.fallbackError = createSafeErrorState(result.error);
+      this.editing = false;
+      this.clearEditDrafts();
+      this.status = 'ERROR';
+      this.publish(this.buildState());
+      return;
+    }
+    this.fallbackError = createSafeErrorState(result.error);
+    this.status = 'ERROR';
+    this.publish(this.buildState());
+  }
+
   private beginCommand(): number {
     this.commandToken += 1;
     this.confirmingDelete = false;
     this.pendingPlainHttpRefresh = false;
+    this.clearPendingPlainHttpEdit();
     this.httpConfirmationHost = undefined;
     this.fallbackError = undefined;
     this.status = 'SUBMITTING';
@@ -290,18 +449,40 @@ export class ProfileDetailViewModel {
     this.publish(this.buildState());
   }
 
+  private clearEditDrafts(): void {
+    this.editNameDraft = '';
+    this.editUrlDraft = '';
+    this.editNameIssue = undefined;
+    this.editUrlIssue = undefined;
+  }
+
+  private clearPendingPlainHttpEdit(): void {
+    this.pendingPlainHttpEdit = undefined;
+    this.pendingPlainHttpEditName = undefined;
+  }
+
+  private clearStaleEditCommandError(): void {
+    if (this.status !== 'SUBMITTING') {
+      this.fallbackError = undefined;
+      if (this.status === 'ERROR') {
+        this.status = 'IDLE';
+      }
+    }
+  }
+
   private buildState(): ProfileDetailViewState {
     const snapshot: ProfileApplicationSnapshot = this.application.current();
     const profile: ProfileApplicationProfileSnapshot | undefined = this.findProfile(snapshot);
     const profileState: ProfileDetailProfileState | undefined = profile === undefined
       ? undefined
       : createProfileDetailProfileState(profile);
-    const actionsLocked: boolean = areProfileActionsLocked(snapshot.runtime.state);
     const sourceRepairRequired: boolean = profile?.sourceRepairRequired === true;
-    const canEnable: boolean = !actionsLocked && isProfileStartEligible(profile);
-    const canRefresh: boolean = !actionsLocked && profile !== undefined && !sourceRepairRequired;
-    const canDelete: boolean = !actionsLocked && profile !== undefined;
-    const canReplaceSubscriptionUrl: boolean = !actionsLocked && sourceRepairRequired;
+    const sourceRetryAvailable: boolean = profile?.lastError?.code === 'SOURCE_DECRYPT_FAILED';
+    const canEnable: boolean = isProfileStartEligible(profile);
+    const canRefresh: boolean = profile !== undefined &&
+      (!sourceRepairRequired || sourceRetryAvailable);
+    const canDelete: boolean = profile !== undefined;
+    const canReplaceSubscriptionUrl: boolean = sourceRepairRequired;
     const error: SafeErrorState | undefined = resolveDetailError(snapshot, profile, this.fallbackError);
     return createProfileDetailViewState(
       this.status,
@@ -310,10 +491,14 @@ export class ProfileDetailViewModel {
       canRefresh,
       canDelete,
       canReplaceSubscriptionUrl,
+      sourceRetryAvailable,
       sourceRepairRequired,
       this.confirmingDelete,
       this.httpConfirmationHost,
-      error
+      error,
+      this.editing,
+      this.editNameIssue,
+      this.editUrlIssue
     );
   }
 
@@ -414,6 +599,10 @@ function resolveRefreshStatus(result: RefreshProfileResult): 'IDLE' | 'COMPLETED
   return result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED';
 }
 
-function resolveManageStatus(result: ManageEnableResult | ManageReplaceResult | ManageDeleteResult): 'COMPLETED' | 'ERROR' {
+function resolveManageStatus(result: ManageEnableResult | ManageDeleteResult): 'COMPLETED' | 'ERROR' {
   return result.kind === 'FAILED' ? 'ERROR' : 'COMPLETED';
+}
+
+function normalizeRequiredName(rawName: string): string {
+  return rawName.trim();
 }

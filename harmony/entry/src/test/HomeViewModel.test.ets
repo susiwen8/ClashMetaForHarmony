@@ -1,10 +1,16 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  createOneClickVpnOperationSnapshot,
   createVpnFailure,
+  type HomeProxySelectionSummary,
+  type OneClickVpnOperationSnapshot,
   createVpnRuntimeSnapshot,
   createVpnStartRequest,
   type ProfileApplicationProfileSnapshot,
+  type CoreRuntimeMode,
+  type VpnRpcRuntimeModeClientPort,
   type VpnFailure,
+  type VpnRuntimeEvent,
   type VpnRuntimeSnapshot
 } from '@cmfa/shared';
 import type { HomeViewState } from '../main/ets/presentation/PresentationModels';
@@ -14,6 +20,7 @@ import {
   createApplicationSnapshot,
   createProfileSnapshot,
   createSafeError,
+  DeferredResult,
   PresentationTestApplication
 } from './fakes/PresentationFakes';
 
@@ -43,8 +50,23 @@ function assertForbiddenPresentationData(serialized: string): void {
   expect(serialized.includes('proxies:')).assertFalse();
 }
 
+function assertVpnOnlyHomeState(state: HomeViewState): void {
+  const serialized: string = JSON.stringify(state);
+  expect(serialized.includes('localProxy')).assertFalse();
+  expect(serialized.includes('127.0.0.1:7890')).assertFalse();
+  expect(serialized.includes('127.0.0.1:7891')).assertFalse();
+  expect(serialized.includes('/tmp/cmfa/runtime')).assertFalse();
+}
+
 function joinPieces(pieces: string[]): string {
   return pieces.join('');
+}
+
+function createHomeProxySelectionSummary(groupName: string, nodeName: string): HomeProxySelectionSummary {
+  return {
+    groupName,
+    nodeName
+  };
 }
 
 function buildSensitiveDocumentsPath(fileName: string): string {
@@ -61,6 +83,29 @@ function buildSensitiveTokenDetail(fileName: string): string {
 
 function buildSensitivePemPath(): string {
   return buildSensitiveDocumentsPath(joinPieces(['private', '.pe', 'm']));
+}
+
+async function flushPromises(turns: number = 6): Promise<void> {
+  for (let index: number = 0; index < turns; index += 1) {
+    await Promise.resolve();
+  }
+}
+
+class FakeRuntimeModeClient implements VpnRpcRuntimeModeClientPort {
+  mode: CoreRuntimeMode = 'RULE';
+  readonly queryCalls: string[] = [];
+  readonly setCalls: CoreRuntimeMode[] = [];
+
+  async queryMode(): Promise<CoreRuntimeMode> {
+    this.queryCalls.push('query');
+    return this.mode;
+  }
+
+  async setMode(mode: CoreRuntimeMode): Promise<CoreRuntimeMode> {
+    this.setCalls.push(mode);
+    this.mode = mode;
+    return mode;
+  }
 }
 
 class ExpectedVpnErrorCase {
@@ -109,6 +154,25 @@ class VpnActiveHandleSummaryValue {
   attached: boolean = true;
 }
 
+class RecordingVpnSessionRegistry extends VpnSessionRegistry {
+  private listenerCountValue: number = 0;
+
+  subscribe(listener: (event: VpnRuntimeEvent) => void): number {
+    const subscriptionId = super.subscribe(listener);
+    this.listenerCountValue += 1;
+    return subscriptionId;
+  }
+
+  unsubscribe(subscriptionId: number): void {
+    super.unsubscribe(subscriptionId);
+    this.listenerCountValue = Math.max(0, this.listenerCountValue - 1);
+  }
+
+  listenerCount(): number {
+    return this.listenerCountValue;
+  }
+}
+
 class ImmediateVpnStartErrorCase {
   result: RejectedVpnStartResultValue | FailedVpnStartResultValue;
   expectedResource: string;
@@ -121,47 +185,70 @@ class ImmediateVpnStartErrorCase {
 
 export default function homeViewModelTestsuite() {
   describe('HomeViewModelTest', () => {
-    it('mapsInitializationRuntimeAndPrimaryActionAcrossActiveProfileStates', 0, () => {
+    it('loadsAndSwitchesTheCurrentSessionModeOnlyWhileVpnIsRunning', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const runtimeMode = new FakeRuntimeModeClient();
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'mode-session'));
+      const viewModel = new HomeViewModel(application, vpnRegistry, runtimeMode);
+
+      await flushPromises();
+      expect(viewModel.current().runtimeMode.available).assertTrue();
+      expect(viewModel.current().runtimeMode.mode).assertEqual('RULE');
+      expect(runtimeMode.queryCalls.length).assertEqual(1);
+
+      await viewModel.requestRuntimeMode('GLOBAL');
+      expect(runtimeMode.setCalls.join(',')).assertEqual('GLOBAL');
+      expect(viewModel.current().runtimeMode.mode).assertEqual('GLOBAL');
+      expect(viewModel.current().runtimeMode.pending).assertFalse();
+
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('STOPPED', null, 'mode-session'));
+      await viewModel.requestRuntimeMode('DIRECT');
+      expect(viewModel.current().runtimeMode.available).assertFalse();
+      expect(runtimeMode.setCalls.join(',')).assertEqual('GLOBAL');
+      viewModel.dispose();
+    });
+
+    it('mapsInitializationAndVpnOnlyHomeStateAcrossActiveProfileStates', 0, () => {
       const application = new PresentationTestApplication(createApplicationSnapshot('LOADING', [], undefined, 'STOPPED'));
       const vpnRegistry = createTestVpnRegistry();
       const viewModel = new HomeViewModel(application, vpnRegistry);
 
       expect(viewModel.current().initialization).assertEqual('LOADING');
-      expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('DISABLED');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
       expect(viewModel.current().initialization).assertEqual('READY');
-      expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('DISABLED');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED'));
-      expect(viewModel.current().localProxy.action).assertEqual('START');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
       expect(viewModel.current().activeProfile?.sourceDisplay).assertEqual('mirror.example.com');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('INVALID', false)], 'active', 'STOPPED'));
       expect(viewModel.current().activeProfile?.availability).assertEqual('INVALID');
-      expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('DISABLED');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('UPDATE_FAILED_USING_VALID', true)], 'active', 'STOPPED'));
-      expect(viewModel.current().localProxy.action).assertEqual('START');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STARTING'));
-      expect(viewModel.current().localProxy.status).assertEqual('STARTING');
-      expect(viewModel.current().localProxy.action).assertEqual('BUSY');
-      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('BUSY');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'RUNNING', {
         httpAddress: '127.0.0.1:7890',
         socksAddress: '127.0.0.1:7891'
       }));
-      expect(viewModel.current().localProxy.status).assertEqual('RUNNING');
-      expect(viewModel.current().localProxy.action).assertEqual('STOP');
-      expect(viewModel.current().localProxy.httpAddress).assertEqual('127.0.0.1:7890');
-      expect(viewModel.current().localProxy.socksAddress).assertEqual('127.0.0.1:7891');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      assertVpnOnlyHomeState(viewModel.current());
 
       emitVpnSnapshot(vpnRegistry, createVpnRuntimeSnapshot({
         state: 'RUNNING',
@@ -195,18 +282,19 @@ export default function homeViewModelTestsuite() {
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
       expect(viewModel.current().vpnGlobalCapture.ipv4Enabled).assertTrue();
       expect(viewModel.current().vpnGlobalCapture.ipv6Enabled).assertTrue();
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPING'));
-      expect(viewModel.current().localProxy.status).assertEqual('STOPPING');
-      expect(viewModel.current().localProxy.action).assertEqual('BUSY');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
+      assertVpnOnlyHomeState(viewModel.current());
 
       application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'ERROR', {
         runtimeError: createSafeError('CMFA_RUNTIME', 'RUNTIME_START', 'core error at /tmp/cmfa/runtime/secret.log'),
         latestRuntimeError: 'fatal at /tmp/cmfa/runtime/secret.log'
       }));
-      expect(viewModel.current().localProxy.status).assertEqual('ERROR');
-      expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
-      expect(viewModel.current().localProxy.error?.technicalDetail.includes('/tmp/cmfa/runtime')).assertFalse();
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
+      expect(viewModel.current().vpnGlobalCapture.error === undefined).assertTrue();
+      assertVpnOnlyHomeState(viewModel.current());
 
       emitVpnSnapshot(vpnRegistry, createVpnRuntimeSnapshot({
         state: 'RECOVERING',
@@ -227,39 +315,141 @@ export default function homeViewModelTestsuite() {
         lastFailure: createVpnFailure('VPN_BACKGROUND_TASK_FAILED', 'raw business error')
       }));
       expect(viewModel.current().vpnGlobalCapture.error?.userMessageResource).assertEqual('error.vpn.background_task_failed');
+      assertVpnOnlyHomeState(viewModel.current());
     });
 
-    it('primaryActionUsesRuntimeAddressesAndCoalescesRepeatedClicks', 0, async () => {
+    it('disablesVpnStartAndProxyManagementWithoutCurrentRevision', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', false)], 'active', 'STOPPED')
+      );
+      const viewModel = new HomeViewModel(application, createTestVpnRegistry());
+
+      const state: HomeViewState = viewModel.current();
+      expect(state.activeProfile?.availability).assertEqual('VALID');
+      expect(state.vpnGlobalCapture.action).assertEqual('DISABLED');
+      expect(state.canManageProxies).assertFalse();
+      assertVpnOnlyHomeState(state);
+
+      viewModel.dispose();
+    });
+
+    it('blocksProxyManagementWhileRuntimeMirrorHydrationIsRecoveringButRestoresItForStoppedAndRunningStates', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('STOPPED');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      expect(viewModel.current().canManageProxies).assertTrue();
+
+      vpnRegistry.beginRuntimeMirrorHydration();
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('RECOVERING');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('BUSY');
+      expect(viewModel.current().canManageProxies).assertFalse();
+
+      vpnRegistry.completeRuntimeMirrorHydrationUnavailable();
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('STOPPED');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      expect(viewModel.current().canManageProxies).assertTrue();
+
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING'));
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('RUNNING');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
+      expect(viewModel.current().canManageProxies).assertTrue();
+
+      viewModel.dispose();
+    });
+
+    it('keepsStopAvailableForActiveVpnErrorAfterMirrorReplayFailureButStillAllowsRetryWhenNoActiveRequestRemains', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const request = createVpnStartRequest('active', 'version-1', 'session-replay');
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+
+      vpnRegistry.beginPending(request);
+      expect(vpnRegistry.hydrateFailure(createVpnFailure('VPN_PROXY_REPLAY_FAILED', 'mirror retry exhausted'), request))
+        .assertTrue();
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('ERROR');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
+      expect(viewModel.current().canManageProxies).assertFalse();
+
+      expect(vpnRegistry.hydrateFailure(createVpnFailure('VPN_PROXY_REPLAY_FAILED', 'mirror retry exhausted'), request, true))
+        .assertTrue();
+
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('ERROR');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      expect(viewModel.current().canManageProxies).assertFalse();
+
+      viewModel.dispose();
+    });
+
+    it('vpnActionCoalescesRepeatedClicksAndIgnoresLegacyLocalRuntimeAddresses', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot('READY', [createActiveProfile('VALID', true, 'https://profile.example.com/config.yaml')], 'active', 'STOPPED', {
-          httpAddress: '',
-          socksAddress: '',
+          httpAddress: '127.0.0.1:7890',
+          socksAddress: '127.0.0.1:7891',
           latestRuntimeError: 'https://ignored.example.com/full/path.yaml'
         })
       );
       const vpnRegistry = createTestVpnRegistry();
-      const deferred = application.deferStart();
+      application.queueVpnStartResult(new Promise<RejectedVpnStartResultValue>(() => {
+      }));
       const viewModel = new HomeViewModel(application, vpnRegistry);
 
-      const first = viewModel.requestLocalAction();
-      const second = viewModel.requestLocalAction();
+      void viewModel.requestVpnAction();
+      void viewModel.requestVpnAction();
 
-      expect(viewModel.current().localProxy.action).assertEqual('BUSY');
-      expect(application.commandLog.join('>')).assertEqual('startLocal');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('BUSY');
+      expect(application.commandLog.join('>')).assertEqual('startVpnGlobalCapture');
+      assertVpnOnlyHomeState(viewModel.current());
+      expect(viewModel.current().activeProfile?.sourceDisplay).assertEqual('profile.example.com');
 
-      application.emitSnapshot(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'RUNNING', {
-        httpAddress: '127.0.0.1:7890',
-        socksAddress: '127.0.0.1:7891'
-      }));
-      deferred.resolve();
-      await first;
-      await second;
+      const startedSnapshot = createVpnRuntimeSnapshot({
+        state: 'RUNNING',
+        activeRequest: {
+          profileId: 'active',
+          versionId: 'version-1',
+          sessionId: 'session-1'
+        },
+        activeHandle: {
+          sessionId: 'session-1',
+          attached: true
+        },
+        captureConfig: {
+          addresses: ['10.111.222.1/30', 'fd00:111:222::1/126'],
+          routes: ['0.0.0.0/0', '::/0'],
+          dnsServers: ['10.111.222.2', 'fd00:111:222::2'],
+          mtu: 1500,
+          ipv4: true,
+          ipv6: true,
+          isBlocking: false,
+          blockedApplications: ['com.github.kr328.clash.harmony'],
+          trustedApplications: []
+        },
+        tunSnapshot: null,
+        notificationActive: true,
+        recoveryAttempt: 0,
+        scheduledRetryDelayMs: null,
+        lastFailure: null
+      });
+      emitVpnSnapshot(vpnRegistry, startedSnapshot);
 
       const state: HomeViewState = viewModel.current();
-      expect(state.localProxy.httpAddress).assertEqual('127.0.0.1:7890');
-      expect(state.localProxy.socksAddress).assertEqual('127.0.0.1:7891');
-      expect(state.activeProfile?.sourceDisplay).assertEqual('mirror.example.com');
+      expect(state.activeProfile?.sourceDisplay).assertEqual('profile.example.com');
+      expect(state.vpnGlobalCapture.status).assertEqual('RUNNING');
+      expect(state.vpnGlobalCapture.ipv4Enabled).assertTrue();
+      expect(state.vpnGlobalCapture.ipv6Enabled).assertTrue();
+      assertVpnOnlyHomeState(state);
       assertForbiddenPresentationData(JSON.stringify(state));
+      viewModel.dispose();
     });
 
     it('disposeUnsubscribesFromApplication', 0, () => {
@@ -294,31 +484,7 @@ export default function homeViewModelTestsuite() {
       expect(application.commandLog.includes('stopVpnGlobalCapture')).assertFalse();
     });
 
-    it('failsClosedForLocalStartWhileVpnOwnsTheNetworkPath', 0, async () => {
-      const blockedStates: Array<'AWAITING_CONSENT' | 'RUNNING' | 'RECOVERING' | 'STOPPING'> = [
-        'AWAITING_CONSENT',
-        'RUNNING',
-        'RECOVERING',
-        'STOPPING'
-      ];
-
-      for (let index = 0; index < blockedStates.length; index += 1) {
-        const state = blockedStates[index];
-        const application = new PresentationTestApplication(
-          createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
-        );
-        const vpnRegistry = createTestVpnRegistry();
-        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot(state));
-        const viewModel = new HomeViewModel(application, vpnRegistry);
-
-        expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
-        await viewModel.requestLocalAction();
-        expect(application.commandLog.includes('startLocal')).assertFalse();
-        viewModel.dispose();
-      }
-    });
-
-    it('failsClosedForLocalStartWhenRuntimeIsErroredAndVpnIsStopped', 0, async () => {
+    it('allowsVpnStartEvenWhenLegacyLocalRuntimeSnapshotIsErrored', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'ERROR', {
           runtimeError: createSafeError('CMFA_RUNTIME', 'RUNTIME_START', buildSensitiveTokenDetail('runtime.log')),
@@ -327,12 +493,12 @@ export default function homeViewModelTestsuite() {
       );
       const viewModel = new HomeViewModel(application, createTestVpnRegistry());
 
-      expect(viewModel.current().localProxy.status).assertEqual('ERROR');
-      expect(viewModel.current().localProxy.action).assertEqual('DISABLED');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
+      assertVpnOnlyHomeState(viewModel.current());
 
-      await viewModel.requestLocalAction();
+      await viewModel.requestVpnAction();
 
-      expect(application.commandLog.includes('startLocal')).assertFalse();
+      expect(application.commandLog.includes('startVpnGlobalCapture')).assertTrue();
       viewModel.dispose();
     });
 
@@ -377,25 +543,6 @@ export default function homeViewModelTestsuite() {
         expect(error?.technicalDetail.includes(`token=${buildSecretTokenValue()}`) ?? false).assertFalse();
         expect(error?.technicalDetail.includes('user:pw') ?? false).assertFalse();
       }
-
-      const localStopRequiredApplication = new PresentationTestApplication(
-        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'RUNNING')
-      );
-      localStopRequiredApplication.queueVpnStartResult(
-        new RejectedVpnStartResultValue(
-          buildVpnSnapshot('STOPPED'),
-          createVpnFailure('VPN_LOCAL_STOP_REQUIRED', buildSensitiveTokenDetail('token.txt'))
-        )
-      );
-      const localStopRequiredViewModel = new HomeViewModel(localStopRequiredApplication, createTestVpnRegistry());
-
-      await localStopRequiredViewModel.requestVpnAction();
-
-      const localStopRequiredError = localStopRequiredViewModel.current().vpnGlobalCapture.error;
-      expect(localStopRequiredError?.userMessageResource ?? '').assertEqual('error.vpn.requires_local_stop');
-      expect(localStopRequiredError?.technicalDetail.includes(joinPieces(['/Us', 'ers'])) ?? false).assertFalse();
-      expect(localStopRequiredError?.technicalDetail.includes(`token=${buildSecretTokenValue()}`) ?? false).assertFalse();
-      localStopRequiredViewModel.dispose();
       viewModel.dispose();
     });
 
@@ -450,7 +597,7 @@ export default function homeViewModelTestsuite() {
       viewModel.dispose();
     });
 
-    it('separatesLocalProxyAndVpnGlobalCaptureStateAndStopsLocalBeforeVpnStart', 0, async () => {
+    it('startsVpnEvenWhenLegacyLocalRuntimeSnapshotIsRunning', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'RUNNING', {
           httpAddress: '127.0.0.1:7890',
@@ -460,8 +607,7 @@ export default function homeViewModelTestsuite() {
       const vpnRegistry = createTestVpnRegistry();
       const viewModel = new HomeViewModel(application, vpnRegistry);
 
-      expect(viewModel.current().localProxy.status).assertEqual('RUNNING');
-      expect(viewModel.current().localProxy.action).assertEqual('STOP');
+      assertVpnOnlyHomeState(viewModel.current());
       expect(viewModel.current().vpnGlobalCapture.status).assertEqual('STOPPED');
       expect(viewModel.current().vpnGlobalCapture.action).assertEqual('START');
 
@@ -469,11 +615,279 @@ export default function homeViewModelTestsuite() {
 
       expect(application.commandLog.join('>')).assertEqual('startVpnGlobalCapture');
     });
+
+    it('publishesSelectedProxySummaryAfterAsyncQueryWhenConstructedWithReadyRunningVpn', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const deferred = new DeferredResult<HomeProxySelectionSummary | undefined>();
+      const published: HomeViewState[] = [];
+      application.queueHomeProxySelectionResult(deferred.promise);
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-home-1'));
+
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+      viewModel.subscribe((state: HomeViewState): void => {
+        published.push(state);
+      });
+
+      expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+      expect(application.commandLog.join('>')).assertEqual('queryHomeProxySelection');
+
+      deferred.resolve(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      await flushPromises();
+
+      const state: HomeViewState = viewModel.current();
+      expect(state.selectedProxyGroupName).assertEqual('Primary');
+      expect(state.selectedProxyNodeName).assertEqual('Tokyo');
+      expect(published.some((publishedState: HomeViewState) => {
+        return publishedState.selectedProxyGroupName === 'Primary' && publishedState.selectedProxyNodeName === 'Tokyo';
+      })).assertTrue();
+      viewModel.dispose();
+    });
+
+    it('clearsSelectedProxySummaryImmediatelyForNonRunningVpnStates', 0, async () => {
+      const clearedStates: Array<'STOPPED' | 'AWAITING_CONSENT' | 'STARTING' | 'RECOVERING' | 'STOPPING' | 'ERROR'> = [
+        'STOPPED',
+        'AWAITING_CONSENT',
+        'STARTING',
+        'RECOVERING',
+        'STOPPING',
+        'ERROR'
+      ];
+
+      for (let index: number = 0; index < clearedStates.length; index += 1) {
+        const sessionId = `running-${index}`;
+        const application = new PresentationTestApplication(
+          createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+        );
+        const vpnRegistry = createTestVpnRegistry();
+        application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, sessionId));
+        const viewModel = new HomeViewModel(application, vpnRegistry);
+        await flushPromises();
+
+        expect(viewModel.current().selectedProxyGroupName).assertEqual('Primary');
+        expect(viewModel.current().selectedProxyNodeName).assertEqual('Tokyo');
+
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot(clearedStates[index], null, sessionId));
+
+        expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+        expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+        viewModel.dispose();
+      }
+    });
+
+    it('clearsSelectedProxySummaryWhenQueryIsUnavailableOrThrowsWithoutCreatingNewErrorCard', 0, async () => {
+      const unavailableCases: Array<Promise<HomeProxySelectionSummary | undefined> | undefined> = [
+        undefined,
+        Promise.reject(new Error('queryHomeProxySelection failed'))
+      ];
+
+      for (let index: number = 0; index < unavailableCases.length; index += 1) {
+        const application = new PresentationTestApplication(
+          createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+        );
+        const vpnRegistry = createTestVpnRegistry();
+        application.queueHomeProxySelectionResult(unavailableCases[index]);
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, `missing-${index}`));
+        const viewModel = new HomeViewModel(application, vpnRegistry);
+
+        await flushPromises();
+
+        const state: HomeViewState = viewModel.current();
+        expect(state.selectedProxyGroupName).assertEqual('');
+        expect(state.selectedProxyNodeName).assertEqual('');
+        expect(state.error === undefined).assertTrue();
+        viewModel.dispose();
+      }
+    });
+
+    it('retriesSelectionQueryOnOrdinaryRunningEventAfterSameSessionUndefinedOrThrownResult', 0, async () => {
+      const unavailableCases: Array<HomeProxySelectionSummary | Promise<HomeProxySelectionSummary | undefined> | undefined> = [
+        undefined,
+        Promise.reject(new Error('queryHomeProxySelection failed'))
+      ];
+
+      for (let index: number = 0; index < unavailableCases.length; index += 1) {
+        const sessionId = `retry-session-${index}`;
+        const application = new PresentationTestApplication(
+          createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+        );
+        const vpnRegistry = createTestVpnRegistry();
+        application.queueHomeProxySelectionResult(unavailableCases[index]);
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, sessionId));
+        const viewModel = new HomeViewModel(application, vpnRegistry);
+
+        await flushPromises();
+
+        expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+        expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+        expect(application.commandLog.join('>')).assertEqual('queryHomeProxySelection');
+
+        application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Retry Winner'));
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, sessionId));
+        await flushPromises();
+
+        expect(application.commandLog.join('>')).assertEqual('queryHomeProxySelection>queryHomeProxySelection');
+        expect(viewModel.current().selectedProxyGroupName).assertEqual('Primary');
+        expect(viewModel.current().selectedProxyNodeName).assertEqual('Retry Winner');
+        viewModel.dispose();
+      }
+    });
+
+    it('serializesOnlySafeSelectedProxyDisplayFields', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED', {
+          httpAddress: '127.0.0.1:7890'
+        })
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-sensitive-home'));
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+
+      await flushPromises();
+
+      const serialized: string = JSON.stringify(viewModel.current());
+      expect(serialized.includes('"selectedProxyGroupName":"Primary"')).assertTrue();
+      expect(serialized.includes('"selectedProxyNodeName":"Tokyo"')).assertTrue();
+      expect(serialized.includes('session-sensitive-home')).assertFalse();
+      expect(serialized.includes('Gateway/Shared/Terminal')).assertFalse();
+      expect(serialized.includes('revision-secret')).assertFalse();
+      expect(serialized.includes(`token=${buildSecretTokenValue()}`)).assertFalse();
+      expect(serialized.includes('127.0.0.1:7890')).assertFalse();
+      expect(serialized.includes('listener.local:8080')).assertFalse();
+      viewModel.dispose();
+    });
+
+    it('ignoresStaleSelectionResultWhenASlowerPreviousSessionCompletesAfterSessionBPublishes', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const sessionAResult = new DeferredResult<HomeProxySelectionSummary | undefined>();
+      application.queueHomeProxySelectionResult(sessionAResult.promise);
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-A'));
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+
+      application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Osaka'));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('STOPPED', null, 'session-A'));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-B'));
+      await flushPromises();
+
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('Osaka');
+
+      sessionAResult.resolve(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      await flushPromises();
+
+      expect(viewModel.current().selectedProxyGroupName).assertEqual('Primary');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('Osaka');
+      viewModel.dispose();
+    });
+
+    it('keepsSelectedProxySummaryClearedWhenStoppedBeforeSlowQueryCompletes', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const deferred = new DeferredResult<HomeProxySelectionSummary | undefined>();
+      application.queueHomeProxySelectionResult(deferred.promise);
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-stop-late'));
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('STOPPED', null, 'session-stop-late'));
+      expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+
+      deferred.resolve(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      await flushPromises();
+
+      expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+      viewModel.dispose();
+    });
+
+    it('disposePreventsPendingSelectionPublishAndUnsubscribesApplicationVpnAndOneClickListeners', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const deferred = new DeferredResult<HomeProxySelectionSummary | undefined>();
+      const published: HomeViewState[] = [];
+      application.queueHomeProxySelectionResult(deferred.promise);
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-dispose'));
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+      viewModel.subscribe((state: HomeViewState): void => {
+        published.push(state);
+      });
+
+      expect(application.listenerCount()).assertEqual(1);
+      expect(application.oneClickListenerCount()).assertEqual(1);
+      expect(vpnRegistry.listenerCount()).assertEqual(1);
+
+      viewModel.dispose();
+
+      expect(application.listenerCount()).assertEqual(0);
+      expect(application.oneClickListenerCount()).assertEqual(0);
+      expect(vpnRegistry.listenerCount()).assertEqual(0);
+
+      deferred.resolve(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      application.emitOneClickVpnOperation(createOneClickVpnOperationSnapshot('IDLE', false, 'SUCCEEDED'));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('STOPPED', null, 'session-dispose'));
+      await flushPromises();
+
+      expect(published.length).assertEqual(0);
+      expect(viewModel.current().selectedProxyGroupName).assertEqual('');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('');
+    });
+
+    it('refreshesSelectedProxySummaryOnlyAfterSucceededIdleOneClickOperation', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const published: HomeViewState[] = [];
+      application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Tokyo'));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'session-one-click'));
+      const viewModel = new HomeViewModel(application, vpnRegistry);
+      viewModel.subscribe((state: HomeViewState): void => {
+        published.push(state);
+      });
+
+      await flushPromises();
+      expect(application.oneClickListenerCount()).assertEqual(1);
+
+      const nonRefreshSnapshots: OneClickVpnOperationSnapshot[] = [
+        createOneClickVpnOperationSnapshot('IDLE', false, 'FAILED'),
+        createOneClickVpnOperationSnapshot('IDLE', false, 'NONE'),
+        createOneClickVpnOperationSnapshot('SAVING_SELECTION', true, 'NONE'),
+        createOneClickVpnOperationSnapshot('CONFIRMING_SELECTION', true, 'NONE')
+      ];
+      for (let index: number = 0; index < nonRefreshSnapshots.length; index += 1) {
+        application.emitOneClickVpnOperation(nonRefreshSnapshots[index]);
+      }
+
+      expect(application.commandLog.join('>')).assertEqual('queryHomeProxySelection');
+
+      application.queueHomeProxySelectionResult(createHomeProxySelectionSummary('Primary', 'Osaka'));
+      application.emitOneClickVpnOperation(createOneClickVpnOperationSnapshot('IDLE', false, 'SUCCEEDED'));
+      await flushPromises();
+
+      expect(application.commandLog.join('>')).assertEqual('queryHomeProxySelection>queryHomeProxySelection');
+      expect(viewModel.current().selectedProxyNodeName).assertEqual('Osaka');
+      expect(published.some((publishedState: HomeViewState) => {
+        return publishedState.selectedProxyGroupName === 'Primary' && publishedState.selectedProxyNodeName === 'Osaka';
+      })).assertTrue();
+      viewModel.dispose();
+    });
+
   });
 }
 
-function createTestVpnRegistry(): VpnSessionRegistry {
-  return new VpnSessionRegistry();
+function createTestVpnRegistry(): RecordingVpnSessionRegistry {
+  return new RecordingVpnSessionRegistry();
 }
 
 function emitVpnSnapshot(

@@ -5,6 +5,7 @@ import os from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { CORE_EXPORTS, RAW_PROXY_EXPORTS } from '../../tools/lib/native-provenance.mjs';
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
@@ -16,16 +17,6 @@ const DIGEST_A = 'a'.repeat(64);
 const DIGEST_B = 'b'.repeat(64);
 const DIGEST_C = 'c'.repeat(64);
 const DIGEST_D = 'd'.repeat(64);
-const CORE_EXPORTS = [
-  'cmfa_mihomo_core_build_info_json_cstr_v1',
-  'cmfa_mihomo_core_version_cstr_v1',
-  'cmfa_mihomo_probe_cancel_v1',
-  'cmfa_mihomo_probe_https_v1',
-  'cmfa_mihomo_runtime_state_v1',
-  'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
-];
 const REQUIRED_CHECKS = [
   'nativeHello',
   'coreVersion',
@@ -177,7 +168,9 @@ test('Task 8 shared boundary, composition, debug page, and self-test wiring are 
       nodeApiOwners.push(path.relative(REPO_ROOT, filePath));
     }
   }
-  assert.deepEqual(nodeApiOwners, ['harmony/core/src/main/ets/CoreNativeAdapter.ets']);
+  assert.deepEqual(nodeApiOwners, [
+    'harmony/core/src/main/ets/CoreNativeAdapter.ets'
+  ]);
   assert.match(sources.adapter, /implements CoreService/u);
   assert.doesNotMatch(sources.adapter, /\bdlopen\b|\bdlsym\b/u);
   assert.match(sources.coreIndex, /createCoreService/u);
@@ -259,6 +252,12 @@ test('Phase 1 merged pass proof requires fresh app evidence and exact native has
     ['core digest missing', (proof) => { proof.native.core.sha256 = null; }, /native\.core\.sha256/u],
     ['wrong architecture', (proof) => { proof.native.addon.elfMachine = 'x86_64'; }, /AArch64/u],
     ['old conflicting export admitted', (proof) => { proof.native.core.requiredExports = ['cmfa_core_version']; }, /cmfa_mihomo_core_build_info_json_cstr_v1|cmfa_mihomo_core_version_cstr_v1/u],
+    ['missing raw proxy export admitted', (proof) => {
+      proof.native.core.requiredExports = CORE_EXPORTS.filter((symbol) => symbol !== RAW_PROXY_EXPORTS[1]);
+    }, /cmfa_mihomo_proxy_group_v1/u],
+    ['extra raw proxy export admitted', (proof) => {
+      proof.native.core.requiredExports = [...CORE_EXPORTS, 'cmfa_mihomo_proxy_shadow_v1'];
+    }, /cmfa_mihomo_proxy_groups_v1|cmfa_mihomo_proxy_shadow_v1/u],
     ['required self-test check missing', (proof) => { proof.checks.pop(); }, /unsubscribeSilence/u],
     ['typed error absent', (proof) => { proof.app.lastError = null; }, /typed CoreError/u]
   ];
@@ -394,26 +393,25 @@ test('Phase 1 runner records a simulator target as incomplete rather than a devi
   }
 });
 
-test('Phase 1 command builders target one device, pass a JSON Want payload, and use bundle-scoped recv', () => {
+test('Phase 1 command builders target one device, pass typed HarmonyOS 6 Want parameters, and use bundle-scoped recv', () => {
   assert.ok(runner, 'Phase 1 runner module must exist');
   const startedAt = '2026-08-05T01:00:00.000Z';
   const launchArgs = runner.buildPhase1LaunchArgs('device-raw-id', EXPECTED_RUN_ID, startedAt);
   assert.deepEqual(launchArgs.slice(0, 2), ['-t', 'device-raw-id']);
   assert.deepEqual(launchArgs.slice(2, 7), ['shell', 'aa', 'start', '-a', 'EntryAbility']);
   assert.ok(launchArgs.includes('-b'));
-  assert.ok(launchArgs.includes('-p'));
-  const payload = JSON.parse(launchArgs[launchArgs.indexOf('-p') + 1]);
-  assert.deepEqual(payload, {
-    'cmfa.phase1.selfTest': true,
-    'cmfa.phase1.runId': EXPECTED_RUN_ID,
-    'cmfa.phase1.runnerStartedAt': startedAt
-  });
+  assert.equal(launchArgs.includes('-p'), false);
+  assert.deepEqual(launchArgs.slice(9), [
+    '--pb', 'cmfa.phase1.selfTest', 'true',
+    '--ps', 'cmfa.phase1.runId', EXPECTED_RUN_ID,
+    '--ps', 'cmfa.phase1.runnerStartedAt', startedAt
+  ]);
 
   const pullArgs = runner.buildPhase1PullArgs('device-raw-id', '/tmp/local-proof.json');
   assert.deepEqual(pullArgs, [
     '-t', 'device-raw-id',
     'file', 'recv', '-b', 'com.github.kr328.clash.harmony',
-    '/data/storage/el2/base/files/phase1-device-proof.json',
+    '/data/storage/el2/base/haps/entry/files/phase1-device-proof.json',
     '/tmp/local-proof.json'
   ]);
 });

@@ -1,16 +1,22 @@
 import type { HomeViewState } from '../presentation/PresentationModels';
 import { RuntimeStatusCard } from '../components/RuntimeStatusCard';
+import { RuntimeModeCard } from '../components/RuntimeModeCard';
+import type { CoreRuntimeMode } from '@cmfa/shared';
 import { SafeErrorCard, createEmptySafeErrorState } from '../components/SafeErrorCard';
 
 @Component
 export struct HomePage {
   @Prop state: HomeViewState;
+  @Link selectedProxyGroupName: string;
+  @Link selectedProxyNodeName: string;
   @Prop compactLayout: boolean;
   onManageProfiles: () => void = () => {
   };
-  onLocalAction: () => void = () => {
-  };
   onVpnAction: () => void = () => {
+  };
+  onRuntimeModeSelect: (mode: CoreRuntimeMode) => void = (_mode: CoreRuntimeMode): void => {
+  };
+  onOpenLogs: () => void = (): void => {
   };
 
   build() {
@@ -36,31 +42,28 @@ export struct HomePage {
           buildProfileCard(this.state, this.onManageProfiles)
 
           RuntimeStatusCard({
-            kind: 'LOCAL',
-            localState: this.state.localProxy
+            vpnState: this.state.vpnGlobalCapture,
+            selectedProxyGroupName: $selectedProxyGroupName,
+            selectedProxyNodeName: $selectedProxyNodeName
           })
 
-          Button(resolveActionLabel('LOCAL', this.state))
-            .id('home.local.action')
+          RuntimeModeCard({
+            state: this.state.runtimeMode,
+            onSelect: this.onRuntimeModeSelect
+          })
+
+          Button($r('app.string.home_logs_open'))
+            .id('home.logs.open')
             .width('100%')
-            .enabled(this.state.localProxy.action === 'START' || this.state.localProxy.action === 'STOP')
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })
-            .backgroundColor(resolveActionBackground(this.state.localProxy.action))
-            .fontColor(resolveActionForeground(this.state.localProxy.action))
+            .backgroundColor($r('app.color.color_surface_card'))
+            .fontColor($r('app.color.color_action_primary'))
+            .border({ width: 1, color: $r('app.color.color_border_subtle') })
             .onClick(() => {
-              this.onLocalAction();
+              this.onOpenLogs();
             })
 
-          if (this.state.localProxy.error !== undefined) {
-            SafeErrorCard({ error: this.state.localProxy.error ?? createEmptySafeErrorState() })
-          }
-
-          RuntimeStatusCard({
-            kind: 'VPN',
-            vpnState: this.state.vpnGlobalCapture
-          })
-
-          Button(resolveActionLabel('VPN', this.state))
+          Button(resolveVpnActionLabel(this.state))
             .id('home.vpn.action')
             .width('100%')
             .enabled(this.state.vpnGlobalCapture.action === 'START' || this.state.vpnGlobalCapture.action === 'STOP')
@@ -78,41 +81,6 @@ export struct HomePage {
           if (this.state.error !== undefined) {
             SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
           }
-
-          Row({ space: $r('app.float.space_sm') }) {
-            Text($r('app.string.home_info_indicator'))
-              .width($r('app.float.touch_target_min'))
-              .height($r('app.float.touch_target_min'))
-              .textAlign(TextAlign.Center)
-              .fontSize($r('app.float.type_body'))
-              .fontWeight(FontWeight.Medium)
-              .fontColor($r('app.color.color_text_inverse'))
-              .backgroundColor($r('app.color.color_action_primary'))
-              .borderRadius($r('app.float.radius_chip'))
-
-            Column({ space: $r('app.float.space_xs') }) {
-              Text($r('app.string.home_info_title'))
-                .fontSize($r('app.float.type_body'))
-                .fontWeight(FontWeight.Medium)
-                .fontColor($r('app.color.color_action_primary'))
-                .width('100%')
-                .textAlign(TextAlign.Start)
-
-              Text($r('app.string.home_info_body'))
-                .fontSize($r('app.float.type_caption'))
-                .fontColor($r('app.color.color_text_secondary'))
-                .width('100%')
-                .textAlign(TextAlign.Start)
-                .maxLines(3)
-            }
-            .layoutWeight(1)
-            .alignItems(HorizontalAlign.Start)
-          }
-          .width('100%')
-          .alignItems(VerticalAlign.Top)
-          .padding($r('app.float.space_md'))
-          .borderRadius($r('app.float.radius_card'))
-          .backgroundColor($r('app.color.color_surface_info_panel'))
         }
         .width('100%')
         .padding($r('app.float.page_padding_compact'))
@@ -128,6 +96,7 @@ export struct HomePage {
     .alignItems(HorizontalAlign.Start)
     .backgroundColor($r('app.color.color_surface_background'))
   }
+
 }
 
 @Builder
@@ -200,21 +169,15 @@ function buildProfileCard(state: HomeViewState, onManageProfiles: () => void): v
   })
 }
 
-function resolveActionLabel(kind: 'LOCAL' | 'VPN', state: HomeViewState) {
-  const action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = kind === 'LOCAL'
-    ? state.localProxy.action
-    : state.vpnGlobalCapture.action;
+function resolveVpnActionLabel(state: HomeViewState) {
+  const action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = state.vpnGlobalCapture.action;
   if (action === 'STOP') {
-    return kind === 'LOCAL'
-      ? $r('app.string.home_local_primary_stop')
-      : $r('app.string.home_vpn_primary_stop');
+    return $r('app.string.home_vpn_primary_stop');
   }
   if (action === 'BUSY') {
     return $r('app.string.home_runtime_primary_busy');
   }
-  return kind === 'LOCAL'
-    ? $r('app.string.home_local_primary_start')
-    : $r('app.string.home_vpn_primary_start');
+  return $r('app.string.home_vpn_primary_start');
 }
 
 function resolveActionBackground(action: 'DISABLED' | 'START' | 'STOP' | 'BUSY') {

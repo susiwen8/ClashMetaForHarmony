@@ -47,8 +47,17 @@ add_library(entry SHARED
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_async.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_events.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_core_module.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/js_runtime_control.cpp"
+  "${CMAKE_CURRENT_SOURCE_DIR}/src/js_proxy.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/js_tun.cpp"
   "${CMAKE_CURRENT_SOURCE_DIR}/src/addon_init.cpp"
+)
+
+add_custom_command(TARGET entry POST_BUILD
+  COMMAND ${CMAKE_COMMAND} -E copy_if_different
+    "${CORE_LIBRARY_PATH}"
+    "$<TARGET_FILE_DIR:entry>/libcmfa_mihomo.so"
+  VERBATIM
 )
 
 set(CMFA_PRIVATE_SOURCE_DEFINITIONS "CMFA_INTERNAL_BACKEND_API=1")

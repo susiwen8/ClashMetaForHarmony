@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import { spawn as spawnChild } from 'node:child_process';
-import { constants as FS_CONSTANTS } from 'node:fs';
+import { constants as FS_CONSTANTS, readFileSync } from 'node:fs';
 import fs from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
@@ -14,13 +14,21 @@ import { buildMihomoOhos } from '../../tools/build-mihomo-ohos.mjs';
 import { createRedactionReplacements, sanitizeText } from '../../tools/lib/proof-redaction.mjs';
 import {
   collectArtifactElfContractErrors,
+  CORE_EXPORTS,
   derivePhase1Result,
   hashFile,
   HAP_NATIVE_ENTRIES,
   inspectHapNativeEntries,
+  NODE_ADDON_ALLOWED_EXPORTS,
   normalizeElfReport,
   PHASE1_NATIVE_PHASE,
   PHASE1_NATIVE_SCHEMA_VERSION,
+  PLAN_B_PROXY_ERROR_CODES,
+  PLAN_B_PROXY_LIMITS,
+  PLAN_B_PROXY_NAPI_METHODS,
+  PLAN_B_PROXY_RUNTIME_TYPES,
+  PLAN_B_PROXY_SHARED_METHODS,
+  RAW_PROXY_EXPORTS,
   resolveLiveRepoPath,
   validatePhase1NativeManifest,
   verifyPhase1NativeManifest
@@ -30,7 +38,19 @@ import { inspectToolchain } from '../../tools/lib/toolchain.mjs';
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 export const DEFAULT_OUTPUT_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-native-provenance.json');
-export { HAP_NATIVE_ENTRIES, PHASE1_NATIVE_PHASE, PHASE1_NATIVE_SCHEMA_VERSION };
+export {
+  CORE_EXPORTS,
+  HAP_NATIVE_ENTRIES,
+  NODE_ADDON_ALLOWED_EXPORTS,
+  PHASE1_NATIVE_PHASE,
+  PHASE1_NATIVE_SCHEMA_VERSION,
+  PLAN_B_PROXY_ERROR_CODES,
+  PLAN_B_PROXY_LIMITS,
+  PLAN_B_PROXY_NAPI_METHODS,
+  PLAN_B_PROXY_RUNTIME_TYPES,
+  PLAN_B_PROXY_SHARED_METHODS,
+  RAW_PROXY_EXPORTS
+};
 
 const COMPILE_NATIVE_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', 'buildMode=debug', 'compileNative'];
 const TASK_TREE_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '-p', 'product=default', '-p', 'buildMode=debug', 'taskTree'];
@@ -38,6 +58,7 @@ const SAFE_CLEAN_PATHS = [
   ['artifacts', 'libcmfa_mihomo.so'],
   ['entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so'],
   ['entry', '.cxx', 'default', 'default', 'debug', 'arm64-v8a'],
+  ['entry', 'build', 'default', 'cache'],
   ['entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a'],
   ['entry', 'build', 'default', 'outputs', 'default']
 ];
@@ -48,6 +69,10 @@ const PRE_PACKAGE_DIRECTORY = path.join('entry', 'build', 'default', 'intermedia
 const PRE_PACKAGE_CORE_NAME = 'libcmfa_mihomo.so';
 const PRE_PACKAGE_ADDON_NAME = 'libentry.so';
 const CANONICAL_HAP_IDENTITY_PATTERN = /^harmony\/entry\/build\/default\/outputs\/default\/[^/]+\.hap$/u;
+const GEODATA_LOCK_PATH = path.join(HARMONY_ROOT, 'geodata.lock.json');
+const CANONICAL_GEODATA_RAWFILE_DIRECTORY = 'harmony/entry/src/main/resources/rawfile';
+
+let cachedCanonicalGeodataAsset = null;
 
 function isoTimestamp(date) {
   return date.toISOString();
@@ -176,6 +201,47 @@ function createBaseManifest({ repoRoot, outputPath, startedAt, runId }) {
     },
     failures: []
   };
+}
+
+function readCanonicalGeodataAsset() {
+  if (cachedCanonicalGeodataAsset !== null) {
+    return cachedCanonicalGeodataAsset;
+  }
+
+  let parsed;
+  try {
+    parsed = JSON.parse(readFileSync(GEODATA_LOCK_PATH, 'utf8'));
+  } catch {
+    throw new Error('canonical geodata lock authority is invalid');
+  }
+
+  if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new Error('canonical geodata lock authority is invalid');
+  }
+  if (parsed.schemaVersion !== '1.0.0' || !Array.isArray(parsed.assets) || parsed.assets.length !== 1) {
+    throw new Error('canonical geodata lock authority is invalid');
+  }
+
+  const [asset] = parsed.assets;
+  if (
+    !asset ||
+    typeof asset !== 'object' ||
+    Array.isArray(asset) ||
+    asset.name !== 'geoip.metadb' ||
+    !Number.isInteger(asset.sizeBytes) ||
+    asset.sizeBytes <= 0 ||
+    !isLowerHexDigest(asset.sha256)
+  ) {
+    throw new Error('canonical geodata lock authority is invalid');
+  }
+
+  cachedCanonicalGeodataAsset = Object.freeze({
+    name: asset.name,
+    path: `${CANONICAL_GEODATA_RAWFILE_DIRECTORY}/${asset.name}`,
+    sizeBytes: asset.sizeBytes,
+    sha256: asset.sha256
+  });
+  return cachedCanonicalGeodataAsset;
 }
 
 function pushFailure(manifest, failure) {
@@ -703,11 +769,27 @@ function validateBuildHapReport(report) {
     }
   }
 
-  const hapPath = typeof report?.hap?.path === 'string' && report.hap.path.length > 0
-    ? report.hap.path
-    : null;
-  if (report?.hap !== undefined && report?.hap !== null && hapPath === null) {
-    errors.push('hap.path must be a non-empty string when hap is present');
+  let hapPath = null;
+  if (report?.hap !== undefined && report?.hap !== null) {
+    if (!report.hap || typeof report.hap !== 'object' || Array.isArray(report.hap)) {
+      errors.push('hap must be an object when present');
+    } else {
+      if (typeof report.hap.path === 'string' && report.hap.path.length > 0) {
+        hapPath = report.hap.path;
+      } else if (report.hap.path !== null) {
+        errors.push('hap.path must be a non-empty string or null when hap is present');
+      }
+
+      if (!(report.hap.sha256 === null || isLowerHexDigest(report.hap.sha256))) {
+        errors.push('hap.sha256 must be a lowercase sha256 digest or null');
+      }
+      if (!(report.hap.sizeBytes === null || isNonNegativeInteger(report.hap.sizeBytes))) {
+        errors.push('hap.sizeBytes must be a non-negative integer or null');
+      }
+      if (hapPath === null && (report.hap.sha256 !== null || report.hap.sizeBytes !== null)) {
+        errors.push('hap.sha256 and hap.sizeBytes must stay null when hap.path is null');
+      }
+    }
   }
 
   const normalizedFailures = normalizeValidFailureEntries(report?.failures);
@@ -740,6 +822,71 @@ function validateBuildHapReport(report) {
   }
   if (firstCommand && typeof firstCommand.stderr !== 'string') {
     errors.push('commands[0].stderr must be a string');
+  }
+
+  const geodata = report?.geodata;
+  let canonicalGeodataAsset = null;
+  try {
+    canonicalGeodataAsset = readCanonicalGeodataAsset();
+  } catch {
+    errors.push('canonical geodata lock authority is invalid');
+  }
+  const canonicalGeodataPath = canonicalGeodataAsset?.path ?? `${CANONICAL_GEODATA_RAWFILE_DIRECTORY}/geoip.metadb`;
+  const hasGeodataShape = geodata &&
+    typeof geodata === 'object' &&
+    !Array.isArray(geodata) &&
+    ['pass', 'fail'].includes(geodata.result) &&
+    geodata.path === canonicalGeodataPath;
+  if (!hasGeodataShape) {
+    errors.push('geodata must be a strict { result, path, sha256, sizeBytes } object for the canonical rawfile asset');
+  } else if (geodata.result === 'pass') {
+    if (!isLowerHexDigest(geodata.sha256)) {
+      errors.push('geodata pass evidence requires a lowercase sha256 digest');
+    }
+    if (!isNonNegativeInteger(geodata.sizeBytes) || geodata.sizeBytes <= 0) {
+      errors.push('geodata pass evidence requires a positive sizeBytes value');
+    }
+    if (canonicalGeodataAsset !== null) {
+      if (geodata.sha256 !== canonicalGeodataAsset.sha256) {
+        errors.push('geodata pass evidence requires the canonical pinned sha256 digest');
+      }
+      if (geodata.sizeBytes !== canonicalGeodataAsset.sizeBytes) {
+        errors.push('geodata pass evidence requires the canonical pinned sizeBytes value');
+      }
+    }
+  } else {
+    const hasTypedFailure = Array.isArray(normalizedFailures) &&
+      normalizedFailures.some((failure) => failure.code === 'GEODATA_PREPARE_FAILED' && failure.stage === 'prepare-geodata');
+    if (result !== 'fail') {
+      errors.push('geodata fail evidence requires report.result = fail');
+    }
+    if (geodata.sha256 !== null) {
+      errors.push('geodata fail evidence requires sha256 = null');
+    }
+    if (geodata.sizeBytes !== null) {
+      errors.push('geodata fail evidence requires sizeBytes = null');
+    }
+    if (hapPath !== null || report?.hap?.sha256 !== null || report?.hap?.sizeBytes !== null) {
+      errors.push('geodata fail evidence requires hap path, sha256, and sizeBytes to stay null');
+    }
+    if (!hasTypedFailure) {
+      errors.push('geodata fail evidence requires a GEODATA_PREPARE_FAILED failure at stage prepare-geodata');
+    }
+    if (firstCommand?.stage !== 'prepare-geodata') {
+      errors.push('geodata fail evidence requires commands[0].stage = prepare-geodata');
+    }
+    if (firstCommand?.result !== 'fail') {
+      errors.push('geodata fail evidence requires commands[0].result = fail');
+    }
+    if (safeCommand?.[0] !== 'prepare-geodata') {
+      errors.push('geodata fail evidence requires commands[0].command[0] = prepare-geodata');
+    }
+    if (!(Number.isInteger(safeExitCode) && safeExitCode !== 0)) {
+      errors.push('geodata fail evidence requires a non-zero commands[0].exitCode');
+    }
+    if (safeStdout !== '' || safeStderr !== '') {
+      errors.push('geodata fail evidence requires empty commands[0] stdout/stderr');
+    }
   }
 
   const selectionOnlyIncomplete = hasValidResult &&
@@ -1276,7 +1423,7 @@ export async function buildPhase1Native(options = {}) {
       const hapStepPassed = !hapStepFailed && Boolean(normalizedBuildReport.hapPath);
       const persistedHapCommand = normalizedBuildReport.valid ? normalizedBuildReport.command : null;
       const persistedHapExitCode = normalizedBuildReport.valid
-        ? (hapStepPassed ? (normalizedBuildReport.exitCode ?? 0) : normalizedBuildReport.exitCode)
+        ? (hapStepPassed ? (normalizedBuildReport.exitCode ?? 0) : (normalizedBuildReport.exitCode === 0 ? null : normalizedBuildReport.exitCode))
         : null;
       manifest.builds.hap = createBuildStep(
         hapStepFailed ? 'fail' : (hapStepPassed ? 'pass' : 'fail'),
@@ -1308,10 +1455,10 @@ export async function buildPhase1Native(options = {}) {
 
       if (!normalizedBuildReport.valid) {
         // malformed reports stop before path/hash/archive evaluation
-      } else if (!selectedHapPath && !selectedHapPathRejected) {
-        pushFailure(manifest, createFailure('HAP_NOT_FOUND', 'Phase1 packaging did not produce a deterministic HAP path.', 'package-hap'));
       } else if (buildReport?.result === 'fail' || (buildReport?.result === 'incomplete' && !shouldContinueArchive(buildReport))) {
         pushFailure(manifest, createFailure('PACKAGE_HAP_FAILED', 'Phase1 packaging did not finish in an archive-verifiable state.', 'package-hap'));
+      } else if (!selectedHapPath && !selectedHapPathRejected) {
+        pushFailure(manifest, createFailure('HAP_NOT_FOUND', 'Phase1 packaging did not produce a deterministic HAP path.', 'package-hap'));
       } else if (selectedHapPath) {
         let hapSnapshot = null;
         try {

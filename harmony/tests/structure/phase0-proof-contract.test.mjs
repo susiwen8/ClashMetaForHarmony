@@ -9,6 +9,7 @@ const buildModulePath = new URL('../bin/build-hap.mjs', import.meta.url);
 const runnerModulePath = new URL('../bin/run-phase0-device-proof.mjs', import.meta.url);
 const schemaPath = new URL('../fixtures/phase0-device-proof.schema.json', import.meta.url);
 const examplePath = new URL('../fixtures/phase0-device-proof.example.json', import.meta.url);
+const nativeProxyContractDocPath = new URL('../../../docs/harmony/native-proxy-contract.md', import.meta.url);
 
 function createSpawnSequence(results) {
   let index = 0;
@@ -64,12 +65,12 @@ function joinFragments(parts) {
 async function writeToolchainLock(harmonyRoot) {
   await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 }
@@ -86,18 +87,24 @@ function createPassingBuildEvidenceObject({ harmonyRoot, hapPath, sha256 }) {
     },
     toolchain: {
       nodeVersion: '22.17.0',
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125'
     },
     wrapper: {
       path: 'harmony/hvigorw',
       executable: true
     },
     phase2SelfTest: createPhase2SelfTestEvidence(false),
+    geodata: {
+      result: 'pass',
+      path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+      sha256: '71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd',
+      sizeBytes: 8593535
+    },
     commands: [],
     hap: {
       path: path.relative(path.resolve(harmonyRoot, '..'), hapPath).split(path.sep).join('/'),
@@ -114,6 +121,18 @@ function createPhase2SelfTestEvidence(enabled) {
     activation: enabled ? 'explicit' : 'default',
     purpose: enabled ? 'test-only' : 'production',
     releaseStatus: enabled ? 'not-releasable' : 'releasable'
+  };
+}
+
+function createPreparedGeodataResult() {
+  return {
+    result: 'pass',
+    source: 'cache',
+    asset: {
+      path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+      sha256: '71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd',
+      sizeBytes: 8593535
+    }
   };
 }
 
@@ -174,6 +193,40 @@ test('phase0 proof contract exports deterministic helpers and a validating incom
   assert.equal(example.device.serial, undefined);
   assert.ok(example.failures.some((entry) => entry.code === 'DEVICE_TARGET_MISSING'));
   assert.ok(example.failures.some((entry) => entry.code === 'SIGNING_REQUIRED'));
+});
+
+test('phase0 proof examples and plan-b proxy evidence docs remain metadata-only and privacy-safe', async () => {
+  const [exampleRaw, docRaw] = await Promise.all([
+    fs.readFile(examplePath, 'utf8'),
+    fs.readFile(nativeProxyContractDocPath, 'utf8')
+  ]);
+
+  const forbiddenExamplePatterns = [
+    /"server"\s*:/u,
+    /"port"\s*:/u,
+    /"uuid"\s*:/u,
+    /"password"\s*:/u,
+    /"token"\s*:/u,
+    /"certificate"\s*:/u,
+    /"provider"\s*:/u,
+    /"delay"\s*:/u,
+    /"url"\s*:/u
+  ];
+  const forbiddenDocPatterns = [
+    /https?:\/\//iu,
+    /file:\/\//iu,
+    /\/Users\//u,
+    /[A-Za-z]:\\\\/u,
+    /entry-default-(?:signed|unsigned)\.hap/u
+  ];
+  for (const pattern of forbiddenExamplePatterns) {
+    assert.doesNotMatch(exampleRaw, pattern);
+  }
+  for (const pattern of forbiddenDocPatterns) {
+    assert.doesNotMatch(docRaw, pattern);
+  }
+  assert.match(docRaw, /\bcounts\b/iu);
+  assert.match(docRaw, /\bhash(?:es)?\b/iu);
 });
 
 test('phase0 build helper CLI requires explicit self-test flags and forwards strict evidence options', async () => {
@@ -428,12 +481,12 @@ test('phase0 proof validator accepts the always-write missing-hap incomplete sha
   await fs.mkdir(harmonyRoot, { recursive: true });
   await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -468,12 +521,12 @@ test('phase0 proof contract accepts pass only when build, install, and launch al
     },
     toolchain: {
       nodeVersion: '22.17.0',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105',
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105'
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125',
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125'
     },
     hap: {
       path: 'harmony/entry/build/default/outputs/default/entry-default-signed.hap',
@@ -520,12 +573,12 @@ test('phase0 proof contract rejects leaked serials and unordered timestamps', as
     },
     toolchain: {
       nodeVersion: '22.17.0',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105',
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105'
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125',
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125'
     },
     hap: {
       path: 'harmony/artifacts/example-signed.hap',
@@ -650,12 +703,12 @@ test('phase0 build helper marks unsigned exit0 outputs incomplete and redacts re
   await fs.chmod(wrapperPath, 0o755);
   await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 
@@ -664,6 +717,7 @@ test('phase0 build helper marks unsigned exit0 outputs incomplete and redacts re
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
       spawnImpl() {
         spawnIndex += 1;
         const current = spawnIndex === 1
@@ -727,6 +781,7 @@ test('phase0 build helper rejects stale signed hap artifacts when this build pro
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
       spawnImpl: createSpawnSequence([
         {
           exitCode: 0,
@@ -750,15 +805,13 @@ test('phase0 build helper rejects stale signed hap artifacts when this build pro
   }
 });
 
-test('phase0 build helper stages the raw core into src/main/libs for packaging and removes the staging copy afterwards', async () => {
+test('phase0 build helper records geodata identity before hvigor packaging succeeds', async () => {
   const { buildHap } = await import(buildModulePath);
-  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-stage-core-'));
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-geodata-pass-'));
   const harmonyRoot = path.join(tempRoot, 'harmony');
   const wrapperPath = path.join(harmonyRoot, 'hvigorw');
   const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
-  const stagedCorePath = path.join(harmonyRoot, 'entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so');
   const hapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
-  let spawnCalls = 0;
 
   await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
   await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
@@ -771,17 +824,124 @@ test('phase0 build helper stages the raw core into src/main/libs for packaging a
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => ({
+        result: 'pass',
+        source: 'cache',
+        asset: {
+          path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+          sha256: 'c'.repeat(64),
+          sizeBytes: 19
+        }
+      }),
       inspectNativeLibraryImpl: async () => ({ result: 'pass' }),
       spawnImpl(command, args) {
-        spawnCalls += 1;
         const child = new EventEmitter();
         child.stdout = new EventEmitter();
         child.stderr = new EventEmitter();
 
         queueMicrotask(async () => {
-          const stagedBytes = await fs.readFile(stagedCorePath, 'utf8');
-          assert.equal(stagedBytes, 'raw-core-bytes');
-          if (spawnCalls === 1) {
+          if (args.includes('assembleHap')) {
+            await fs.mkdir(path.dirname(hapPath), { recursive: true });
+            await fs.writeFile(hapPath, 'signed-hap', 'utf8');
+          }
+          child.stdout.emit('data', Buffer.from('BUILD SUCCESSFUL\n'));
+          child.emit('close', 0, null);
+        });
+
+        return child;
+      }
+    });
+
+    assert.deepEqual(report.geodata, {
+      result: 'pass',
+      path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+      sha256: 'c'.repeat(64),
+      sizeBytes: 19
+    });
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper persists a synthetic prepare-geodata failure before any hvigor spawn', async () => {
+  const { buildHap } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-geodata-fail-'));
+  const harmonyRoot = path.join(tempRoot, 'harmony');
+  const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+  let spawnCalls = 0;
+
+  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+  await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+  await fs.chmod(wrapperPath, 0o755);
+  await writeToolchainLock(harmonyRoot);
+
+  try {
+    const report = await buildHap({
+      harmonyRoot,
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => {
+        throw Object.assign(new Error('geoip digest mismatch'), { code: 'GEODATA_DIGEST_MISMATCH' });
+      },
+      spawnImpl() {
+        spawnCalls += 1;
+        throw new Error('hvigor must not run after geodata preparation fails');
+      }
+    });
+
+    assert.equal(spawnCalls, 0);
+    assert.equal(report.result, 'fail');
+    assert.deepEqual(report.geodata, {
+      result: 'fail',
+      path: 'harmony/entry/src/main/resources/rawfile/geoip.metadb',
+      sha256: null,
+      sizeBytes: null
+    });
+    assert.deepEqual(report.commands[0], {
+      stage: 'prepare-geodata',
+      result: 'fail',
+      command: ['prepare-geodata'],
+      cwd: 'harmony',
+      exitCode: 1,
+      signal: null,
+      stdout: '',
+      stderr: ''
+    });
+    assert.ok(report.failures.some((entry) => entry.code === 'GEODATA_PREPARE_FAILED' && entry.stage === 'prepare-geodata'));
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper does not rewrite the HAP after Hvigor signing completes', async () => {
+  const { buildHap } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-signing-boundary-'));
+  const harmonyRoot = path.join(tempRoot, 'harmony');
+  const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+  const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  const hapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  const spawnCalls = [];
+
+  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+  await fs.chmod(wrapperPath, 0o755);
+  await fs.writeFile(rawCorePath, 'raw-core-bytes', 'utf8');
+  await writeToolchainLock(harmonyRoot);
+
+  try {
+    const report = await buildHap({
+      harmonyRoot,
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
+      inspectNativeLibraryImpl: async () => ({ result: 'pass' }),
+      spawnImpl(command, args) {
+        spawnCalls.push({ command, args });
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+
+        queueMicrotask(async () => {
+          if (spawnCalls.length === 1) {
             await fs.mkdir(path.dirname(hapPath), { recursive: true });
             await fs.writeFile(hapPath, 'signed-hap', 'utf8');
           }
@@ -794,11 +954,77 @@ test('phase0 build helper stages the raw core into src/main/libs for packaging a
     });
 
     assert.equal(report.result, 'pass');
-    assert.equal(spawnCalls, 4);
-    await assert.rejects(fs.access(stagedCorePath));
+    assert.equal(spawnCalls.length, 2);
+    assert.ok(spawnCalls.every(({ command }) => command === wrapperPath));
   } finally {
     await fs.rm(tempRoot, { recursive: true, force: true });
   }
+});
+
+test('phase0 build helper clears stale ArkTS cache and default output artifacts before the first Hvigor build', async () => {
+  const { buildHap } = await import(buildModulePath);
+  const tempRoot = await fs.mkdtemp(path.join(os.tmpdir(), 'phase0-build-cache-clean-'));
+  const harmonyRoot = path.join(tempRoot, 'harmony');
+  const wrapperPath = path.join(harmonyRoot, 'hvigorw');
+  const rawCorePath = path.join(harmonyRoot, 'artifacts', 'libcmfa_mihomo.so');
+  const staleCachePath = path.join(harmonyRoot, 'entry', 'build', 'default', 'cache', 'debug', 'ets', 'stale.abc');
+  const staleOutputPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'stale.hap');
+  const freshHapPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
+  let spawnCount = 0;
+
+  await fs.mkdir(path.dirname(wrapperPath), { recursive: true });
+  await fs.mkdir(path.dirname(rawCorePath), { recursive: true });
+  await fs.mkdir(path.dirname(staleCachePath), { recursive: true });
+  await fs.mkdir(path.dirname(staleOutputPath), { recursive: true });
+  await fs.writeFile(wrapperPath, '#!/bin/sh\n', 'utf8');
+  await fs.chmod(wrapperPath, 0o755);
+  await fs.writeFile(rawCorePath, 'raw-core-bytes', 'utf8');
+  await fs.writeFile(staleCachePath, 'stale-arkts-cache', 'utf8');
+  await fs.writeFile(staleOutputPath, 'stale-hap', 'utf8');
+  await writeToolchainLock(harmonyRoot);
+
+  try {
+    const report = await buildHap({
+      harmonyRoot,
+      outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
+      inspectNativeLibraryImpl: async () => ({ result: 'pass' }),
+      spawnImpl() {
+        spawnCount += 1;
+        const child = new EventEmitter();
+        child.stdout = new EventEmitter();
+        child.stderr = new EventEmitter();
+
+        queueMicrotask(async () => {
+          if (spawnCount === 1) {
+            await assert.rejects(fs.access(path.join(harmonyRoot, 'entry', 'build', 'default', 'cache')), { code: 'ENOENT' });
+            await assert.rejects(fs.access(staleOutputPath), { code: 'ENOENT' });
+            await fs.mkdir(path.dirname(freshHapPath), { recursive: true });
+            await fs.writeFile(freshHapPath, 'fresh-hap', 'utf8');
+          }
+
+          child.stdout.emit('data', Buffer.from('BUILD SUCCESSFUL\n'));
+          child.emit('close', 0, null);
+        });
+
+        return child;
+      }
+    });
+
+    assert.equal(report.result, 'pass');
+    assert.equal(spawnCount, 2);
+    await assert.rejects(fs.access(staleCachePath), { code: 'ENOENT' });
+  } finally {
+    await fs.rm(tempRoot, { recursive: true, force: true });
+  }
+});
+
+test('phase0 build helper source contract keeps repo-scoped cache cleanup before module/project builds', async () => {
+  const source = await fs.readFile(buildModulePath, 'utf8');
+
+  assert.match(source, /const SAFE_PRE_BUILD_CLEAN_PATHS = \[[\s\S]*\['entry', 'build', 'default', 'cache'\][\s\S]*\];/u);
+  assert.match(source, /const absolutePath = path\.resolve\(harmonyRoot, \.\.\.segments\);[\s\S]*absolutePath\.startsWith\(`\$\{path\.resolve\(harmonyRoot\)\}\$\{path\.sep\}`\)/u);
+  assert.match(source, /await cleanupBuildOutputs\(harmonyRoot, fsApi\);[\s\S]*for \(const \[stage, args\] of \[\s*\['module', MODULE_BUILD_ARGS\],\s*\['project', PROJECT_BUILD_ARGS\]/u);
 });
 
 test('phase0 build helper fails fast on raw core export drift before any hvigor spawn', async () => {
@@ -877,6 +1103,7 @@ test('phase0 build helper stamps strict self-test evidence and clears stale lane
       const report = await buildHap({
         harmonyRoot,
         outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+        prepareGeodataImpl: async () => createPreparedGeodataResult(),
         env: {
           ...process.env,
           CMFA_ENABLE_PHASE2_SELFTEST: '1',
@@ -931,6 +1158,7 @@ test('phase0 build helper times out hung hvigor, kills it, and returns fail evid
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
       commandTimeoutMs: 10,
       spawnImpl() {
         let killed = false;
@@ -987,6 +1215,7 @@ test('phase0 build helper redacts external absolute paths, file URLs, and signin
     const report = await buildHap({
       harmonyRoot,
       outputPath: path.join(harmonyRoot, 'artifacts', 'phase0-build-evidence.json'),
+      prepareGeodataImpl: async () => createPreparedGeodataResult(),
       spawnImpl: createSpawnSequence([
         {
           exitCode: 0,
@@ -1249,12 +1478,12 @@ test('phase0 device runner rejects unsigned haps before hdc and redacts external
   await fs.writeFile(unsignedHapPath, 'unsigned-hap', 'utf8');
   await fs.writeFile(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({
     installed: {
-      devecoVersion: '6.1.0.860',
-      sdkVersion: '6.1.0.105',
-      ndkVersion: '6.1.0.105',
-      hvigorVersion: '6.23.7',
-      ohpmVersion: '6.1.1.830',
-      hdcVersion: '6.1.0.105'
+      devecoVersion: '6.1.1.300',
+      sdkVersion: '6.1.1.125',
+      ndkVersion: '6.1.1.125',
+      hvigorVersion: '6.24.4',
+      ohpmVersion: '6.1.2.285',
+      hdcVersion: '6.1.1.125'
     }
   }), 'utf8');
 

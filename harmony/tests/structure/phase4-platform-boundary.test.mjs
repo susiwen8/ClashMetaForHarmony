@@ -57,6 +57,7 @@ test('phase4 platform boundary keeps notification SDK imports isolated and netwo
 
   assertContains(notificationDriverSource, "@kit.BackgroundTasksKit", 'HarmonyVpnNotificationDriver');
   assertContains(notificationDriverSource, "@kit.AbilityKit", 'HarmonyVpnNotificationDriver');
+  assertContains(notificationDriverSource, "@kit.NotificationKit", 'HarmonyVpnNotificationDriver');
   assertNotContains(continuousTaskDriverSource, '@kit.', 'ContinuousTaskDriver');
   assertNotContains(notificationDriverSource, '@cmfa/core', 'HarmonyVpnNotificationDriver');
   assertNotContains(notificationDriverSource, 'VpnExtensionAbility', 'HarmonyVpnNotificationDriver');
@@ -67,6 +68,8 @@ test('phase4 platform boundary keeps notification SDK imports isolated and netwo
   assertNotContains(platformFactorySource, '@kit.NetworkKit', 'PlatformFactory');
   assertNotContains(platformFactorySource, '@kit.BackgroundTasksKit', 'PlatformFactory');
   assertNotContains(platformFactorySource, '@kit.AbilityKit', 'PlatformFactory');
+  assertNotContains(platformFactorySource, '@kit.NotificationKit', 'PlatformFactory');
+  assertNotContains(platformIndexSource, '@kit.NotificationKit', 'platform/Index.ets');
   assertNotContains(platformIndexSource, '@kit.', 'platform/Index.ets');
 });
 
@@ -90,5 +93,25 @@ test('phase4 notification adapter stays compat-20 and propagates start failures 
     notificationDriverSource,
     'stopBackgroundRunning(this.context, continuousTaskId)',
     'compat-20 notification adapter'
+  );
+  assert.match(
+    notificationDriverSource,
+    /notificationManager\.publish\(/u,
+    'compat-20 notification adapter must update the system-owned notification via NotificationKit'
+  );
+  assert.match(
+    notificationDriverSource,
+    /updateOnly:\s*true/u,
+    'compat-20 notification adapter must fail closed instead of creating a second notification'
+  );
+  assert.match(
+    notificationDriverSource,
+    /notificationSlotType:\s*notificationManager\.SlotType\.LIVE_VIEW/u,
+    'compat-20 notification adapter must target the original LIVE_VIEW slot'
+  );
+  assert.match(
+    notificationDriverSource,
+    /notificationContentType:\s*notificationManager\.ContentType\.NOTIFICATION_CONTENT_SYSTEM_LIVE_VIEW/u,
+    'compat-20 notification adapter must keep the SYSTEM_LIVE_VIEW content type'
   );
 });

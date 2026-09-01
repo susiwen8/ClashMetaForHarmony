@@ -1,7 +1,10 @@
 import {
   createAppError,
+  cloneOneClickVpnOperationSnapshot,
   createProfile,
   createProfileRevision,
+  createProxyRuntimeNotReadyError,
+  createOneClickVpnOperationSnapshot,
   createVpnRuntimeSnapshot,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
@@ -15,6 +18,11 @@ import {
   type AppErrorStage,
   type Clock,
   type CoreEvent,
+  type CoreProxyDelaySnapshot,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied,
   type CoreService,
   type IdGenerator,
   type LocalAcquireCommand,
@@ -23,6 +31,7 @@ import {
   type LocalRuntimeStoppedResult,
   type LocalOptions,
   type LocalProfileAcquisition,
+  type HomeProxySelectionSummary,
   type ManageDeleteResult,
   type ManageEnableResult,
   type ManageProfileFailedResult,
@@ -31,6 +40,18 @@ import {
   type LocalRuntimeStartResult,
   type LocalRuntimeStopResult,
   type Profile,
+  type OneClickVpnConfirmationHandle,
+  type OneClickVpnConfirmationPort,
+  type OneClickVpnConfirmationResult,
+  type OneClickVpnOperationListener,
+  type OneClickVpnOperationSnapshot,
+  type ProxyDelayResult,
+  type ProxyReconcileResult,
+  type ProxyApplicationPort,
+  type ProxyGroupListQueryResult,
+  type ProxyGroupQueryResult,
+  type ProxyRejectedResult,
+  type ProxySelectionResult,
   type ProfileApplicationErrorSnapshot,
   type ProfileApplicationListener,
   type ProfileApplicationProfileSnapshot,
@@ -49,6 +70,7 @@ import {
   type RuntimeSnapshot,
   type StagedSource,
   type SubscriptionSecretStore,
+  type UpdateProfileResult,
   type VpnControllerStartResult,
   type VpnControllerStopResult,
   type VpnRuntimeEvent,
@@ -56,6 +78,10 @@ import {
   redactUrl
 } from '@cmfa/shared';
 import { safeRemoteSourceDisplayFromUrl } from '../../main/ets/presentation/PresentationModels';
+import {
+  ProxyDelayScheduledTaskPort,
+  ProxyDelaySchedulerPort
+} from '../../main/ets/presentation/ProxyViewModel';
 
 interface ApplicationSnapshotOptions {
   httpAddress?: string;
@@ -100,6 +126,67 @@ export class DeferredResult<T> {
   }
 }
 
+export class ManualScheduledTask extends ProxyDelayScheduledTaskPort {
+  readonly delayMs: number;
+  private readonly callback: () => void;
+  private cancelledValue: boolean = false;
+  private firedValue: boolean = false;
+
+  constructor(delayMs: number, callback: () => void) {
+    super();
+    this.delayMs = delayMs;
+    this.callback = callback;
+  }
+
+  get cancelled(): boolean {
+    return this.cancelledValue;
+  }
+
+  get fired(): boolean {
+    return this.firedValue;
+  }
+
+  cancel(): void {
+    this.cancelledValue = true;
+  }
+
+  run(): void {
+    if (this.cancelledValue || this.firedValue) {
+      return;
+    }
+    this.firedValue = true;
+    this.callback();
+  }
+}
+
+export class ManualDelayScheduler extends ProxyDelaySchedulerPort {
+  readonly tasks: ManualScheduledTask[] = [];
+
+  constructor() {
+    super();
+  }
+
+  schedule(delayMs: number, callback: () => void): ManualScheduledTask {
+    const task = new ManualScheduledTask(delayMs, callback);
+    this.tasks.push(task);
+    return task;
+  }
+
+  pendingCount(): number {
+    let count: number = 0;
+    for (let index: number = 0; index < this.tasks.length; index += 1) {
+      if (!this.tasks[index].cancelled && !this.tasks[index].fired) {
+        count += 1;
+      }
+    }
+    return count;
+  }
+
+  latest(): ManualScheduledTask | undefined {
+    return this.tasks.length === 0 ? undefined : this.tasks[this.tasks.length - 1];
+  }
+}
+
 export interface SafeRemoteImportRecord {
   sourceDisplay: string;
   allowPlainHttp: boolean;
@@ -116,6 +203,14 @@ export interface SafeReplaceRecord {
   sourceDisplay: string;
 }
 
+export interface SafeUpdateProfileRecord {
+  profileId: string;
+  name: string;
+  sourceChanged: boolean;
+  sourceDisplay?: string;
+  allowPlainHttp: boolean;
+}
+
 class SafeRemoteImportRecordValue implements SafeRemoteImportRecord {
   sourceDisplay: string = '';
   allowPlainHttp: boolean = false;
@@ -130,6 +225,14 @@ class SafeRefreshRecordValue implements SafeRefreshRecord {
 class SafeReplaceRecordValue implements SafeReplaceRecord {
   profileId: string = '';
   sourceDisplay: string = '';
+}
+
+class SafeUpdateProfileRecordValue implements SafeUpdateProfileRecord {
+  profileId: string = '';
+  name: string = '';
+  sourceChanged: boolean = false;
+  sourceDisplay?: string;
+  allowPlainHttp: boolean = false;
 }
 
 class FixedClock implements Clock {
@@ -239,6 +342,34 @@ class InertCoreService implements CoreService {
     return createRuntimeModel('STOPPED', '', '', '');
   }
 
+  async queryProxyGroups(_context: CoreProxyQueryContext, _selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroups'));
+  }
+
+  async queryProxyGroup(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyGroupResult> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroup'));
+  }
+
+  async selectProxy(
+    _context: CoreProxyQueryContext,
+    _groupName: string,
+    _memberName: string
+  ): Promise<CoreProxySelectionApplied> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('selectProxy'));
+  }
+
+  async startProxyDelayTest(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('startProxyDelayTest'));
+  }
+
+  async readProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('readProxyDelayTest'));
+  }
+
+  async cancelProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('cancelProxyDelayTest'));
+  }
+
   subscribe(_callback: (event: CoreEvent) => void): number {
     return 1;
   }
@@ -287,6 +418,7 @@ class ProfileApplicationSnapshotValue implements ProfileApplicationSnapshot {
   profiles: ProfileApplicationProfileSnapshot[] = [];
   activeProfileId?: string;
   runtime: ProfileApplicationRuntimeSnapshot = new ProfileApplicationRuntimeSnapshotValue();
+  proxyReconciliation: ProxyReconcileResult | null = null;
   error: ProfileApplicationErrorSnapshot | null = null;
 }
 
@@ -311,6 +443,7 @@ export class PresentationTestApplication extends ProfileApplication {
   readonly importUrlCommands: SafeRemoteImportRecord[] = [];
   readonly refreshCommands: SafeRefreshRecord[] = [];
   readonly replaceCommands: SafeReplaceRecord[] = [];
+  readonly updateProfileCommands: SafeUpdateProfileRecord[] = [];
   private readonly presentationListeners: Map<number, ProfileApplicationListener> = new Map();
   private nextPresentationListenerId: number = 0;
   private currentSnapshot: ProfileApplicationSnapshot;
@@ -322,8 +455,13 @@ export class PresentationTestApplication extends ProfileApplication {
   private readonly enableResults: Promise<ManageEnableResult>[] = [];
   private readonly deleteResults: Promise<ManageDeleteResult>[] = [];
   private readonly replaceResults: Promise<ManageReplaceResult>[] = [];
+  private readonly updateProfileResults: Promise<UpdateProfileResult>[] = [];
   private readonly vpnStartResults: Promise<VpnControllerStartResult>[] = [];
   private readonly vpnStopResults: Promise<VpnControllerStopResult>[] = [];
+  private readonly homeProxySelectionResults: Promise<HomeProxySelectionSummary | undefined>[] = [];
+  private readonly oneClickListeners: Map<number, OneClickVpnOperationListener> = new Map();
+  private nextOneClickListenerId: number = 0;
+  private oneClickSnapshot: OneClickVpnOperationSnapshot = createOneClickVpnOperationSnapshot('IDLE', false, 'NONE');
 
   constructor(snapshot?: ProfileApplicationSnapshot) {
     super(createDependencies());
@@ -375,12 +513,22 @@ export class PresentationTestApplication extends ProfileApplication {
     this.replaceResults.push(Promise.resolve(result));
   }
 
+  queueUpdateProfileResult(result: UpdateProfileResult | Promise<UpdateProfileResult>): void {
+    this.updateProfileResults.push(Promise.resolve(result));
+  }
+
   queueVpnStartResult(result: VpnControllerStartResult | Promise<VpnControllerStartResult>): void {
     this.vpnStartResults.push(Promise.resolve(result));
   }
 
   queueVpnStopResult(result: VpnControllerStopResult | Promise<VpnControllerStopResult>): void {
     this.vpnStopResults.push(Promise.resolve(result));
+  }
+
+  queueHomeProxySelectionResult(
+    result: HomeProxySelectionSummary | Promise<HomeProxySelectionSummary | undefined> | undefined
+  ): void {
+    this.homeProxySelectionResults.push(Promise.resolve(result));
   }
 
   deferStart(): DeferredCommand {
@@ -458,6 +606,40 @@ export class PresentationTestApplication extends ProfileApplication {
     });
   }
 
+  async queryHomeProxySelection(): Promise<HomeProxySelectionSummary | undefined> {
+    this.commandLog.push('queryHomeProxySelection');
+    return await shiftOrDefault<HomeProxySelectionSummary | undefined>(this.homeProxySelectionResults, undefined);
+  }
+
+  currentOneClickVpnOperation(): OneClickVpnOperationSnapshot {
+    return cloneOneClickVpnOperationSnapshot(this.oneClickSnapshot);
+  }
+
+  subscribeOneClickVpnOperation(listener: OneClickVpnOperationListener): number {
+    this.nextOneClickListenerId += 1;
+    this.oneClickListeners.set(this.nextOneClickListenerId, listener);
+    return this.nextOneClickListenerId;
+  }
+
+  unsubscribeOneClickVpnOperation(id: number): void {
+    this.oneClickListeners.delete(id);
+  }
+
+  emitOneClickVpnOperation(snapshot: OneClickVpnOperationSnapshot): void {
+    this.oneClickSnapshot = cloneOneClickVpnOperationSnapshot(snapshot);
+    const listeners: OneClickVpnOperationListener[] = [];
+    this.oneClickListeners.forEach((listener: OneClickVpnOperationListener): void => {
+      listeners.push(listener);
+    });
+    for (let index: number = 0; index < listeners.length; index += 1) {
+      listeners[index](cloneOneClickVpnOperationSnapshot(this.oneClickSnapshot));
+    }
+  }
+
+  oneClickListenerCount(): number {
+    return this.oneClickListeners.size;
+  }
+
   async importLocal(command: LocalAcquireCommand): Promise<ImportProfileResult> {
     this.commandLog.push(`importLocal:${command.preferredName?.trim() ?? ''}`);
     return await shiftOrDefault<ImportProfileResult>(this.importLocalResults, createCancelledImportResult());
@@ -492,8 +674,28 @@ export class PresentationTestApplication extends ProfileApplication {
     return await shiftOrDefault<ManageReplaceResult>(this.replaceResults, createReplacedResult(profileId));
   }
 
+  async updateProfile(
+    profileId: string,
+    name: string,
+    sourceUrl?: string,
+    allowPlainHttp: boolean = false
+  ): Promise<UpdateProfileResult> {
+    this.commandLog.push(`updateProfile:${profileId}:${allowPlainHttp ? 'plain' : 'secure'}:${name}`);
+    this.updateProfileCommands.push(
+      createSafeUpdateProfileRecord(
+        profileId,
+        name,
+        sourceUrl !== undefined && sourceUrl.trim().length > 0,
+        sourceUrl === undefined ? undefined : safeRemoteSourceDisplayFromUrl(sourceUrl),
+        allowPlainHttp
+      )
+    );
+    return await shiftOrDefault<UpdateProfileResult>(this.updateProfileResults, createUpdatedProfileResult(profileId));
+  }
+
   dispose(): void {
     this.presentationListeners.clear();
+    this.oneClickListeners.clear();
   }
 
   emitSnapshot(snapshot: ProfileApplicationSnapshot): void {
@@ -527,6 +729,7 @@ export function createApplicationSnapshot(
     options?.latestRuntimeError ?? '',
     options?.runtimeError ?? null
   );
+  snapshot.proxyReconciliation = null;
   snapshot.error = options?.error ?? null;
   return snapshot;
 }
@@ -580,6 +783,67 @@ export function createSafeError(
   snapshot.timestamp = '2026-08-11T12:30:00.000Z';
   snapshot.retryable = false;
   return snapshot;
+}
+
+class InertProxyApplicationPort implements ProxyApplicationPort {
+  async listGroups(): Promise<ProxyGroupListQueryResult> {
+    throw createProxyRuntimeNotReadyError('listGroups');
+  }
+
+  async queryGroup(_groupName: string, _groupPath?: string[]): Promise<ProxyGroupQueryResult> {
+    throw createProxyRuntimeNotReadyError('queryGroup');
+  }
+
+  async select(
+    _groupName: string,
+    _memberName: string,
+    _snapshotGeneration: number,
+    _groupPath?: string[]
+  ): Promise<ProxySelectionResult> {
+    throw createProxyRuntimeNotReadyError('select');
+  }
+
+  async reconcileActiveSelections(): Promise<ProxyReconcileResult> {
+    throw createProxyRuntimeNotReadyError('reconcileActiveSelections');
+  }
+
+  async startDelayTest(_groupName: string, _snapshotGeneration: number, _groupPath?: string[]): Promise<ProxyDelayResult> {
+    throw createProxyRuntimeNotReadyError('startDelayTest');
+  }
+
+  async readDelayTest(_jobId: string): Promise<ProxyDelayResult> {
+    throw createProxyRuntimeNotReadyError('readDelayTest');
+  }
+
+  async cancelDelayTest(_jobId: string): Promise<ProxyDelayResult> {
+    throw createProxyRuntimeNotReadyError('cancelDelayTest');
+  }
+
+  async cancelAndDrainDelayTest(): Promise<ProxyRejectedResult | undefined> {
+    return undefined;
+  }
+}
+
+class CancelledOneClickVpnConfirmationResultValue implements OneClickVpnConfirmationResult {
+  kind: 'CANCELLED' = 'CANCELLED';
+}
+
+class InertOneClickVpnConfirmationHandle implements OneClickVpnConfirmationHandle {
+  async wait(): Promise<OneClickVpnConfirmationResult> {
+    return new CancelledOneClickVpnConfirmationResultValue();
+  }
+
+  markStartAccepted(): void {
+  }
+
+  cancel(): void {
+  }
+}
+
+class InertOneClickVpnConfirmation implements OneClickVpnConfirmationPort {
+  arm(_expectedSessionId: string, _timeoutMs: number): OneClickVpnConfirmationHandle {
+    return new InertOneClickVpnConfirmationHandle();
+  }
 }
 
 function createDependencies(): ProfileApplicationDependencies {
@@ -636,7 +900,9 @@ function createDependencies(): ProfileApplicationDependencies {
     manageProfileUseCases,
     runtimeCoordinator,
     commitService,
-    repository
+    repository,
+    oneClickVpnConfirmation: new InertOneClickVpnConfirmation(),
+    proxyService: new InertProxyApplicationPort()
   };
 }
 
@@ -683,6 +949,7 @@ function cloneApplicationSnapshot(snapshot: ProfileApplicationSnapshot): Profile
     snapshot.runtime.latest.lastError,
     snapshot.runtime.lastError
   );
+  cloned.proxyReconciliation = snapshot.proxyReconciliation;
   cloned.error = snapshot.error === null ? null : cloneError(snapshot.error);
   return cloned;
 }
@@ -799,6 +1066,22 @@ function createSafeReplaceRecord(profileId: string, sourceDisplay: string): Safe
   return record;
 }
 
+function createSafeUpdateProfileRecord(
+  profileId: string,
+  name: string,
+  sourceChanged: boolean,
+  sourceDisplay: string | undefined,
+  allowPlainHttp: boolean
+): SafeUpdateProfileRecord {
+  const record: SafeUpdateProfileRecordValue = new SafeUpdateProfileRecordValue();
+  record.profileId = profileId;
+  record.name = name;
+  record.sourceChanged = sourceChanged;
+  record.sourceDisplay = sourceDisplay;
+  record.allowPlainHttp = allowPlainHttp;
+  return record;
+}
+
 function shiftOrDefault<T>(results: Promise<T>[], fallback: T): Promise<T> {
   if (results.length === 0) {
     return Promise.resolve(fallback);
@@ -881,6 +1164,49 @@ export function createReplacedResult(profileId: string): ManageReplaceResult {
   return {
     kind: 'REPLACED',
     profile: createProfileRecord(profileId, 'REMOTE_URL', 'VALID')
+  };
+}
+
+export function createUpdatedProfileResult(
+  profileId: string,
+  sourceKind: ProfileSourceKind = 'REMOTE_URL'
+): UpdateProfileResult {
+  return {
+    kind: 'UPDATED',
+    profile: createProfileRecord(profileId, sourceKind, 'VALID')
+  };
+}
+
+export function createUpdatedProfileRefreshFailedResult(
+  profileId: string,
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string,
+  sourceKind: ProfileSourceKind = 'REMOTE_URL'
+): UpdateProfileResult {
+  return {
+    kind: 'UPDATED_REFRESH_FAILED',
+    profile: createProfileRecord(profileId, sourceKind, 'VALID'),
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
+  };
+}
+
+export function createFailedUpdateResult(
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string
+): UpdateProfileResult {
+  return {
+    kind: 'FAILED',
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
   };
 }
 

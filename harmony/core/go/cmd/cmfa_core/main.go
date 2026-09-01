@@ -104,6 +104,18 @@ static char *cmfa_tun_trace_correlation_hash(cmfa_tun_trace *trace) {
 	return trace->correlation_hash;
 }
 
+static char *cmfa_tun_trace_destination_hash(cmfa_tun_trace *trace) {
+	return trace->destination_hash;
+}
+
+static char *cmfa_tun_trace_outbound_terminal_hash(cmfa_tun_trace *trace) {
+	return trace->outbound_terminal_hash;
+}
+
+static char *cmfa_tun_trace_outbound_chain_hash(cmfa_tun_trace *trace) {
+	return trace->outbound_chain_hash;
+}
+
 typedef cmfa_status (*cmfa_host_protect_socket_bridge_fn)(int fd, uint32_t timeout_ms, cmfa_error *error);
 typedef cmfa_status (*cmfa_host_emit_runtime_event_bridge_fn)(const cmfa_runtime_event *event, cmfa_error *error);
 
@@ -220,37 +232,127 @@ import (
 	"strconv"
 	"sync"
 	"time"
+	"unicode"
 	"unicode/utf8"
 	"unsafe"
 
 	configpkg "github.com/clashmetaforandroid/harmony/core/go/internal/config"
 	probepkg "github.com/clashmetaforandroid/harmony/core/go/internal/probe"
+	proxygroups "github.com/clashmetaforandroid/harmony/core/go/internal/proxygroups"
 	runtimepkg "github.com/clashmetaforandroid/harmony/core/go/internal/runtime"
+	runtimecontrol "github.com/clashmetaforandroid/harmony/core/go/internal/runtimecontrol"
 	"github.com/clashmetaforandroid/harmony/core/go/internal/version"
 )
 
 var (
-	coreVersionOnce     sync.Once
-	coreVersionCStr     *C.char
-	buildInfoOnce       sync.Once
-	buildInfoCStr       *C.char
-	probeDefaultTimeout = probepkg.DefaultTimeout
-	runtimeLogs         = runtimepkg.NewLogBuffer(32)
-	tunSocketProtector  = backendHostSocketProtector{}
-	tunEventSink        = backendHostEventSink{}
-	localProxy          = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
+	coreVersionOnce           sync.Once
+	coreVersionCStr           *C.char
+	buildInfoOnce             sync.Once
+	buildInfoCStr             *C.char
+	probeDefaultTimeout       = probepkg.DefaultTimeout
+	runtimeLogs               = runtimepkg.NewLogBuffer(32)
+	tunSocketProtector        = backendHostSocketProtector{}
+	tunEventSink              = backendHostEventSink{}
+	proxygroupsServiceMu      sync.RWMutex
+	proxygroupsRuntimeService proxygroupsService = proxygroups.NewService(nil)
+	proxyDelayServiceMu       sync.RWMutex
+	proxyDelayRuntimeService  proxyDelayService = proxygroups.NewMihomoDelayJobManager()
+	runtimeModeService                          = runtimecontrol.NewService(nil)
+	localProxy                                  = runtimepkg.NewLocalProxyWithDeps(runtimepkg.LocalProxyDeps{
 		Prepare:               loadConfigForLocalProxy,
 		Events:                tunEventSink,
 		Logs:                  runtimeLogs,
+		ReportStageLifecycle:  reportTunStartStage,
 		SocketProtector:       tunSocketProtector,
 		SocketProtectAPILevel: 21,
 		MaxLogContextFields:   4,
 		MaxLogFieldBytes:      256,
 	})
+	newManagedConfigLoader = func(sandboxRoot string) managedConfigLoader {
+		return configpkg.NewLoader(sandboxRoot)
+	}
+	newLegacyRelativeConfigLoader = func(sandboxRoot string) managedConfigLoader {
+		return configpkg.NewLoaderWithDeps(sandboxRoot, configpkg.LoaderDeps{
+			PrepareHome: nonAuthoritativePrepareHome,
+		})
+	}
+	validateManagedConfig        = configpkg.ValidateFile
+	validateLegacyRelativeConfig = func(sandboxRoot, candidate string) error {
+		return configpkg.ValidateFileWithDeps(sandboxRoot, candidate, configpkg.ValidateDeps{
+			PrepareHome: nonAuthoritativePrepareHome,
+		})
+	}
 )
 
 type backendHostSocketProtector struct{}
 type backendHostEventSink struct{}
+type managedConfigLoader interface {
+	LoadForLocalProxy(candidate string) error
+}
+
+type proxygroupsService interface {
+	ListGroups(ctx proxygroups.QueryContext, selectableOnly bool) ([]byte, error)
+	QueryGroup(ctx proxygroups.QueryContext, groupName string) ([]byte, error)
+	Select(ctx proxygroups.QueryContext, groupName, memberName string) ([]byte, error)
+}
+
+type proxyDelayService interface {
+	Start(ctx proxygroups.QueryContext, groupName string) (proxygroups.DelayTestSnapshot, error)
+	Read(jobID string) (proxygroups.DelayTestSnapshot, error)
+	Cancel(jobID string) (proxygroups.DelayTestSnapshot, error)
+	CancelActiveAndDrain() error
+}
+
+type proxyRawExportStatus uint8
+
+const (
+	proxyRawExportStatusOK proxyRawExportStatus = iota
+	proxyRawExportStatusInvalidArgument
+	proxyRawExportStatusInvalidUTF8
+	proxyRawExportStatusOutOfRange
+	proxyRawExportStatusInvalidState
+	proxyRawExportStatusBackendError
+	proxyRawExportStatusBufferTooSmall
+)
+
+type proxyRawExportRequest struct {
+	profileHash    *string
+	revisionHash   *string
+	sessionHash    *string
+	generation     uint64
+	selectableOnly uint8
+	groupName      *string
+	memberName     *string
+}
+
+type proxyRawExportBuffer struct {
+	output       []byte
+	outputLength *uint64
+}
+
+type proxyRawExportResult struct {
+	status    proxyRawExportStatus
+	errorCode string
+}
+
+type proxyMutationResult struct {
+	status  int
+	message string
+}
+
+const (
+	delayBridgeInvalidErrorCode     = "PROXY_DELAY_BRIDGE_INVALID"
+	delayJobNotFoundErrorCode       = "PROXY_DELAY_JOB_NOT_FOUND"
+	proxyMutationBackendErrorStatus = int(C.CMFA_BACKEND_ERROR)
+)
+
+func reportTunStartStage(stage string) {
+	runtimeLogs.Publish(runtimepkg.RuntimeLog{
+		Level:    runtimepkg.LogLevelInfo,
+		Category: "runtime.tun.stage",
+		Message:  stage,
+	})
+}
 
 func (backendHostSocketProtector) ProtectSocket(fd int, timeout time.Duration) error {
 	if C.cmfa_host_protect_socket_bridge_available() == 0 {
@@ -284,7 +386,29 @@ func (backendHostEventSink) Publish(event runtimepkg.RuntimeEvent) {
 	if event.TraceID == "" && !(event.Kind == "runtime.socket_protect_failed" && event.Code == "VPN_SOCKET_PROTECT_FAILED") {
 		return
 	}
-	_ = hostRuntimeEventBridge(event)
+	if err := hostRuntimeEventBridge(event); err != nil && isFixedTunPacketDiagnostic(event) {
+		runtimeLogs.Publish(runtimepkg.RuntimeLog{
+			Level:    runtimepkg.LogLevelInfo,
+			Category: "runtime.tun.packet-diagnostic",
+			Message:  event.Protocol,
+		})
+	}
+}
+
+func isFixedTunPacketDiagnostic(event runtimepkg.RuntimeEvent) bool {
+	if event.Kind != "tun.diagnostic" || event.Ingress != "diagnostic" || event.Message != event.Protocol {
+		return false
+	}
+	switch event.Protocol {
+	case "tun.packet.read-loop-enter",
+		"tun.packet.read-would-block",
+		"tun.packet.read-failed",
+		"tun.packet.raw-read",
+		"tun.packet.gvisor-inject":
+		return true
+	default:
+		return false
+	}
 }
 
 var hostRuntimeEventBridge = emitRuntimeEventToHost
@@ -327,15 +451,23 @@ func emitRuntimeEventToHost(event runtimepkg.RuntimeEvent) error {
 	return fmt.Errorf("host runtime event bridge failed with status %d", int(status))
 }
 
+func buildLocalStartOptions(configPath string, mixedPort uint32) runtimepkg.StartOptions {
+	socksPort := uint64(0)
+	if mixedPort < 65535 {
+		socksPort = uint64(mixedPort) + 1
+	}
+	return runtimepkg.StartOptions{
+		ConfigPath:         configPath,
+		HTTPListenAddress:  "127.0.0.1:" + strconv.FormatUint(uint64(mixedPort), 10),
+		SOCKSListenAddress: "127.0.0.1:" + strconv.FormatUint(socksPort, 10),
+	}
+}
+
 func buildTunStartOptions(configPath string, mixedPort uint32, sessionID string, tunFD int, platformAPILevel uint32, processProtected bool) runtimepkg.TunStartOptions {
 	return runtimepkg.TunStartOptions{
-		SessionID: sessionID,
-		TunFD:     tunFD,
-		Base: runtimepkg.StartOptions{
-			ConfigPath:         configPath,
-			HTTPListenAddress:  "127.0.0.1:" + strconv.FormatUint(uint64(mixedPort), 10),
-			SOCKSListenAddress: "127.0.0.1:0",
-		},
+		SessionID:        sessionID,
+		TunFD:            tunFD,
+		Base:             buildLocalStartOptions(configPath, mixedPort),
 		PlatformAPILevel: int(platformAPILevel),
 		ProcessProtected: processProtected,
 	}
@@ -350,23 +482,46 @@ func goBuildInfoJSON() string {
 }
 
 func loadConfigForLocalProxy(configPath string) error {
+	managedConfigPath := filepath.IsAbs(configPath)
 	sandboxRoot, candidate, err := configSandbox(configPath)
 	if err != nil {
 		return err
 	}
 
-	loader := configpkg.NewLoader(sandboxRoot)
-	return loader.Load(candidate)
+	loader := newLegacyRelativeConfigLoader(sandboxRoot)
+	if managedConfigPath {
+		loader = newManagedConfigLoader(sandboxRoot)
+	}
+	return loader.LoadForLocalProxy(candidate)
+}
+
+func validateConfigForNative(configPath string) error {
+	managedConfigPath := filepath.IsAbs(configPath)
+	sandboxRoot, candidate, err := configSandbox(configPath)
+	if err != nil {
+		return err
+	}
+
+	if managedConfigPath {
+		return validateManagedConfig(sandboxRoot, candidate)
+	}
+	return validateLegacyRelativeConfig(sandboxRoot, candidate)
+}
+
+func configStatus(err error) C.cmfa_status {
+	switch {
+	case err == nil:
+		return C.CMFA_OK
+	case errors.Is(err, configpkg.ErrContentURIUnsupported), errors.Is(err, configpkg.ErrPathOutsideSandbox), errors.Is(err, configpkg.ErrManagedConfigUnavailable):
+		return C.CMFA_INVALID_ARGUMENT
+	default:
+		return C.CMFA_BACKEND_ERROR
+	}
 }
 
 func configSandbox(configPath string) (string, string, error) {
 	if filepath.IsAbs(configPath) {
-		dir := filepath.Dir(configPath)
-		base := filepath.Base(configPath)
-		if base == "." || base == string(filepath.Separator) {
-			return "", "", errors.New("config path must name a file")
-		}
-		return dir, base, nil
+		return configpkg.ResolveManagedConfigPath(configPath)
 	}
 
 	wd, err := os.Getwd()
@@ -374,6 +529,10 @@ func configSandbox(configPath string) (string, string, error) {
 		return "", "", err
 	}
 	return wd, configPath, nil
+}
+
+func nonAuthoritativePrepareHome(string) error {
+	return nil
 }
 
 func setError(errorOut *C.cmfa_error, status C.cmfa_status, message string) {
@@ -442,6 +601,30 @@ func encodeLogLevel(level runtimepkg.LogLevel) C.cmfa_log_level {
 	}
 }
 
+func encodeRuntimeMode(mode runtimecontrol.Mode) C.cmfa_runtime_mode {
+	switch mode {
+	case runtimecontrol.ModeGlobal:
+		return C.CMFA_MODE_GLOBAL
+	case runtimecontrol.ModeDirect:
+		return C.CMFA_MODE_DIRECT
+	default:
+		return C.CMFA_MODE_RULE
+	}
+}
+
+func decodeRuntimeMode(mode C.cmfa_runtime_mode) (runtimecontrol.Mode, error) {
+	switch mode {
+	case C.CMFA_MODE_RULE:
+		return runtimecontrol.ModeRule, nil
+	case C.CMFA_MODE_GLOBAL:
+		return runtimecontrol.ModeGlobal, nil
+	case C.CMFA_MODE_DIRECT:
+		return runtimecontrol.ModeDirect, nil
+	default:
+		return runtimecontrol.ModeRule, runtimecontrol.ErrInvalidMode
+	}
+}
+
 func copyCStringBuffer(target *C.char, capacity C.size_t, value string) {
 	if target == nil || capacity == 0 {
 		return
@@ -504,10 +687,18 @@ func writeTunSnapshot(snapshot *C.cmfa_tun_snapshot, source runtimepkg.TunSnapsh
 	copyCStringBuffer(C.cmfa_tun_snapshot_failure_detail(snapshot), C.CMFA_MAX_TUN_FAILURE_DETAIL_BYTES, source.Failure.Detail)
 }
 
+func sanitizeTunTraceForBridge(source runtimepkg.TunTrace) runtimepkg.TunTrace {
+	sanitized := source
+	sanitized.SourceAddress = ""
+	sanitized.DestinationAddress = ""
+	return sanitized
+}
+
 func writeTunTrace(trace *C.cmfa_tun_trace, source runtimepkg.TunTrace) {
 	if trace == nil {
 		return
 	}
+	source = sanitizeTunTraceForBridge(source)
 	*trace = C.cmfa_tun_trace{}
 	trace.struct_size = C.uint32_t(C.sizeof_cmfa_tun_trace)
 	copyCStringBuffer(C.cmfa_tun_trace_session_id(trace), C.CMFA_MAX_TUN_SESSION_ID_BYTES, source.SessionID)
@@ -518,6 +709,10 @@ func writeTunTrace(trace *C.cmfa_tun_trace, source runtimepkg.TunTrace) {
 	copyCStringBuffer(C.cmfa_tun_trace_destination_address(trace), C.CMFA_MAX_TUN_ADDRESS_BYTES, source.DestinationAddress)
 	copyCStringBuffer(C.cmfa_tun_trace_hashed_tuple(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.HashedTuple)
 	copyCStringBuffer(C.cmfa_tun_trace_correlation_hash(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.CorrelationHash)
+	copyCStringBuffer(C.cmfa_tun_trace_destination_hash(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.DestinationHash)
+	copyCStringBuffer(C.cmfa_tun_trace_outbound_terminal_hash(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.OutboundTerminalHash)
+	copyCStringBuffer(C.cmfa_tun_trace_outbound_chain_hash(trace), C.CMFA_MAX_TUN_HASH_BYTES, source.OutboundChainHash)
+	trace.outbound_chain_length = C.uint32_t(source.OutboundChainLength)
 }
 
 func writeTunTraceCollection(collection *C.cmfa_tun_trace_collection, traces []runtimepkg.TunTrace) {
@@ -635,6 +830,12 @@ type runtimeLogEnvelope struct {
 }
 
 func encodeRuntimeLogMessage(log runtimepkg.RuntimeLog) string {
+	if log.Category == "runtime.tun.stage" {
+		if isAllowedTunStartStage(log.Message) {
+			return log.Message
+		}
+		return `{"category":"runtime.tun.stage.invalid","message":"invalid tun stage"}`
+	}
 	payload, err := json.Marshal(runtimeLogEnvelope{
 		Category: log.Category,
 		Message:  log.Message,
@@ -644,6 +845,36 @@ func encodeRuntimeLogMessage(log runtimepkg.RuntimeLog) string {
 		return `{"category":"runtime.log.encode_failed","message":"failed to encode runtime log"}`
 	}
 	return string(payload)
+}
+
+func isAllowedTunStartStage(stage string) bool {
+	switch stage {
+	case "tun.prepare.begin",
+		"tun.prepare.ok",
+		"tun.prepare.failed",
+		"tun.http-listener.begin",
+		"tun.http-listener.ok",
+		"tun.http-listener.failed",
+		"tun.socks-listener.begin",
+		"tun.socks-listener.ok",
+		"tun.socks-listener.failed",
+		"tun.listener.begin",
+		"tun.listener.ok",
+		"tun.listener.failure.interface",
+		"tun.listener.failure.stack-create",
+		"tun.listener.failure.stack-start",
+		"tun.listener.failure.unknown-scope",
+		"tun.listener.failure.bad-fd",
+		"tun.listener.failure.permission",
+		"tun.listener.failure.invalid",
+		"tun.listener.failure.unsupported",
+		"tun.listener.failure.io",
+		"tun.listener.failure.unknown-cause",
+		"tun.listener.failed":
+		return true
+	default:
+		return false
+	}
 }
 
 func failureMessage(snapshot runtimepkg.Snapshot, err error) string {
@@ -686,6 +917,556 @@ func tunStatus(snapshot runtimepkg.TunSnapshot, err error) C.cmfa_status {
 	}
 }
 
+func currentProxygroupsService() proxygroupsService {
+	proxygroupsServiceMu.RLock()
+	defer proxygroupsServiceMu.RUnlock()
+	return proxygroupsRuntimeService
+}
+
+func currentProxyDelayService() proxyDelayService {
+	proxyDelayServiceMu.RLock()
+	defer proxyDelayServiceMu.RUnlock()
+	return proxyDelayRuntimeService
+}
+
+func proxyExportAccessibleBytes(capacity uint64) int {
+	if capacity == 0 {
+		return 0
+	}
+
+	limit := uint64(proxygroups.MaxResponseBytes + 1)
+	if capacity > limit {
+		capacity = limit
+	}
+	return int(capacity)
+}
+
+func proxyExportBufferFromC(output *C.char, outputCapacity C.size_t, outputLength *C.size_t) (proxyRawExportBuffer, *uint64) {
+	var goOutputLength *uint64
+	var lengthValue uint64
+	if outputLength != nil {
+		goOutputLength = &lengthValue
+	}
+
+	buffer := proxyRawExportBuffer{outputLength: goOutputLength}
+	size := proxyExportAccessibleBytes(uint64(outputCapacity))
+	if output != nil && size > 0 {
+		buffer.output = unsafe.Slice((*byte)(unsafe.Pointer(output)), size)
+	}
+
+	return buffer, goOutputLength
+}
+
+func cStringToGoStringPointer(value *C.char) *string {
+	if value == nil {
+		return nil
+	}
+
+	goValue := C.GoString(value)
+	return &goValue
+}
+
+func toCProxyRawExportStatus(status proxyRawExportStatus) C.cmfa_status {
+	switch status {
+	case proxyRawExportStatusOK:
+		return C.CMFA_OK
+	case proxyRawExportStatusInvalidArgument:
+		return C.CMFA_INVALID_ARGUMENT
+	case proxyRawExportStatusInvalidUTF8:
+		return C.CMFA_INVALID_UTF8
+	case proxyRawExportStatusOutOfRange:
+		return C.CMFA_OUT_OF_RANGE
+	case proxyRawExportStatusInvalidState:
+		return C.CMFA_INVALID_STATE
+	case proxyRawExportStatusBackendError:
+		return C.CMFA_BACKEND_ERROR
+	case proxyRawExportStatusBufferTooSmall:
+		return C.CMFA_BUFFER_TOO_SMALL
+	default:
+		return C.CMFA_BACKEND_ERROR
+	}
+}
+
+func writeProxyRawExportResult(outputLength *C.size_t, goOutputLength *uint64, errorOut *C.cmfa_error, result proxyRawExportResult) C.cmfa_status {
+	if outputLength != nil {
+		if goOutputLength != nil {
+			*outputLength = C.size_t(*goOutputLength)
+		} else {
+			*outputLength = 0
+		}
+	}
+
+	status := toCProxyRawExportStatus(result.status)
+	if result.status == proxyRawExportStatusOK {
+		clearError(errorOut)
+		return status
+	}
+
+	setError(errorOut, status, result.errorCode)
+	return status
+}
+
+func executeProxyGroupsExport(request proxyRawExportRequest, buffer proxyRawExportBuffer) proxyRawExportResult {
+	return executeProxyRawExport(request, buffer, func(ctx proxygroups.QueryContext) ([]byte, error) {
+		return currentProxygroupsService().ListGroups(ctx, request.selectableOnly == 1)
+	}, false, false)
+}
+
+func executeProxyGroupExport(request proxyRawExportRequest, buffer proxyRawExportBuffer) proxyRawExportResult {
+	return executeProxyRawExport(request, buffer, func(ctx proxygroups.QueryContext) ([]byte, error) {
+		return currentProxygroupsService().QueryGroup(ctx, *request.groupName)
+	}, true, false)
+}
+
+func executeProxySelectExport(request proxyRawExportRequest, buffer proxyRawExportBuffer) proxyRawExportResult {
+	return executeProxyRawExport(request, buffer, func(ctx proxygroups.QueryContext) ([]byte, error) {
+		return currentProxygroupsService().Select(ctx, *request.groupName, *request.memberName)
+	}, true, true)
+}
+
+func executeProxyRawExport(
+	request proxyRawExportRequest,
+	buffer proxyRawExportBuffer,
+	invoke func(proxygroups.QueryContext) ([]byte, error),
+	requireGroupName bool,
+	requireMemberName bool,
+) proxyRawExportResult {
+	if buffer.outputLength != nil {
+		*buffer.outputLength = 0
+	}
+	if len(buffer.output) > 0 {
+		buffer.output[0] = 0
+	}
+	if buffer.outputLength == nil || len(buffer.output) == 0 {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusInvalidArgument,
+			errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+		}
+	}
+
+	ctx, status, errorCode := buildProxyQueryContext(request)
+	if status != proxyRawExportStatusOK {
+		return proxyRawExportResult{status: status, errorCode: errorCode}
+	}
+	if request.selectableOnly != 0 && request.selectableOnly != 1 {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusInvalidArgument,
+			errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+		}
+	}
+	if status, errorCode := validateProxyExportNames(request, requireGroupName, requireMemberName); status != proxyRawExportStatusOK {
+		return proxyRawExportResult{status: status, errorCode: errorCode}
+	}
+
+	payload, err := invoke(ctx)
+	if err != nil {
+		return mapProxyRawExportError(request, err)
+	}
+	if len(payload) > proxygroups.MaxResponseBytes {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusOutOfRange,
+			errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+		}
+	}
+	if status := writeProxyRawExportPayload(buffer, payload); status != proxyRawExportStatusOK {
+		return proxyRawExportResult{
+			status:    status,
+			errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+		}
+	}
+	return proxyRawExportResult{status: proxyRawExportStatusOK}
+}
+
+func buildProxyQueryContext(request proxyRawExportRequest) (proxygroups.QueryContext, proxyRawExportStatus, string) {
+	profileHash, status, errorCode := normalizeProxyRequiredString(request.profileHash)
+	if status != proxyRawExportStatusOK {
+		return proxygroups.QueryContext{}, status, errorCode
+	}
+	revisionHash, status, errorCode := normalizeProxyRequiredString(request.revisionHash)
+	if status != proxyRawExportStatusOK {
+		return proxygroups.QueryContext{}, status, errorCode
+	}
+
+	sessionHash, status, errorCode := normalizeProxyOptionalString(request.sessionHash)
+	if status != proxyRawExportStatusOK {
+		return proxygroups.QueryContext{}, status, errorCode
+	}
+
+	ctx := proxygroups.QueryContext{
+		ProfileHash:  profileHash,
+		RevisionHash: revisionHash,
+		SessionHash:  sessionHash,
+		Generation:   request.generation,
+	}
+	if err := ctx.Validate(); err != nil {
+		if isProxyModelError(err, proxygroups.ErrCodeInvalidQueryContext) {
+			return proxygroups.QueryContext{}, proxyRawExportStatusInvalidArgument, string(proxygroups.ErrCodeProxyBridgeInvalid)
+		}
+		return proxygroups.QueryContext{}, proxyRawExportStatusBackendError, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	return ctx, proxyRawExportStatusOK, ""
+}
+
+func validateProxyExportNames(request proxyRawExportRequest, requireGroupName bool, requireMemberName bool) (proxyRawExportStatus, string) {
+	if requireGroupName {
+		status, errorCode := validateProxyNamePointer(request.groupName)
+		if status != proxyRawExportStatusOK {
+			return status, errorCode
+		}
+	}
+	if requireMemberName {
+		status, errorCode := validateProxyNamePointer(request.memberName)
+		if status != proxyRawExportStatusOK {
+			return status, errorCode
+		}
+	}
+	return proxyRawExportStatusOK, ""
+}
+
+func normalizeProxyRequiredString(value *string) (string, proxyRawExportStatus, string) {
+	if value == nil {
+		return "", proxyRawExportStatusInvalidArgument, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	if !utf8.ValidString(*value) {
+		return "", proxyRawExportStatusInvalidUTF8, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	return *value, proxyRawExportStatusOK, ""
+}
+
+func normalizeProxyOptionalString(value *string) (*string, proxyRawExportStatus, string) {
+	if value == nil {
+		return nil, proxyRawExportStatusOK, ""
+	}
+	if !utf8.ValidString(*value) {
+		return nil, proxyRawExportStatusInvalidUTF8, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	if *value == "" {
+		return nil, proxyRawExportStatusOK, ""
+	}
+	copy := *value
+	return &copy, proxyRawExportStatusOK, ""
+}
+
+func validateProxyNamePointer(value *string) (proxyRawExportStatus, string) {
+	if value == nil {
+		return proxyRawExportStatusInvalidArgument, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	if !utf8.ValidString(*value) {
+		return proxyRawExportStatusInvalidUTF8, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	if *value == "" {
+		return proxyRawExportStatusInvalidArgument, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	if len(*value) > proxygroups.MaxNameUTF8Bytes {
+		return proxyRawExportStatusOutOfRange, string(proxygroups.ErrCodeProxyBridgeInvalid)
+	}
+	for _, r := range *value {
+		if unicode.IsControl(r) {
+			return proxyRawExportStatusInvalidArgument, string(proxygroups.ErrCodeProxyBridgeInvalid)
+		}
+	}
+	return proxyRawExportStatusOK, ""
+}
+
+func writeProxyRawExportPayload(buffer proxyRawExportBuffer, payload []byte) proxyRawExportStatus {
+	required := len(payload)
+	if len(buffer.output) < required+1 {
+		*buffer.outputLength = uint64(required)
+		return proxyRawExportStatusBufferTooSmall
+	}
+
+	copy(buffer.output[:required], payload)
+	buffer.output[required] = 0
+	*buffer.outputLength = uint64(required)
+	return proxyRawExportStatusOK
+}
+
+func mapProxyRawExportError(request proxyRawExportRequest, err error) proxyRawExportResult {
+	var modelErr *proxygroups.ModelError
+	if errors.As(err, &modelErr) {
+		switch modelErr.Code {
+		case proxygroups.ErrCodeProxyRuntimeNotReady:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidState,
+				errorCode: string(proxygroups.ErrCodeProxyRuntimeNotReady),
+			}
+		case proxygroups.ErrCodeProxyGroupNotFound:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidArgument,
+				errorCode: string(proxygroups.ErrCodeProxyGroupNotFound),
+			}
+		case proxygroups.ErrCodeProxyGroupNotSelectable:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidArgument,
+				errorCode: string(proxygroups.ErrCodeProxyGroupNotSelectable),
+			}
+		case proxygroups.ErrCodeProxyMemberNotFound:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidArgument,
+				errorCode: string(proxygroups.ErrCodeProxyMemberNotFound),
+			}
+		case proxygroups.ErrCodeProxySelectionFailed:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: string(proxygroups.ErrCodeProxySelectionFailed),
+			}
+		case proxygroups.ErrCodeResponseTooLarge:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusOutOfRange,
+				errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+			}
+		default:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: string(proxygroups.ErrCodeProxyBridgeInvalid),
+			}
+		}
+	}
+
+	errorCode := proxygroups.ErrCodeProxyBridgeInvalid
+	if request.memberName != nil {
+		errorCode = proxygroups.ErrCodeProxySelectionFailed
+	}
+	return proxyRawExportResult{
+		status:    proxyRawExportStatusBackendError,
+		errorCode: string(errorCode),
+	}
+}
+
+func isProxyModelError(err error, code proxygroups.ErrorCode) bool {
+	var modelErr *proxygroups.ModelError
+	return errors.As(err, &modelErr) && modelErr.Code == code
+}
+
+func executeProxyDelayStartExport(request proxyRawExportRequest, buffer proxyRawExportBuffer) (result proxyRawExportResult) {
+	defer func() {
+		if recover() != nil {
+			result = proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		}
+	}()
+
+	if buffer.outputLength != nil {
+		*buffer.outputLength = 0
+	}
+	if len(buffer.output) > 0 {
+		buffer.output[0] = 0
+	}
+	if buffer.outputLength == nil || len(buffer.output) == 0 {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusInvalidArgument,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+
+	ctx, status, _ := buildProxyQueryContext(request)
+	if status != proxyRawExportStatusOK {
+		return proxyRawExportResult{
+			status:    status,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+	if status, _ := validateProxyNamePointer(request.groupName); status != proxyRawExportStatusOK {
+		return proxyRawExportResult{
+			status:    status,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+
+	snapshot, err := currentProxyDelayService().Start(ctx, *request.groupName)
+	if err != nil {
+		return mapProxyDelayExportError(err)
+	}
+	return marshalProxyDelaySnapshot(buffer, snapshot)
+}
+
+func executeProxyDelaySnapshotExport(jobID *string, buffer proxyRawExportBuffer) (result proxyRawExportResult) {
+	defer func() {
+		if recover() != nil {
+			result = proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		}
+	}()
+
+	if buffer.outputLength != nil {
+		*buffer.outputLength = 0
+	}
+	if len(buffer.output) > 0 {
+		buffer.output[0] = 0
+	}
+	if buffer.outputLength == nil || len(buffer.output) == 0 {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusInvalidArgument,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+
+	normalizedJobID, status, errorCode := normalizeProxyDelayJobID(jobID)
+	if status != proxyRawExportStatusOK {
+		return proxyRawExportResult{status: status, errorCode: errorCode}
+	}
+
+	snapshot, err := currentProxyDelayService().Read(normalizedJobID)
+	if err != nil {
+		return mapProxyDelayExportError(err)
+	}
+	return marshalProxyDelaySnapshot(buffer, snapshot)
+}
+
+func executeProxyDelayCancelExport(jobID *string, buffer proxyRawExportBuffer) (result proxyRawExportResult) {
+	defer func() {
+		if recover() != nil {
+			result = proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		}
+	}()
+
+	if buffer.outputLength != nil {
+		*buffer.outputLength = 0
+	}
+	if len(buffer.output) > 0 {
+		buffer.output[0] = 0
+	}
+	if buffer.outputLength == nil || len(buffer.output) == 0 {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusInvalidArgument,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+
+	normalizedJobID, status, errorCode := normalizeProxyDelayJobID(jobID)
+	if status != proxyRawExportStatusOK {
+		return proxyRawExportResult{status: status, errorCode: errorCode}
+	}
+
+	snapshot, err := currentProxyDelayService().Cancel(normalizedJobID)
+	if err != nil {
+		return mapProxyDelayExportError(err)
+	}
+	return marshalProxyDelaySnapshot(buffer, snapshot)
+}
+
+func normalizeProxyDelayJobID(value *string) (string, proxyRawExportStatus, string) {
+	if value == nil {
+		return "", proxyRawExportStatusInvalidArgument, delayBridgeInvalidErrorCode
+	}
+	if !utf8.ValidString(*value) {
+		return "", proxyRawExportStatusInvalidUTF8, delayBridgeInvalidErrorCode
+	}
+	if len(*value) != proxygroups.MaxDelayJobIDBytes {
+		return "", proxyRawExportStatusInvalidArgument, delayBridgeInvalidErrorCode
+	}
+	for _, r := range *value {
+		if (r < '0' || r > '9') && (r < 'a' || r > 'f') {
+			return "", proxyRawExportStatusInvalidArgument, delayBridgeInvalidErrorCode
+		}
+	}
+	return *value, proxyRawExportStatusOK, ""
+}
+
+func marshalProxyDelaySnapshot(buffer proxyRawExportBuffer, snapshot proxygroups.DelayTestSnapshot) proxyRawExportResult {
+	payload, err := snapshot.MarshalJSONBytes()
+	if err != nil {
+		return mapProxyDelayExportError(err)
+	}
+	if len(payload) > proxygroups.MaxResponseBytes {
+		return proxyRawExportResult{
+			status:    proxyRawExportStatusOutOfRange,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+	if status := writeProxyRawExportPayload(buffer, payload); status != proxyRawExportStatusOK {
+		return proxyRawExportResult{
+			status:    status,
+			errorCode: delayBridgeInvalidErrorCode,
+		}
+	}
+	return proxyRawExportResult{status: proxyRawExportStatusOK}
+}
+
+func mapProxyDelayExportError(err error) proxyRawExportResult {
+	var modelErr *proxygroups.ModelError
+	if errors.As(err, &modelErr) {
+		switch modelErr.Code {
+		case proxygroups.ErrCodeDelayJobNotFound:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidState,
+				errorCode: delayJobNotFoundErrorCode,
+			}
+		case proxygroups.ErrCodeProxyGroupNotFound:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidArgument,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		case proxygroups.ErrCodeProxyRuntimeNotReady:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusInvalidState,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		case proxygroups.ErrCodeResponseTooLarge:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusOutOfRange,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		default:
+			return proxyRawExportResult{
+				status:    proxyRawExportStatusBackendError,
+				errorCode: delayBridgeInvalidErrorCode,
+			}
+		}
+	}
+	return proxyRawExportResult{
+		status:    proxyRawExportStatusBackendError,
+		errorCode: delayBridgeInvalidErrorCode,
+	}
+}
+
+func drainProxyDelayJobsForMutation() error {
+	var err error
+	recovered := false
+	func() {
+		defer func() {
+			if recover() != nil {
+				recovered = true
+			}
+		}()
+		err = currentProxyDelayService().CancelActiveAndDrain()
+	}()
+	if recovered {
+		return errors.New(delayBridgeInvalidErrorCode)
+	}
+	return err
+}
+
+func executeAfterProxyDelayDrain(initOutput func(), mutate func() proxyMutationResult) proxyMutationResult {
+	if initOutput != nil {
+		initOutput()
+	}
+	if err := drainProxyDelayJobsForMutation(); err != nil {
+		return proxyMutationResult{
+			status:  proxyMutationBackendErrorStatus,
+			message: delayBridgeInvalidErrorCode,
+		}
+	}
+	return mutate()
+}
+
+func writeProxyMutationResult(errorOut *C.cmfa_error, result proxyMutationResult) C.cmfa_status {
+	status := C.cmfa_status(result.status)
+	if result.status == int(C.CMFA_OK) {
+		clearError(errorOut)
+		return C.CMFA_OK
+	}
+	setError(errorOut, status, result.message)
+	return status
+}
+
 //export cmfa_mihomo_core_version_cstr_v1
 func cmfa_mihomo_core_version_cstr_v1() *C.char {
 	coreVersionOnce.Do(func() {
@@ -704,6 +1485,160 @@ func cmfa_mihomo_core_build_info_json_cstr_v1() *C.char {
 	return buildInfoCStr
 }
 
+//export cmfa_mihomo_validate_config_v1
+func cmfa_mihomo_validate_config_v1(configPath *C.char, errorOut *C.cmfa_error) C.cmfa_status {
+	if configPath == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "config path must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	err := validateConfigForNative(C.GoString(configPath))
+	status := configStatus(err)
+	if err != nil {
+		setError(errorOut, status, err.Error())
+		return status
+	}
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_load_config_v1
+func cmfa_mihomo_load_config_v1(configPath *C.char, errorOut *C.cmfa_error) C.cmfa_status {
+	if configPath == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "config path must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+
+	return writeProxyMutationResult(errorOut, executeAfterProxyDelayDrain(nil, func() proxyMutationResult {
+		err := loadConfigForLocalProxy(C.GoString(configPath))
+		status := configStatus(err)
+		if err != nil {
+			return proxyMutationResult{status: int(status), message: err.Error()}
+		}
+		return proxyMutationResult{status: int(C.CMFA_OK)}
+	}))
+}
+
+//export cmfa_mihomo_proxy_groups_v1
+func cmfa_mihomo_proxy_groups_v1(
+	profileHash *C.char,
+	revisionHash *C.char,
+	sessionHash *C.char,
+	generation C.uint64_t,
+	selectableOnly C.uint8_t,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxyGroupsExport(proxyRawExportRequest{
+		profileHash:    cStringToGoStringPointer(profileHash),
+		revisionHash:   cStringToGoStringPointer(revisionHash),
+		sessionHash:    cStringToGoStringPointer(sessionHash),
+		generation:     uint64(generation),
+		selectableOnly: uint8(selectableOnly),
+	}, buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
+//export cmfa_mihomo_proxy_group_v1
+func cmfa_mihomo_proxy_group_v1(
+	profileHash *C.char,
+	revisionHash *C.char,
+	sessionHash *C.char,
+	generation C.uint64_t,
+	groupName *C.char,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxyGroupExport(proxyRawExportRequest{
+		profileHash:  cStringToGoStringPointer(profileHash),
+		revisionHash: cStringToGoStringPointer(revisionHash),
+		sessionHash:  cStringToGoStringPointer(sessionHash),
+		generation:   uint64(generation),
+		groupName:    cStringToGoStringPointer(groupName),
+	}, buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
+//export cmfa_mihomo_proxy_select_v1
+func cmfa_mihomo_proxy_select_v1(
+	profileHash *C.char,
+	revisionHash *C.char,
+	sessionHash *C.char,
+	generation C.uint64_t,
+	groupName *C.char,
+	memberName *C.char,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxySelectExport(proxyRawExportRequest{
+		profileHash:  cStringToGoStringPointer(profileHash),
+		revisionHash: cStringToGoStringPointer(revisionHash),
+		sessionHash:  cStringToGoStringPointer(sessionHash),
+		generation:   uint64(generation),
+		groupName:    cStringToGoStringPointer(groupName),
+		memberName:   cStringToGoStringPointer(memberName),
+	}, buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
+//export cmfa_mihomo_proxy_delay_start_v1
+func cmfa_mihomo_proxy_delay_start_v1(
+	profileHash *C.char,
+	revisionHash *C.char,
+	sessionHash *C.char,
+	generation C.uint64_t,
+	groupName *C.char,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxyDelayStartExport(proxyRawExportRequest{
+		profileHash:  cStringToGoStringPointer(profileHash),
+		revisionHash: cStringToGoStringPointer(revisionHash),
+		sessionHash:  cStringToGoStringPointer(sessionHash),
+		generation:   uint64(generation),
+		groupName:    cStringToGoStringPointer(groupName),
+	}, buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
+//export cmfa_mihomo_proxy_delay_snapshot_v1
+func cmfa_mihomo_proxy_delay_snapshot_v1(
+	jobID *C.char,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxyDelaySnapshotExport(cStringToGoStringPointer(jobID), buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
+//export cmfa_mihomo_proxy_delay_cancel_v1
+func cmfa_mihomo_proxy_delay_cancel_v1(
+	jobID *C.char,
+	output *C.char,
+	outputCapacity C.size_t,
+	outputLength *C.size_t,
+	errorOut *C.cmfa_error,
+) C.cmfa_status {
+	buffer, goOutputLength := proxyExportBufferFromC(output, outputCapacity, outputLength)
+	result := executeProxyDelayCancelExport(cStringToGoStringPointer(jobID), buffer)
+	return writeProxyRawExportResult(outputLength, goOutputLength, errorOut, result)
+}
+
 //export cmfa_mihomo_start_local_v1
 func cmfa_mihomo_start_local_v1(configPath *C.char,
 	mixedPort C.uint32_t,
@@ -715,31 +1650,29 @@ func cmfa_mihomo_start_local_v1(configPath *C.char,
 		return C.CMFA_INVALID_ARGUMENT
 	}
 
-	result, err := localProxy.Start(runtimepkg.StartOptions{
-		ConfigPath:         C.GoString(configPath),
-		HTTPListenAddress:  "127.0.0.1:" + strconv.FormatUint(uint64(mixedPort), 10),
-		SOCKSListenAddress: "127.0.0.1:0",
-	})
-	writeSnapshot(snapshot, result)
-	status := runtimeStatus(err)
-	if err != nil {
-		setError(errorOut, status, failureMessage(result, err))
-		return status
-	}
-	clearError(errorOut)
-	return C.CMFA_OK
+	return writeProxyMutationResult(errorOut, executeAfterProxyDelayDrain(func() {
+		writeSnapshot(snapshot, runtimepkg.Snapshot{})
+	}, func() proxyMutationResult {
+		result, err := localProxy.Start(buildLocalStartOptions(C.GoString(configPath), uint32(mixedPort)))
+		writeSnapshot(snapshot, result)
+		status := runtimeStatus(err)
+		if err != nil {
+			return proxyMutationResult{status: int(status), message: failureMessage(result, err)}
+		}
+		return proxyMutationResult{status: int(C.CMFA_OK)}
+	}))
 }
 
 //export cmfa_mihomo_stop_v1
 func cmfa_mihomo_stop_v1(errorOut *C.cmfa_error) C.cmfa_status {
-	result, err := localProxy.Stop()
-	status := runtimeStatus(err)
-	if err != nil {
-		setError(errorOut, status, failureMessage(result, err))
-		return status
-	}
-	clearError(errorOut)
-	return C.CMFA_OK
+	return writeProxyMutationResult(errorOut, executeAfterProxyDelayDrain(nil, func() proxyMutationResult {
+		result, err := localProxy.Stop()
+		status := runtimeStatus(err)
+		if err != nil {
+			return proxyMutationResult{status: int(status), message: failureMessage(result, err)}
+		}
+		return proxyMutationResult{status: int(C.CMFA_OK)}
+	}))
 }
 
 //export cmfa_mihomo_runtime_state_v1
@@ -754,6 +1687,41 @@ func cmfa_mihomo_runtime_state_v1(snapshot *C.cmfa_runtime_snapshot, errorOut *C
 	return C.CMFA_OK
 }
 
+//export cmfa_mihomo_runtime_mode_v1
+func cmfa_mihomo_runtime_mode_v1(modeOut *C.cmfa_runtime_mode, errorOut *C.cmfa_error) C.cmfa_status {
+	if modeOut == nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "runtime mode output must not be null")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+	mode, err := runtimeModeService.Query()
+	if err != nil {
+		setError(errorOut, C.CMFA_BACKEND_ERROR, "runtime mode query failed")
+		return C.CMFA_BACKEND_ERROR
+	}
+	*modeOut = encodeRuntimeMode(mode)
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
+//export cmfa_mihomo_set_runtime_mode_v1
+func cmfa_mihomo_set_runtime_mode_v1(rawMode C.cmfa_runtime_mode, errorOut *C.cmfa_error) C.cmfa_status {
+	mode, err := decodeRuntimeMode(rawMode)
+	if err != nil {
+		setError(errorOut, C.CMFA_INVALID_ARGUMENT, "runtime mode is invalid")
+		return C.CMFA_INVALID_ARGUMENT
+	}
+	if _, err := runtimeModeService.Set(mode); err != nil {
+		if errors.Is(err, runtimecontrol.ErrInvalidMode) {
+			setError(errorOut, C.CMFA_INVALID_ARGUMENT, "runtime mode is invalid")
+			return C.CMFA_INVALID_ARGUMENT
+		}
+		setError(errorOut, C.CMFA_BACKEND_ERROR, "runtime mode switch failed")
+		return C.CMFA_BACKEND_ERROR
+	}
+	clearError(errorOut)
+	return C.CMFA_OK
+}
+
 //export cmfa_mihomo_start_tun_v1
 func cmfa_mihomo_start_tun_v1(options *C.cmfa_tun_options, snapshot *C.cmfa_tun_snapshot, errorOut *C.cmfa_error) C.cmfa_status {
 	if options == nil || snapshot == nil {
@@ -761,35 +1729,37 @@ func cmfa_mihomo_start_tun_v1(options *C.cmfa_tun_options, snapshot *C.cmfa_tun_
 		return C.CMFA_INVALID_ARGUMENT
 	}
 
-	result, err := localProxy.StartTun(buildTunStartOptions(
-		C.GoString(C.cmfa_tun_options_config_path(options)),
-		uint32(C.cmfa_tun_options_mixed_port(options)),
-		C.GoString(C.cmfa_tun_options_session_id(options)),
-		int(options.tun_fd),
-		uint32(C.cmfa_tun_options_platform_api_level(options)),
-		C.cmfa_tun_options_process_protected(options) != 0,
-	))
-	writeTunSnapshot(snapshot, result)
-	status := tunStatus(result, err)
-	if err != nil {
-		setError(errorOut, status, tunFailureMessage(result, err))
-		return status
-	}
-	clearError(errorOut)
-	return C.CMFA_OK
+	return writeProxyMutationResult(errorOut, executeAfterProxyDelayDrain(func() {
+		writeTunSnapshot(snapshot, runtimepkg.TunSnapshot{})
+	}, func() proxyMutationResult {
+		result, err := localProxy.StartTun(buildTunStartOptions(
+			C.GoString(C.cmfa_tun_options_config_path(options)),
+			uint32(C.cmfa_tun_options_mixed_port(options)),
+			C.GoString(C.cmfa_tun_options_session_id(options)),
+			int(options.tun_fd),
+			uint32(C.cmfa_tun_options_platform_api_level(options)),
+			C.cmfa_tun_options_process_protected(options) != 0,
+		))
+		writeTunSnapshot(snapshot, result)
+		status := tunStatus(result, err)
+		if err != nil {
+			return proxyMutationResult{status: int(status), message: tunFailureMessage(result, err)}
+		}
+		return proxyMutationResult{status: int(C.CMFA_OK)}
+	}))
 }
 
 //export cmfa_mihomo_stop_tun_v1
 func cmfa_mihomo_stop_tun_v1(errorOut *C.cmfa_error) C.cmfa_status {
-	_, err := localProxy.Stop()
-	result := localProxy.TunSnapshot()
-	status := tunStatus(result, err)
-	if err != nil {
-		setError(errorOut, status, tunFailureMessage(result, err))
-		return status
-	}
-	clearError(errorOut)
-	return C.CMFA_OK
+	return writeProxyMutationResult(errorOut, executeAfterProxyDelayDrain(nil, func() proxyMutationResult {
+		_, err := localProxy.Stop()
+		result := localProxy.TunSnapshot()
+		status := tunStatus(result, err)
+		if err != nil {
+			return proxyMutationResult{status: int(status), message: tunFailureMessage(result, err)}
+		}
+		return proxyMutationResult{status: int(C.CMFA_OK)}
+	}))
 }
 
 //export cmfa_mihomo_tun_runtime_state_v1

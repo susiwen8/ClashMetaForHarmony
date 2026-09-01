@@ -277,6 +277,7 @@ struct TunBackendState {
   cmfa_status close_stale_status = CMFA_OK;
   cmfa_status snapshot_status = CMFA_OK;
   cmfa_status trace_status = CMFA_OK;
+  std::string stop_error_message;
   cmfa_tun_options copied_options{};
   std::string copied_config_path;
   std::string closed_stale_session_id;
@@ -300,6 +301,7 @@ void reset_tun_backend() {
   g_tun_backend.close_stale_status = CMFA_OK;
   g_tun_backend.snapshot_status = CMFA_OK;
   g_tun_backend.trace_status = CMFA_OK;
+  g_tun_backend.stop_error_message.clear();
   g_tun_backend.copied_options = cmfa_tun_options{};
   g_tun_backend.copied_config_path.clear();
   g_tun_backend.closed_stale_session_id.clear();
@@ -316,6 +318,18 @@ void reset_tun_backend() {
   g_tun_backend.snapshot.failure.struct_size = sizeof(g_tun_backend.snapshot.failure);
   g_tun_backend.traces.struct_size = sizeof(g_tun_backend.traces);
   g_tun_backend.traces.trace_count = 2;
+  const char *destination_hashes[] = {
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa1",
+      "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2",
+  };
+  const char *terminal_hashes[] = {
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb1",
+      "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2",
+  };
+  const char *chain_hashes[] = {
+      "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc1",
+      "ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc2",
+  };
   for (uint32_t index = 0; index < g_tun_backend.traces.trace_count; index += 1) {
     auto &trace = g_tun_backend.traces.traces[index];
     trace.struct_size = sizeof(trace);
@@ -327,6 +341,10 @@ void reset_tun_backend() {
     std::strncpy(trace.destination_address, "1.1.1.1:443", sizeof(trace.destination_address) - 1);
     std::snprintf(trace.hashed_tuple, sizeof(trace.hashed_tuple), "hash-%u", index + 1);
     std::snprintf(trace.correlation_hash, sizeof(trace.correlation_hash), "corr-%u", index + 1);
+    std::strncpy(trace.destination_hash, destination_hashes[index], sizeof(trace.destination_hash) - 1);
+    std::strncpy(trace.outbound_terminal_hash, terminal_hashes[index], sizeof(trace.outbound_terminal_hash) - 1);
+    std::strncpy(trace.outbound_chain_hash, chain_hashes[index], sizeof(trace.outbound_chain_hash) - 1);
+    trace.outbound_chain_length = index + 1;
   }
 }
 
@@ -351,6 +369,11 @@ extern "C" cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_
   snapshot->mixed_port = 7890;
   return CMFA_OK;
 }
+extern "C" cmfa_status cmfa_runtime_mode_query(cmfa_runtime_mode *mode, cmfa_error *) {
+  *mode = CMFA_MODE_RULE;
+  return CMFA_OK;
+}
+extern "C" cmfa_status cmfa_runtime_mode_set(cmfa_runtime_mode, cmfa_error *) { return CMFA_OK; }
 extern "C" cmfa_status cmfa_probe_https(const cmfa_probe_request *, cmfa_probe_result **, cmfa_error *) {
   return CMFA_CORE_UNAVAILABLE;
 }
@@ -371,9 +394,16 @@ extern "C" cmfa_status cmfa_tun_start(const cmfa_tun_options *options, cmfa_tun_
   return CMFA_OK;
 }
 
-extern "C" cmfa_status cmfa_tun_stop(cmfa_error *) {
+extern "C" cmfa_status cmfa_tun_stop(cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
   g_tun_backend.stop_calls += 1;
+  if (error != nullptr && error->message != nullptr && error->capacity > 0 && !g_tun_backend.stop_error_message.empty()) {
+    const size_t limit = std::min(g_tun_backend.stop_error_message.size(), error->capacity - 1);
+    std::memcpy(error->message, g_tun_backend.stop_error_message.data(), limit);
+    error->message[limit] = '\0';
+    error->length = limit;
+    error->code = g_tun_backend.stop_status;
+  }
   return g_tun_backend.stop_status;
 }
 
@@ -1214,6 +1244,135 @@ void test_start_tun_preserves_socket_protect_failure_code() {
                "socket protect failure should preserve native code");
 }
 
+void test_stop_tun_allows_only_fixed_backend_prefixes_in_detail() {
+  reset_tun_backend();
+  std::unique_ptr<FakeEnv, void (*)(FakeEnv *)> env(create_env(), destroy_env);
+  LifecycleContext lifecycle;
+  auto addon = make_addon(env.get(), &lifecycle);
+
+  {
+    std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
+    g_tun_backend.stop_status = CMFA_BACKEND_ERROR;
+    g_tun_backend.stop_error_message = "TUN_STOP_EXECUTOR_FAILED_ERROR: secret-token";
+  }
+
+  FakeValue *promise = reinterpret_cast<FakeValue *>(cmfa::nodeaddon::stop_tun(
+      reinterpret_cast<napi_env>(env.get()),
+      reinterpret_cast<napi_callback_info>(new FakeCallbackInfo{{}, addon.get()})));
+  FakeValue *rejection = await_promise(env.get(), promise, "stopTun fixed-prefix failure should settle");
+  expect(promise->promise_rejected, "stopTun fixed-prefix failure should reject");
+  expect_equal(get_named_prop(rejection, "code")->string_value, std::string("CMFA_BACKEND_ERROR"),
+               "stopTun fixed-prefix failure should preserve backend code");
+  expect_equal(get_named_prop(rejection, "detail")->string_value, std::string("TUN_STOP_EXECUTOR_FAILED_ERROR"),
+               "stopTun should expose only the allowlisted fixed prefix");
+  expect(get_named_prop(rejection, "detail")->string_value.find("secret-token") == std::string::npos,
+         "stopTun fixed-prefix detail must not leak backend secret");
+
+  reset_tun_backend();
+  {
+    std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
+    g_tun_backend.stop_status = CMFA_BACKEND_ERROR;
+    g_tun_backend.stop_error_message = "TUN_STOP_EXECUTOR_FAILED_ERRORISH: secret-token";
+  }
+
+  FakeValue *pseudo_promise = reinterpret_cast<FakeValue *>(cmfa::nodeaddon::stop_tun(
+      reinterpret_cast<napi_env>(env.get()),
+      reinterpret_cast<napi_callback_info>(new FakeCallbackInfo{{}, addon.get()})));
+  FakeValue *pseudo_rejection = await_promise(env.get(), pseudo_promise, "stopTun pseudo-prefix failure should settle");
+  expect(pseudo_promise->promise_rejected, "stopTun pseudo-prefix failure should reject");
+  expect_equal(get_named_prop(pseudo_rejection, "detail")->string_value, std::string("TUN_STOP_CONTRACT_OTHER"),
+               "stopTun pseudo-prefix failure should map to other contract detail");
+  expect(get_named_prop(pseudo_rejection, "detail")->string_value.find("secret-token") == std::string::npos,
+         "stopTun pseudo-prefix detail must not leak backend secret");
+}
+
+void test_stop_tun_maps_contract_backend_messages_to_safe_tokens() {
+  reset_tun_backend();
+  std::unique_ptr<FakeEnv, void (*)(FakeEnv *)> env(create_env(), destroy_env);
+  LifecycleContext lifecycle;
+  auto addon = make_addon(env.get(), &lifecycle);
+
+  const struct {
+    const char *message;
+    const char *expected_detail;
+    const char *label;
+  } cases[] = {
+      {"backend stop_tun failed", "TUN_STOP_CONTRACT_BACKEND_FAILED", "exact backend failure"},
+      {"backend tun_runtime_state after stop failed", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "exact snapshot failure"},
+      {"backend tun snapshot secret-token", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "snapshot prefix failure"},
+      {"backend returned an invalid tun state", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "invalid tun state snapshot failure"},
+      {"backend tun session_id secret-token", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "tun session id snapshot failure"},
+      {"backend tun counters secret-token", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "tun counters snapshot failure"},
+      {"backend tun failure secret-token", "TUN_STOP_CONTRACT_SNAPSHOT_FAILED", "tun failure snapshot failure"},
+      {"backend tun_copy_traces after stop failed", "TUN_STOP_CONTRACT_TRACES_FAILED", "exact traces failure"},
+      {"backend tun trace secret-token", "TUN_STOP_CONTRACT_TRACES_FAILED", "trace prefix failure"},
+      {"backend tun traces secret-token", "TUN_STOP_CONTRACT_TRACES_FAILED", "traces prefix failure"},
+      {"totally different secret-token", "TUN_STOP_CONTRACT_OTHER", "other failure"},
+      {"", "TUN_STOP_CONTRACT_EMPTY", "empty failure"},
+  };
+
+  for (const auto &entry : cases) {
+    reset_tun_backend();
+    {
+      std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
+      g_tun_backend.stop_status = CMFA_BACKEND_ERROR;
+      g_tun_backend.stop_error_message = entry.message;
+    }
+
+    FakeValue *promise = reinterpret_cast<FakeValue *>(cmfa::nodeaddon::stop_tun(
+        reinterpret_cast<napi_env>(env.get()),
+        reinterpret_cast<napi_callback_info>(new FakeCallbackInfo{{}, addon.get()})));
+    FakeValue *rejection = await_promise(env.get(), promise, std::string(entry.label) + " should settle");
+    expect(promise->promise_rejected, std::string(entry.label) + " should reject");
+    expect_equal(get_named_prop(rejection, "code")->string_value, std::string("CMFA_BACKEND_ERROR"),
+                 std::string(entry.label) + " should preserve backend code");
+    expect_equal(get_named_prop(rejection, "detail")->string_value, std::string(entry.expected_detail),
+                 std::string(entry.label) + " should map to the safe contract token");
+    expect(get_named_prop(rejection, "detail")->string_value.find("secret-token") == std::string::npos,
+           std::string(entry.label) + " must not leak backend secret");
+  }
+}
+
+void test_stop_tun_maps_proxy_delay_bridge_invalid_to_safe_token() {
+  reset_tun_backend();
+  std::unique_ptr<FakeEnv, void (*)(FakeEnv *)> env(create_env(), destroy_env);
+  LifecycleContext lifecycle;
+  auto addon = make_addon(env.get(), &lifecycle);
+
+  {
+    std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
+    g_tun_backend.stop_status = CMFA_BACKEND_ERROR;
+    g_tun_backend.stop_error_message = "PROXY_DELAY_BRIDGE_INVALID";
+  }
+
+  FakeValue *promise = reinterpret_cast<FakeValue *>(cmfa::nodeaddon::stop_tun(
+      reinterpret_cast<napi_env>(env.get()),
+      reinterpret_cast<napi_callback_info>(new FakeCallbackInfo{{}, addon.get()})));
+  FakeValue *rejection = await_promise(env.get(), promise, "proxy delay bridge invalid should settle");
+  expect(promise->promise_rejected, "proxy delay bridge invalid should reject");
+  expect_equal(get_named_prop(rejection, "detail")->string_value, std::string("TUN_STOP_PROXY_DELAY_DRAIN_FAILED"),
+               "exact proxy delay bridge invalid should map to the fixed token");
+  expect(get_named_prop(rejection, "detail")->string_value.find("secret-token") == std::string::npos,
+         "proxy delay bridge invalid must not leak backend secret");
+
+  reset_tun_backend();
+  {
+    std::lock_guard<std::mutex> lock(g_tun_backend.mutex);
+    g_tun_backend.stop_status = CMFA_BACKEND_ERROR;
+    g_tun_backend.stop_error_message = "PROXY_DELAY_BRIDGE_INVALID_SUFFIX: secret-token";
+  }
+
+  FakeValue *pseudo_promise = reinterpret_cast<FakeValue *>(cmfa::nodeaddon::stop_tun(
+      reinterpret_cast<napi_env>(env.get()),
+      reinterpret_cast<napi_callback_info>(new FakeCallbackInfo{{}, addon.get()})));
+  FakeValue *pseudo_rejection = await_promise(env.get(), pseudo_promise, "proxy delay bridge invalid suffix should settle");
+  expect(pseudo_promise->promise_rejected, "proxy delay bridge invalid suffix should reject");
+  expect_equal(get_named_prop(pseudo_rejection, "detail")->string_value, std::string("TUN_STOP_CONTRACT_OTHER"),
+               "proxy delay bridge invalid suffix should fall back to other token");
+  expect(get_named_prop(pseudo_rejection, "detail")->string_value.find("secret-token") == std::string::npos,
+         "proxy delay bridge invalid suffix must not leak backend secret");
+}
+
 void test_tsfn_closing_requires_cleanup_but_does_not_settle_or_leak() {
   reset_tun_backend();
   std::unique_ptr<FakeEnv, void (*)(FakeEnv *)> env(create_env(), destroy_env);
@@ -1266,6 +1425,18 @@ void test_tun_snapshot_stop_and_trace_exports_resolve() {
   expect(traces_promise->promise_resolved, "readTunTraces should resolve");
   expect_equal(traces->array_items.size(), static_cast<size_t>(1), "afterSequence should filter one earlier trace");
   expect_equal(get_named_prop(traces->array_items[0], "sequence")->number_value, 2.0, "remaining trace should be sequence 2");
+  expect_equal(get_named_prop(traces->array_items[0], "destinationHash")->string_value,
+               std::string("aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa2"),
+               "destination hash should export");
+  expect_equal(get_named_prop(traces->array_items[0], "outboundTerminalHash")->string_value,
+               std::string("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb2"),
+               "terminal hash should export");
+  expect_equal(get_named_prop(traces->array_items[0], "outboundChainHash")->string_value,
+               std::string("ccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc2"),
+               "chain hash should export");
+  expect_equal(get_named_prop(traces->array_items[0], "outboundChainLength")->number_value,
+               2.0,
+               "chain length should export");
 
   FakeValue *stop_promise = reinterpret_cast<FakeValue *>(
       cmfa::nodeaddon::stop_tun(reinterpret_cast<napi_env>(env.get()),
@@ -1386,6 +1557,12 @@ int main() {
        test_start_tun_promise_worker_copies_input_before_backend_runs},
       {"queue_failure_and_native_error_release_resources", test_queue_failure_and_native_error_release_resources},
       {"start_tun_preserves_socket_protect_failure_code", test_start_tun_preserves_socket_protect_failure_code},
+      {"stop_tun_allows_only_fixed_backend_prefixes_in_detail",
+       test_stop_tun_allows_only_fixed_backend_prefixes_in_detail},
+      {"stop_tun_maps_contract_backend_messages_to_safe_tokens",
+       test_stop_tun_maps_contract_backend_messages_to_safe_tokens},
+      {"stop_tun_maps_proxy_delay_bridge_invalid_to_safe_token",
+       test_stop_tun_maps_proxy_delay_bridge_invalid_to_safe_token},
       {"tsfn_closing_requires_cleanup_but_does_not_settle_or_leak",
        test_tsfn_closing_requires_cleanup_but_does_not_settle_or_leak},
       {"tun_snapshot_stop_and_trace_exports_resolve", test_tun_snapshot_stop_and_trace_exports_resolve},

@@ -4,6 +4,7 @@
 #include <array>
 #include <cstring>
 #include <new>
+#include <string_view>
 #include <utility>
 
 namespace cmfa::nodeaddon {
@@ -18,6 +19,30 @@ namespace {
 struct AsyncTsfnFinalizerState {
   std::shared_ptr<AsyncPromiseJob> job;
 };
+
+constexpr char kProxyBufferCanary = static_cast<char>(0x7F);
+constexpr std::array<std::string_view, 14> kStopTunBackendFailurePrefixes = {
+    "TUN_STOP_LISTENER_FAILED_BAD_FD",
+    "TUN_STOP_LISTENER_FAILED_ALREADY_CLOSED",
+    "TUN_STOP_LISTENER_FAILED_INVALID",
+    "TUN_STOP_LISTENER_FAILED_IO",
+    "TUN_STOP_LISTENER_FAILED_OTHER",
+    "TUN_STOP_LISTENER_FAILED_PANIC",
+    "TUN_STOP_HTTP_LISTENER_FAILED_ERROR",
+    "TUN_STOP_HTTP_LISTENER_FAILED_PANIC",
+    "TUN_STOP_SOCKS_LISTENER_FAILED_ERROR",
+    "TUN_STOP_SOCKS_LISTENER_FAILED_PANIC",
+    "TUN_STOP_CONNECTIONS_FAILED_ERROR",
+    "TUN_STOP_CONNECTIONS_FAILED_PANIC",
+    "TUN_STOP_EXECUTOR_FAILED_ERROR",
+    "TUN_STOP_EXECUTOR_FAILED_PANIC",
+};
+constexpr std::string_view kStopTunContractBackendFailed = "TUN_STOP_CONTRACT_BACKEND_FAILED";
+constexpr std::string_view kStopTunContractSnapshotFailed = "TUN_STOP_CONTRACT_SNAPSHOT_FAILED";
+constexpr std::string_view kStopTunContractTracesFailed = "TUN_STOP_CONTRACT_TRACES_FAILED";
+constexpr std::string_view kStopTunContractEmpty = "TUN_STOP_CONTRACT_EMPTY";
+constexpr std::string_view kStopTunContractOther = "TUN_STOP_CONTRACT_OTHER";
+constexpr std::string_view kStopTunProxyDelayDrainFailed = "TUN_STOP_PROXY_DELAY_DRAIN_FAILED";
 
 cmfa::napi::ReleaseResult finish_async(AddonState *addon, AsyncThreadHandle *handle) {
   if (addon == nullptr || handle == nullptr) {
@@ -109,33 +134,218 @@ void tsfn_finalize_async(napi_env env, void *finalize_data, void *) {
   delete state;
 }
 
-bool build_async_result_value(napi_env env, const AsyncResult &result, napi_value *value) {
-  CoreErrorData error;
+bool next_utf8_code_point(std::string_view input, size_t *index, uint32_t *code_point) {
+  if (*index >= input.size()) {
+    return false;
+  }
+
+  const unsigned char lead = static_cast<unsigned char>(input[*index]);
+  if (lead <= 0x7F) {
+    *code_point = lead;
+    *index += 1;
+    return true;
+  }
+
+  const size_t remaining = input.size() - *index;
+  if ((lead & 0xE0U) == 0xC0U) {
+    if (remaining < 2) {
+      return false;
+    }
+    const unsigned char b1 = static_cast<unsigned char>(input[*index + 1]);
+    if ((b1 & 0xC0U) != 0x80U) {
+      return false;
+    }
+    const uint32_t cp = (static_cast<uint32_t>(lead & 0x1FU) << 6U) | static_cast<uint32_t>(b1 & 0x3FU);
+    if (cp < 0x80U) {
+      return false;
+    }
+    *code_point = cp;
+    *index += 2;
+    return true;
+  }
+
+  if ((lead & 0xF0U) == 0xE0U) {
+    if (remaining < 3) {
+      return false;
+    }
+    const unsigned char b1 = static_cast<unsigned char>(input[*index + 1]);
+    const unsigned char b2 = static_cast<unsigned char>(input[*index + 2]);
+    if ((b1 & 0xC0U) != 0x80U || (b2 & 0xC0U) != 0x80U) {
+      return false;
+    }
+    const uint32_t cp = (static_cast<uint32_t>(lead & 0x0FU) << 12U) |
+                        (static_cast<uint32_t>(b1 & 0x3FU) << 6U) |
+                        static_cast<uint32_t>(b2 & 0x3FU);
+    if (cp < 0x800U || (cp >= 0xD800U && cp <= 0xDFFFU)) {
+      return false;
+    }
+    *code_point = cp;
+    *index += 3;
+    return true;
+  }
+
+  if ((lead & 0xF8U) == 0xF0U) {
+    if (remaining < 4) {
+      return false;
+    }
+    const unsigned char b1 = static_cast<unsigned char>(input[*index + 1]);
+    const unsigned char b2 = static_cast<unsigned char>(input[*index + 2]);
+    const unsigned char b3 = static_cast<unsigned char>(input[*index + 3]);
+    if ((b1 & 0xC0U) != 0x80U || (b2 & 0xC0U) != 0x80U || (b3 & 0xC0U) != 0x80U) {
+      return false;
+    }
+    const uint32_t cp = (static_cast<uint32_t>(lead & 0x07U) << 18U) |
+                        (static_cast<uint32_t>(b1 & 0x3FU) << 12U) |
+                        (static_cast<uint32_t>(b2 & 0x3FU) << 6U) |
+                        static_cast<uint32_t>(b3 & 0x3FU);
+    if (cp < 0x10000U || cp > 0x10FFFFU) {
+      return false;
+    }
+    *code_point = cp;
+    *index += 4;
+    return true;
+  }
+
+  return false;
+}
+
+bool is_valid_utf8(std::string_view input) {
+  size_t index = 0;
+  while (index < input.size()) {
+    uint32_t code_point = 0;
+    if (!next_utf8_code_point(input, &index, &code_point)) {
+      return false;
+    }
+  }
+  return true;
+}
+
+std::string_view bounded_error_message_view(const cmfa_error &error) {
+  if (error.message == nullptr || error.capacity == 0) {
+    return {};
+  }
+  if (error.length > 0 && error.length < error.capacity) {
+    return std::string_view(error.message, error.length);
+  }
+  return std::string_view(error.message, strnlen(error.message, error.capacity));
+}
+
+bool matches_stop_tun_backend_prefix(std::string_view message, std::string_view prefix) {
+  if (message.size() < prefix.size() || message.compare(0, prefix.size(), prefix) != 0) {
+    return false;
+  }
+  return message.size() == prefix.size() || message[prefix.size()] == ':';
+}
+
+bool message_equals(std::string_view message, std::string_view expected) {
+  return message.size() == expected.size() && message.compare(0, expected.size(), expected) == 0;
+}
+
+bool message_has_prefix(std::string_view message, std::string_view prefix) {
+  return message.size() >= prefix.size() && message.compare(0, prefix.size(), prefix) == 0;
+}
+
+std::string_view classify_stop_tun_contract_backend_detail(std::string_view message) {
+  if (message.empty()) {
+    return kStopTunContractEmpty;
+  }
+  if (message_equals(message, "PROXY_DELAY_BRIDGE_INVALID")) {
+    return kStopTunProxyDelayDrainFailed;
+  }
+  if (message_equals(message, "backend stop_tun failed")) {
+    return kStopTunContractBackendFailed;
+  }
+  if (message_equals(message, "backend tun_runtime_state after stop failed") ||
+      message_equals(message, "backend returned an invalid tun state") ||
+      message_has_prefix(message, "backend tun session_id ") ||
+      message_has_prefix(message, "backend tun counters ") ||
+      message_has_prefix(message, "backend tun failure ") ||
+      message_has_prefix(message, "backend tun snapshot ")) {
+    return kStopTunContractSnapshotFailed;
+  }
+  if (message_equals(message, "backend tun_copy_traces after stop failed") ||
+      message_has_prefix(message, "backend tun trace") ||
+      message_has_prefix(message, "backend tun traces ")) {
+    return kStopTunContractTracesFailed;
+  }
+  return kStopTunContractOther;
+}
+
+void maybe_set_stop_tun_backend_detail(CoreErrorData *core_error,
+                                       AsyncOp op,
+                                       cmfa_status status,
+                                       const cmfa_error &backend_error) {
+  if (core_error == nullptr || op != AsyncOp::STOP_TUN || status != CMFA_BACKEND_ERROR) {
+    return;
+  }
+
+  const std::string_view message = bounded_error_message_view(backend_error);
+  for (const std::string_view prefix : kStopTunBackendFailurePrefixes) {
+    if (matches_stop_tun_backend_prefix(message, prefix)) {
+      core_error->detail.assign(prefix);
+      return;
+    }
+  }
+  core_error->detail.assign(classify_stop_tun_contract_backend_detail(message));
+}
+
+bool proxy_result_to_js(napi_env env, const AsyncResult &result, napi_value *value, CoreErrorData *error) {
+  if (!is_valid_utf8(result.string_value)) {
+    *error = make_core_error(CMFA_BACKEND_ERROR, async_operation_name(result.op));
+    return false;
+  }
+  const napi_status status =
+      napi_create_string_utf8(env, result.string_value.c_str(), result.string_value.size(), value);
+  if (status != napi_ok) {
+    *error = make_napi_failure(async_operation_name(result.op), status);
+    return false;
+  }
+  return true;
+}
+
+bool build_async_result_value(napi_env env, const AsyncResult &result, napi_value *value, CoreErrorData *error) {
   switch (result.op) {
     case AsyncOp::CORE_VERSION:
       if (napi_create_string_utf8(env, result.string_value.c_str(), result.string_value.size(), value) != napi_ok) {
+        *error = make_napi_failure(async_operation_name(result.op), napi_generic_failure);
         return false;
       }
       return true;
     case AsyncOp::VALIDATE_CONFIGURATION:
     case AsyncOp::LOAD_CONFIGURATION:
-      return napi_get_undefined(env, value) == napi_ok;
+      if (napi_get_undefined(env, value) != napi_ok) {
+        *error = make_napi_failure(async_operation_name(result.op), napi_generic_failure);
+        return false;
+      }
+      return true;
 #if defined(CMFA_ENABLE_PHASE2_SELFTEST)
     case AsyncOp::PROBE_HTTPS:
-      return owned_probe_result_to_js(env, result.probe_result, value, &error);
+      return owned_probe_result_to_js(env, result.probe_result, value, error);
 #endif
     case AsyncOp::START_LOCAL:
     case AsyncOp::STOP_RUNTIME:
-      return owned_snapshot_to_js(env, result.snapshot, value, &error);
+      return owned_snapshot_to_js(env, result.snapshot, value, error);
+    case AsyncOp::PROXY_GROUPS:
+    case AsyncOp::PROXY_GROUP:
+    case AsyncOp::PROXY_SELECT:
+    case AsyncOp::PROXY_DELAY_START:
+    case AsyncOp::PROXY_DELAY_SNAPSHOT:
+    case AsyncOp::PROXY_DELAY_CANCEL:
+      return proxy_result_to_js(env, result, value, error);
     case AsyncOp::START_TUN:
     case AsyncOp::STOP_TUN:
     case AsyncOp::TUN_SNAPSHOT:
-      return owned_tun_snapshot_to_js(env, result.tun_snapshot, value, &error);
+      return owned_tun_snapshot_to_js(env, result.tun_snapshot, value, error);
     case AsyncOp::CLOSE_STALE_OUTBOUND_CONNECTIONS:
-      return napi_get_undefined(env, value) == napi_ok;
+      if (napi_get_undefined(env, value) != napi_ok) {
+        *error = make_napi_failure(async_operation_name(result.op), napi_generic_failure);
+        return false;
+      }
+      return true;
     case AsyncOp::READ_TUN_TRACES:
-      return owned_tun_traces_to_js(env, result.tun_traces, value, &error);
+      return owned_tun_traces_to_js(env, result.tun_traces, value, error);
     default:
+      *error = make_napi_failure(async_operation_name(result.op), napi_generic_failure);
       return false;
   }
 }
@@ -182,6 +392,32 @@ bool validate_js_safe_trace_sequence(uint64_t sequence, AsyncResult *result, Asy
   if (sequence > kMaxJsSafeInteger) {
     result->error = make_core_error(CMFA_OUT_OF_RANGE, async_operation_name(op));
     return false;
+  }
+  return true;
+}
+
+void populate_proxy_query_context(const OwnedProxyQueryContext &input, cmfa_proxy_query_context *query) {
+  std::memset(query, 0, sizeof(*query));
+  query->struct_size = sizeof(*query);
+  std::memcpy(query->profile_hash, input.profile_hash.data(), input.profile_hash.size());
+  std::memcpy(query->revision_hash, input.revision_hash.data(), input.revision_hash.size());
+  if (input.has_session) {
+    std::memcpy(query->session_hash, input.session_hash.data(), input.session_hash.size());
+  }
+  query->generation = input.generation;
+}
+
+bool validate_proxy_output_buffer(const std::vector<char> &buffer, size_t length) {
+  if (length > CMFA_MAX_PROXY_JSON_BYTES || length >= buffer.size()) {
+    return false;
+  }
+  if (buffer[length] != '\0') {
+    return false;
+  }
+  for (size_t index = length + 1; index < buffer.size(); index += 1) {
+    if (buffer[index] != kProxyBufferCanary) {
+      return false;
+    }
   }
   return true;
 }
@@ -291,6 +527,68 @@ AsyncResult run_async_operation(AddonState *addon, const AsyncInput &input, cons
       result.ok = true;
       return result;
     }
+    case AsyncOp::PROXY_GROUPS:
+    case AsyncOp::PROXY_GROUP:
+    case AsyncOp::PROXY_SELECT:
+    case AsyncOp::PROXY_DELAY_START:
+    case AsyncOp::PROXY_DELAY_SNAPSHOT:
+    case AsyncOp::PROXY_DELAY_CANCEL: {
+      cmfa_proxy_query_context query{};
+      if (input.op == AsyncOp::PROXY_GROUPS || input.op == AsyncOp::PROXY_GROUP || input.op == AsyncOp::PROXY_SELECT ||
+          input.op == AsyncOp::PROXY_DELAY_START) {
+        populate_proxy_query_context(input.proxy_query_context, &query);
+      }
+
+      std::vector<char> proxy_json(CMFA_MAX_PROXY_JSON_BYTES + 1U, kProxyBufferCanary);
+      cmfa_json_buffer output{};
+      output.data = proxy_json.data();
+      output.capacity = proxy_json.size();
+      output.length = 0;
+
+      cmfa_status status = CMFA_BACKEND_ERROR;
+      switch (input.op) {
+        case AsyncOp::PROXY_GROUPS:
+          status = cmfa_proxy_groups(&query, input.proxy_selectable_only ? 1U : 0U, &output, &error);
+          break;
+        case AsyncOp::PROXY_GROUP:
+          status = cmfa_proxy_group(&query, input.proxy_group_name.c_str(), &output, &error);
+          break;
+        case AsyncOp::PROXY_SELECT:
+          status =
+              cmfa_proxy_select(&query, input.proxy_group_name.c_str(), input.proxy_member_name.c_str(), &output, &error);
+          break;
+        case AsyncOp::PROXY_DELAY_START:
+          status = cmfa_proxy_delay_start(&query, input.proxy_group_name.c_str(), &output, &error);
+          break;
+        case AsyncOp::PROXY_DELAY_SNAPSHOT:
+          status = cmfa_proxy_delay_snapshot(input.proxy_delay_job_id.c_str(), &output, &error);
+          break;
+        case AsyncOp::PROXY_DELAY_CANCEL:
+          status = cmfa_proxy_delay_cancel(input.proxy_delay_job_id.c_str(), &output, &error);
+          break;
+        default:
+          status = CMFA_BACKEND_ERROR;
+          break;
+      }
+
+      if (status == CMFA_OK) {
+        if (!validate_proxy_output_buffer(proxy_json, output.length)) {
+          result.error = make_core_error(CMFA_BACKEND_ERROR, async_operation_name(input.op));
+          return result;
+        }
+        result.ok = true;
+        result.string_value.assign(proxy_json.data(), output.length);
+        return result;
+      }
+
+      if (status == CMFA_BUFFER_TOO_SMALL) {
+        result.error = make_core_error(CMFA_BACKEND_ERROR, async_operation_name(input.op));
+        return result;
+      }
+
+      result.error = make_core_error(status, async_operation_name(input.op));
+      return result;
+    }
     case AsyncOp::STOP_RUNTIME: {
       const cmfa_status stop_status = cmfa_stop(&error);
       if (stop_status != CMFA_OK) {
@@ -341,6 +639,7 @@ AsyncResult run_async_operation(AddonState *addon, const AsyncInput &input, cons
       const cmfa_status stop_status = cmfa_tun_stop(&error);
       if (stop_status != CMFA_OK) {
         result.error = make_core_error(stop_status, async_operation_name(input.op));
+        maybe_set_stop_tun_backend_detail(&result.error, input.op, stop_status, error);
         return result;
       }
 
@@ -408,6 +707,11 @@ AsyncResult run_async_operation(AddonState *addon, const AsyncInput &input, cons
         owned_trace.destination_address = copy_fixed_text(trace.destination_address, sizeof(trace.destination_address));
         owned_trace.hashed_tuple = copy_fixed_text(trace.hashed_tuple, sizeof(trace.hashed_tuple));
         owned_trace.correlation_hash = copy_fixed_text(trace.correlation_hash, sizeof(trace.correlation_hash));
+        owned_trace.destination_hash = copy_fixed_text(trace.destination_hash, sizeof(trace.destination_hash));
+        owned_trace.outbound_terminal_hash =
+            copy_fixed_text(trace.outbound_terminal_hash, sizeof(trace.outbound_terminal_hash));
+        owned_trace.outbound_chain_hash = copy_fixed_text(trace.outbound_chain_hash, sizeof(trace.outbound_chain_hash));
+        owned_trace.outbound_chain_length = trace.outbound_chain_length;
         owned_trace.sequence = assign_tun_trace_sequence(addon, owned_trace);
         if (!validate_js_safe_trace_sequence(owned_trace.sequence, &result, input.op)) {
           return result;
@@ -438,10 +742,11 @@ void complete_promise(napi_env env, napi_value, void *, void *data) {
 
   if (payload->result.ok) {
     napi_value resolution = nullptr;
-    if (build_async_result_value(env, payload->result, &resolution)) {
+    CoreErrorData completion_error;
+    if (build_async_result_value(env, payload->result, &resolution, &completion_error)) {
       (void)napi_resolve_deferred(env, job->deferred, resolution);
     } else {
-      reject_deferred_with_napi_failure(env, job->deferred, async_operation_name(job->input.op), napi_generic_failure);
+      reject_deferred_with_core_error(env, job->deferred, completion_error);
     }
   } else {
     reject_deferred_with_core_error(env, job->deferred, payload->result.error);

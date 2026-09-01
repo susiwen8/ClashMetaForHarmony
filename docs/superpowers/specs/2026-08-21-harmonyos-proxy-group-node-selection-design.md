@@ -248,11 +248,21 @@ Query results never reuse selection result kinds.
 
 ### 7.2 Core contract
 
-The typed core boundary adds equivalents of the Android behavior:
+The Plan B typed `CoreService` boundary adds context-correlated equivalents of
+the Android behavior:
 
-- `queryProxyGroupNames(excludeNotSelectable: boolean): Promise<string[]>`
-- `queryProxyGroup(name: string): Promise<ProxyGroupSnapshot>`
-- `selectProxy(groupName: string, nodeName: string): Promise<ProxySelectionResult>`
+- `queryProxyGroups(context, selectableOnly): Promise<CoreProxyGroupList>`
+- `queryProxyGroup(context, groupName): Promise<CoreProxyGroupResult>`
+- `selectProxy(context, groupName, memberName): Promise<CoreProxySelectionApplied>`
+
+The query context carries profile/revision hashes, an optional session hash,
+and a non-zero generation. The three returned values are closed decoded native
+envelopes that echo this context so Plan C can reject stale or cross-runtime
+results. They are transport-facing `CoreService` values, not the public
+application result unions: Plan C's `CoreProxyPort`/`ProxyService` validates the
+echoed context, strips `schemaVersion`/`kind`, and exposes the
+`ProxyGroupSnapshot`, `ProxyQueryResult`, and `ProxySelectionResult` domain
+shapes defined above.
 
 Names are normalized as bounded UTF-8 values. Empty names, control characters,
 oversized lists, duplicate members, unknown types, and malformed native JSON
@@ -282,19 +292,31 @@ proxy registry:
 2. Resolve one group and return its ordered members plus the current member.
 3. Reject a selector patch unless both the group and member exist in the same
    runtime snapshot.
-4. Patch the mihomo selector and close only stale connections owned by that
-   group when required by the runtime API.
+4. Patch the mihomo selector and best-effort close only stale connections owned
+   by that group when required by the runtime API. Individual close errors do
+   not turn an already-confirmed selector change into a rejected result because
+   the selection cannot be safely rolled back.
 5. Return a confirmed post-patch snapshot rather than assuming success.
+
+Top-level group order comes from the loaded `GLOBAL` group's flattened
+`ProxyGroup.Proxies()` result. This preserves mihomo's active provider order,
+including explicit `GLOBAL` groups that combine `use` and `proxies`; the Harmony
+implementation must not copy the Android helper's legacy `Providers()[0]`
+truncation or iterate the unordered proxy registry map.
 
 The C++/Node-API layer returns bounded JSON with names, types, selection state,
 and error codes only. It must reject unknown fields and oversized responses.
 Native errors are mapped to allowlisted ArkTS error codes; raw mihomo messages
 are redacted before crossing the boundary.
 
-The Go/C++ result schema uses explicit `schemaVersion`, `kind`, profile/revision
-identity hashes, optional session identity hash, group snapshot, and allowlisted
-error fields. A response with an unknown schema version, result kind, field,
-type, or duplicated member is rejected by ArkTS decoding.
+The Go/C++ JSON success schema uses explicit `schemaVersion`, `kind`,
+profile/revision identity hashes, optional session identity hash, and group
+snapshot fields. Plan B failures do not create a second rejected JSON envelope:
+they travel out of band through `cmfa_status` + bounded `cmfa_error`, then become
+an allowlisted typed `CoreError`. Plan C converts those typed failures into the
+`REJECTED` application unions and error fields defined above. A successful JSON
+response with an unknown schema version, result kind, field, type, or duplicated
+member is rejected by ArkTS decoding.
 
 ## 9. Query and Selection Flows
 

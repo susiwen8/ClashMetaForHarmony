@@ -28,6 +28,12 @@ export interface ReplaceSubscriptionUrlResult {
   profile: Profile;
 }
 
+export interface UpdateProfileMetadataResult {
+  kind: 'UPDATED';
+  profile: Profile;
+  sourceChanged: boolean;
+}
+
 export interface ManageProfileFailedResult {
   kind: 'FAILED';
   error: AppError;
@@ -36,6 +42,7 @@ export interface ManageProfileFailedResult {
 export type ManageEnableResult = EnableProfileResult | ManageProfileFailedResult;
 export type ManageDeleteResult = DeleteProfileResult | ManageProfileFailedResult;
 export type ManageReplaceResult = ReplaceSubscriptionUrlResult | ManageProfileFailedResult;
+export type ManageUpdateResult = UpdateProfileMetadataResult | ManageProfileFailedResult;
 
 class EnableProfileResultValue implements EnableProfileResult {
   kind: 'ENABLED' = 'ENABLED';
@@ -64,6 +71,17 @@ class ReplaceSubscriptionUrlResultValue implements ReplaceSubscriptionUrlResult 
   }
 }
 
+class UpdateProfileMetadataResultValue implements UpdateProfileMetadataResult {
+  kind: 'UPDATED' = 'UPDATED';
+  profile: Profile;
+  sourceChanged: boolean;
+
+  constructor(profile: Profile, sourceChanged: boolean) {
+    this.profile = profile;
+    this.sourceChanged = sourceChanged;
+  }
+}
+
 class ManageProfileFailedResultValue implements ManageProfileFailedResult {
   kind: 'FAILED' = 'FAILED';
   error: AppError;
@@ -71,6 +89,10 @@ class ManageProfileFailedResultValue implements ManageProfileFailedResult {
   constructor(error: AppError) {
     this.error = error;
   }
+}
+
+export function createManageProfileFailedResult(error: AppError): ManageProfileFailedResult {
+  return new ManageProfileFailedResultValue(error);
 }
 
 export class ManageProfileUseCases {
@@ -213,68 +235,11 @@ export class ManageProfileUseCases {
         return new ManageProfileFailedResultValue(admission.error);
       }
       try {
-        const profile: Profile | undefined = await this.repository.get(profileId);
-        if (profile === undefined) {
-          return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', 'Profile was not found.', {
-            retryable: false,
-            timestamp: this.clock.now()
-          }));
+        const result: ManageUpdateResult = await this.updateMetadataInsideLease(profileId, undefined, sourceUrl, true);
+        if (result.kind === 'FAILED') {
+          return result;
         }
-        if (profile.sourceKind !== 'REMOTE_URL') {
-          return new ManageProfileFailedResultValue(createAppError('IMPORT', 'Only remote profiles can replace their subscription URL.', {
-            retryable: false,
-            timestamp: this.clock.now()
-          }));
-        }
-
-        let newSecretRef: string;
-        try {
-          newSecretRef = await this.secretStore.encrypt(sourceUrl);
-        } catch (error) {
-          return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Subscription secret operation failed.'), {
-            retryable: false,
-            timestamp: this.clock.now()
-          }));
-        }
-
-        let updatedProfile: Profile;
-        try {
-          updatedProfile = createProfile({
-            id: profile.id,
-            name: profile.name,
-            sourceKind: profile.sourceKind,
-            sourceDisplay: sourceUrl,
-            sourceSecretRef: newSecretRef,
-            currentRevision: profile.currentRevision,
-            failedCandidate: profile.failedCandidate,
-            availability: profile.availability,
-            lastError: profile.lastError,
-            createdAt: profile.createdAt,
-            updatedAt: this.clock.now(),
-            lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
-          });
-        } catch (error) {
-          await safeRemoveSecret(this.secretStore, newSecretRef);
-          return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
-            retryable: false,
-            timestamp: this.clock.now()
-          }));
-        }
-
-        try {
-          await this.repository.save(updatedProfile);
-        } catch (error) {
-          await safeRemoveSecret(this.secretStore, newSecretRef);
-          return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
-            retryable: false,
-            timestamp: this.clock.now()
-          }));
-        }
-
-        if (profile.sourceSecretRef !== undefined) {
-          await safeRemoveSecret(this.secretStore, profile.sourceSecretRef);
-        }
-        return new ReplaceSubscriptionUrlResultValue(updatedProfile);
+        return new ReplaceSubscriptionUrlResultValue(result.profile);
       } finally {
         admission.lease?.release();
       }
@@ -285,10 +250,124 @@ export class ManageProfileUseCases {
       }));
     }
   }
+
+  async updateMetadata(profileId: string, name: string, sourceUrl?: string): Promise<ManageUpdateResult> {
+    try {
+      if (!this.runtimeCoordinator.isInitialized()) {
+        await this.runtimeCoordinator.initialize();
+      }
+      const admission = this.runtimeCoordinator.acquireMutationLease('REPLACE');
+      if (admission.error !== undefined) {
+        return new ManageProfileFailedResultValue(admission.error);
+      }
+      try {
+        return await this.updateMetadataInsideLease(profileId, name, sourceUrl, false);
+      } finally {
+        admission.lease?.release();
+      }
+    } catch (error) {
+      return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+  }
+
+  private async updateMetadataInsideLease(
+    profileId: string,
+    name: string | undefined,
+    sourceUrl: string | undefined,
+    requireSourceChange: boolean
+  ): Promise<ManageUpdateResult> {
+    const profile: Profile | undefined = await this.repository.get(profileId);
+    if (profile === undefined) {
+      return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', 'Profile was not found.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+    const normalizedSourceUrl: string | undefined = normalizeOptionalSourceUrl(sourceUrl);
+    if (requireSourceChange && normalizedSourceUrl === undefined) {
+      return new ManageProfileFailedResultValue(createAppError('IMPORT', 'Remote profile URL must use http or https.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+    if (normalizedSourceUrl !== undefined && profile.sourceKind !== 'REMOTE_URL') {
+      return new ManageProfileFailedResultValue(createAppError('IMPORT', 'Only remote profiles can update their subscription URL.', {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+
+    const sourceChanged: boolean = normalizedSourceUrl !== undefined;
+    let nextSecretRef: string | undefined = profile.sourceSecretRef;
+    if (sourceChanged) {
+      try {
+        nextSecretRef = await this.secretStore.encrypt(normalizedSourceUrl!);
+      } catch (error) {
+        return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Subscription secret operation failed.'), {
+          retryable: false,
+          timestamp: this.clock.now()
+        }));
+      }
+    }
+
+    let updatedProfile: Profile;
+    try {
+      updatedProfile = createProfile({
+        id: profile.id,
+        name: name ?? profile.name,
+        sourceKind: profile.sourceKind,
+        sourceDisplay: sourceChanged ? normalizedSourceUrl! : profile.sourceDisplay,
+        sourceSecretRef: nextSecretRef,
+        currentRevision: profile.currentRevision,
+        failedCandidate: profile.failedCandidate,
+        availability: profile.availability,
+        lastError: profile.lastError,
+        createdAt: profile.createdAt,
+        updatedAt: this.clock.now(),
+        lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
+      });
+    } catch (error) {
+      if (sourceChanged && nextSecretRef !== undefined) {
+        await safeRemoveSecret(this.secretStore, nextSecretRef);
+      }
+      return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+
+    try {
+      await this.repository.save(updatedProfile);
+    } catch (error) {
+      if (sourceChanged && nextSecretRef !== undefined) {
+        await safeRemoveSecret(this.secretStore, nextSecretRef);
+      }
+      return new ManageProfileFailedResultValue(createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile persistence failed.'), {
+        retryable: false,
+        timestamp: this.clock.now()
+      }));
+    }
+
+    if (sourceChanged && profile.sourceSecretRef !== undefined) {
+      await safeRemoveSecret(this.secretStore, profile.sourceSecretRef);
+    }
+    return new UpdateProfileMetadataResultValue(updatedProfile, sourceChanged);
+  }
 }
 
 function resolveErrorMessage(error: Object | undefined, fallback: string): string {
   return error instanceof Error && error.message.trim().length > 0 ? error.message : fallback;
+}
+
+function normalizeOptionalSourceUrl(sourceUrl: string | undefined): string | undefined {
+  if (sourceUrl === undefined) {
+    return undefined;
+  }
+  const normalized: string = sourceUrl.trim();
+  return normalized.length === 0 ? undefined : normalized;
 }
 
 async function safeRemoveSecret(secretStore: SubscriptionSecretStore, secretRef: string): Promise<void> {

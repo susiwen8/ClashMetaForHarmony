@@ -6,6 +6,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { inspectToolchain } from '../../tools/lib/toolchain.mjs';
 import {
+  CORE_EXPORTS,
   HAP_NATIVE_ENTRIES,
   verifyPhase1NativeManifest
 } from '../../tools/lib/native-provenance.mjs';
@@ -25,7 +26,7 @@ export const PROOF_SCHEMA_VERSION = '1.0.0';
 export const PHASE_NUMBER = 1;
 export const BUNDLE_NAME = 'com.github.kr328.clash.harmony';
 export const ENTRY_ABILITY_NAME = 'EntryAbility';
-export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/files/phase1-device-proof.json';
+export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/haps/entry/files/phase1-device-proof.json';
 export const REQUIRED_CHECK_IDS = Object.freeze([
   'nativeHello',
   'coreVersion',
@@ -40,16 +41,7 @@ const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 export const DEFAULT_OUTPUT_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-device-proof.json');
 export const DEFAULT_MANIFEST_PATH = path.join(HARMONY_ROOT, 'artifacts', 'phase1-native-provenance.json');
 
-const PRIVATE_CORE_EXPORTS = [
-  'cmfa_mihomo_core_build_info_json_cstr_v1',
-  'cmfa_mihomo_core_version_cstr_v1',
-  'cmfa_mihomo_probe_cancel_v1',
-  'cmfa_mihomo_probe_https_v1',
-  'cmfa_mihomo_runtime_state_v1',
-  'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
-];
+const PRIVATE_CORE_EXPORTS = CORE_EXPORTS;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/u;
 const DIGEST_PATTERN = /^[a-f0-9]{64}$/u;
 const FINAL_RESULTS = new Set(['pass', 'fail', 'incomplete']);
@@ -483,16 +475,13 @@ export function validatePhase1Proof(proof, options = {}) {
 }
 
 export function buildPhase1LaunchArgs(target, runId, runnerStartedAt) {
-  const wantParameters = {
-    'cmfa.phase1.selfTest': true,
-    'cmfa.phase1.runId': runId,
-    'cmfa.phase1.runnerStartedAt': runnerStartedAt
-  };
   return buildTargetedHdcArgs(target, [
     'shell', 'aa', 'start',
     '-a', ENTRY_ABILITY_NAME,
     '-b', BUNDLE_NAME,
-    '-p', JSON.stringify(wantParameters)
+    '--pb', 'cmfa.phase1.selfTest', 'true',
+    '--ps', 'cmfa.phase1.runId', runId,
+    '--ps', 'cmfa.phase1.runnerStartedAt', runnerStartedAt
   ]);
 }
 

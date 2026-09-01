@@ -2,6 +2,7 @@
   "schemaVersion": "4.0.0",
   "phase": 4,
   "result": "pass",
+  "stubDetected": false,
   "runId": "4b6ec0a3-47cd-4776-96f1-b03df8a09472",
   "outputPath": "harmony/artifacts/phase4-device-proof.json",
   "timestamps": {
@@ -21,7 +22,7 @@
       "bundleName": "com.github.kr328.clash.harmony"
     },
     "probe": {
-      "bundleName": "com.github.kr328.clash.harmony.trafficprobe"
+      "bundleName": "com.cmfa.phase4.trafficprobe"
     },
     "hapSha256": [
       "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
@@ -59,8 +60,7 @@
   "traffic": {
     "tcp": {
       "result": "pass",
-      "sessionId": "session-tcp",
-      "traceId": "trace-tcp",
+      "correlated": true,
       "captureTrace": {
         "ingress": "tun",
         "event": "tcp-connect"
@@ -71,8 +71,7 @@
     },
     "udp": {
       "result": "pass",
-      "sessionId": "session-udp",
-      "traceId": "trace-udp",
+      "correlated": true,
       "captureTrace": {
         "ingress": "tun",
         "event": "udp-associate"
@@ -83,8 +82,7 @@
     },
     "dns": {
       "result": "pass",
-      "sessionId": "session-dns",
-      "traceId": "trace-dns",
+      "correlated": true,
       "captureTrace": {
         "ingress": "tun",
         "event": "dns-query"
@@ -95,8 +93,7 @@
     },
     "ipv4": {
       "result": "pass",
-      "sessionId": "session-ipv4",
-      "traceId": "trace-ipv4",
+      "correlated": true,
       "captureTrace": {
         "ingress": "tun",
         "event": "ipv4-flow"
@@ -114,14 +111,12 @@
     "http": {
       "result": "pass",
       "ingress": "local-http",
-      "sessionId": "local-http-session",
-      "traceId": "local-http-trace"
+      "correlated": true
     },
     "socks": {
       "result": "pass",
       "ingress": "local-socks",
-      "sessionId": "local-socks-session",
-      "traceId": "local-socks-trace"
+      "correlated": true
     }
   },
   "lifecycle": {

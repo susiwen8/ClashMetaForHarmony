@@ -21,7 +21,7 @@ class PlatformPersistenceFailure extends Error {
   }
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 
 function toPersistenceFailure(error: Object | undefined, fallback: string): PlatformPersistenceFailure {
   if (error instanceof PlatformPersistenceFailure) {

@@ -1,0 +1,13 @@
+{
+  "schemaVersion": "1.0.0",
+  "assets": [
+    {
+      "name": "geoip.metadb",
+      "sizeBytes": 8593535,
+      "sha256": "71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd",
+      "urls": [
+        "https://github.com/MetaCubeX/meta-rules-dat/releases/download/latest/geoip.metadb"
+      ]
+    }
+  ]
+}

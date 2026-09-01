@@ -16,6 +16,7 @@ import {
 
 const SUITE_NAME: string = 'Phase3UiFlow';
 const HTTP_WARNING_CANCEL_TEXT: string = '取消';
+const HOME_REMOVED_INFO_TITLE_TEXT: string = '从配置开始';
 const PROFILES_EMPTY_TITLE_TEXT: string = '还没有配置';
 
 export default function Phase3UiFlowTestsuite(): void {
@@ -33,7 +34,13 @@ export default function Phase3UiFlowTestsuite(): void {
         const driver = Driver.create();
         await driver.waitForComponent(ON.id('home.profile.manage'), 5000);
         await driver.assertComponentExist(ON.id('home.runtime.primary'));
-
+        let removedInfoVisible: boolean = true;
+        try {
+          await driver.findComponent(ON.text(HOME_REMOVED_INFO_TITLE_TEXT));
+        } catch (_error) {
+          removedInfoVisible = false;
+        }
+        expect(removedInfoVisible).assertFalse();
         const manage = await driver.findComponent(ON.id('home.profile.manage'));
         expect(await manage.getId()).assertEqual('home.profile.manage');
         await manage.click();
@@ -61,6 +68,11 @@ export default function Phase3UiFlowTestsuite(): void {
 
         await driver.waitForComponent(ON.id('profiles.add'), 5000);
         await driver.assertComponentExist(ON.text(PROFILES_EMPTY_TITLE_TEXT));
+        const profilesBack = await driver.findComponent(ON.id('profiles.back'));
+        expect(await profilesBack.getId()).assertEqual('profiles.back');
+        await profilesBack.click();
+        await driver.waitForComponent(ON.id('home.profile.manage'), 5000);
+        await driver.assertComponentExist(ON.id('home.profile.manage'));
         appendEvidenceCheck(TASK14_UI_FLOW_PASS_CHECK);
       } catch (error) {
         setEvidenceStatus('FAIL');

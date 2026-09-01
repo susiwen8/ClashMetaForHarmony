@@ -1,25 +1,110 @@
 import common from '@ohos.app.ability.common';
 import type { Want } from '@kit.AbilityKit';
 import { vpnExtension } from '@kit.NetworkKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import { CORE_BRIDGE_VERSION, createCoreService } from '@cmfa/core';
-import { PlatformFactory, type PlatformGraph } from '@cmfa/platform';
 import {
+  HarmonyVpnRpcPlatformFactory,
+  PlatformFactory,
+  createHarmonyRuntimeLogExporter,
+  createHarmonyRuntimeLogStore,
+  type HarmonyVpnRpcPlatformBundle,
+  type PlatformGraph
+} from '@cmfa/platform';
+import {
+  ActiveProfileProxyResolver,
+  buildVpnRpcCatalogFromCore,
   createAppError,
+  createProxyRuntimeIdentity,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
   ProfileApplication,
   ProfileCommitService,
+  ProxyService,
   RefreshProfileUseCase,
   SerialCommandQueue,
+  SubscriptionOneClickVpnConfirmation,
+  VpnProxyCommandBus,
+  VpnRpcClient,
+  VpnRpcProxyHandler,
+  VpnRpcRuntimeToolsClient,
   type AppError,
+  type BoundedDelaySchedulerPort,
+  type CancelableDelayTask,
+  type ClockPort,
+  type CoreProxyDelaySnapshot,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyPort,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied,
   type CoreService,
-  type VpnControllerPort
+  type OneClickVpnConfirmationPort,
+  type Profile,
+  type VpnOpaqueCatalog,
+  type VpnControllerPort,
+  type VpnProxyCommandHandler,
+  type VpnProxyRuntimeMirrorPort,
+  type VpnRpcCancelableTaskPort,
+  type VpnRpcClientContext,
+  type VpnRpcClientPort,
+  type VpnRpcClockPort,
+  type VpnRpcSchedulerPort
 } from '@cmfa/shared';
 import type { ApplicationComposition, ApplicationCompositionState } from './ApplicationComposition';
-import { HarmonyVpnController, type VpnExtensionAbilityApi } from '../vpn/HarmonyVpnController';
-import { VpnExtensionComposition, installVpnExtensionCompositionFactoryForTesting } from '../vpn/VpnExtensionComposition';
+import {
+  HarmonyVpnController,
+  type HarmonyVpnControllerDependencies,
+  type VpnExtensionAbilityApi
+} from '../vpn/HarmonyVpnController';
+import { UiOwnedVpnExtensionAbilityApi } from '../vpn/UiOwnedVpnExtensionAbilityApi';
 import { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
+
+const INITIALIZATION_LOG_DOMAIN: number = 0x0000;
+const INITIALIZATION_LOG_TAG: string = 'CMFAInit';
+const VPN_UI_LOG_DOMAIN: number = 0x0000;
+const VPN_UI_LOG_TAG: string = 'CMFAVpn';
+
+function reportVpnUiStage(stage: string): void {
+  hilog.warn(VPN_UI_LOG_DOMAIN, VPN_UI_LOG_TAG, '%{public}s', stage);
+}
+
+class CoreProxyServiceAdapter implements CoreProxyPort {
+  private readonly coreService: CoreService;
+
+  constructor(coreService: CoreService) {
+    this.coreService = coreService;
+  }
+
+  async loadConfiguration(path: string): Promise<void> {
+    await this.coreService.loadConfiguration(path);
+  }
+
+  async queryProxyGroups(context: CoreProxyQueryContext, selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    return await this.coreService.queryProxyGroups(context, selectableOnly);
+  }
+
+  async queryProxyGroup(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyGroupResult> {
+    return await this.coreService.queryProxyGroup(context, groupName);
+  }
+
+  async selectProxy(context: CoreProxyQueryContext, groupName: string, memberName: string): Promise<CoreProxySelectionApplied> {
+    return await this.coreService.selectProxy(context, groupName, memberName);
+  }
+
+  async startProxyDelayTest(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.startProxyDelayTest(context, groupName);
+  }
+
+  async readProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.readProxyDelayTest(jobId);
+  }
+
+  async cancelProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.cancelProxyDelayTest(jobId);
+  }
+}
 
 export interface Phase1LaunchContext {
   selfTest: boolean;
@@ -97,6 +182,8 @@ const PROBE_CA_PEM_KEY = 'cmfa.phase2.caPem';
 const PROBE_EXPECTED_BODY_SHA256_KEY = 'cmfa.phase2.expectedBodySha256';
 const PROBE_FIXTURE_PATH_KEY = 'cmfa.phase2.fixturePath';
 const PROBE_FIXTURE_SHA256_KEY = 'cmfa.phase2.fixtureSha256';
+const BUNDLE_NAME: string = 'com.github.kr328.clash.harmony';
+const ABILITY_NAME: string = 'CmfaVpnExtensionAbility';
 declare const AppStorage: AppStorageBridge;
 const phase1DefaultContext: Phase1LaunchContext = {
   selfTest: false,
@@ -114,8 +201,168 @@ const sharedCoreService: CoreService = createCoreService();
 let phase1LaunchListener: Phase1LaunchListener | undefined = undefined;
 let phase1LaunchListenerId: number = 0;
 let sharedVpnRegistry: VpnSessionRegistry | undefined = undefined;
-let sharedVpnController: HarmonyVpnController | undefined = undefined;
-let vpnExtensionRegistryResolver: (() => VpnSessionRegistry) | undefined = undefined;
+let sharedVpnCommandBus: VpnProxyCommandBus | undefined = undefined;
+
+class TimeoutDelayTask implements CancelableDelayTask {
+  private readonly timerId: number;
+
+  constructor(timerId: number) {
+    this.timerId = timerId;
+  }
+
+  cancel(): void {
+    clearTimeout(this.timerId);
+  }
+}
+
+class TimeoutDelayScheduler implements BoundedDelaySchedulerPort {
+  schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask {
+    const timerId: number = setTimeout(() => {
+      void runner();
+    }, delayMs);
+    return new TimeoutDelayTask(timerId);
+  }
+}
+
+interface RuntimeMirrorInitializableController {
+  initializeRuntimeMirror?(): Promise<void>;
+}
+
+interface UiOwnedVpnExtensionAbilityApiLike extends VpnExtensionAbilityApi {
+  bindStopHandler(handler: () => void): void;
+}
+
+interface VpnRpcCatalogInputs {
+  profileHash: string;
+  revisionHash: string;
+  sessionHash: string;
+  configPath: string;
+}
+
+class VpnRpcCatalogInputsValue implements VpnRpcCatalogInputs {
+  profileHash: string = '';
+  revisionHash: string = '';
+  sessionHash: string = '';
+  configPath: string = '';
+}
+
+class HarmonyVpnControllerDependenciesRecord implements HarmonyVpnControllerDependencies {
+  runtimeMirror?: VpnProxyRuntimeMirrorPort;
+  scheduler?: BoundedDelaySchedulerPort;
+  trafficClock?: ClockPort;
+  trafficScheduler?: BoundedDelaySchedulerPort;
+  trafficReportStage?: (stage: string) => void;
+  rpcClient?: VpnRpcClientPort;
+}
+
+class VpnRpcCancelableTaskAdapter implements VpnRpcCancelableTaskPort {
+  private readonly task: CancelableDelayTask;
+
+  constructor(task: CancelableDelayTask) {
+    this.task = task;
+  }
+
+  cancel(): void {
+    this.task.cancel();
+  }
+}
+
+class VpnRpcSchedulerAdapter implements VpnRpcSchedulerPort {
+  private readonly scheduler: BoundedDelaySchedulerPort;
+
+  constructor(scheduler: BoundedDelaySchedulerPort) {
+    this.scheduler = scheduler;
+  }
+
+  schedule(delayMs: number, runner: () => Promise<void>): VpnRpcCancelableTaskPort {
+    return new VpnRpcCancelableTaskAdapter(this.scheduler.schedule(delayMs, runner));
+  }
+}
+
+class SystemVpnRpcClock implements VpnRpcClockPort, ClockPort {
+  nowMs(): number {
+    return Date.now();
+  }
+}
+
+class UiVpnRpcRuntimeMirror implements VpnProxyRuntimeMirrorPort {
+  private readonly graph: PlatformGraph;
+  private readonly coreProxy: CoreProxyPort;
+  private readonly commandBus: VpnProxyCommandBus;
+  private readonly bundle: HarmonyVpnRpcPlatformBundle;
+  private readonly client: VpnRpcClientPort;
+  private readonly handlerFactory: (client: VpnRpcClientPort, catalog: VpnOpaqueCatalog) => VpnProxyCommandHandler;
+  private activeBindingKey?: string;
+  private activeSessionId?: string;
+
+  constructor(
+    graph: PlatformGraph,
+    coreProxy: CoreProxyPort,
+    commandBus: VpnProxyCommandBus,
+    bundle: HarmonyVpnRpcPlatformBundle,
+    client: VpnRpcClientPort,
+    handlerFactory: (client: VpnRpcClientPort, catalog: VpnOpaqueCatalog) => VpnProxyCommandHandler
+  ) {
+    this.graph = graph;
+    this.coreProxy = coreProxy;
+    this.commandBus = commandBus;
+    this.bundle = bundle;
+    this.client = client;
+    this.handlerFactory = handlerFactory;
+  }
+
+  async bindExistingSession(request: import('@cmfa/shared').VpnStartRequest): Promise<void> {
+    const context: VpnRpcClientContext | null = this.client.activeContext();
+    if (this.client.state() !== 'READY' ||
+      context === null ||
+      context.guards.profileHash === null ||
+      context.guards.revisionHash === null ||
+      context.guards.catalogDigest === null) {
+      throw new Error('VPN RPC UI runtime mirror unavailable.');
+    }
+    const bindingKey: string =
+      `${request.profileId}\u0000${request.versionId}\u0000${request.sessionId}\u0000${context.guards.catalogDigest}\u0000${context.sessionGeneration}`;
+    if (this.activeBindingKey === bindingKey) {
+      return;
+    }
+    if (this.activeSessionId !== undefined) {
+      await this.commandBus.deactivate(this.activeSessionId);
+      this.activeSessionId = undefined;
+      this.activeBindingKey = undefined;
+    }
+    const inputs: VpnRpcCatalogInputs = await resolveVpnRpcCatalogInputs(this.graph, request);
+    const catalog: VpnOpaqueCatalog = await buildVpnRpcCatalogFromCore(
+      this.bundle.crypto,
+      this.coreProxy,
+      inputs.profileHash,
+      inputs.revisionHash,
+      inputs.sessionHash,
+      inputs.configPath
+    );
+    if (catalog.profileHash !== context.guards.profileHash ||
+      catalog.revisionHash !== context.guards.revisionHash ||
+      catalog.catalogDigest !== context.guards.catalogDigest) {
+      throw new Error('VPN RPC catalog mismatch.');
+    }
+    const handler: VpnProxyCommandHandler = this.handlerFactory(this.client, catalog);
+    this.commandBus.bind(
+      createProxyRuntimeIdentity(request.profileId, request.versionId, catalog.revisionHash, request.sessionId),
+      handler,
+      context.sessionGeneration
+    );
+    this.activeSessionId = request.sessionId;
+    this.activeBindingKey = bindingKey;
+  }
+
+  async deactivate(sessionId: string): Promise<void> {
+    if (this.activeSessionId !== sessionId) {
+      return;
+    }
+    await this.commandBus.deactivate(sessionId);
+    this.activeSessionId = undefined;
+    this.activeBindingKey = undefined;
+  }
+}
 
 export interface ApplicationCompositionDependencies {
   coreService?: CoreService;
@@ -123,10 +370,28 @@ export interface ApplicationCompositionDependencies {
   createProfileApplication?: (
     graph: PlatformGraph,
     coreService: CoreService,
-    vpnRegistry: VpnSessionRegistry
+    vpnRegistry: VpnSessionRegistry,
+    commandBus: VpnProxyCommandBus,
+    vpnController?: VpnControllerPort,
+    oneClickVpnConfirmation?: OneClickVpnConfirmationPort
   ) => ProfileApplication;
   vpnRegistry?: VpnSessionRegistry;
+  commandBus?: VpnProxyCommandBus;
   createVpnController?: (registry: VpnSessionRegistry) => VpnControllerPort;
+  createOneClickVpnConfirmation?: (controller: VpnControllerPort) => OneClickVpnConfirmationPort;
+  createVpnRuntimeMirror?: (
+    graph: PlatformGraph,
+    coreService: CoreService,
+    commandBus: VpnProxyCommandBus
+  ) => VpnProxyRuntimeMirrorPort;
+  createVpnRpcPlatformBundle?: () => HarmonyVpnRpcPlatformBundle;
+  createVpnRpcClient?: (
+    bundle: HarmonyVpnRpcPlatformBundle,
+    scheduler: VpnRpcSchedulerPort,
+    clock: VpnRpcClockPort
+  ) => VpnRpcClientPort;
+  createVpnRpcHandler?: (client: VpnRpcClientPort, catalog: VpnOpaqueCatalog, clock: import('@cmfa/shared').Clock) => VpnProxyCommandHandler;
+  createVpnExtensionAbilityApi?: (context: common.UIAbilityContext) => UiOwnedVpnExtensionAbilityApiLike;
 }
 
 export function getCoreService(): CoreService {
@@ -183,6 +448,31 @@ export function getPhase1LaunchContext(): Phase1LaunchContext {
   };
 }
 
+export function buildForwardedVpnExtensionWant(sourceWant: Want, launchContext: Phase1LaunchContext): Want {
+  const sourceParameters: Record<string, Object> | undefined = sourceWant.parameters;
+  let forwardedParameters: Record<string, Object> | undefined = undefined;
+  if (sourceParameters !== undefined) {
+    forwardedParameters = {};
+    const parameterKeys: string[] = Object.keys(sourceParameters);
+    for (let index: number = 0; index < parameterKeys.length; index += 1) {
+      const key: string = parameterKeys[index];
+      forwardedParameters[key] = sourceParameters[key];
+    }
+  }
+  if (launchContext.runId.length > 0) {
+    if (forwardedParameters === undefined) {
+      forwardedParameters = {};
+    }
+    forwardedParameters[RUN_ID_KEY] = launchContext.runId;
+  }
+  return {
+    deviceId: sourceWant.deviceId ?? '',
+    bundleName: sourceWant.bundleName,
+    abilityName: sourceWant.abilityName,
+    parameters: forwardedParameters
+  };
+}
+
 export function createApplicationCompositionStorage(composition: ApplicationComposition): LocalStorage {
   const storage = new LocalStorage();
   storage.setOrCreate<ApplicationComposition>(APPLICATION_COMPOSITION_STORAGE_KEY, composition);
@@ -201,25 +491,43 @@ export function createApplicationComposition(
 }
 
 class SystemVpnExtensionAbilityApi implements VpnExtensionAbilityApi {
-  private lastWant?: Want;
-  private onStopped?: () => void;
-
   async startVpnExtensionAbility(want: Want): Promise<void> {
-    this.lastWant = want;
-    await vpnExtension.startVpnExtensionAbility(want);
+    const forwardedWant: Want = buildForwardedVpnExtensionWant(want, getPhase1LaunchContext());
+    reportVpnUiStage('ui.extension.start.invoke');
+    try {
+      const startPromise: Promise<void> = vpnExtension.startVpnExtensionAbility(forwardedWant);
+      reportVpnUiStage('ui.extension.start.returned');
+      await startPromise;
+      reportVpnUiStage('ui.extension.start.resolved');
+    } catch (error) {
+      reportVpnUiStage('ui.extension.start.rejected');
+      throw error as Error;
+    }
   }
 
   async stopVpnExtensionAbility(): Promise<void> {
-    const stopWant: Want | undefined = this.lastWant;
-    if (stopWant === undefined) {
-      return;
+    const stopWant: Want = {
+      deviceId: '',
+      bundleName: BUNDLE_NAME,
+      abilityName: ABILITY_NAME
+    };
+    reportVpnUiStage('ui.extension.stop.invoke');
+    try {
+      const stopPromise: Promise<void> = vpnExtension.stopVpnExtensionAbility(stopWant);
+      reportVpnUiStage('ui.extension.stop.returned');
+      await stopPromise;
+      reportVpnUiStage('ui.extension.stop.resolved');
+    } catch (error) {
+      reportVpnUiStage('ui.extension.stop.rejected');
+      throw error as Error;
     }
-    await vpnExtension.stopVpnExtensionAbility(stopWant);
-    this.onStopped?.();
   }
 
-  bindStopHandler(handler: () => void): void {
-    this.onStopped = handler;
+  async updateTraffic(
+    _sessionId: string,
+    _uploadBytesPerSecond: number,
+    _downloadBytesPerSecond: number
+  ): Promise<void> {
   }
 }
 
@@ -235,6 +543,9 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private graph?: PlatformGraph;
   private application?: ProfileApplication;
   private vpnRegistry?: VpnSessionRegistry;
+  private ownedVpnController?: HarmonyVpnController;
+  private ownedVpnRpcPlatformBundle?: HarmonyVpnRpcPlatformBundle;
+  private ownedVpnRpcClient?: VpnRpcClientPort;
 
   constructor(context: common.UIAbilityContext, dependencies: ApplicationCompositionDependencies) {
     this.context = context;
@@ -275,7 +586,9 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       await this.closePromise;
       return;
     }
-    const closePromise: Promise<void> = this.closeInternal();
+    const closePromise: Promise<void> = this.closeInternal().finally(() => {
+      this.closePromise = undefined;
+    });
     this.closePromise = closePromise;
     await closePromise;
   }
@@ -286,14 +599,47 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       this.graph = graph;
       const vpnRegistry: VpnSessionRegistry = this.resolveVpnRegistry();
       this.vpnRegistry = vpnRegistry;
-      setVpnExtensionRegistryResolver(() => vpnRegistry);
-      ensureVpnExtensionFactoryInstalled();
-      const application: ProfileApplication = this.createProfileApplication(graph, this.coreService, vpnRegistry);
+      const commandBus: VpnProxyCommandBus = this.resolveVpnCommandBus();
+      const vpnRpcClient: VpnRpcClientPort | undefined = this.shouldCreateVpnController()
+        ? this.resolveVpnRpcClient()
+        : undefined;
+      let vpnController: VpnControllerPort | undefined = undefined;
+      let oneClickVpnConfirmation: OneClickVpnConfirmationPort | undefined = undefined;
+      if (this.shouldCreateVpnController()) {
+        vpnController = this.createVpnController(
+          vpnRegistry,
+          graph,
+          this.coreService,
+          commandBus,
+          vpnRpcClient,
+          this.ownedVpnRpcPlatformBundle
+        );
+        await this.initializeRuntimeMirror(vpnController);
+        oneClickVpnConfirmation = this.createOneClickVpnConfirmation(vpnController);
+      }
+      const application: ProfileApplication = this.createProfileApplication(
+        graph,
+        this.coreService,
+        vpnRegistry,
+        commandBus,
+        vpnController,
+        oneClickVpnConfirmation
+      );
       this.application = application;
       await application.initialize();
-      const readyState: ApplicationCompositionState = createReadyState(application, vpnRegistry);
+      const runtimeModeClient = vpnRpcClient === undefined
+        ? undefined
+        : new VpnRpcRuntimeToolsClient(vpnRpcClient);
+      const readyState: ApplicationCompositionState = createReadyState(
+        application,
+        vpnRegistry,
+        runtimeModeClient,
+        createHarmonyRuntimeLogStore(this.context.filesDir),
+        createHarmonyRuntimeLogExporter(this.context)
+      );
       this.publish(readyState);
-    } catch (_error) {
+    } catch (error) {
+      hilog.error(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'application.initialize:failed');
       await this.closeResources();
       const appError: ApplicationCompositionPersistenceError = new ApplicationCompositionPersistenceError(
         'Application composition initialization failed.'
@@ -320,20 +666,39 @@ class ApplicationCompositionRecord implements ApplicationComposition {
 
   private async closeResources(): Promise<ApplicationCompositionPersistenceError | null> {
     const application: ProfileApplication | undefined = this.application;
+    const ownedVpnController: HarmonyVpnController | undefined = this.ownedVpnController;
+    const ownedVpnRpcClient: VpnRpcClientPort | undefined = this.ownedVpnRpcClient;
     const graph: PlatformGraph | undefined = this.graph;
-    this.application = undefined;
-    this.graph = undefined;
     let cleanupError: ApplicationCompositionPersistenceError | null = null;
     if (application !== undefined) {
       try {
-        application.dispose();
+        await application.close();
+        this.application = undefined;
       } catch (_) {
-        cleanupError = createCleanupError();
+        return createCleanupError();
+      }
+    }
+    if (ownedVpnController !== undefined) {
+      try {
+        await ownedVpnController.dispose();
+        this.ownedVpnController = undefined;
+      } catch (_) {
+        cleanupError = cleanupError ?? createCleanupError();
+      }
+    }
+    if (ownedVpnRpcClient !== undefined) {
+      try {
+        await ownedVpnRpcClient.close();
+        this.ownedVpnRpcClient = undefined;
+        this.ownedVpnRpcPlatformBundle = undefined;
+      } catch (_) {
+        cleanupError = cleanupError ?? createCleanupError();
       }
     }
     if (graph !== undefined) {
       try {
         await graph.close();
+        this.graph = undefined;
       } catch (_) {
         cleanupError = cleanupError ?? createCleanupError();
       }
@@ -351,10 +716,23 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private createProfileApplication(
     graph: PlatformGraph,
     coreService: CoreService,
-    vpnRegistry: VpnSessionRegistry
+    vpnRegistry: VpnSessionRegistry,
+    commandBus: VpnProxyCommandBus,
+    vpnController?: VpnControllerPort,
+    oneClickVpnConfirmation?: OneClickVpnConfirmationPort
   ): ProfileApplication {
     if (this.dependencies.createProfileApplication !== undefined) {
-      return this.dependencies.createProfileApplication(graph, coreService, vpnRegistry);
+      return this.dependencies.createProfileApplication(
+        graph,
+        coreService,
+        vpnRegistry,
+        commandBus,
+        vpnController,
+        oneClickVpnConfirmation
+      );
+    }
+    if (vpnController === undefined || oneClickVpnConfirmation === undefined) {
+      throw new Error('Profile application creation requires VPN controller wiring.');
     }
     const runtimeCoordinator: LocalRuntimeCoordinator = new LocalRuntimeCoordinator({
       repository: graph.repository,
@@ -397,6 +775,15 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       clock: graph.clock,
       runtimeCoordinator
     });
+    const proxyService = new ProxyService(
+      new ActiveProfileProxyResolver(graph.repository, graph.contentStore),
+      new CoreProxyServiceAdapter(coreService),
+      graph.proxySelectionRepository,
+      graph.proxyIdentityHasher,
+      vpnRegistry,
+      commandBus,
+      graph.clock
+    );
     return new ProfileApplication({
       importUseCase,
       refreshUseCase,
@@ -404,7 +791,9 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       runtimeCoordinator,
       commitService,
       repository: graph.repository,
-      vpnController: this.createVpnController(vpnRegistry),
+      oneClickVpnConfirmation,
+      proxyService,
+      vpnController,
       idGenerator: graph.idGenerator
     });
   }
@@ -413,14 +802,72 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     return this.dependencies.vpnRegistry ?? resolveSharedVpnRegistry();
   }
 
-  private createVpnController(registry: VpnSessionRegistry): VpnControllerPort {
+  private resolveVpnCommandBus(): VpnProxyCommandBus {
+    return this.dependencies.commandBus ?? resolveSharedVpnCommandBus();
+  }
+
+  private createVpnController(
+    registry: VpnSessionRegistry,
+    graph: PlatformGraph,
+    coreService: CoreService,
+    commandBus: VpnProxyCommandBus,
+    vpnRpcClient?: VpnRpcClientPort,
+    vpnRpcBundle?: HarmonyVpnRpcPlatformBundle
+  ): VpnControllerPort {
     if (this.dependencies.createVpnController !== undefined) {
       return this.dependencies.createVpnController(registry);
     }
-    if (registry === resolveSharedVpnRegistry()) {
-      return resolveSharedVpnController();
+    if (this.ownedVpnController !== undefined) {
+      return this.ownedVpnController;
     }
-    return createBoundHarmonyVpnController(registry);
+    this.ownedVpnController = createBoundHarmonyVpnController(
+      registry,
+      this.context,
+      graph,
+      coreService,
+      commandBus,
+      vpnRpcClient,
+      vpnRpcBundle,
+      this.dependencies
+    );
+    return this.ownedVpnController;
+  }
+
+  private async initializeRuntimeMirror(controller: VpnControllerPort): Promise<void> {
+    await (controller as RuntimeMirrorInitializableController).initializeRuntimeMirror?.();
+  }
+
+  private shouldCreateVpnController(): boolean {
+    return this.dependencies.createProfileApplication === undefined ||
+      this.dependencies.createOneClickVpnConfirmation !== undefined ||
+      this.dependencies.createVpnController !== undefined ||
+      this.dependencies.createVpnRuntimeMirror !== undefined ||
+      this.dependencies.createVpnRpcClient !== undefined ||
+      this.dependencies.createVpnRpcHandler !== undefined ||
+      this.dependencies.createVpnExtensionAbilityApi !== undefined;
+  }
+
+  private resolveVpnRpcClient(): VpnRpcClientPort {
+    if (this.ownedVpnRpcClient !== undefined) {
+      return this.ownedVpnRpcClient;
+    }
+    const scheduler = new VpnRpcSchedulerAdapter(new TimeoutDelayScheduler());
+    const clock: VpnRpcClockPort = new SystemVpnRpcClock();
+    const bundle: HarmonyVpnRpcPlatformBundle = this.ownedVpnRpcPlatformBundle ??
+      this.dependencies.createVpnRpcPlatformBundle?.() ??
+      new HarmonyVpnRpcPlatformFactory(undefined, this.context.filesDir).create();
+    this.ownedVpnRpcPlatformBundle = bundle;
+    const client: VpnRpcClientPort = this.dependencies.createVpnRpcClient?.(bundle, scheduler, clock) ??
+      new VpnRpcClient(bundle.crypto, bundle.random, scheduler, clock, bundle.clientFactory);
+    this.ownedVpnRpcClient = client;
+    return client;
+  }
+
+  private createOneClickVpnConfirmation(controller: VpnControllerPort): OneClickVpnConfirmationPort {
+    if (this.dependencies.createOneClickVpnConfirmation !== undefined) {
+      return this.dependencies.createOneClickVpnConfirmation(controller);
+    }
+    return new SubscriptionOneClickVpnConfirmation(controller, new TimeoutDelayScheduler());
   }
 
   private publish(state: ApplicationCompositionState): void {
@@ -483,11 +930,20 @@ function createLoadingState(): ApplicationCompositionState {
   };
 }
 
-function createReadyState(application: ProfileApplication, vpnRegistry: VpnSessionRegistry): ApplicationCompositionState {
+function createReadyState(
+  application: ProfileApplication,
+  vpnRegistry: VpnSessionRegistry,
+  runtimeModeClient?: import('@cmfa/shared').VpnRpcRuntimeModeClientPort,
+  runtimeLogStore?: import('@cmfa/shared').RuntimeLogStorePort,
+  runtimeLogExporter?: import('@cmfa/shared').RuntimeLogExportPort
+): ApplicationCompositionState {
   return {
     status: 'READY',
     application,
-    vpnRegistry
+    vpnRegistry,
+    runtimeModeClient,
+    runtimeLogStore,
+    runtimeLogExporter
   };
 }
 
@@ -498,18 +954,6 @@ function createErrorState(error: AppError): ApplicationCompositionState {
   };
 }
 
-function ensureVpnExtensionFactoryInstalled(): void {
-  installVpnExtensionCompositionFactoryForTesting((context: common.VpnExtensionContext | undefined) => {
-    return new VpnExtensionComposition(context, {
-      registry: resolveInstalledVpnExtensionRegistry()
-    });
-  });
-}
-
-function setVpnExtensionRegistryResolver(resolver: () => VpnSessionRegistry): void {
-  vpnExtensionRegistryResolver = resolver;
-}
-
 function resolveSharedVpnRegistry(): VpnSessionRegistry {
   if (sharedVpnRegistry !== undefined) {
     return sharedVpnRegistry;
@@ -518,25 +962,74 @@ function resolveSharedVpnRegistry(): VpnSessionRegistry {
   return sharedVpnRegistry;
 }
 
-function resolveInstalledVpnExtensionRegistry(): VpnSessionRegistry {
-  if (vpnExtensionRegistryResolver !== undefined) {
-    return vpnExtensionRegistryResolver();
+function resolveSharedVpnCommandBus(): VpnProxyCommandBus {
+  if (sharedVpnCommandBus !== undefined) {
+    return sharedVpnCommandBus;
   }
-  return resolveSharedVpnRegistry();
+  sharedVpnCommandBus = new VpnProxyCommandBus();
+  return sharedVpnCommandBus;
 }
 
-function resolveSharedVpnController(): HarmonyVpnController {
-  if (sharedVpnController !== undefined) {
-    return sharedVpnController;
+async function resolveVpnRpcCatalogInputs(
+  graph: PlatformGraph,
+  request: import('@cmfa/shared').VpnStartRequest
+): Promise<VpnRpcCatalogInputs> {
+  const profile: Profile | undefined = await graph.repository.get(request.profileId);
+  if (profile === undefined || profile.currentRevision === null || profile.currentRevision.validatedAt !== request.versionId) {
+    throw new Error('Committed VPN profile was unavailable.');
   }
-  sharedVpnController = createBoundHarmonyVpnController(resolveSharedVpnRegistry());
-  ensureVpnExtensionFactoryInstalled();
-  return sharedVpnController;
+  const inputs: VpnRpcCatalogInputsValue = new VpnRpcCatalogInputsValue();
+  inputs.profileHash = await graph.proxyIdentityHasher.sha256(profile.id);
+  inputs.revisionHash = profile.currentRevision.sha256Digest;
+  inputs.sessionHash = await graph.proxyIdentityHasher.sha256(request.sessionId);
+  inputs.configPath = graph.contentStore.resolveCorePath(profile.currentRevision);
+  return inputs;
 }
 
-function createBoundHarmonyVpnController(registry: VpnSessionRegistry): HarmonyVpnController {
-  const api = new SystemVpnExtensionAbilityApi();
-  const controller = new HarmonyVpnController(registry, api);
+function createBoundHarmonyVpnController(
+  registry: VpnSessionRegistry,
+  context: common.UIAbilityContext,
+  graph: PlatformGraph,
+  coreService: CoreService,
+  commandBus: VpnProxyCommandBus,
+  vpnRpcClient: VpnRpcClientPort | undefined,
+  vpnRpcBundle: HarmonyVpnRpcPlatformBundle | undefined,
+  dependencies: ApplicationCompositionDependencies
+): HarmonyVpnController {
+  const api: UiOwnedVpnExtensionAbilityApiLike = dependencies.createVpnExtensionAbilityApi !== undefined
+    ? dependencies.createVpnExtensionAbilityApi(context)
+    : new UiOwnedVpnExtensionAbilityApi(
+      new SystemVpnExtensionAbilityApi(),
+      new PlatformFactory(context).createContinuousNotificationPort()
+    );
+  const bundle: HarmonyVpnRpcPlatformBundle = vpnRpcBundle ??
+    dependencies.createVpnRpcPlatformBundle?.() ??
+    new HarmonyVpnRpcPlatformFactory(undefined, context.filesDir).create();
+  const client: VpnRpcClientPort = vpnRpcClient ?? (
+    dependencies.createVpnRpcClient?.(bundle, new VpnRpcSchedulerAdapter(new TimeoutDelayScheduler()), new SystemVpnRpcClock()) ??
+    new VpnRpcClient(bundle.crypto, bundle.random, new VpnRpcSchedulerAdapter(new TimeoutDelayScheduler()), new SystemVpnRpcClock(), bundle.clientFactory)
+  );
+  const mirror = dependencies.createVpnRuntimeMirror !== undefined
+    ? dependencies.createVpnRuntimeMirror(graph, coreService, commandBus)
+    : new UiVpnRpcRuntimeMirror(
+      graph,
+      new CoreProxyServiceAdapter(coreService),
+      commandBus,
+      bundle,
+      client,
+      (runtimeClient: VpnRpcClientPort, catalog: VpnOpaqueCatalog): VpnProxyCommandHandler => {
+        return dependencies.createVpnRpcHandler?.(runtimeClient, catalog, graph.clock) ??
+          new VpnRpcProxyHandler(runtimeClient, catalog, graph.clock);
+      }
+    );
+  const controllerDependencies = new HarmonyVpnControllerDependenciesRecord();
+  controllerDependencies.runtimeMirror = mirror;
+  controllerDependencies.scheduler = new TimeoutDelayScheduler();
+  controllerDependencies.trafficClock = new SystemVpnRpcClock();
+  controllerDependencies.trafficScheduler = new TimeoutDelayScheduler();
+  controllerDependencies.trafficReportStage = reportVpnUiStage;
+  controllerDependencies.rpcClient = client;
+  const controller = new HarmonyVpnController(registry, api, controllerDependencies);
   api.bindStopHandler(() => {
     controller.handleExtensionDestroyed();
   });

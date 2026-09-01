@@ -11,13 +11,32 @@ import { inspectNativeLibrary } from '../../tests/bin/inspect-native-lib.mjs';
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
 const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const SIGNING_TOKEN_PATTERN = /(^|[\s"'(=\[])([^\s"'<>]*\.(?:p12|cer|p7b|pem|pfx))(?=$|[\s"'<>)}\]])/giu;
-const CORE_EXPORTS = [
+export const RAW_PROXY_EXPORTS = Object.freeze([
+  'cmfa_mihomo_proxy_groups_v1',
+  'cmfa_mihomo_proxy_group_v1',
+  'cmfa_mihomo_proxy_select_v1'
+]);
+export const RAW_PROXY_DELAY_EXPORTS = Object.freeze([
+  'cmfa_mihomo_proxy_delay_start_v1',
+  'cmfa_mihomo_proxy_delay_snapshot_v1',
+  'cmfa_mihomo_proxy_delay_cancel_v1'
+]);
+export const CORE_EXPORTS = Object.freeze([
   'cmfa_mihomo_close_stale_tun_connections_v1',
   'cmfa_mihomo_core_build_info_json_cstr_v1',
   'cmfa_mihomo_core_version_cstr_v1',
+  'cmfa_mihomo_load_config_v1',
   'cmfa_mihomo_probe_cancel_v1',
   'cmfa_mihomo_probe_https_v1',
+  'cmfa_mihomo_proxy_delay_cancel_v1',
+  'cmfa_mihomo_proxy_delay_snapshot_v1',
+  'cmfa_mihomo_proxy_delay_start_v1',
+  'cmfa_mihomo_proxy_group_v1',
+  'cmfa_mihomo_proxy_groups_v1',
+  'cmfa_mihomo_proxy_select_v1',
+  'cmfa_mihomo_runtime_mode_v1',
   'cmfa_mihomo_runtime_state_v1',
+  'cmfa_mihomo_set_runtime_mode_v1',
   'cmfa_mihomo_start_local_v1',
   'cmfa_mihomo_start_tun_v1',
   'cmfa_mihomo_stop_tun_v1',
@@ -25,14 +44,72 @@ const CORE_EXPORTS = [
   'cmfa_mihomo_take_runtime_log_v1',
   'cmfa_mihomo_tun_copy_traces_ring_v1',
   'cmfa_mihomo_tun_copy_traces_v1',
-  'cmfa_mihomo_tun_runtime_state_v1'
-];
-const NODE_ADDON_ALLOWED_EXPORTS = [
+  'cmfa_mihomo_tun_runtime_state_v1',
+  'cmfa_mihomo_validate_config_v1'
+]);
+export const NODE_ADDON_ALLOWED_EXPORTS = Object.freeze([
   '_fini',
   '_init',
   'cmfa_host_emit_runtime_event_bridge_v1',
   'cmfa_host_protect_socket_bridge_v1'
-];
+]);
+export const PLAN_B_PROXY_LIMITS = Object.freeze({
+  maxGroupCount: 128,
+  maxNodeCount: 1024,
+  maxNameUtf8Bytes: 256,
+  maxRawJsonBytes: 1024 * 1024
+});
+export const PLAN_B_PROXY_RUNTIME_TYPES = Object.freeze([
+  'Direct',
+  'Reject',
+  'RejectDrop',
+  'Compatible',
+  'Pass',
+  'PassRule',
+  'Rematch',
+  'Dns',
+  'Relay',
+  'Selector',
+  'Fallback',
+  'URLTest',
+  'LoadBalance',
+  'Shadowsocks',
+  'ShadowsocksR',
+  'Snell',
+  'Socks5',
+  'Http',
+  'Vmess',
+  'Vless',
+  'Trojan',
+  'Hysteria',
+  'Hysteria2',
+  'WireGuard',
+  'Tuic',
+  'Ssh',
+  'Mieru',
+  'AnyTLS',
+  'Sudoku',
+  'Masque',
+  'TrustTunnel',
+  'ShadowQuic',
+  'OpenVPN',
+  'Tailscale',
+  'GostRelay'
+]);
+export const PLAN_B_PROXY_ERROR_CODES = Object.freeze([
+  'PROXY_RUNTIME_NOT_READY',
+  'PROXY_GROUP_NOT_FOUND',
+  'PROXY_GROUP_NOT_SELECTABLE',
+  'PROXY_MEMBER_NOT_FOUND',
+  'PROXY_SELECTION_FAILED',
+  'PROXY_BRIDGE_INVALID'
+]);
+export const PLAN_B_PROXY_NAPI_METHODS = Object.freeze([
+  'queryProxyGroups',
+  'queryProxyGroup',
+  'selectProxy'
+]);
+export const PLAN_B_PROXY_SHARED_METHODS = PLAN_B_PROXY_NAPI_METHODS;
 const NODE_ADDON_ALLOWED_NEEDED = ['libace_napi.z.so', 'libc.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const CORE_ALLOWED_NEEDED = ['libc.so'];
 const TOOLCHAIN_LOCK_IDENTITY = 'harmony/toolchain.lock.json';

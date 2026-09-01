@@ -2,10 +2,14 @@
   "schemaVersion": "1.0.0",
   "architecture": "arm64",
   "source": {
-    "sdkVersion": "6.1.0.105",
-    "sdkApiVersion": 23
+    "sdkVersion": "6.1.1.125",
+    "sdkApiVersion": 24
   },
   "goProbe": [
+    "libc.so"
+  ],
+  "probeAddon": [
+    "libace_napi.z.so",
     "libc.so"
   ],
   "mihomoCore": [

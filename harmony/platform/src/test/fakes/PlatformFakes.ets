@@ -1,5 +1,5 @@
 import { createAppError, createProfile, createProfileRevision, type AppError, type Profile, type ProfileAvailability } from '@cmfa/shared';
-import type { DurableProfileRow, RdbDriver, RdbTransaction } from '../../main/ets/rdb/RdbDriver';
+import type { DurableProfileRow, DurableProxySelectionRow, RdbDriver, RdbTransaction } from '../../main/ets/rdb/RdbDriver';
 import type { Clock, IdGenerator } from '@cmfa/shared';
 import type { FileDriver } from '../../main/ets/files/FileDriver';
 import {
@@ -9,6 +9,7 @@ import {
   type HuksDriver,
   type HuksEncryptedPayload
 } from '../../main/ets/secrets/HuksDriver';
+import type { VpnRpcDerivedHmacOperations } from '../../main/ets/vpn/HarmonyVpnRpcKeyProvider';
 
 class ScriptedFailure {
   readonly error: Error;
@@ -129,6 +130,7 @@ export function buildProfile(id: string, availability: ProfileAvailability, upda
 export class RecordingRdbDriver implements RdbDriver {
   readonly log: string[] = [];
   readonly committedRows: Map<string, DurableProfileRow> = new Map<string, DurableProfileRow>();
+  readonly committedSelectionRows: Map<string, DurableProxySelectionRow> = new Map<string, DurableProxySelectionRow>();
   initializeCallCount: number = 0;
   private activeIdValue: string | undefined = undefined;
   private appStatePresent: boolean = true;
@@ -140,6 +142,10 @@ export class RecordingRdbDriver implements RdbDriver {
 
   seedRow(row: DurableProfileRow): void {
     this.committedRows.set(row.id, cloneDurableRow(row));
+  }
+
+  seedSelectionRow(row: DurableProxySelectionRow): void {
+    this.committedSelectionRows.set(selectionKey(row.profileId, row.groupName), cloneDurableProxySelectionRow(row));
   }
 
   seedListRows(rows: DurableProfileRow[]): void {
@@ -243,10 +249,40 @@ export class RecordingRdbDriver implements RdbDriver {
     return this.activeIdValue;
   }
 
+  async listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]> {
+    this.log.push(`listProxySelectionRows:${profileId}`);
+    this.failIfScripted(`listProxySelectionRows:${profileId}`);
+    const rows: DurableProxySelectionRow[] = [];
+    for (const row of this.committedSelectionRows.values()) {
+      if (row.profileId === profileId) {
+        rows.push(cloneDurableProxySelectionRow(row));
+      }
+    }
+    rows.sort((left: DurableProxySelectionRow, right: DurableProxySelectionRow): number => {
+      if (left.groupName < right.groupName) {
+        return -1;
+      }
+      if (left.groupName > right.groupName) {
+        return 1;
+      }
+      return 0;
+    });
+    return rows;
+  }
+
+  async getProxySelectionRow(profileId: string, groupName: string): Promise<DurableProxySelectionRow | undefined> {
+    const operation: string = `getProxySelectionRow:${profileId}:${groupName}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const row: DurableProxySelectionRow | undefined = this.committedSelectionRows.get(selectionKey(profileId, groupName));
+    return row === undefined ? undefined : cloneDurableProxySelectionRow(row);
+  }
+
   async transaction<T>(block: (transaction: RdbTransaction) => Promise<T>): Promise<T> {
     this.log.push('begin');
     this.failIfScripted('begin');
     const rowsSnapshot: Map<string, DurableProfileRow> = cloneRowMap(this.committedRows);
+    const selectionsSnapshot: Map<string, DurableProxySelectionRow> = cloneSelectionRowMap(this.committedSelectionRows);
     const activeSnapshot: string | undefined = this.activeIdValue;
     const transaction = new RecordingTransaction(this);
     try {
@@ -258,6 +294,10 @@ export class RecordingRdbDriver implements RdbDriver {
       this.committedRows.clear();
       for (const entry of rowsSnapshot.entries()) {
         this.committedRows.set(entry[0], cloneDurableRow(entry[1]));
+      }
+      this.committedSelectionRows.clear();
+      for (const entry of selectionsSnapshot.entries()) {
+        this.committedSelectionRows.set(entry[0], cloneDurableProxySelectionRow(entry[1]));
       }
       this.activeIdValue = activeSnapshot;
       this.log.push('rollback');
@@ -319,9 +359,69 @@ export class RecordingRdbDriver implements RdbDriver {
   }
 
   txDeleteProfile(id: string): void {
+    this.txDeleteProfileSelections(id);
     this.log.push(`deleteProfile:${id}`);
     this.failIfScripted(`deleteProfile:${id}`);
     this.committedRows.delete(id);
+  }
+
+  txListProxySelectionRows(profileId: string): DurableProxySelectionRow[] {
+    const operation: string = `tx.listProxySelectionRows:${profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const rows: DurableProxySelectionRow[] = [];
+    for (const row of this.committedSelectionRows.values()) {
+      if (row.profileId === profileId) {
+        rows.push(cloneDurableProxySelectionRow(row));
+      }
+    }
+    rows.sort((left: DurableProxySelectionRow, right: DurableProxySelectionRow): number => {
+      if (left.groupName < right.groupName) {
+        return -1;
+      }
+      if (left.groupName > right.groupName) {
+        return 1;
+      }
+      return 0;
+    });
+    return rows;
+  }
+
+  txGetProxySelectionRow(profileId: string, groupName: string): DurableProxySelectionRow | undefined {
+    const operation: string = `tx.getProxySelectionRow:${profileId}:${groupName}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const row: DurableProxySelectionRow | undefined = this.committedSelectionRows.get(selectionKey(profileId, groupName));
+    return row === undefined ? undefined : cloneDurableProxySelectionRow(row);
+  }
+
+  txUpsertProxySelectionRow(row: DurableProxySelectionRow): void {
+    const operation: string = `tx.upsertProxySelectionRow:${row.profileId}:${row.groupName}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    this.committedSelectionRows.set(selectionKey(row.profileId, row.groupName), cloneDurableProxySelectionRow(row));
+  }
+
+  txDeleteProxySelection(profileId: string, groupName: string): void {
+    const operation: string = `tx.deleteProxySelection:${profileId}:${groupName}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    this.committedSelectionRows.delete(selectionKey(profileId, groupName));
+  }
+
+  txDeleteProfileSelections(profileId: string): void {
+    const operation: string = `deleteProfileSelections:${profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const staleKeys: string[] = [];
+    for (const entry of this.committedSelectionRows.entries()) {
+      if (entry[1].profileId === profileId) {
+        staleKeys.push(entry[0]);
+      }
+    }
+    for (let index = 0; index < staleKeys.length; index += 1) {
+      this.committedSelectionRows.delete(staleKeys[index]);
+    }
   }
 }
 
@@ -347,6 +447,26 @@ class RecordingTransaction implements RdbTransaction {
   async deleteProfile(id: string): Promise<void> {
     this.driver.txDeleteProfile(id);
   }
+
+  async listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]> {
+    return this.driver.txListProxySelectionRows(profileId);
+  }
+
+  async getProxySelectionRow(profileId: string, groupName: string): Promise<DurableProxySelectionRow | undefined> {
+    return this.driver.txGetProxySelectionRow(profileId, groupName);
+  }
+
+  async upsertProxySelectionRow(row: DurableProxySelectionRow): Promise<void> {
+    this.driver.txUpsertProxySelectionRow(row);
+  }
+
+  async deleteProxySelection(profileId: string, groupName: string): Promise<void> {
+    this.driver.txDeleteProxySelection(profileId, groupName);
+  }
+
+  async deleteProfileSelections(profileId: string): Promise<void> {
+    this.driver.txDeleteProfileSelections(profileId);
+  }
 }
 
 export function cloneDurableRow(row: DurableProfileRow): DurableProfileRow {
@@ -367,12 +487,34 @@ export function cloneDurableRow(row: DurableProfileRow): DurableProfileRow {
   };
 }
 
+export function cloneDurableProxySelectionRow(row: DurableProxySelectionRow): DurableProxySelectionRow {
+  return {
+    profileId: row.profileId,
+    groupName: row.groupName,
+    selectedNodeName: row.selectedNodeName,
+    revisionId: row.revisionId,
+    updatedAt: row.updatedAt
+  };
+}
+
 function cloneRowMap(rows: Map<string, DurableProfileRow>): Map<string, DurableProfileRow> {
   const copy: Map<string, DurableProfileRow> = new Map<string, DurableProfileRow>();
   for (const entry of rows.entries()) {
     copy.set(entry[0], cloneDurableRow(entry[1]));
   }
   return copy;
+}
+
+function cloneSelectionRowMap(rows: Map<string, DurableProxySelectionRow>): Map<string, DurableProxySelectionRow> {
+  const copy: Map<string, DurableProxySelectionRow> = new Map<string, DurableProxySelectionRow>();
+  for (const entry of rows.entries()) {
+    copy.set(entry[0], cloneDurableProxySelectionRow(entry[1]));
+  }
+  return copy;
+}
+
+function selectionKey(profileId: string, groupName: string): string {
+  return `${profileId}\u0000${groupName}`;
 }
 
 export function assertAppErrorShape(error: Object, expectedDetailFragment: string): void {
@@ -581,6 +723,7 @@ export class FakeFileDriver implements FileDriver {
   private readonly scriptedFailures: Map<string, ScriptedPathFailure[]> = new Map<string, ScriptedPathFailure[]>();
   private readonly scriptedReadCounts: Map<string, number[]> = new Map<string, number[]>();
   private readonly scriptedWriteCounts: Map<string, number[]> = new Map<string, number[]>();
+  private readonly scriptedRenameReplaceCorruptions: Map<string, Uint8Array[]> = new Map<string, Uint8Array[]>();
   private nextFd: number = 10;
 
   seedDirectory(path: string): void {
@@ -642,6 +785,16 @@ export class FakeFileDriver implements FileDriver {
     this.scriptedReadCounts.set(normalizeFakePath(target), counts.slice());
   }
 
+  scriptRenameReplaceCorruption(target: string, bytes: Uint8Array): void {
+    const normalizedTarget: string = target;
+    let queue: Uint8Array[] | undefined = this.scriptedRenameReplaceCorruptions.get(normalizedTarget);
+    if (queue === undefined) {
+      queue = [];
+      this.scriptedRenameReplaceCorruptions.set(normalizedTarget, queue);
+    }
+    queue.push(cloneBytes(bytes));
+  }
+
   async mkdir(path: string, recursive: boolean): Promise<void> {
     const normalizedPath: string = normalizeFakePath(path);
     this.operationLog.push(`mkdir:${normalizedPath}:${recursive ? 'recursive' : 'single'}`);
@@ -650,6 +803,9 @@ export class FakeFileDriver implements FileDriver {
       const parent: string | null = fakeParentPath(normalizedPath);
       if (parent !== null && !this.entries.has(parent)) {
         throw new Error('Parent directory does not exist.');
+      }
+      if (this.entries.has(normalizedPath)) {
+        throw new Error('Path already exists.');
       }
       this.entries.set(normalizedPath, new FakeFileEntry('DIRECTORY'));
       return;
@@ -867,10 +1023,45 @@ export class FakeFileDriver implements FileDriver {
     }
     const parent: string | null = fakeParentPath(normalizedDestination);
     if (parent !== null) {
-      this.ensureDirectoryChain(parent);
+      const parentEntry: FakeFileEntry | undefined = this.entries.get(parent);
+      if (parentEntry === undefined || parentEntry.kind !== 'DIRECTORY') {
+        throw new Error('Destination parent directory is unavailable.');
+      }
     }
     this.entries.delete(normalizedSource);
     this.entries.set(normalizedDestination, entry);
+  }
+
+  async renameReplace(source: string, destination: string): Promise<void> {
+    const normalizedSource: string = normalizeFakePath(source);
+    const normalizedDestination: string = normalizeFakePath(destination);
+    this.operationLog.push(`renameReplace:${normalizedSource}->${normalizedDestination}`);
+    this.renamePairs.push(`${normalizedSource}->${normalizedDestination}`);
+    this.failIfScripted('renameReplace', `${normalizedSource}->${normalizedDestination}`);
+    const entry: FakeFileEntry | undefined = this.entries.get(normalizedSource);
+    if (entry === undefined) {
+      throw new Error('No such file or directory.');
+    }
+    if (entry.kind !== 'FILE') {
+      throw new Error('Source must be a file.');
+    }
+    const parent: string | null = fakeParentPath(normalizedDestination);
+    if (parent !== null) {
+      const parentEntry: FakeFileEntry | undefined = this.entries.get(parent);
+      if (parentEntry === undefined || parentEntry.kind !== 'DIRECTORY') {
+        throw new Error('Destination parent directory is unavailable.');
+      }
+    }
+    const destinationEntry: FakeFileEntry | undefined = this.entries.get(normalizedDestination);
+    if (destinationEntry !== undefined && destinationEntry.kind !== 'FILE') {
+      throw new Error('Destination must be a file path.');
+    }
+    this.entries.delete(normalizedSource);
+    this.entries.set(normalizedDestination, entry);
+    const corruptedBytes: Uint8Array | undefined = this.nextRenameReplaceCorruption(`${normalizedSource}->${normalizedDestination}`);
+    if (corruptedBytes !== undefined) {
+      this.entries.set(normalizedDestination, new FakeFileEntry('FILE', corruptedBytes));
+    }
   }
 
   async hash(path: string, algorithm: string): Promise<string> {
@@ -936,6 +1127,18 @@ export class FakeFileDriver implements FileDriver {
     return next;
   }
 
+  private nextRenameReplaceCorruption(target: string): Uint8Array | undefined {
+    const queue: Uint8Array[] | undefined = this.scriptedRenameReplaceCorruptions.get(target);
+    if (queue === undefined || queue.length === 0) {
+      return undefined;
+    }
+    const next: Uint8Array | undefined = queue.shift();
+    if (queue.length === 0) {
+      this.scriptedRenameReplaceCorruptions.delete(target);
+    }
+    return next;
+  }
+
   private requireOpenHandle(fd: number): FakeOpenHandle {
     const handle: FakeOpenHandle | undefined = this.handles.get(fd);
     if (handle === undefined) {
@@ -968,6 +1171,38 @@ export function buildBytes(length: number): Uint8Array {
 
 export function utf8Bytes(value: string): Uint8Array {
   return encodeUtf8(value);
+}
+
+export function decodeHexBytes(hex: string): Uint8Array {
+  const bytes = new Uint8Array(hex.length / 2);
+  for (let index: number = 0; index < bytes.length; index += 1) {
+    bytes[index] = parseInt(hex.slice(index * 2, index * 2 + 2), 16);
+  }
+  return bytes;
+}
+
+export class DeterministicVpnRpcDerivedHmacOperations implements VpnRpcDerivedHmacOperations {
+  readonly calls: string[] = [];
+  readonly keyRefs: Uint8Array[] = [];
+  readonly inputRefs: Uint8Array[] = [];
+  output: Uint8Array = buildBytes(32);
+  error?: Error;
+
+  async hmacSha256(key: Uint8Array, input: Uint8Array): Promise<Uint8Array> {
+    this.calls.push(`${encodeHexForDeterministicDerived(key)}:${encodeHexForDeterministicDerived(input)}`);
+    this.keyRefs.push(key);
+    this.inputRefs.push(input);
+    if (key.length > 0) {
+      key[0] = key[0] ^ 0x01;
+    }
+    if (input.length > 0) {
+      input[0] = input[0] ^ 0x02;
+    }
+    if (this.error !== undefined) {
+      throw this.error;
+    }
+    return this.output;
+  }
 }
 
 class DeterministicHuksDriverCall {
@@ -1174,6 +1409,10 @@ function hexBytes(bytes: Uint8Array): string {
     hex += bytes[index].toString(16).padStart(2, '0');
   }
   return hex;
+}
+
+function encodeHexForDeterministicDerived(bytes: Uint8Array): string {
+  return hexBytes(bytes);
 }
 
 function mutateBase64Field(envelopeText: string, fieldName: string): string {

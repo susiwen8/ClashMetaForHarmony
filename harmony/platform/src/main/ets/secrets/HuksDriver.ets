@@ -21,13 +21,23 @@ export interface HuksOptionsContract {
 
 export interface HuksSessionHandleContract {
   handle: number;
+  // Caller-owned bytes. Implementations must clone SDK-owned buffers before returning.
   challenge?: Uint8Array;
 }
 
 export interface HuksReturnResultContract {
+  // Caller-owned bytes. Implementations must clone SDK-owned buffers before returning.
   outData?: Uint8Array;
+  // Caller-owned records and any Uint8Array values inside them.
   properties?: Array<HuksParamContract>;
 }
+
+export interface HuksErrorCodeCarrier {
+  code?: number;
+}
+
+export const HUKS_STANDARD_KEY_SIZE_256: number = 256;
+export const HUKS_KEY_ITEM_ALREADY_EXISTS_ERROR_CODE: number = 12000017;
 
 export interface HuksOperations {
   isKeyItemExist(keyAlias: string, options: HuksOptionsContract): Promise<boolean>;

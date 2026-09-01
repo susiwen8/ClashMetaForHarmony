@@ -13,19 +13,21 @@ import (
 type ApplyFunc func(cfg *mihomocfg.Config, force bool) error
 
 type LoaderDeps struct {
-	ParseBytes ParseBytesFunc
-	Apply     ApplyFunc
-	Lifecycle *runtimepkg.Lifecycle
-	Events    eventspkg.Sink
+	ParseBytes  ParseBytesFunc
+	PrepareHome PrepareHomeFunc
+	Apply       ApplyFunc
+	Lifecycle   *runtimepkg.Lifecycle
+	Events      eventspkg.Sink
 }
 
 type Loader struct {
 	sandboxRoot string
 
-	parseBytes ParseBytesFunc
-	apply     ApplyFunc
-	lifecycle *runtimepkg.Lifecycle
-	events    eventspkg.Sink
+	parseBytes  ParseBytesFunc
+	prepareHome PrepareHomeFunc
+	apply       ApplyFunc
+	lifecycle   *runtimepkg.Lifecycle
+	events      eventspkg.Sink
 
 	mu          sync.RWMutex
 	currentPath string
@@ -41,6 +43,8 @@ func NewLoaderWithDeps(sandboxRoot string, deps LoaderDeps) *Loader {
 	if parseBytes == nil {
 		parseBytes = mihomoexecutor.ParseWithBytes
 	}
+
+	prepareHome := resolvePrepareHome(deps.PrepareHome)
 
 	apply := deps.Apply
 	if apply == nil {
@@ -63,6 +67,7 @@ func NewLoaderWithDeps(sandboxRoot string, deps LoaderDeps) *Loader {
 	return &Loader{
 		sandboxRoot: sandboxRoot,
 		parseBytes:  parseBytes,
+		prepareHome: prepareHome,
 		apply:       apply,
 		lifecycle:   lifecycle,
 		events:      sink,
@@ -70,6 +75,14 @@ func NewLoaderWithDeps(sandboxRoot string, deps LoaderDeps) *Loader {
 }
 
 func (l *Loader) Load(candidate string) error {
+	return l.load(candidate, nil)
+}
+
+func (l *Loader) LoadForLocalProxy(candidate string) error {
+	return l.load(candidate, clearConfigOwnedIngress)
+}
+
+func (l *Loader) load(candidate string, prepare func(cfg *mihomocfg.Config)) error {
 	l.mu.Lock()
 	defer l.mu.Unlock()
 
@@ -80,7 +93,7 @@ func (l *Loader) Load(candidate string) error {
 		State: string(currentState),
 	})
 
-	resolvedPath, cfg, err := parseWithinSandbox(l.sandboxRoot, candidate, l.parseBytes)
+	resolvedPath, cfg, err := parseWithinSandbox(l.sandboxRoot, candidate, l.prepareHome, l.parseBytes)
 	if err != nil {
 		l.events.Publish(eventspkg.Event{
 			Kind:    "config.load.failed",
@@ -89,6 +102,9 @@ func (l *Loader) Load(candidate string) error {
 			Message: err.Error(),
 		})
 		return err
+	}
+	if prepare != nil {
+		prepare(cfg)
 	}
 
 	if err := l.lifecycle.TransitionWith(runtimepkg.StateConfigLoaded, func() error {
@@ -111,6 +127,24 @@ func (l *Loader) Load(candidate string) error {
 		State: string(l.lifecycle.State()),
 	})
 	return nil
+}
+
+func clearConfigOwnedIngress(cfg *mihomocfg.Config) {
+	if cfg == nil {
+		return
+	}
+	if cfg.General != nil {
+		cfg.General.Inbound = mihomocfg.Inbound{}
+	}
+	if cfg.DNS != nil {
+		cfg.DNS.Listen = ""
+		cfg.DNS.ListenRoutingMark = 0
+	}
+	if cfg.IPTables != nil {
+		cfg.IPTables.Enable = false
+	}
+	cfg.Listeners = nil
+	cfg.Tunnels = nil
 }
 
 func (l *Loader) CurrentPath() string {

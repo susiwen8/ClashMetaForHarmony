@@ -2,6 +2,7 @@ export interface HttpTransportRequest {
   url: string;
   timeoutMs: number;
   maxResponseBytes: number;
+  userAgent: string;
 }
 
 export interface HttpTransportResponse {
@@ -53,6 +54,22 @@ export function isHttpTransportFailure(value: Object | undefined): boolean {
     typeof record.detail === 'string';
 }
 
+export function validateHttpTransportRequestUserAgent(userAgent: string): void {
+  if (userAgent.trim().length === 0 || containsControlCharacter(userAgent)) {
+    throw createHttpTransportFailure('NETWORK', 'HTTP_TRANSPORT_REQUEST_INVALID');
+  }
+}
+
 export interface HttpTransport {
   fetch(request: HttpTransportRequest): Promise<HttpTransportResponse>;
+}
+
+function containsControlCharacter(value: string): boolean {
+  for (let index = 0; index < value.length; index += 1) {
+    const codePoint: number = value.charCodeAt(index);
+    if (codePoint <= 0x1f || codePoint === 0x7f) {
+      return true;
+    }
+  }
+  return false;
 }

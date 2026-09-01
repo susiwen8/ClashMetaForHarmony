@@ -1,5 +1,17 @@
 export type RuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+export type CoreRuntimeMode = 'RULE' | 'GLOBAL' | 'DIRECT';
+
+export function normalizeCoreRuntimeMode(rawMode: string): CoreRuntimeMode {
+  switch (rawMode) {
+    case 'RULE':
+    case 'GLOBAL':
+    case 'DIRECT':
+      return rawMode;
+    default:
+      throw new Error('Core runtime mode must stay inside the closed mode contract.');
+  }
+}
 
 export interface LocalOptions {
   configPath: string;

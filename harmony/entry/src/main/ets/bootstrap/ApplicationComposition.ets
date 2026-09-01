@@ -1,4 +1,10 @@
-import type { AppError, ProfileApplication } from '@cmfa/shared';
+import type {
+  AppError,
+  ProfileApplication,
+  RuntimeLogExportPort,
+  RuntimeLogStorePort,
+  VpnRpcRuntimeModeClientPort
+} from '@cmfa/shared';
 import type { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 interface ApplicationCompositionLoadingState {
@@ -9,6 +15,9 @@ interface ApplicationCompositionReadyState {
   status: 'READY';
   application: ProfileApplication;
   vpnRegistry: VpnSessionRegistry;
+  runtimeModeClient?: VpnRpcRuntimeModeClientPort;
+  runtimeLogStore?: RuntimeLogStorePort;
+  runtimeLogExporter?: RuntimeLogExportPort;
 }
 
 interface ApplicationCompositionErrorState {

@@ -11,12 +11,12 @@
   },
   "toolchain": {
     "nodeVersion": "22.17.0",
-    "hvigorVersion": "6.23.7",
-    "ohpmVersion": "6.1.1.830",
-    "hdcVersion": "6.1.0.105",
-    "devecoVersion": "6.1.0.860",
-    "sdkVersion": "6.1.0.105",
-    "ndkVersion": "6.1.0.105"
+    "hvigorVersion": "6.24.4",
+    "ohpmVersion": "6.1.2.285",
+    "hdcVersion": "6.1.1.125",
+    "devecoVersion": "6.1.1.300",
+    "sdkVersion": "6.1.1.125",
+    "ndkVersion": "6.1.1.125"
   },
   "hap": {
     "path": "harmony/artifacts/example-signed.hap",

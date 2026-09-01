@@ -2,22 +2,35 @@ import { describe, expect, it } from '@ohos/hypium';
 import { createCoreService } from '@cmfa/core';
 import { PlatformFactory, type PlatformGraph } from '@cmfa/platform';
 import {
+  ActiveProfileProxyResolver,
   createProfile,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
   ProfileApplication,
   ProfileCommitService,
+  ProxyService,
+  createProxyRuntimeNotReadyError,
   RefreshProfileUseCase,
   SerialCommandQueue,
+  VpnProxyCommandBus,
   type CoreEvent,
+  type CoreProxyDelaySnapshot,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyPort,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied,
   type CoreService,
   type LocalOptions,
+  type OneClickVpnConfirmationHandle,
+  type OneClickVpnConfirmationPort,
+  type OneClickVpnConfirmationResult,
   type Profile,
   type ProfileRevision,
   type RuntimeSnapshot
 } from '@cmfa/shared';
-import { HomeViewModel } from '../../../main/ets/presentation/HomeViewModel';
+import { VpnSessionRegistry } from '../../../main/ets/vpn/VpnSessionRegistry';
 import {
   appendEvidenceCheck,
   appendEvidenceFailure,
@@ -35,13 +48,49 @@ const SUITE_NAME: string = 'Phase3RuntimeFlow';
 const EXPECTED_HTTP_ADDRESS: string = '127.0.0.1:7890';
 const EXPECTED_SOCKS_ADDRESS: string = '127.0.0.1:7891';
 
+class CoreProxyServiceAdapter implements CoreProxyPort {
+  private readonly coreService: CoreService;
+
+  constructor(coreService: CoreService) {
+    this.coreService = coreService;
+  }
+
+  async loadConfiguration(path: string): Promise<void> {
+    await this.coreService.loadConfiguration(path);
+  }
+
+  async queryProxyGroups(context: CoreProxyQueryContext, selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    return await this.coreService.queryProxyGroups(context, selectableOnly);
+  }
+
+  async queryProxyGroup(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyGroupResult> {
+    return await this.coreService.queryProxyGroup(context, groupName);
+  }
+
+  async selectProxy(context: CoreProxyQueryContext, groupName: string, memberName: string): Promise<CoreProxySelectionApplied> {
+    return await this.coreService.selectProxy(context, groupName, memberName);
+  }
+
+  async startProxyDelayTest(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.startProxyDelayTest(context, groupName);
+  }
+
+  async readProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.readProxyDelayTest(jobId);
+  }
+
+  async cancelProxyDelayTest(jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await this.coreService.cancelProxyDelayTest(jobId);
+  }
+}
+
 export default function Phase3RuntimeFlowTestsuite(): void {
   describe(SUITE_NAME, () => {
-    it('runs the real core through ProfileApplication and HomeViewModel', 0, async () => {
+    it('runs the real core through ProfileApplication and LocalRuntimeCoordinator', 0, async () => {
       appendEvidenceTrace(`${SUITE_NAME}.start`);
       let graph: PlatformGraph | undefined = undefined;
+      let coordinator: LocalRuntimeCoordinator | undefined = undefined;
       let application: ProfileApplication | undefined = undefined;
-      let homeViewModel: HomeViewModel | undefined = undefined;
       const trace: string[] = [];
       const profileIds: string[] = [];
       try {
@@ -73,35 +122,39 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         trace.push('retain/save');
 
         const tracedCore: TracedCoreService = new TracedCoreService(realCore, trace);
-        application = createProductionProfileApplication(graph, tracedCore);
+        coordinator = new LocalRuntimeCoordinator({
+          repository: graph.repository,
+          contentStore: graph.contentStore,
+          coreService: tracedCore,
+          clock: graph.clock
+        });
+        application = createProductionProfileApplication(graph, tracedCore, coordinator);
         await application.initialize();
 
         const enableResult = await application.enable(profileId);
         ensure(enableResult.kind === 'ENABLED', `Enable must succeed before runtime start: ${JSON.stringify(enableResult)}`);
 
-        const startResult = await application.startLocal();
-        ensure(startResult.kind === 'STARTED', `startLocal must succeed: ${JSON.stringify(startResult)}`);
-        expect(application.current().runtime.state).assertEqual('RUNNING');
-        const latest = application.current().runtime.latest;
+        const startResult = await coordinator.start();
+        ensure(startResult.kind === 'STARTED', `coordinator.start must succeed: ${JSON.stringify(startResult)}`);
+        expect(coordinator.current().state).assertEqual('RUNNING');
+        const latest = coordinator.current().latest;
         expect(latest.state).assertEqual('RUNNING');
         expect(latest.httpAddress).assertEqual(EXPECTED_HTTP_ADDRESS);
         expect(latest.socksAddress).assertEqual(EXPECTED_SOCKS_ADDRESS);
         trace.push(`RUNNING ${latest.httpAddress} ${latest.socksAddress}`);
 
-        homeViewModel = new HomeViewModel(application);
-        expect(homeViewModel.current().httpAddress).assertEqual(latest.httpAddress);
-        expect(homeViewModel.current().socksAddress).assertEqual(latest.socksAddress);
-        const homeHttpAddress: string = requireAddress(homeViewModel.current().httpAddress, 'Home httpAddress');
-        const homeSocksAddress: string = requireAddress(homeViewModel.current().socksAddress, 'Home socksAddress');
+        const homeHttpAddress: string = requireAddress(latest.httpAddress, 'Runtime httpAddress');
+        const homeSocksAddress: string = requireAddress(latest.socksAddress, 'Runtime socksAddress');
+        const diagnosticAddresses: string = formatListenerAddresses(homeHttpAddress, homeSocksAddress);
         setEvidenceHomeAddresses(
-          formatListenerAddresses(homeHttpAddress, homeSocksAddress),
-          formatListenerAddresses(latest.httpAddress, latest.socksAddress)
+          diagnosticAddresses,
+          diagnosticAddresses
         );
 
-        const stopResult = await application.stopLocal();
-        ensure(stopResult.kind === 'STOPPED', `stopLocal must succeed: ${JSON.stringify(stopResult)}`);
-        expect(application.current().runtime.state).assertEqual('STOPPED');
-        expect(application.current().runtime.latest.state).assertEqual('STOPPED');
+        const stopResult = await coordinator.stop();
+        ensure(stopResult.kind === 'STOPPED', `coordinator.stop must succeed: ${JSON.stringify(stopResult)}`);
+        expect(coordinator.current().state).assertEqual('STOPPED');
+        expect(coordinator.current().latest.state).assertEqual('STOPPED');
         trace.push('STOPPED');
 
         expect(JSON.stringify(trace)).assertEqual(JSON.stringify([
@@ -123,23 +176,26 @@ export default function Phase3RuntimeFlowTestsuite(): void {
         throw toError(error);
       } finally {
         let cleanupError: Error | undefined = undefined;
-        try {
-          homeViewModel?.dispose();
-        } catch (error) {
-          cleanupError = toError(error);
+        if (coordinator !== undefined) {
+          try {
+            const cleanupStop = await coordinator.stop();
+            ensure(cleanupStop.kind === 'STOPPED', `Cleanup stop must not fail: ${JSON.stringify(cleanupStop)}`);
+          } catch (error) {
+            cleanupError = captureCleanupError(cleanupError, error);
+          }
         }
         if (application !== undefined) {
           try {
-            const cleanupStop = await application.stopLocal();
-            ensure(cleanupStop.kind === 'STOPPED', `Cleanup stop must not fail: ${JSON.stringify(cleanupStop)}`);
+            application.dispose();
           } catch (error) {
-            cleanupError = cleanupError ?? toError(error);
-          } finally {
-            try {
-              application.dispose();
-            } catch (error) {
-              cleanupError = cleanupError ?? toError(error);
-            }
+            cleanupError = captureCleanupError(cleanupError, error);
+          }
+        }
+        if (coordinator !== undefined) {
+          try {
+            coordinator.dispose();
+          } catch (error) {
+            cleanupError = captureCleanupError(cleanupError, error);
           }
         }
         if (graph !== undefined) {
@@ -225,6 +281,41 @@ class TracedCoreService implements CoreService {
     return this.delegate.runtimeSnapshot();
   }
 
+  async queryProxyGroups(context: CoreProxyQueryContext, selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    void context;
+    void selectableOnly;
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroups'));
+  }
+
+  async queryProxyGroup(context: CoreProxyQueryContext, groupName: string): Promise<CoreProxyGroupResult> {
+    void context;
+    void groupName;
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroup'));
+  }
+
+  async selectProxy(
+    context: CoreProxyQueryContext,
+    groupName: string,
+    memberName: string
+  ): Promise<CoreProxySelectionApplied> {
+    void context;
+    void groupName;
+    void memberName;
+    return await Promise.reject(createProxyRuntimeNotReadyError('selectProxy'));
+  }
+
+  async startProxyDelayTest(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('startProxyDelayTest'));
+  }
+
+  async readProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('readProxyDelayTest'));
+  }
+
+  async cancelProxyDelayTest(_jobId: string): Promise<CoreProxyDelaySnapshot> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('cancelProxyDelayTest'));
+  }
+
   subscribe(callback: (event: CoreEvent) => void): number {
     return this.delegate.subscribe(callback);
   }
@@ -234,19 +325,18 @@ class TracedCoreService implements CoreService {
   }
 }
 
-function createProductionProfileApplication(graph: PlatformGraph, coreService: CoreService): ProfileApplication {
+function createProductionProfileApplication(
+  graph: PlatformGraph,
+  coreService: CoreService,
+  runtimeCoordinator: LocalRuntimeCoordinator
+): ProfileApplication {
   const commitService = new ProfileCommitService({
     repository: graph.repository,
     contentStore: graph.contentStore,
     clock: graph.clock
   });
   const queue = new SerialCommandQueue();
-  const runtimeCoordinator = new LocalRuntimeCoordinator({
-    repository: graph.repository,
-    contentStore: graph.contentStore,
-    coreService,
-    clock: graph.clock
-  });
+  const oneClickVpnConfirmation: OneClickVpnConfirmationPort = new InertOneClickVpnConfirmation();
   return new ProfileApplication({
     importUseCase: new ImportProfileUseCase({
       repository: graph.repository,
@@ -279,8 +369,40 @@ function createProductionProfileApplication(graph: PlatformGraph, coreService: C
     }),
     runtimeCoordinator,
     commitService,
-    repository: graph.repository
+    repository: graph.repository,
+    oneClickVpnConfirmation,
+    proxyService: new ProxyService(
+      new ActiveProfileProxyResolver(graph.repository, graph.contentStore),
+      new CoreProxyServiceAdapter(coreService),
+      graph.proxySelectionRepository,
+      graph.proxyIdentityHasher,
+      new VpnSessionRegistry(),
+      new VpnProxyCommandBus(),
+      graph.clock
+    )
   });
+}
+
+class CancelledOneClickVpnConfirmationResultValue implements OneClickVpnConfirmationResult {
+  kind: 'CANCELLED' = 'CANCELLED';
+}
+
+class InertOneClickVpnConfirmationHandle implements OneClickVpnConfirmationHandle {
+  async wait(): Promise<OneClickVpnConfirmationResult> {
+    return new CancelledOneClickVpnConfirmationResultValue();
+  }
+
+  markStartAccepted(): void {
+  }
+
+  cancel(): void {
+  }
+}
+
+class InertOneClickVpnConfirmation implements OneClickVpnConfirmationPort {
+  arm(_expectedSessionId: string, _timeoutMs: number): OneClickVpnConfirmationHandle {
+    return new InertOneClickVpnConfirmationHandle();
+  }
 }
 
 function ensure(condition: boolean, message: string): void {

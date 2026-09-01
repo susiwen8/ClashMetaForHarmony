@@ -61,6 +61,7 @@ export interface FileDriver {
   unlink(path: string): Promise<void>;
   rmdir(path: string): Promise<void>;
   renameNoOverwrite(source: string, destination: string): Promise<void>;
+  renameReplace(source: string, destination: string): Promise<void>;
   hash(path: string, algorithm: string): Promise<string>;
 }
 
@@ -69,4 +70,6 @@ export const FILE_OPEN_MODE_WRITE_ONLY: number = 0o1;
 export const FILE_OPEN_MODE_READ_WRITE: number = 0o2;
 export const FILE_OPEN_MODE_CREATE: number = 0o100;
 export const FILE_OPEN_MODE_TRUNC: number = 0o1000;
+export const FILE_OPEN_MODE_APPEND: number = 0o2000;
+export const FILE_MOVE_MODE_OVERWRITE: number = 0;
 export const FILE_MOVE_MODE_NO_OVERWRITE: number = 1;

@@ -1,9 +1,19 @@
 #include "cmfa_napi.h"
 #include "cmfa_mihomo_backend.h"
 
+#include <hilog/log.h>
+
 namespace cmfa::nodeaddon {
 
 namespace {
+
+constexpr unsigned int kInitializationLogDomain = 0x0000;
+constexpr const char *kInitializationLogTag = "CMFAInitNative";
+
+void log_initialization(const char *stage, int status) {
+  (void)OH_LOG_Print(LOG_APP, status == 0 ? LOG_INFO : LOG_ERROR, kInitializationLogDomain,
+                     kInitializationLogTag, "%{public}s:%{public}d", stage, status);
+}
 
 cmfa_status shutdown_core(void *context, cmfa_error *error) {
   auto *ownership = static_cast<AddonLifecycleOwnership *>(context);
@@ -42,6 +52,7 @@ void delete_state_with_cleanup(AddonState *state) {
 
 napi_value Init(napi_env env, napi_value exports) {
   try {
+    log_initialization("begin", 0);
     auto *state =
         new AddonState(cmfa::napi::LifecycleOperations{nullptr, shutdown_core, unregister_backend});
     state->env = env;
@@ -54,6 +65,7 @@ napi_value Init(napi_env env, napi_value exports) {
     error.code = CMFA_OK;
 
     const cmfa_status register_status = cmfa::register_mihomo_backend(&error);
+    log_initialization("register_mihomo_backend", static_cast<int>(register_status));
     if (register_status != CMFA_OK) {
       throw_core_error(env, make_core_error(register_status, "Init"));
       delete state;
@@ -67,6 +79,7 @@ napi_value Init(napi_env env, napi_value exports) {
     host.log_sink = emit_log_event;
     host.event_sink = emit_runtime_event;
     const cmfa_status initialize_status = cmfa_initialize(&host, &error);
+    log_initialization("cmfa_initialize", static_cast<int>(initialize_status));
     if (initialize_status != CMFA_OK) {
       throw_core_error(env, make_core_error(initialize_status, "Init"));
       delete_state_with_cleanup(state);
@@ -75,6 +88,7 @@ napi_value Init(napi_env env, napi_value exports) {
     state->ownership.core_initialized.store(true, std::memory_order_release);
 
     const napi_status cleanup_hook_status = napi_add_env_cleanup_hook(env, cleanup_addon, state);
+    log_initialization("napi_add_env_cleanup_hook", static_cast<int>(cleanup_hook_status));
     if (cleanup_hook_status != napi_ok) {
       throw_napi_failure(env, "Init", cleanup_hook_status);
       delete_state_with_cleanup(state);
@@ -82,6 +96,7 @@ napi_value Init(napi_env env, napi_value exports) {
     }
 
     const napi_status define_status = define_core_module(env, exports, state);
+    log_initialization("define_core_module", static_cast<int>(define_status));
     if (define_status != napi_ok) {
       const napi_status remove_status = napi_remove_env_cleanup_hook(env, cleanup_addon, state);
       (void)remove_status;
@@ -90,7 +105,9 @@ napi_value Init(napi_env env, napi_value exports) {
       return nullptr;
     }
 
-    if (!state->owner.activate()) {
+    const bool activated = state->owner.activate();
+    log_initialization("activate", activated ? 0 : 1);
+    if (!activated) {
       const napi_status remove_status = napi_remove_env_cleanup_hook(env, cleanup_addon, state);
       (void)remove_status;
       throw_core_error(env, make_core_error(CMFA_INVALID_STATE, "Init"));
@@ -100,6 +117,7 @@ napi_value Init(napi_env env, napi_value exports) {
 
     return exports;
   } catch (...) {
+    log_initialization("catch", 1);
     throw_napi_failure(env, "Init", napi_generic_failure);
     return nullptr;
   }

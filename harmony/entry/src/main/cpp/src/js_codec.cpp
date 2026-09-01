@@ -193,6 +193,18 @@ const char *async_operation_name(AsyncOp op) {
       return "startLocal";
     case AsyncOp::STOP_RUNTIME:
       return "stopRuntime";
+    case AsyncOp::PROXY_GROUPS:
+      return "queryProxyGroups";
+    case AsyncOp::PROXY_GROUP:
+      return "queryProxyGroup";
+    case AsyncOp::PROXY_SELECT:
+      return "selectProxy";
+    case AsyncOp::PROXY_DELAY_START:
+      return "startProxyDelayTest";
+    case AsyncOp::PROXY_DELAY_SNAPSHOT:
+      return "readProxyDelayTest";
+    case AsyncOp::PROXY_DELAY_CANCEL:
+      return "cancelProxyDelayTest";
     case AsyncOp::START_TUN:
       return "startTun";
     case AsyncOp::STOP_TUN:
@@ -589,6 +601,10 @@ bool owned_tun_traces_to_js(napi_env env, const std::vector<OwnedTunTrace> &trac
         set_named_string(env, trace, "destinationAddress", traces[index].destination_address) != napi_ok ||
         set_named_string(env, trace, "hashedTuple", traces[index].hashed_tuple) != napi_ok ||
         set_named_string(env, trace, "correlationHash", traces[index].correlation_hash) != napi_ok ||
+        set_named_string(env, trace, "destinationHash", traces[index].destination_hash) != napi_ok ||
+        set_named_string(env, trace, "outboundTerminalHash", traces[index].outbound_terminal_hash) != napi_ok ||
+        set_named_string(env, trace, "outboundChainHash", traces[index].outbound_chain_hash) != napi_ok ||
+        set_named_uint32(env, trace, "outboundChainLength", traces[index].outbound_chain_length) != napi_ok ||
         napi_set_element(env, array, index, trace) != napi_ok) {
       *error = make_napi_failure("readTunTraces", napi_generic_failure);
       return false;

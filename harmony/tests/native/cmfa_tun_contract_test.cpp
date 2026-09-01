@@ -301,6 +301,32 @@ void fill_trace_hashes(FakeTunBackend &backend, const char *hashed_tuple, const 
   }
 }
 
+void fill_trace_outbound_proof(FakeTunBackend &backend,
+                               const char *destination_hash,
+                               const char *outbound_terminal_hash,
+                               const char *outbound_chain_hash,
+                               uint32_t outbound_chain_length) {
+  std::memset(backend.traces.traces[0].destination_hash, 0, sizeof(backend.traces.traces[0].destination_hash));
+  std::memset(backend.traces.traces[0].outbound_terminal_hash, 0, sizeof(backend.traces.traces[0].outbound_terminal_hash));
+  std::memset(backend.traces.traces[0].outbound_chain_hash, 0, sizeof(backend.traces.traces[0].outbound_chain_hash));
+  if (destination_hash != nullptr) {
+    std::strncpy(backend.traces.traces[0].destination_hash,
+                 destination_hash,
+                 sizeof(backend.traces.traces[0].destination_hash) - 1);
+  }
+  if (outbound_terminal_hash != nullptr) {
+    std::strncpy(backend.traces.traces[0].outbound_terminal_hash,
+                 outbound_terminal_hash,
+                 sizeof(backend.traces.traces[0].outbound_terminal_hash) - 1);
+  }
+  if (outbound_chain_hash != nullptr) {
+    std::strncpy(backend.traces.traces[0].outbound_chain_hash,
+                 outbound_chain_hash,
+                 sizeof(backend.traces.traces[0].outbound_chain_hash) - 1);
+  }
+  backend.traces.traces[0].outbound_chain_length = outbound_chain_length;
+}
+
 cmfa_status backend_attach_host(void *context, const cmfa_backend_host *host, cmfa_error *) {
   auto *backend = static_cast<FakeTunBackend *>(context);
   std::lock_guard<std::mutex> lock(backend->mutex);
@@ -324,9 +350,92 @@ cmfa_status backend_start_local(void *, const cmfa_local_options *, cmfa_runtime
 
 cmfa_status backend_stop_local(void *, cmfa_error *) { return CMFA_OK; }
 cmfa_status backend_runtime_state(void *, cmfa_runtime_snapshot *, cmfa_error *) { return CMFA_OK; }
+cmfa_status backend_runtime_mode_query(void *, cmfa_runtime_mode *mode, cmfa_error *) {
+  *mode = CMFA_MODE_RULE;
+  return CMFA_OK;
+}
+cmfa_status backend_runtime_mode_set(void *, cmfa_runtime_mode, cmfa_error *) { return CMFA_OK; }
 
 cmfa_status backend_probe_https(void *, const cmfa_probe_request *, cmfa_probe_result *, cmfa_error *) {
   return CMFA_CORE_UNAVAILABLE;
+}
+
+void clear_json_error(cmfa_error *error) {
+  if (error == nullptr) {
+    return;
+  }
+  error->code = CMFA_OK;
+  error->length = 0;
+  if (error->message != nullptr && error->capacity > 0) {
+    error->message[0] = '\0';
+  }
+}
+
+cmfa_status write_synthetic_json(cmfa_json_buffer *output, cmfa_error *error) {
+  static constexpr char kSyntheticJson[] = "{}";
+  static constexpr size_t kSyntheticJsonLength = sizeof(kSyntheticJson) - 1;
+  if (output == nullptr || output->data == nullptr || output->capacity == 0) {
+    if (error != nullptr) {
+      error->code = CMFA_INVALID_ARGUMENT;
+      error->length = 0;
+      if (error->message != nullptr && error->capacity > 0) {
+        error->message[0] = '\0';
+      }
+    }
+    return CMFA_INVALID_ARGUMENT;
+  }
+  output->length = 0;
+  output->data[0] = '\0';
+  if (output->capacity <= kSyntheticJsonLength) {
+    output->length = kSyntheticJsonLength;
+    clear_json_error(error);
+    return CMFA_BUFFER_TOO_SMALL;
+  }
+  std::memcpy(output->data, kSyntheticJson, sizeof(kSyntheticJson));
+  output->length = kSyntheticJsonLength;
+  clear_json_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status backend_proxy_groups(void *,
+                                 const cmfa_proxy_query_context *,
+                                 uint8_t,
+                                 cmfa_json_buffer *output,
+                                 cmfa_error *error) {
+  return write_synthetic_json(output, error);
+}
+
+cmfa_status backend_proxy_group(void *,
+                                const cmfa_proxy_query_context *,
+                                const char *,
+                                cmfa_json_buffer *output,
+                                cmfa_error *error) {
+  return write_synthetic_json(output, error);
+}
+
+cmfa_status backend_proxy_select(void *,
+                                 const cmfa_proxy_query_context *,
+                                 const char *,
+                                 const char *,
+                                 cmfa_json_buffer *output,
+                                 cmfa_error *error) {
+  return write_synthetic_json(output, error);
+}
+
+cmfa_status backend_proxy_delay_start(void *,
+                                      const cmfa_proxy_query_context *,
+                                      const char *,
+                                      cmfa_json_buffer *output,
+                                      cmfa_error *error) {
+  return write_synthetic_json(output, error);
+}
+
+cmfa_status backend_proxy_delay_snapshot(void *, const char *, cmfa_json_buffer *output, cmfa_error *error) {
+  return write_synthetic_json(output, error);
+}
+
+cmfa_status backend_proxy_delay_cancel(void *, const char *, cmfa_json_buffer *output, cmfa_error *error) {
+  return write_synthetic_json(output, error);
 }
 
 cmfa_status backend_start_tun(void *context,
@@ -410,6 +519,14 @@ cmfa_backend_api make_backend_api(FakeTunBackend *backend) {
   api.start_local = backend_start_local;
   api.stop = backend_stop_local;
   api.runtime_state = backend_runtime_state;
+  api.runtime_mode_query = backend_runtime_mode_query;
+  api.runtime_mode_set = backend_runtime_mode_set;
+  api.proxy_groups = backend_proxy_groups;
+  api.proxy_group = backend_proxy_group;
+  api.proxy_select = backend_proxy_select;
+  api.proxy_delay_start = backend_proxy_delay_start;
+  api.proxy_delay_snapshot = backend_proxy_delay_snapshot;
+  api.proxy_delay_cancel = backend_proxy_delay_cancel;
   api.probe_https = backend_probe_https;
   api.start_tun = backend_start_tun;
   api.stop_tun = backend_stop_tun;
@@ -761,6 +878,7 @@ void test_empty_redacted_trace_addresses_are_allowed() {
   cmfa_tun_trace_collection traces{};
   ErrorBox error;
   expect_eq(cmfa_tun_copy_traces(&traces, &error.error), CMFA_OK, "empty redacted trace addresses should export");
+  reset_contract();
 }
 
 void test_trace_paging_reads_full_ring() {
@@ -793,6 +911,41 @@ void test_trace_paging_reads_full_ring() {
   expect_eq(seen_ids.size(), backend.trace_ring.size(), "ring API should return every stored trace");
   expect_string_eq(seen_ids.front(), "trace-000", "first paged trace should be oldest");
   expect_string_eq(seen_ids.back(), "trace-255", "last paged trace should be newest");
+  reset_contract();
+}
+
+void test_partial_or_malformed_outbound_proof_fails_closed() {
+  const char *hash_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+  const char *hash_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+  const char *hash_c = "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+  struct OutboundCase {
+    const char *destination_hash;
+    const char *terminal_hash;
+    const char *chain_hash;
+    uint32_t chain_length;
+  };
+  const std::vector<OutboundCase> invalid_cases = {
+      {"short", nullptr, nullptr, 0},
+      {hash_a, hash_b, nullptr, 1},
+      {hash_a, nullptr, hash_c, 1},
+      {hash_a, hash_b, hash_c, 0},
+      {hash_a, hash_b, hash_c, 17},
+  };
+
+  for (const auto &test_case : invalid_cases) {
+    FakeTunBackend backend;
+    ProtectCapture capture;
+    initialize_backend(&backend, &capture);
+    fill_trace_outbound_proof(
+        backend, test_case.destination_hash, test_case.terminal_hash, test_case.chain_hash, test_case.chain_length);
+
+    cmfa_tun_trace_collection traces{};
+    ErrorBox error;
+    expect_eq(cmfa_tun_copy_traces(&traces, &error.error),
+              CMFA_BACKEND_ERROR,
+              "partial or malformed outbound proof must fail closed");
+    reset_contract();
+  }
 }
 
 } // namespace
@@ -811,6 +964,7 @@ int main() {
       {"invalid_trace_hashes_fail_closed", test_invalid_trace_hashes_fail_closed},
       {"empty_redacted_trace_addresses_are_allowed", test_empty_redacted_trace_addresses_are_allowed},
       {"trace_paging_reads_full_ring", test_trace_paging_reads_full_ring},
+      {"partial_or_malformed_outbound_proof_fails_closed", test_partial_or_malformed_outbound_proof_fails_closed},
   };
 
   for (const auto &entry : tests) {

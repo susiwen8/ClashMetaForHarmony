@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Proxy One-Click VPN Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "result",
+    "packageSha256",
+    "stoppedToVpnState",
+    "runningSwitchState",
+    "recreationState",
+    "cleanupState"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "2.0.0"
+    },
+    "result": {
+      "enum": ["pass", "incomplete"]
+    },
+    "packageSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "stoppedToVpnState": {
+      "enum": ["RUNNING_SELECTED", "NOT_PROVEN"]
+    },
+    "runningSwitchState": {
+      "enum": ["HOT_SWITCHED_SAME_SESSION", "NOT_PROVEN"]
+    },
+    "recreationState": {
+      "enum": ["RESTORED_RUNNING_SELECTED", "NOT_PROVEN"]
+    },
+    "cleanupState": {
+      "enum": ["CLEAN", "NOT_PROVEN"]
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "pass"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "stoppedToVpnState": {
+            "const": "RUNNING_SELECTED"
+          },
+          "runningSwitchState": {
+            "const": "HOT_SWITCHED_SAME_SESSION"
+          },
+          "recreationState": {
+            "const": "RESTORED_RUNNING_SELECTED"
+          },
+          "cleanupState": {
+            "const": "CLEAN"
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "result": {
+            "const": "incomplete"
+          }
+        }
+      },
+      "then": {
+        "properties": {
+          "stoppedToVpnState": {
+            "const": "NOT_PROVEN"
+          },
+          "runningSwitchState": {
+            "const": "NOT_PROVEN"
+          },
+          "recreationState": {
+            "const": "NOT_PROVEN"
+          },
+          "cleanupState": {
+            "const": "NOT_PROVEN"
+          }
+        }
+      }
+    }
+  ]
+}

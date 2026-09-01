@@ -1,6 +1,5 @@
 import { ProfileApplication, type ProfileApplicationListener, type ProfileApplicationSnapshot } from '@cmfa/shared';
 import {
-  areProfileActionsLocked,
   cloneProfilesViewState,
   createProfileRowState,
   createProfilesViewState,
@@ -114,9 +113,8 @@ export class ProfilesViewModel {
 
 function createState(snapshot: ProfileApplicationSnapshot): ProfilesViewState {
   const rows: ProfileRowState[] = [];
-  const actionsLockedByRuntime: boolean = areProfileActionsLocked(snapshot.runtime.state);
   for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
-    rows.push(createProfileRowState(snapshot.profiles[index], snapshot.activeProfileId, actionsLockedByRuntime));
+    rows.push(createProfileRowState(snapshot.profiles[index], snapshot.activeProfileId));
   }
   return createProfilesViewState(
     snapshot.status,

@@ -2,6 +2,7 @@ import {
   createSubscriptionSecretError,
   createAppError,
   createProfile,
+  createProxyRuntimeNotReadyError,
   createProfileRevision,
   redactUrl,
   type LocalProfileAcquisitionCancelled as PortLocalProfileAcquisitionCancelled,
@@ -12,6 +13,10 @@ import {
   type AppError,
   type Clock as PortClock,
   type CoreError,
+  type CoreProxyGroupList,
+  type CoreProxyGroupResult,
+  type CoreProxyQueryContext,
+  type CoreProxySelectionApplied,
   type IdGenerator as PortIdGenerator,
   type LocalAcquireCommand as PortLocalAcquireCommand,
   type LocalProfileAcquisition as PortLocalProfileAcquisition,
@@ -240,6 +245,22 @@ export class FakeCoreService {
       throw scripted.error;
     }
     return Promise.resolve();
+  }
+
+  async queryProxyGroups(_context: CoreProxyQueryContext, _selectableOnly: boolean): Promise<CoreProxyGroupList> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroups'));
+  }
+
+  async queryProxyGroup(_context: CoreProxyQueryContext, _groupName: string): Promise<CoreProxyGroupResult> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('queryProxyGroup'));
+  }
+
+  async selectProxy(
+    _context: CoreProxyQueryContext,
+    _groupName: string,
+    _memberName: string
+  ): Promise<CoreProxySelectionApplied> {
+    return await Promise.reject(createProxyRuntimeNotReadyError('selectProxy'));
   }
 }
 

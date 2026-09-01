@@ -10,12 +10,15 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 	"unicode/utf8"
 
 	adapterinbound "github.com/metacubex/mihomo/adapter/inbound"
 	C "github.com/metacubex/mihomo/constant"
 	mihomoexecutor "github.com/metacubex/mihomo/hub/executor"
+	authStore "github.com/metacubex/mihomo/listener/auth"
+	LC "github.com/metacubex/mihomo/listener/config"
 	mihomohttp "github.com/metacubex/mihomo/listener/http"
 	mihomosocks "github.com/metacubex/mihomo/listener/socks"
 	"github.com/metacubex/mihomo/tunnel"
@@ -32,23 +35,26 @@ type ListenerHandle interface {
 }
 
 type LocalProxyDeps struct {
-	Prepare           func(configPath string) error
-	HTTPFactory       func(addr string) (ListenerHandle, error)
-	SOCKSFactory      func(addr string) (ListenerHandle, error)
-	CloseConnections  func() error
-	Shutdown          func() error
-	Events            EventSink
-	Logs              LogSink
-	BaseTunnel        C.Tunnel
-	TunFactory        TunListenerFactory
-	SocketProtector   SocketProtector
+	Prepare               func(configPath string) error
+	HTTPFactory           func(addr string) (ListenerHandle, error)
+	SOCKSFactory          func(addr string) (ListenerHandle, error)
+	CloseConnections      func() error
+	Shutdown              func() error
+	Events                EventSink
+	Logs                  LogSink
+	BaseTunnel            C.Tunnel
+	TunFactory            TunListenerFactory
+	ReportStageLifecycle  func(stage string)
+	SocketProtector       SocketProtector
 	SocketProtectAPILevel int
 	SocketProtectTimeout  time.Duration
+	TunRouteProbe         TunRouteProbe
+	TunRouteProbeInterval time.Duration
 	MaxMessageBytes       int
 	MaxSnapshotBytes      int
 	AllowedLoopbackIP     string
-	MaxLogContextFields int
-	MaxLogFieldBytes    int
+	MaxLogContextFields   int
+	MaxLogFieldBytes      int
 }
 
 type LocalProxy struct {
@@ -61,12 +67,15 @@ type LocalProxy struct {
 	socksListener ListenerHandle
 	tunListener   TunListenerHandle
 
-	tunSnapshot TunSnapshot
-	tunRecorder *tunTraceRecorder
-	tunTraces   []TunTrace
+	tunSnapshot           TunSnapshot
+	tunRecorder           *tunTraceRecorder
+	tunTraces             []TunTrace
 	tunCloseStaleInFlight bool
+	tunRouteProbeInFlight bool
+	tunRouteProbeEpoch    uint64
+	lastTunRouteProbeAt   time.Time
 
-	lastStartOptions       StartOptions
+	lastStartOptions        StartOptions
 	restoreSocketProtection func()
 }
 
@@ -90,12 +99,126 @@ type runtimeFailure struct {
 	message string
 }
 
+type stopStageDefinition struct {
+	stage         string
+	codePrefix    string
+	classifyCause bool
+}
+
 func (e runtimeFailure) Error() string {
 	return e.message
 }
 
+var (
+	tunStopListenerStage = stopStageDefinition{
+		stage:         "tun.stop.listener",
+		codePrefix:    "TUN_STOP_LISTENER_FAILED",
+		classifyCause: true,
+	}
+	tunStopHTTPListenerStage = stopStageDefinition{
+		stage:      "tun.stop.http-listener",
+		codePrefix: "TUN_STOP_HTTP_LISTENER_FAILED",
+	}
+	tunStopSOCKSListenerStage = stopStageDefinition{
+		stage:      "tun.stop.socks-listener",
+		codePrefix: "TUN_STOP_SOCKS_LISTENER_FAILED",
+	}
+	tunStopConnectionsStage = stopStageDefinition{
+		stage:      "tun.stop.connections",
+		codePrefix: "TUN_STOP_CONNECTIONS_FAILED",
+	}
+	tunStopExecutorStage = stopStageDefinition{
+		stage:      "tun.stop.executor",
+		codePrefix: "TUN_STOP_EXECUTOR_FAILED",
+	}
+)
+
+type stopCommitDecision struct {
+	snapshot    Snapshot
+	tunSnapshot TunSnapshot
+	event       RuntimeEvent
+	logLevel    LogLevel
+	logCategory string
+	logMessage  string
+	logContext  map[string]string
+	returnErr   error
+}
+
+func buildStopCommitDecision(
+	preserveError bool,
+	previous Snapshot,
+	previousTun TunSnapshot,
+	stopFailureDiagnostic string,
+	baseTunSnapshot TunSnapshot,
+) stopCommitDecision {
+	switch {
+	case preserveError:
+		snapshot := previous
+		snapshot.State = RuntimeError
+		tunSnapshot := previousTun
+		tunSnapshot.State = TunStateError
+		return stopCommitDecision{
+			snapshot:    snapshot,
+			tunSnapshot: tunSnapshot,
+			event: RuntimeEvent{
+				Kind:    "runtime.error",
+				State:   RuntimeError,
+				Message: snapshot.LastError,
+			},
+			logLevel:    LogLevelError,
+			logCategory: "runtime.stop.error",
+			logMessage:  snapshot.LastError,
+			logContext: map[string]string{
+				"configPath": snapshot.ActiveConfigPath,
+			},
+		}
+	case stopFailureDiagnostic != "":
+		snapshot := Snapshot{
+			State:     RuntimeError,
+			LastError: stopFailureDiagnostic,
+		}
+		tunSnapshot := baseTunSnapshot
+		tunSnapshot.State = TunStateError
+		return stopCommitDecision{
+			snapshot:    snapshot,
+			tunSnapshot: tunSnapshot,
+			event: RuntimeEvent{
+				Kind:    "runtime.error",
+				State:   RuntimeError,
+				Message: snapshot.LastError,
+			},
+			logLevel:    LogLevelError,
+			logCategory: "runtime.stop.failed",
+			logMessage:  snapshot.LastError,
+			returnErr:   runtimeFailure{message: snapshot.LastError},
+		}
+	default:
+		snapshot := Snapshot{State: RuntimeStopped}
+		tunSnapshot := baseTunSnapshot
+		tunSnapshot.State = TunStateStopped
+		return stopCommitDecision{
+			snapshot:    snapshot,
+			tunSnapshot: tunSnapshot,
+			event: RuntimeEvent{
+				Kind:  "runtime.stopped",
+				State: RuntimeStopped,
+			},
+			logLevel:    LogLevelInfo,
+			logCategory: "runtime.stopped",
+			logMessage:  "local proxy stopped",
+		}
+	}
+}
+
 func NewLocalProxy() *LocalProxy {
 	return NewLocalProxyWithDeps(LocalProxyDeps{})
+}
+
+func localListenerAdditions(name string) []adapterinbound.Addition {
+	return []adapterinbound.Addition{
+		adapterinbound.WithInName(name),
+		adapterinbound.WithSpecialRules(""),
+	}
 }
 
 func NewLocalProxyWithDeps(deps LocalProxyDeps) *LocalProxy {
@@ -107,12 +230,17 @@ func NewLocalProxyWithDeps(deps LocalProxyDeps) *LocalProxy {
 	}
 	if deps.HTTPFactory == nil {
 		deps.HTTPFactory = func(addr string) (ListenerHandle, error) {
-			return mihomohttp.NewWithAuthenticate(addr, deps.BaseTunnel, false)
+			return mihomohttp.NewWithAuthenticate(addr, deps.BaseTunnel, false, localListenerAdditions("CMFA-LOCAL-HTTP")...)
 		}
 	}
 	if deps.SOCKSFactory == nil {
 		deps.SOCKSFactory = func(addr string) (ListenerHandle, error) {
-			return mihomosocks.New(addr, deps.BaseTunnel)
+			return mihomosocks.NewWithConfig(
+				LC.AuthServer{Enable: true, Listen: addr, AuthStore: authStore.Nil},
+				adapterinbound.NewListenConfig(),
+				deps.BaseTunnel,
+				localListenerAdditions("CMFA-LOCAL-SOCKS")...,
+			)
 		}
 	}
 	if deps.TunFactory == nil {
@@ -157,6 +285,9 @@ func NewLocalProxyWithDeps(deps LocalProxyDeps) *LocalProxy {
 	if deps.SocketProtectTimeout <= 0 {
 		deps.SocketProtectTimeout = 3 * time.Second
 	}
+	if deps.TunRouteProbeInterval <= 0 {
+		deps.TunRouteProbeInterval = 200 * time.Millisecond
+	}
 
 	return &LocalProxy{
 		deps:   deps,
@@ -176,13 +307,101 @@ func (p *LocalProxy) Snapshot() Snapshot {
 
 func (p *LocalProxy) TunSnapshot() TunSnapshot {
 	p.mu.Lock()
-	defer p.mu.Unlock()
-
 	snapshot := p.tunSnapshot
-	if p.tunRecorder != nil {
-		snapshot.Counters = p.tunRecorder.Counters()
+	recorder := p.tunRecorder
+	activeSessionID := snapshot.SessionID
+	activeState := snapshot.State
+	hasActiveTun := p.tunListener != nil
+	routeProbe := p.deps.TunRouteProbe
+	routeProbeInterval := p.deps.TunRouteProbeInterval
+	probeEpoch := p.tunRouteProbeEpoch
+	if recorder != nil {
+		snapshot.Counters = recorder.Counters()
 	}
-	return snapshot
+	shouldProbe := hasActiveTun && (snapshot.State == TunStateReady ||
+		(snapshot.State == TunStateError && snapshot.Failure.Code == tunRouteLostCode))
+	if shouldProbe && p.tunRouteProbeInFlight {
+		shouldProbe = false
+	}
+	if shouldProbe && routeProbeInterval > 0 && !p.lastTunRouteProbeAt.IsZero() && time.Since(p.lastTunRouteProbeAt) < routeProbeInterval {
+		shouldProbe = false
+	}
+	if shouldProbe {
+		p.tunRouteProbeInFlight = true
+	}
+	p.mu.Unlock()
+
+	if !shouldProbe {
+		return snapshot
+	}
+	if routeProbe == nil {
+		routeProbe = defaultTunRouteProbe
+	}
+
+	var (
+		probeErr   error
+		probePanic any
+	)
+	func() {
+		defer func() {
+			probePanic = recover()
+		}()
+		probeErr = routeProbe()
+	}()
+
+	p.mu.Lock()
+	current := p.tunSnapshot
+	if p.tunRecorder != nil {
+		current.Counters = p.tunRecorder.Counters()
+	}
+	ownsProbeGate := p.tunRouteProbeInFlight && p.tunRouteProbeEpoch == probeEpoch
+	if ownsProbeGate {
+		p.tunRouteProbeInFlight = false
+	}
+	if p.tunListener == nil || current.SessionID != activeSessionID {
+		p.mu.Unlock()
+		if probePanic != nil {
+			panic(probePanic)
+		}
+		return current
+	}
+	if current.State != activeState {
+		p.mu.Unlock()
+		if probePanic != nil {
+			panic(probePanic)
+		}
+		return current
+	}
+	if !ownsProbeGate {
+		p.mu.Unlock()
+		if probePanic != nil {
+			panic(probePanic)
+		}
+		return current
+	}
+	if probePanic != nil {
+		p.mu.Unlock()
+		panic(probePanic)
+	}
+	p.lastTunRouteProbeAt = time.Now()
+	if current.State == TunStateError && current.Failure.Code != tunRouteLostCode {
+		p.mu.Unlock()
+		return current
+	}
+	if failure, lost := classifyTunRouteProbeFailure(probeErr); lost {
+		current.State = TunStateError
+		current.Failure = failure
+		p.tunSnapshot = current
+		p.mu.Unlock()
+		return current
+	}
+	if probeErr == nil && current.State == TunStateError && current.Failure.Code == tunRouteLostCode {
+		current.State = TunStateReady
+		current.Failure = TunFailure{}
+		p.tunSnapshot = current
+	}
+	p.mu.Unlock()
+	return current
 }
 
 func (p *LocalProxy) CopyTunTraces(limit int) []TunTrace {
@@ -288,6 +507,9 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 	p.tunListener = nil
 	p.tunRecorder = nil
 	p.restoreSocketProtection = nil
+	p.tunRouteProbeInFlight = false
+	p.tunRouteProbeEpoch += 1
+	p.lastTunRouteProbeAt = time.Time{}
 	p.state = RuntimeStopping
 	if !preserveError {
 		p.latest = Snapshot{State: RuntimeStopping}
@@ -304,63 +526,70 @@ func (p *LocalProxy) Stop() (Snapshot, error) {
 		defer restoreSocketProtection()
 	}
 	var stopErr error
-	if err := closeTunListener(tunListener); err != nil {
-		stopErr = joinErrors(stopErr, err)
+	recordStopStage := func(definition stopStageDefinition, run func() error) {
+		p.reportStageLifecycle(definition.stage + ".begin")
+		var err error
+		func() {
+			defer func() {
+				if recovered := recover(); recovered != nil {
+					err = newStopStagePanic(definition)
+				}
+			}()
+			err = run()
+		}()
+		if err != nil {
+			if !isStopStageClassifiedError(err) {
+				err = classifyStopStageError(definition, err)
+			}
+			stopErr = joinErrors(stopErr, err)
+			p.reportStageLifecycle(definition.stage + ".failed")
+			return
+		}
+		p.reportStageLifecycle(definition.stage + ".ok")
 	}
-	if err := closeListener(httpListener); err != nil {
-		stopErr = joinErrors(stopErr, err)
-	}
-	if err := closeListener(socksListener); err != nil {
-		stopErr = joinErrors(stopErr, err)
-	}
-	if err := p.deps.CloseConnections(); err != nil {
-		stopErr = joinErrors(stopErr, fmt.Errorf("close tracked connections: %w", err))
-	}
-	if err := p.deps.Shutdown(); err != nil {
-		stopErr = joinErrors(stopErr, fmt.Errorf("executor shutdown: %w", err))
-	}
+	recordStopStage(tunStopListenerStage, func() error {
+		return closeTunListener(tunListener)
+	})
+	recordStopStage(tunStopHTTPListenerStage, func() error {
+		return closeListener(httpListener)
+	})
+	recordStopStage(tunStopSOCKSListenerStage, func() error {
+		return closeListener(socksListener)
+	})
+	recordStopStage(tunStopConnectionsStage, func() error {
+		if err := p.deps.CloseConnections(); err != nil {
+			return fmt.Errorf("close tracked connections: %w", err)
+		}
+		return nil
+	})
+	recordStopStage(tunStopExecutorStage, func() error {
+		if err := p.deps.Shutdown(); err != nil {
+			return fmt.Errorf("executor shutdown: %w", err)
+		}
+		return nil
+	})
 
-	snapshot := Snapshot{State: RuntimeStopped}
-	tunSnapshot := TunSnapshot{State: TunStateStopped}
+	tunSnapshot := TunSnapshot{
+		SessionID: previousTun.SessionID,
+	}
 	if tunRecorder != nil {
 		tunSnapshot.Counters = tunRecorder.Counters()
 		p.tunTraces = tunRecorder.Traces(256)
 	}
-	if preserveError {
-		snapshot = previous
-		snapshot.State = RuntimeError
-		tunSnapshot = previousTun
-		tunSnapshot.State = TunStateError
+	stopFailureDiagnostic := ""
+	if stopErr != nil {
+		stopFailureDiagnostic = truncateUTF8(redactSecrets(stopErr.Error(), ""), p.deps.MaxMessageBytes)
 	}
+	decision := buildStopCommitDecision(preserveError, previous, previousTun, stopFailureDiagnostic, tunSnapshot)
 	p.mu.Lock()
-	p.state = snapshot.State
-	p.latest = snapshot
-	p.tunSnapshot = tunSnapshot
+	p.state = decision.snapshot.State
+	p.latest = decision.snapshot
+	p.tunSnapshot = decision.tunSnapshot
 	p.mu.Unlock()
 
-	if preserveError {
-		p.publish(RuntimeEvent{
-			Kind:    "runtime.error",
-			State:   RuntimeError,
-			Message: snapshot.LastError,
-		})
-		p.publishLog(LogLevelError, "runtime.stop.error", snapshot.LastError, map[string]string{
-			"configPath": snapshot.ActiveConfigPath,
-		})
-		return snapshot, nil
-	}
-
-	if stopErr != nil {
-		return p.commitStopFailureWithTun(stopErr, tunSnapshot)
-	}
-
-	p.publish(RuntimeEvent{
-		Kind:  "runtime.stopped",
-		State: RuntimeStopped,
-	})
-	p.publishLog(LogLevelInfo, "runtime.stopped", "local proxy stopped", nil)
-
-	return snapshot, nil
+	p.publish(decision.event)
+	p.publishLog(decision.logLevel, decision.logCategory, decision.logMessage, decision.logContext)
+	return decision.snapshot, decision.returnErr
 }
 
 func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOptions) (Snapshot, TunSnapshot, error) {
@@ -388,6 +617,9 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		p.tunSnapshot = TunSnapshot{State: TunStateIdle}
 		p.tunTraces = nil
 	}
+	p.tunRouteProbeInFlight = false
+	p.tunRouteProbeEpoch += 1
+	p.lastTunRouteProbeAt = time.Time{}
 	p.mu.Unlock()
 
 	p.publish(startingEvent)
@@ -397,13 +629,20 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		"socksListen": options.SOCKSListenAddress,
 	})
 
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.prepare.begin")
+	}
 	if err := p.deps.Prepare(options.ConfigPath); err != nil {
 		if tunOptions != nil {
+			p.reportStageLifecycle("tun.prepare.failed")
 			tunSnapshot, tunErr := p.commitTunStartFailure(options.ConfigPath, tunOptions.SessionID, "VPN_TUN_START_FAILED", err)
 			return Snapshot{}, tunSnapshot, tunErr
 		}
 		snapshot, startErr := p.commitStartFailure(options.ConfigPath, err)
 		return snapshot, TunSnapshot{}, startErr
+	}
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.prepare.ok")
 	}
 
 	restoreSocketProtection := func() {}
@@ -419,8 +658,14 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		})
 	}
 
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.http-listener.begin")
+	}
 	httpListener, err := p.deps.HTTPFactory(options.HTTPListenAddress)
 	if err != nil {
+		if tunOptions != nil {
+			p.reportStageLifecycle("tun.http-listener.failed")
+		}
 		rollbackErr := p.rollbackStart(nil, restoreSocketProtection, nil)
 		if tunOptions != nil {
 			tunSnapshot, tunErr := p.commitTunStartFailure(
@@ -437,9 +682,18 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		)
 		return snapshot, TunSnapshot{}, startErr
 	}
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.http-listener.ok")
+	}
 
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.socks-listener.begin")
+	}
 	socksListener, err := p.deps.SOCKSFactory(options.SOCKSListenAddress)
 	if err != nil {
+		if tunOptions != nil {
+			p.reportStageLifecycle("tun.socks-listener.failed")
+		}
 		bindErr := fmt.Errorf("bind SOCKS listener %s: %w", options.SOCKSListenAddress, err)
 		rollbackErr := p.rollbackStart(httpListener, restoreSocketProtection, nil)
 		if tunOptions != nil {
@@ -454,6 +708,9 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 		snapshot, startErr := p.commitStartFailure(options.ConfigPath, joinErrors(bindErr, rollbackErr))
 		return snapshot, TunSnapshot{}, startErr
 	}
+	if tunOptions != nil {
+		p.reportStageLifecycle("tun.socks-listener.ok")
+	}
 
 	var (
 		tunListener TunListenerHandle
@@ -462,6 +719,8 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 	)
 	if tunOptions != nil {
 		tunRecorder = newTunTraceRecorder(tunOptions.SessionID, p.deps.Events, 256)
+		tunRecorder.packetDiagnosticSink = p.reportStageLifecycle
+		p.reportStageLifecycle("tun.listener.begin")
 		tunListener, err = p.deps.TunFactory(
 			buildTunConfig(tunOptions.TunFD),
 			tunRecorder.Wrap(p.deps.BaseTunnel),
@@ -469,6 +728,10 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 			adapterinbound.WithSpecialRules(""),
 		)
 		if err != nil {
+			for _, stage := range classifyTunListenerFailure(err) {
+				p.reportStageLifecycle(stage)
+			}
+			p.reportStageLifecycle("tun.listener.failed")
 			rollbackErr := p.rollbackStart(socksListener, restoreSocketProtection, httpListener)
 			tunSnapshot, tunErr := p.commitTunStartFailure(
 				options.ConfigPath,
@@ -478,6 +741,7 @@ func (p *LocalProxy) startRuntime(options StartOptions, tunOptions *TunStartOpti
 			)
 			return Snapshot{}, tunSnapshot, tunErr
 		}
+		p.reportStageLifecycle("tun.listener.ok")
 		tunSnapshot = TunSnapshot{
 			State:     TunStateReady,
 			SessionID: tunOptions.SessionID,
@@ -577,28 +841,6 @@ func (p *LocalProxy) failStart(configPath string, err error) Snapshot {
 	return snapshot
 }
 
-func (p *LocalProxy) failStop(err error) Snapshot {
-	diagnostic := truncateUTF8(redactSecrets(err.Error(), ""), p.deps.MaxMessageBytes)
-	snapshot := Snapshot{
-		State:     RuntimeError,
-		LastError: diagnostic,
-	}
-	p.mu.Lock()
-	p.state = RuntimeError
-	p.latest = snapshot
-	p.tunListener = nil
-	p.tunRecorder = nil
-	p.restoreSocketProtection = nil
-	p.mu.Unlock()
-	p.publish(RuntimeEvent{
-		Kind:    "runtime.error",
-		State:   RuntimeError,
-		Message: snapshot.LastError,
-	})
-	p.publishLog(LogLevelError, "runtime.stop.failed", snapshot.LastError, nil)
-	return snapshot
-}
-
 func (p *LocalProxy) commitStartFailure(configPath string, err error) (Snapshot, error) {
 	snapshot := p.failStart(configPath, err)
 	return snapshot, runtimeFailure{message: snapshot.LastError}
@@ -635,20 +877,6 @@ func (p *LocalProxy) commitTunStartFailure(configPath string, sessionID string, 
 	})
 	p.publishLog(LogLevelError, "runtime.tun.start.failed", snapshot.Failure.Detail, nil)
 	return snapshot, runtimeFailure{message: snapshot.Failure.Detail}
-}
-
-func (p *LocalProxy) commitStopFailure(err error) (Snapshot, error) {
-	snapshot := p.failStop(err)
-	return snapshot, runtimeFailure{message: snapshot.LastError}
-}
-
-func (p *LocalProxy) commitStopFailureWithTun(err error, tunSnapshot TunSnapshot) (Snapshot, error) {
-	snapshot := p.failStop(err)
-	p.mu.Lock()
-	tunSnapshot.State = TunStateError
-	p.tunSnapshot = tunSnapshot
-	p.mu.Unlock()
-	return snapshot, runtimeFailure{message: snapshot.LastError}
 }
 
 func (p *LocalProxy) rollbackStart(primary ListenerHandle, restoreSocketProtection func(), secondary ListenerHandle) error {
@@ -696,6 +924,91 @@ func (p *LocalProxy) publishLog(level LogLevel, category, message string, contex
 		Message:  truncateUTF8(redactSecrets(message, configPath), p.deps.MaxLogFieldBytes),
 		Context:  sanitizeContext(context, p.deps.MaxLogContextFields, p.deps.MaxLogFieldBytes),
 	})
+}
+
+func (p *LocalProxy) reportStageLifecycle(stage string) {
+	if p.deps.ReportStageLifecycle == nil {
+		return
+	}
+	defer func() {
+		_ = recover()
+	}()
+	p.deps.ReportStageLifecycle(stage)
+}
+
+func classifyStopStageError(definition stopStageDefinition, err error) error {
+	code := definition.codePrefix + "_ERROR"
+	if definition.classifyCause {
+		code = definition.codePrefix + "_" + classifyStopListenerFailureCause(err)
+	}
+	return stopStageClassifiedError{
+		code:  code,
+		cause: err,
+	}
+}
+
+func newStopStagePanic(definition stopStageDefinition) error {
+	return stopStageClassifiedError{
+		code:    definition.codePrefix + "_PANIC",
+		message: "panic during stop cleanup",
+	}
+}
+
+type stopStageClassifiedError struct {
+	code    string
+	cause   error
+	message string
+}
+
+func (e stopStageClassifiedError) Error() string {
+	if e.cause != nil {
+		return fmt.Sprintf("%s: %s", e.code, e.cause.Error())
+	}
+	if e.message != "" {
+		return fmt.Sprintf("%s: %s", e.code, e.message)
+	}
+	return e.code
+}
+
+func (e stopStageClassifiedError) Unwrap() error {
+	return e.cause
+}
+
+func isStopStageClassifiedError(err error) bool {
+	var classified stopStageClassifiedError
+	return errors.As(err, &classified)
+}
+
+func classifyStopListenerFailureCause(err error) string {
+	switch {
+	case errors.Is(err, syscall.EBADF):
+		return "BAD_FD"
+	case errors.Is(err, net.ErrClosed):
+		return "ALREADY_CLOSED"
+	case errors.Is(err, syscall.EINVAL):
+		return "INVALID"
+	case errors.Is(err, syscall.EIO):
+		return "IO"
+	}
+
+	normalized := strings.ToLower(strings.TrimSpace(err.Error()))
+	switch {
+	case strings.Contains(normalized, "bad file descriptor"):
+		return "BAD_FD"
+	case strings.Contains(normalized, "use of closed network connection"),
+		strings.Contains(normalized, "already closed"),
+		strings.Contains(normalized, "closed pipe"):
+		return "ALREADY_CLOSED"
+	case strings.Contains(normalized, "invalid argument"),
+		strings.Contains(normalized, "invalid fd"),
+		strings.Contains(normalized, "invalid file descriptor"):
+		return "INVALID"
+	case strings.Contains(normalized, "i/o"),
+		strings.Contains(normalized, "input/output"):
+		return "IO"
+	default:
+		return "OTHER"
+	}
 }
 
 func (p *LocalProxy) validateStartOptions(options StartOptions) error {

@@ -1,25 +1,25 @@
-import type { LocalProxyState, VpnGlobalCaptureState } from '../presentation/PresentationModels';
+import type { VpnGlobalCaptureState } from '../presentation/PresentationModels';
 
 @Component
 export struct RuntimeStatusCard {
-  @Prop kind: 'LOCAL' | 'VPN' = 'LOCAL';
-  @Prop localState: LocalProxyState = createEmptyLocalProxyState();
   @Prop vpnState: VpnGlobalCaptureState = createEmptyVpnGlobalCaptureState();
+  @Link selectedProxyGroupName: string;
+  @Link selectedProxyNodeName: string;
 
   build() {
     Column({ space: $r('app.float.space_md') }) {
       Row({ space: $r('app.float.space_md') }) {
         Text($r('app.string.home_runtime_indicator'))
           .fontSize($r('app.float.type_title'))
-          .fontColor(runtimeColor(this.kind === 'LOCAL' ? this.localState.status : this.vpnState.status))
+          .fontColor(runtimeColor(this.vpnState.status))
 
         Column({ space: $r('app.float.space_xs') }) {
-          Text(this.kind === 'LOCAL' ? $r('app.string.home_local_title') : $r('app.string.home_vpn_title'))
+          Text($r('app.string.home_vpn_title'))
             .fontSize($r('app.float.type_title'))
             .fontWeight(FontWeight.Medium)
             .fontColor($r('app.color.color_text_primary'))
 
-          Text(resolveStatusLabel(this.kind, this.localState, this.vpnState))
+          Text(resolveStatusLabel(this.vpnState))
             .fontSize($r('app.float.type_caption'))
             .fontColor($r('app.color.color_text_secondary'))
             .maxLines(2)
@@ -31,28 +31,20 @@ export struct RuntimeStatusCard {
       Divider()
         .color($r('app.color.color_border_subtle'))
 
-      if (this.kind === 'LOCAL') {
-        Column({ space: $r('app.float.space_md') }) {
-          buildFactRow($r('app.string.home_local_http_label'), this.localState.httpAddress)
-          buildFactRow($r('app.string.home_local_socks_label'), this.localState.socksAddress)
-        }
-      } else {
-        Column({ space: $r('app.float.space_md') }) {
-          buildFactRow($r('app.string.home_vpn_ipv4_label'), this.vpnState.ipv4Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled'))
-          buildFactRow($r('app.string.home_vpn_ipv6_label'), this.vpnState.ipv6Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled'))
-          buildFactRow($r('app.string.home_vpn_dns_label'), this.vpnState.dnsServers.length > 0 ? this.vpnState.dnsServers.join(', ') : undefined)
-          buildFactRow($r('app.string.home_vpn_mtu_label'), this.vpnState.mtu === undefined ? undefined : `${this.vpnState.mtu}`)
-          buildFactRow($r('app.string.home_vpn_notification_label'), this.vpnState.notificationActive ? $r('app.string.home_vpn_notification_active') : $r('app.string.home_vpn_notification_inactive'))
-          buildFactRow($r('app.string.home_vpn_recovery_label'), resolveRecoveryValue(this.vpnState))
-        }
+      Column({ space: $r('app.float.space_md') }) {
+        buildFactRow($r('app.string.home_vpn_ipv4_label'), this.vpnState.ipv4Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled'))
+        buildFactRow($r('app.string.home_vpn_ipv6_label'), this.vpnState.ipv6Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled'))
+        buildFactRow($r('app.string.home_vpn_dns_label'), this.vpnState.dnsServers.length > 0 ? this.vpnState.dnsServers.join(', ') : undefined)
+        buildFactRow($r('app.string.home_vpn_mtu_label'), this.vpnState.mtu === undefined ? undefined : `${this.vpnState.mtu}`)
+        buildFactRow($r('app.string.home_vpn_notification_label'), this.vpnState.notificationActive ? $r('app.string.home_vpn_notification_active') : $r('app.string.home_vpn_notification_inactive'))
+        buildFactRow($r('app.string.home_vpn_recovery_label'), resolveRecoveryValue(this.vpnState))
+        this.buildSelectedProxyRows()
       }
 
       Divider()
         .color($r('app.color.color_border_subtle'))
 
-      Text(this.kind === 'LOCAL'
-        ? $r('app.string.home_local_boundary_note')
-        : $r('app.string.home_vpn_boundary_note'))
+      Text($r('app.string.home_vpn_boundary_note'))
         .fontSize($r('app.float.type_caption'))
         .fontColor($r('app.color.color_text_secondary'))
         .maxLines(3)
@@ -64,16 +56,43 @@ export struct RuntimeStatusCard {
     .border({
       width: 1,
       color: $r('app.color.color_border_subtle')
-    })
+  })
   }
-}
 
-class LocalProxyStateValue implements LocalProxyState {
-  status: 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR' = 'STOPPED';
-  action: 'DISABLED' | 'START' | 'STOP' | 'BUSY' = 'DISABLED';
-  httpAddress?: string;
-  socksAddress?: string;
-  error?: import('../presentation/PresentationModels').SafeErrorState;
+  @Builder
+  private buildSelectedProxyRows(): void {
+    if (this.selectedProxyGroupName.length > 0 && this.selectedProxyNodeName.length > 0) {
+      Row({ space: $r('app.float.space_sm') }) {
+        Text($r('app.string.home_vpn_proxy_group_label'))
+          .fontSize($r('app.float.type_caption'))
+          .fontColor($r('app.color.color_text_secondary'))
+
+        Text(this.selectedProxyGroupName)
+          .layoutWeight(1)
+          .fontSize($r('app.float.type_caption'))
+          .fontColor($r('app.color.color_text_primary'))
+          .textAlign(TextAlign.End)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .width('100%')
+
+      Row({ space: $r('app.float.space_sm') }) {
+        Text($r('app.string.home_vpn_proxy_node_label'))
+          .fontSize($r('app.float.type_caption'))
+          .fontColor($r('app.color.color_text_secondary'))
+
+        Text(this.selectedProxyNodeName)
+          .layoutWeight(1)
+          .fontSize($r('app.float.type_caption'))
+          .fontColor($r('app.color.color_text_primary'))
+          .textAlign(TextAlign.End)
+          .maxLines(1)
+          .textOverflow({ overflow: TextOverflow.Ellipsis })
+      }
+      .width('100%')
+    }
+  }
 }
 
 class VpnGlobalCaptureStateValue implements VpnGlobalCaptureState {
@@ -87,10 +106,6 @@ class VpnGlobalCaptureStateValue implements VpnGlobalCaptureState {
   recoveryAttempt: number = 0;
   scheduledRetryDelayMs?: number;
   error?: import('../presentation/PresentationModels').SafeErrorState;
-}
-
-function createEmptyLocalProxyState(): LocalProxyState {
-  return new LocalProxyStateValue();
 }
 
 function createEmptyVpnGlobalCaptureState(): VpnGlobalCaptureState {
@@ -125,22 +140,7 @@ function buildFactRow(label: Resource, value: Resource | string | undefined): vo
   .width('100%')
 }
 
-function resolveStatusLabel(kind: 'LOCAL' | 'VPN', localState: LocalProxyState, vpnState: VpnGlobalCaptureState) {
-  if (kind === 'LOCAL') {
-    switch (localState.status) {
-      case 'STARTING':
-        return $r('app.string.home_local_status_starting');
-      case 'RUNNING':
-        return $r('app.string.home_local_status_running');
-      case 'STOPPING':
-        return $r('app.string.home_local_status_stopping');
-      case 'ERROR':
-        return $r('app.string.home_local_status_error');
-      case 'STOPPED':
-      default:
-        return $r('app.string.home_local_status_stopped');
-    }
-  }
+function resolveStatusLabel(vpnState: VpnGlobalCaptureState) {
   switch (vpnState.status) {
     case 'AWAITING_CONSENT':
       return $r('app.string.home_vpn_status_awaiting_consent');

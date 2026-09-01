@@ -152,22 +152,22 @@ test('discoverToolchain returns a sanitized pass report for the integrated SDK f
   assert.deepEqual(report.failures, []);
   assert.deepEqual(report.target, {
     name: 'HarmonyOS 6/API 20/arm64',
-    targetSdkVersion: '6.1.0(23)',
-    targetApiVersion: 23,
+    targetSdkVersion: '6.1.1(24)',
+    targetApiVersion: 24,
     compatibleSdkVersion: '6.0.0(20)',
     compatibleApiVersion: 20,
     runtimeOS: 'HarmonyOS',
     architecture: 'arm64'
   });
   assert.deepEqual(report.installed, {
-    devecoVersion: '6.1.0.860',
-    sdkVersion: '6.1.0.105',
-    sdkApiVersion: 23,
-    ndkVersion: '6.1.0.105',
-    ndkApiVersion: 23,
-    hvigorVersion: '6.23.7',
-    ohpmVersion: '6.1.1.830',
-    hdcVersion: '6.1.0.105'
+    devecoVersion: '6.1.1.300',
+    sdkVersion: '6.1.1.125',
+    sdkApiVersion: 24,
+    ndkVersion: '6.1.1.125',
+    ndkApiVersion: 24,
+    hvigorVersion: '6.24.4',
+    ohpmVersion: '6.1.2.285',
+    hdcVersion: '6.1.1.125'
   });
   assert.equal(report.tools.node.found, true);
   assert.equal(report.tools.node.version, '22.17.0');
@@ -238,13 +238,13 @@ test('discoverToolchain reports SDK_METADATA_MISSING when sdk-pkg.json is malfor
   });
 });
 
-test('discoverToolchain reports SDK_METADATA_MISSING when integrated SDK apiVersion is not 23', async () => {
+test('discoverToolchain reports SDK_METADATA_MISSING when integrated SDK apiVersion is not 24', async () => {
   const [{ discoverToolchain }, fixture] = await Promise.all([
     import(modulePath),
     fs.readFile(fixturePath, 'utf8').then((raw) => JSON.parse(raw))
   ]);
 
-  fixture.probe.files[`${FIXTURE_SDK_ROOT}/sdk-pkg.json`] = '{"apiVersion":"24","version":"6.1.0.105","platformVersion":"6.1.0","stage":"Release"}\n';
+  fixture.probe.files[`${FIXTURE_SDK_ROOT}/sdk-pkg.json`] = '{"apiVersion":"23","version":"6.1.1.125","platformVersion":"6.1.1","stage":"Release"}\n';
 
   const report = await discoverToolchain(createProbeFromFixture(fixture));
 
@@ -261,13 +261,13 @@ test('discoverToolchain accepts top-level sdk-pkg metadata when data nesting is 
     fs.readFile(fixturePath, 'utf8').then((raw) => JSON.parse(raw))
   ]);
 
-  fixture.probe.files[`${FIXTURE_SDK_ROOT}/sdk-pkg.json`] = '{"apiVersion":"23","version":"6.1.0.105","platformVersion":"6.1.0","stage":"Release"}\n';
+  fixture.probe.files[`${FIXTURE_SDK_ROOT}/sdk-pkg.json`] = '{"apiVersion":"24","version":"6.1.1.125","platformVersion":"6.1.1","stage":"Release"}\n';
 
   const report = await discoverToolchain(createProbeFromFixture(fixture));
 
   assert.equal(report.result, 'pass');
-  assert.equal(report.installed.sdkVersion, '6.1.0.105');
-  assert.equal(report.installed.sdkApiVersion, 23);
+  assert.equal(report.installed.sdkVersion, '6.1.1.125');
+  assert.equal(report.installed.sdkApiVersion, 24);
 });
 
 test('discoverToolchain reports ARKTS_DECLARATIONS_MISSING when declaration files disappear', async () => {
@@ -330,9 +330,9 @@ test('discoverToolchain prefers integrated metadata for hvigor, ohpm, and hdc ve
 
   const report = await discoverToolchain(createProbeFromFixture(fixture));
 
-  assert.deepEqual(report.tools.hvigor, { found: true, version: '6.23.7' });
-  assert.deepEqual(report.tools.ohpm, { found: true, version: '6.1.1.830' });
-  assert.deepEqual(report.tools.hdc, { found: true, version: '6.1.0.105' });
+  assert.deepEqual(report.tools.hvigor, { found: true, version: '6.24.4' });
+  assert.deepEqual(report.tools.ohpm, { found: true, version: '6.1.2.285' });
+  assert.deepEqual(report.tools.hdc, { found: true, version: '6.1.1.125' });
 });
 
 test('discoverToolchain prefers the integrated hvigor binary over a PATH hvigor lookalike', async () => {
@@ -352,7 +352,7 @@ test('discoverToolchain prefers the integrated hvigor binary over a PATH hvigor 
 
   assert.equal(inspection.report.result, 'pass');
   assert.equal(inspection.resolved.paths.hvigor, `${FIXTURE_CONTENTS_ROOT}/tools/hvigor/bin/hvigorw`);
-  assert.deepEqual(inspection.report.tools.hvigor, { found: true, version: '6.23.7' });
+  assert.deepEqual(inspection.report.tools.hvigor, { found: true, version: '6.24.4' });
 });
 
 test('discoverToolchain does not borrow integrated hvigor metadata for a PATH-only hvigor binary', async () => {
@@ -388,7 +388,7 @@ test('discoverToolchain normalizes a leading v only for the node version', async
 
   assert.equal(report.tools.node.version, '20.5.1');
   assert.equal(report.tools.java.version, '17.0.18');
-  assert.equal(report.tools.hdc.version, '6.1.0.105');
+  assert.equal(report.tools.hdc.version, '6.1.1.125');
 });
 
 test('discoverToolchain parses Windows-escaped sdk.dir values from local.properties without mixing default DevEco contents', async () => {

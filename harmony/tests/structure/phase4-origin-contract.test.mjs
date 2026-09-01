@@ -53,8 +53,8 @@ async function loadTask10WireContract() {
     sessionHeader,
     flowHeader,
     buildHttpsBody: (runId, sessionId, flowId) => buildToken('HTTPS', runId, sessionId, flowId),
-    buildTcpPayload: (runId, sessionId, flowId) => Buffer.from(buildToken('TCP', runId, sessionId, flowId), 'utf8'),
-    buildUdpPayload: (runId, sessionId, flowId) => Buffer.from(buildToken('UDP', runId, sessionId, flowId), 'utf8')
+    buildTcpPayload: (runId, sessionId, flowId) => Buffer.from(`${buildToken('TCP', runId, sessionId, flowId)}|cmfa-${flowId}`, 'utf8'),
+    buildUdpPayload: (runId, sessionId, flowId) => Buffer.from(`${buildToken('UDP', runId, sessionId, flowId)}|cmfa-${flowId}`, 'utf8')
   };
 }
 
@@ -98,6 +98,31 @@ async function sendRawTcp({ host, port, payload }) {
     client.once('error', reject);
     client.on('end', () => {
       resolve(Buffer.concat(chunks));
+    });
+  });
+}
+
+async function sendRawTcpWithoutHalfClose({ host, port, payload }) {
+  return await new Promise((resolve, reject) => {
+    const client = net.createConnection({ host, port }, () => {
+      client.write(payload);
+    });
+    const chunks = [];
+    const timeoutId = setTimeout(() => {
+      client.destroy();
+      reject(new Error('tcp echo timed out before client half-close'));
+    }, 1000);
+    client.on('data', (chunk) => {
+      chunks.push(chunk);
+      if (Buffer.concat(chunks).length >= payload.length) {
+        clearTimeout(timeoutId);
+        client.end();
+        resolve(Buffer.concat(chunks));
+      }
+    });
+    client.once('error', (error) => {
+      clearTimeout(timeoutId);
+      reject(error);
     });
   });
 }
@@ -168,7 +193,7 @@ test('phase4 origin exports a live controlled origin with exact HTTPS/TCP/UDP co
     assert.equal(httpsResult.headers['x-cmfa-probe-flow-id'], flowIds.https);
     assert.equal(httpsResult.body, buildToken('HTTPS', runId, sessionId, flowIds.https));
 
-    const tcpPayload = Buffer.from(buildToken('TCP', runId, sessionId, flowIds.tcp), 'utf8');
+    const tcpPayload = Buffer.from(`${buildToken('TCP', runId, sessionId, flowIds.tcp)}|cmfa-${flowIds.tcp}`, 'utf8');
     const tcpEcho = await origin.sendTcpProbe({
       port: controlled.tcp.port,
       host: controlled.tcp.host,
@@ -176,7 +201,7 @@ test('phase4 origin exports a live controlled origin with exact HTTPS/TCP/UDP co
     });
     assert.deepEqual(tcpEcho, tcpPayload);
 
-    const udpPayload = Buffer.from(buildToken('UDP', runId, sessionId, flowIds.udp), 'utf8');
+    const udpPayload = Buffer.from(`${buildToken('UDP', runId, sessionId, flowIds.udp)}|cmfa-${flowIds.udp}`, 'utf8');
     const udpEcho = await origin.sendUdpProbe({
       port: controlled.udp.port,
       host: controlled.udp.host,
@@ -262,6 +287,24 @@ test('phase4 origin rejects LAN-only proof on wildcard, loopback-only, malformed
   }
 });
 
+test('phase4 origin echoes a complete TCP correlation token before the client half-closes', async () => {
+  const origin = await import(modulePath);
+  const runId = uuid();
+  const controlled = await origin.startControlledOrigin({ bindAddress: '127.0.0.1', runId });
+  try {
+    const sessionId = uuid();
+    const flowId = uuid();
+    const payload = Buffer.from(`${buildToken('TCP', runId, sessionId, flowId)}|cmfa-${flowId}`, 'utf8');
+    assert.deepEqual(await sendRawTcpWithoutHalfClose({
+      host: controlled.tcp.host,
+      port: controlled.tcp.port,
+      payload
+    }), payload);
+  } finally {
+    await controlled.close();
+  }
+});
+
 test('phase4 origin helpers expose predictable CLI parsing and LAN address rules', async () => {
   const origin = await import(modulePath);
 
@@ -277,6 +320,9 @@ test('phase4 origin helpers expose predictable CLI parsing and LAN address rules
   assert.equal(origin.isPrivateLanAddress('127.0.0.1'), false);
   assert.equal(origin.isPrivateLanAddress('::1'), false);
   assert.equal(origin.isPrivateLanAddress('fd00::1'), false);
+  assert.doesNotThrow(() => origin.validateBindAddress('30.231.220.115', true, 'ipv4', true));
+  assert.throws(() => origin.validateBindAddress('30.231.220.115', true, 'ipv4', false), /private lan ipv4/u);
+  assert.throws(() => origin.validateBindAddress('0.0.0.0', true, 'ipv4', true), /wildcard|explicit/u);
 });
 
 test('phase4 origin optionally serves an explicit ipv6 branch or reports a clean not-run capability', async () => {

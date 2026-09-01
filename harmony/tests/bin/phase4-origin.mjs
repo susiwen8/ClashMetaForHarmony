@@ -122,7 +122,7 @@ export function parseCliArgs(argv = process.argv.slice(2)) {
   return parsed;
 }
 
-function validateBindAddress(bindAddress, lanProofRequired, family = 'ipv4') {
+export function validateBindAddress(bindAddress, lanProofRequired, family = 'ipv4', deviceSubnetProof = false) {
   if (bindAddress === '0.0.0.0' || bindAddress === '::' || bindAddress === '*') {
     throw new Error(family === 'ipv6'
       ? 'Optional ipv6 branch must not bind a wildcard host'
@@ -137,7 +137,11 @@ function validateBindAddress(bindAddress, lanProofRequired, family = 'ipv4') {
     }
     return;
   }
-  if (lanProofRequired && !isPrivateLanAddress(bindAddress)) {
+  const firstOctet = Number.parseInt(String(bindAddress).split('.')[0] ?? '', 10);
+  const isExplicitUnicastIpv4 = net.isIP(bindAddress) === 4
+    && firstOctet > 0 && firstOctet < 224 && firstOctet !== 127;
+  if (lanProofRequired && !isPrivateLanAddress(bindAddress)
+    && !(deviceSubnetProof && isExplicitUnicastIpv4)) {
     throw new Error('LAN proof requires an explicit private lan ipv4 bind address');
   }
 }
@@ -238,9 +242,10 @@ export async function startControlledOrigin({
   ipv6BindAddress = '',
   runId,
   lanProofRequired = false,
+  deviceSubnetProof = false,
   emit = writeRecord
 }) {
-  validateBindAddress(bindAddress, lanProofRequired, 'ipv4');
+  validateBindAddress(bindAddress, lanProofRequired, 'ipv4', deviceSubnetProof);
   if (ipv6BindAddress.length > 0) {
     validateBindAddress(ipv6BindAddress, false, 'ipv6');
   }
@@ -312,17 +317,18 @@ export async function startControlledOrigin({
 
   const tcpServer = net.createServer((socket) => {
     const chunks = [];
-    socket.on('data', (chunk) => {
-      chunks.push(chunk);
-      const size = chunks.reduce((total, entry) => total + entry.length, 0);
-      if (size > MAX_TCP_BYTES) {
-        socket.destroy(new Error('MAX_TCP_BYTES exceeded'));
+    let responded = false;
+    const respondIfComplete = () => {
+      if (responded) {
+        return true;
       }
-    });
-    socket.on('end', () => {
       const payload = Buffer.concat(chunks);
       try {
         const correlation = parseTcpEnvelope(payload);
+        if (correlation.marker !== `cmfa-${correlation.flowId}`) {
+          return false;
+        }
+        responded = true;
         emitObservation({
           type: 'observation',
           protocol: 'tcp',
@@ -330,10 +336,25 @@ export async function startControlledOrigin({
           sessionId: correlation.sessionId,
           flowId: correlation.flowId,
           payloadSha256: sha256(payload),
-          correlationHash: correlation.marker.length > 0 ? sha256(correlation.marker) : ''
+          correlationHash: sha256(correlation.marker)
         });
         socket.end(payload);
+        return true;
       } catch {
+        return false;
+      }
+    };
+    socket.on('data', (chunk) => {
+      chunks.push(chunk);
+      const size = chunks.reduce((total, entry) => total + entry.length, 0);
+      if (size > MAX_TCP_BYTES) {
+        socket.destroy(new Error('MAX_TCP_BYTES exceeded'));
+        return;
+      }
+      respondIfComplete();
+    });
+    socket.on('end', () => {
+      if (!respondIfComplete()) {
         socket.destroy();
       }
     });

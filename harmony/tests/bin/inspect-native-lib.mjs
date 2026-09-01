@@ -11,15 +11,25 @@ const REPO_ROOT = path.resolve(HARMONY_ROOT, '..');
 const ALLOWLIST_PATH = path.join(HARMONY_ROOT, 'toolchain.native-allowlist.json');
 const COMPONENT_ALLOWLIST_KEYS = {
   probe: 'goProbe',
+  probeAddon: 'probeAddon',
   mihomoCore: 'mihomoCore',
   nodeAddon: 'nodeAddon'
 };
 const BUILD_INFO_EXPORT = 'cmfa_mihomo_core_build_info_json_cstr_v1';
 const RAW_VERSION_EXPORT = 'cmfa_mihomo_core_version_cstr_v1';
+const LOAD_CONFIG_EXPORT = 'cmfa_mihomo_load_config_v1';
+const PROXY_GROUPS_EXPORT = 'cmfa_mihomo_proxy_groups_v1';
+const PROXY_GROUP_EXPORT = 'cmfa_mihomo_proxy_group_v1';
+const PROXY_SELECT_EXPORT = 'cmfa_mihomo_proxy_select_v1';
+const PROXY_DELAY_CANCEL_EXPORT = 'cmfa_mihomo_proxy_delay_cancel_v1';
+const PROXY_DELAY_SNAPSHOT_EXPORT = 'cmfa_mihomo_proxy_delay_snapshot_v1';
+const PROXY_DELAY_START_EXPORT = 'cmfa_mihomo_proxy_delay_start_v1';
 const PROBE_HTTPS_EXPORT = 'cmfa_mihomo_probe_https_v1';
 const PROBE_CANCEL_EXPORT = 'cmfa_mihomo_probe_cancel_v1';
+const RUNTIME_MODE_EXPORT = 'cmfa_mihomo_runtime_mode_v1';
 const TAKE_LOG_EXPORT = 'cmfa_mihomo_take_runtime_log_v1';
 const RUNTIME_STATE_EXPORT = 'cmfa_mihomo_runtime_state_v1';
+const SET_RUNTIME_MODE_EXPORT = 'cmfa_mihomo_set_runtime_mode_v1';
 const START_LOCAL_EXPORT = 'cmfa_mihomo_start_local_v1';
 const CLOSE_STALE_TUN_CONNECTIONS_EXPORT = 'cmfa_mihomo_close_stale_tun_connections_v1';
 const START_TUN_EXPORT = 'cmfa_mihomo_start_tun_v1';
@@ -28,6 +38,7 @@ const STOP_EXPORT = 'cmfa_mihomo_stop_v1';
 const TUN_COPY_TRACES_EXPORT = 'cmfa_mihomo_tun_copy_traces_v1';
 const TUN_COPY_TRACES_RING_EXPORT = 'cmfa_mihomo_tun_copy_traces_ring_v1';
 const TUN_RUNTIME_STATE_EXPORT = 'cmfa_mihomo_tun_runtime_state_v1';
+const VALIDATE_CONFIG_EXPORT = 'cmfa_mihomo_validate_config_v1';
 const DLOPEN_TEXT_PATTERN = /\bdlopen\b/u;
 const DLSYM_TEXT_PATTERN = /\bdlsym\b/u;
 const LIBDL_TEXT_PATTERN = /\blibdl(?:\.so)?\b/u;
@@ -40,24 +51,40 @@ const NODE_ADDON_ALLOWED_EXPORTS = [
   '_init',
   ...FIXED_HOST_BRIDGE_SYMBOLS
 ];
+const PROBE_ADDON_ALLOWED_EXPORTS = [
+  '_fini',
+  '_init'
+];
+const REQUIRED_MIHOMO_CORE_EXPORTS = [
+  CLOSE_STALE_TUN_CONNECTIONS_EXPORT,
+  BUILD_INFO_EXPORT,
+  RAW_VERSION_EXPORT,
+  LOAD_CONFIG_EXPORT,
+  PROBE_CANCEL_EXPORT,
+  PROBE_HTTPS_EXPORT,
+  PROXY_DELAY_CANCEL_EXPORT,
+  PROXY_DELAY_SNAPSHOT_EXPORT,
+  PROXY_DELAY_START_EXPORT,
+  PROXY_GROUP_EXPORT,
+  PROXY_GROUPS_EXPORT,
+  PROXY_SELECT_EXPORT,
+  RUNTIME_MODE_EXPORT,
+  RUNTIME_STATE_EXPORT,
+  SET_RUNTIME_MODE_EXPORT,
+  START_LOCAL_EXPORT,
+  START_TUN_EXPORT,
+  STOP_TUN_EXPORT,
+  STOP_EXPORT,
+  TAKE_LOG_EXPORT,
+  TUN_COPY_TRACES_RING_EXPORT,
+  TUN_COPY_TRACES_EXPORT,
+  TUN_RUNTIME_STATE_EXPORT,
+  VALIDATE_CONFIG_EXPORT
+];
 const REQUIRED_EXPORTS = {
   probe: ['cmfa_probe_add', 'cmfa_probe_version'],
-  mihomoCore: [
-    CLOSE_STALE_TUN_CONNECTIONS_EXPORT,
-    BUILD_INFO_EXPORT,
-    RAW_VERSION_EXPORT,
-    PROBE_CANCEL_EXPORT,
-    PROBE_HTTPS_EXPORT,
-    RUNTIME_STATE_EXPORT,
-    START_LOCAL_EXPORT,
-    START_TUN_EXPORT,
-    STOP_TUN_EXPORT,
-    STOP_EXPORT,
-    TAKE_LOG_EXPORT,
-    TUN_COPY_TRACES_RING_EXPORT,
-    TUN_COPY_TRACES_EXPORT,
-    TUN_RUNTIME_STATE_EXPORT
-  ],
+  probeAddon: [],
+  mihomoCore: REQUIRED_MIHOMO_CORE_EXPORTS,
   nodeAddon: []
 };
 const ANDROID_PATTERN = /android|liblog\.so|libc\+\+_shared\.so|libdl_android/i;
@@ -67,6 +94,7 @@ const JNI_CONTENT_PATTERN = /\bJNI_OnLoad\b|\bJava_[A-Za-z0-9_]+\b/u;
 const DLOPEN_CONTENT_PATTERN = /\bdlopen\b|\bdlsym\b|\blibdl\b/u;
 const PROBE_BACKEND_SENTINEL_PATTERN = /probe-backend/iu;
 const STUB_BUILD_CONTENT_PATTERN = /ohos_mihomo_stub_build/u;
+const INITIAL_EXEC_TLS_RELOCATION_PATTERN = /\bR_AARCH64_TLS_TPREL64\b/u;
 const NODE_ADDON_FORBIDDEN_SYMBOL_PATTERNS = [
   { code: 'PUBLIC_CMFA_EXPORT_FORBIDDEN', pattern: /^cmfa_/u },
   { code: 'INTERNAL_SYMBOL_FORBIDDEN', pattern: /cmfa_internal_register_backend/u },
@@ -222,7 +250,10 @@ function inferComponent(component, libPath) {
   }
 
   const baseName = path.basename(libPath).toLowerCase();
-  if (baseName.includes('probe')) {
+  if (baseName === 'libprobeentry.so') {
+    throw Object.assign(new Error(`Explicit component is required for ${baseName}`), { code: 'COMPONENT_REQUIRED' });
+  }
+  if (baseName === 'libcmfa_probe.so' || baseName === 'libprobe.so') {
     return 'probe';
   }
   if (baseName.includes('core') || baseName.includes('mihomo')) {
@@ -276,13 +307,14 @@ export async function inspectNativeLibrary({
   }
 
   const readelfPath = inspection.resolved.paths.llvmReadelf;
-  const [headerResult, dynamicResult, symbolsResult] = await Promise.all([
+  const [headerResult, dynamicResult, symbolsResult, relocationsResult] = await Promise.all([
     runReadelf(readelfPath, ['-h', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs }),
     runReadelf(readelfPath, ['-d', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs }),
-    runReadelf(readelfPath, ['--dyn-syms', '-W', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs })
+    runReadelf(readelfPath, ['--dyn-syms', '-W', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs }),
+    runReadelf(readelfPath, ['-rW', absoluteLibPath], { cwd: repoRoot, spawnImpl, timeoutMs: readelfTimeoutMs })
   ]);
 
-  const commandResults = [headerResult, dynamicResult, symbolsResult];
+  const commandResults = [headerResult, dynamicResult, symbolsResult, relocationsResult];
   for (const result of commandResults) {
     if (result.timedOut) {
       throw Object.assign(new Error(`llvm-readelf timed out after ${readelfTimeoutMs} ms`), { code: 'LLVMREADELF_TIMEOUT' });
@@ -312,6 +344,13 @@ export async function inspectNativeLibrary({
     failures.push(createFailure('ELF_MACHINE_INVALID', 'Expected Machine: AArch64'));
   }
 
+  if (INITIAL_EXEC_TLS_RELOCATION_PATTERN.test(relocationsResult.stdout)) {
+    failures.push(createFailure(
+      'DYNAMIC_TLS_MODEL_REQUIRED',
+      'HarmonyOS native modules are loaded dynamically and must not contain R_AARCH64_TLS_TPREL64.'
+    ));
+  }
+
   if (neededLibraries.some((entry) => ANDROID_PATTERN.test(entry))) {
     failures.push(createFailure('ANDROID_DEPENDENCY_FORBIDDEN', `Android dependency detected: ${neededLibraries.find((entry) => ANDROID_PATTERN.test(entry))}`));
   }
@@ -319,6 +358,34 @@ export async function inspectNativeLibrary({
   for (const lib of neededLibraries) {
     if (!allowlistedNeeded.includes(lib)) {
       failures.push(createFailure('DT_NEEDED_NOT_ALLOWLISTED', lib));
+    }
+  }
+  if (selectedComponent === 'probeAddon') {
+    if (neededLibraries.includes('libcmfa_mihomo.so')) {
+      failures.push(createFailure('MIHOMO_CORE_DEPENDENCY_FORBIDDEN', 'libcmfa_mihomo.so'));
+    }
+    if (neededLibraries.includes('libdl.so')) {
+      failures.push(createFailure('LIBDL_FORBIDDEN', 'libdl.so'));
+    }
+    if (neededLibraries.includes('libc++_shared.so')) {
+      failures.push(createFailure('LIBCXX_SHARED_FORBIDDEN', 'libc++_shared.so'));
+    }
+    if (neededLibraries.join('\0') !== allowlistedNeeded.join('\0')) {
+      failures.push(createFailure('DT_NEEDED_SET_MISMATCH', neededLibraries.join(',')));
+    }
+    for (const symbol of exportedSymbols) {
+      if (FIXED_HOST_BRIDGE_SYMBOLS.includes(symbol)) {
+        failures.push(createFailure('HOST_BRIDGE_EXPORT_FORBIDDEN', symbol));
+      }
+      if (symbol.startsWith('cmfa_')) {
+        failures.push(createFailure('PUBLIC_CMFA_EXPORT_FORBIDDEN', symbol));
+      }
+      if (EXPORT_SENTINEL_PATTERN.test(symbol)) {
+        failures.push(createFailure('EXPORT_SENTINEL_FORBIDDEN', symbol));
+      }
+    }
+    if (exportedSymbols.join('\0') !== PROBE_ADDON_ALLOWED_EXPORTS.join('\0')) {
+      failures.push(createFailure('EXPORT_SET_MISMATCH', exportedSymbols.join(',')));
     }
   }
   if (selectedComponent === 'nodeAddon') {
@@ -359,6 +426,15 @@ export async function inspectNativeLibrary({
     const publicExports = exportedSymbols.filter((entry) => entry.startsWith('cmfa_'));
     if (publicExports.length !== requiredExports.length || publicExports.some((entry, index) => entry !== requiredExports[index])) {
       failures.push(createFailure('EXPORT_SET_MISMATCH', publicExports.join(',')));
+    }
+  }
+
+  if (selectedComponent === 'probeAddon') {
+    if (JNI_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('ANDROID_JNI_FORBIDDEN', 'JNI_OnLoad'));
+    }
+    if (DLOPEN_CONTENT_PATTERN.test(binaryText)) {
+      failures.push(createFailure('DLOPEN_SENTINEL_FORBIDDEN', 'dlopen/dlsym/libdl'));
     }
   }
 

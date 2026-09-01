@@ -15,7 +15,7 @@ function serialize(value: Object): string {
 
 export default function profilesViewModelTestsuite() {
   describe('ProfilesViewModelTest', () => {
-    it('mapsRowsWithIndependentActiveAvailabilityAndRuntimeLocks', 0, () => {
+    it('mapsRowsWithoutExposingRuntimeLocks', 0, () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot(
           'READY',
@@ -35,11 +35,9 @@ export default function profilesViewModelTestsuite() {
       expect(current.profiles[0].id).assertEqual('zeta');
       expect(current.profiles[0].sourceDisplay).assertEqual('zeta.example.com');
       expect(current.profiles[0].active).assertFalse();
-      expect(current.profiles[0].actionsLockedByRuntime).assertFalse();
       expect(current.profiles[1].id).assertEqual('alpha');
       expect(current.profiles[1].active).assertTrue();
       expect(current.profiles[1].availability).assertEqual('INVALID');
-      expect(current.profiles[1].actionsLockedByRuntime).assertFalse();
 
       application.emitSnapshot(
         createApplicationSnapshot(
@@ -53,8 +51,10 @@ export default function profilesViewModelTestsuite() {
         )
       );
 
-      expect(viewModel.current().profiles[0].actionsLockedByRuntime).assertTrue();
-      expect(viewModel.current().profiles[1].actionsLockedByRuntime).assertTrue();
+      expect(viewModel.current().profiles[0].active).assertFalse();
+      expect(viewModel.current().profiles[1].active).assertTrue();
+      expect(viewModel.current().profiles[1].availability).assertEqual('INVALID');
+      expect(serialize(viewModel.current()).includes('actionsLockedByRuntime')).assertFalse();
       expect(serialize(viewModel.current()).includes('/tmp/cmfa/profiles')).assertFalse();
       expect(serialize(viewModel.current()).includes('secret=1')).assertFalse();
       expect(serialize(viewModel.current()).includes('CoreEvent')).assertFalse();

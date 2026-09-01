@@ -1,6 +1,6 @@
 {
   "app": {
-    "bundleName": "com.github.kr328.clash.harmony.trafficprobe",
+    "bundleName": "com.cmfa.phase4.trafficprobe",
     "vendor": "example",
     "versionCode": 1000000,
     "versionName": "1.0.0",

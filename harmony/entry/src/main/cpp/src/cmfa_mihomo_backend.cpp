@@ -13,6 +13,10 @@
 #include <mutex>
 #include <string>
 
+#if defined(__OHOS__)
+#include <hilog/log.h>
+#endif
+
 #if defined(__APPLE__)
 #define CMFA_OPTIONAL_SYMBOL __attribute__((weak_import))
 #elif defined(__GNUC__) || defined(__clang__)
@@ -28,16 +32,67 @@ struct cmfa_mihomo_runtime_log_record_v1 {
   char message[4096];
 };
 extern "C" int cmfa_mihomo_take_runtime_log_v1(cmfa_mihomo_runtime_log_record_v1 *record);
+extern "C" cmfa_status cmfa_mihomo_validate_config_v1(const char *config_path, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_load_config_v1(const char *config_path, cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
                                                   uint32_t mixed_port,
                                                   cmfa_runtime_snapshot *snapshot,
                                                   cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_stop_v1(cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snapshot, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_runtime_mode_v1(cmfa_runtime_mode *mode, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_set_runtime_mode_v1(cmfa_runtime_mode mode, cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *request,
                                                   cmfa_probe_result *result,
                                                   cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_groups_v1(const char *profile_hash,
+                                                   const char *revision_hash,
+                                                   const char *session_hash,
+                                                   uint64_t generation,
+                                                   uint8_t selectable_only,
+                                                   char *output,
+                                                   size_t output_capacity,
+                                                   size_t *output_length,
+                                                   cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_group_v1(const char *profile_hash,
+                                                  const char *revision_hash,
+                                                  const char *session_hash,
+                                                  uint64_t generation,
+                                                  const char *group_name,
+                                                  char *output,
+                                                  size_t output_capacity,
+                                                  size_t *output_length,
+                                                  cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_select_v1(const char *profile_hash,
+                                                   const char *revision_hash,
+                                                   const char *session_hash,
+                                                   uint64_t generation,
+                                                   const char *group_name,
+                                                   const char *member_name,
+                                                   char *output,
+                                                   size_t output_capacity,
+                                                   size_t *output_length,
+                                                   cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_start_v1(const char *profile_hash,
+                                                        const char *revision_hash,
+                                                        const char *session_hash,
+                                                        uint64_t generation,
+                                                        const char *group_name,
+                                                        char *output,
+                                                        size_t output_capacity,
+                                                        size_t *output_length,
+                                                        cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_snapshot_v1(const char *job_id,
+                                                           char *output,
+                                                           size_t output_capacity,
+                                                           size_t *output_length,
+                                                           cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_cancel_v1(const char *job_id,
+                                                         char *output,
+                                                         size_t output_capacity,
+                                                         size_t *output_length,
+                                                         cmfa_error *error);
 extern "C" cmfa_status cmfa_mihomo_start_tun_v1(const cmfa_tun_options *options,
                                                 cmfa_tun_snapshot *snapshot,
                                                 cmfa_error *error) CMFA_OPTIONAL_SYMBOL;
@@ -54,12 +109,106 @@ extern "C" cmfa_status cmfa_mihomo_close_stale_tun_connections_v1(const char *se
 namespace {
 
 constexpr size_t kMaxVersionScanBytes = 256;
+#if defined(__OHOS__)
+constexpr unsigned int kVpnStageLogDomain = 0x0D00CF4A;
+constexpr const char *kVpnStageLogTag = "CMFAVpn";
+#endif
+constexpr std::array<const char *, 38> kTunLifecycleStages = {
+    "tun.prepare.begin",
+    "tun.prepare.ok",
+    "tun.prepare.failed",
+    "tun.http-listener.begin",
+    "tun.http-listener.ok",
+    "tun.http-listener.failed",
+    "tun.socks-listener.begin",
+    "tun.socks-listener.ok",
+    "tun.socks-listener.failed",
+    "tun.listener.begin",
+    "tun.listener.endpoint-enter",
+    "tun.listener.ok",
+    "tun.listener.failure.interface",
+    "tun.listener.failure.stack-create",
+    "tun.listener.failure.stack-start",
+    "tun.listener.failure.unknown-scope",
+    "tun.listener.failure.bad-fd",
+    "tun.listener.failure.permission",
+    "tun.listener.failure.invalid",
+    "tun.listener.failure.unsupported",
+    "tun.listener.failure.io",
+    "tun.listener.failure.unknown-cause",
+    "tun.listener.failed",
+    "tun.stop.listener.begin",
+    "tun.stop.listener.ok",
+    "tun.stop.listener.failed",
+    "tun.stop.http-listener.begin",
+    "tun.stop.http-listener.ok",
+    "tun.stop.http-listener.failed",
+    "tun.stop.socks-listener.begin",
+    "tun.stop.socks-listener.ok",
+    "tun.stop.socks-listener.failed",
+    "tun.stop.connections.begin",
+    "tun.stop.connections.ok",
+    "tun.stop.connections.failed",
+    "tun.stop.executor.begin",
+    "tun.stop.executor.ok",
+    "tun.stop.executor.failed",
+};
+constexpr std::array<const char *, 5> kTunPacketDiagnosticStages = {
+    "tun.packet.read-loop-enter",
+    "tun.packet.read-would-block",
+    "tun.packet.read-failed",
+    "tun.packet.raw-read",
+    "tun.packet.gvisor-inject",
+};
+bool is_allowed_tun_lifecycle_stage(const char *stage) {
+  if (stage == nullptr) {
+    return false;
+  }
+  for (const char *allowed : kTunLifecycleStages) {
+    if (std::strcmp(stage, allowed) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+bool is_allowed_tun_packet_diagnostic_stage(const char *stage) {
+  if (stage == nullptr) {
+    return false;
+  }
+  for (const char *allowed : kTunPacketDiagnosticStages) {
+    if (std::strcmp(stage, allowed) == 0) {
+      return true;
+    }
+  }
+  return false;
+}
+
+#if defined(__OHOS__)
+bool is_allowed_tun_packet_diagnostic_event(const cmfa_runtime_event *event) {
+  return event != nullptr && event->ingress != nullptr && event->protocol != nullptr &&
+         std::strcmp(event->ingress, "diagnostic") == 0 &&
+         is_allowed_tun_packet_diagnostic_stage(event->protocol);
+}
+#endif
+
+void emit_tun_packet_diagnostic_stage_if_allowed(const cmfa_runtime_event *event) {
+#if defined(__OHOS__)
+  if (!is_allowed_tun_packet_diagnostic_event(event)) {
+    return;
+  }
+  (void)OH_LOG_Print(LOG_APP, LOG_INFO, kVpnStageLogDomain, kVpnStageLogTag, "%{public}s", event->protocol);
+#else
+  (void)event;
+#endif
+}
 
 struct MihomoBackendState {
   std::mutex mutex;
   bool registered = false;
   bool attached = false;
   cmfa_backend_host host{};
+  std::string active_tun_session_id;
 };
 
 MihomoBackendState g_backend_state;
@@ -147,14 +296,20 @@ void emit_runtime_event_locked(cmfa_runtime_state_value state, const char *messa
   (void)g_backend_state.host.host_emit_event(g_backend_state.host.context, &event, nullptr);
 }
 
-void emit_runtime_logs() {
+void emit_runtime_logs(const char *tun_session_id = nullptr) {
   cmfa_backend_host host{};
+  std::string stored_tun_session_id;
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
     if (!log_host_ready_locked()) {
       return;
     }
     host = g_backend_state.host;
+    if ((tun_session_id == nullptr || tun_session_id[0] == '\0') &&
+        !g_backend_state.active_tun_session_id.empty()) {
+      stored_tun_session_id = g_backend_state.active_tun_session_id;
+      tun_session_id = stored_tun_session_id.c_str();
+    }
   }
 
   while (true) {
@@ -162,6 +317,29 @@ void emit_runtime_logs() {
     record.struct_size = sizeof(record);
     if (cmfa_mihomo_take_runtime_log_v1(&record) == 0) {
       return;
+    }
+    const char *stage = record.message;
+    if (is_allowed_tun_lifecycle_stage(stage)) {
+#if defined(__OHOS__)
+      (void)OH_LOG_Print(LOG_APP, LOG_INFO, kVpnStageLogDomain, kVpnStageLogTag, "%{public}s", stage);
+#endif
+      continue;
+    }
+    if (is_allowed_tun_packet_diagnostic_stage(stage)) {
+#if defined(__OHOS__)
+      (void)OH_LOG_Print(LOG_APP, LOG_INFO, kVpnStageLogDomain, kVpnStageLogTag, "%{public}s", stage);
+#endif
+      if (tun_session_id != nullptr && tun_session_id[0] != '\0' && host.host_emit_event != nullptr) {
+        cmfa_runtime_event event{};
+        event.struct_size = sizeof(event);
+        event.state = CMFA_RUNTIME_RUNNING;
+        event.message = stage;
+        event.session_id = tun_session_id;
+        event.ingress = "diagnostic";
+        event.protocol = stage;
+        (void)host.host_emit_event(host.context, &event, nullptr);
+      }
+      continue;
     }
     cmfa_log_message message{};
     message.struct_size = sizeof(message);
@@ -171,14 +349,34 @@ void emit_runtime_logs() {
   }
 }
 
-std::string snapshot_message(const cmfa_runtime_snapshot &snapshot, const char *fallback) {
-  if (snapshot.last_error[0] != '\0') {
-    return snapshot.last_error;
+const char *runtime_event_message(cmfa_status status,
+                                  cmfa_runtime_state_value state,
+                                  const char *failure_message,
+                                  const char *fallback_message) {
+  if (status != CMFA_OK) {
+    return failure_message != nullptr ? failure_message : "runtime error";
   }
-  if (snapshot.http_address[0] != '\0' || snapshot.socks_address[0] != '\0') {
-    return std::string("http=") + snapshot.http_address + " socks=" + snapshot.socks_address;
+  switch (state) {
+    case CMFA_RUNTIME_STARTING:
+      return "starting local proxy";
+    case CMFA_RUNTIME_RUNNING:
+      return "local proxy running";
+    case CMFA_RUNTIME_STOPPING:
+      return "stopping local proxy";
+    case CMFA_RUNTIME_STOPPED:
+      return "local proxy stopped";
+    case CMFA_RUNTIME_ERROR:
+      return "runtime error";
+    default:
+      return fallback_message != nullptr ? fallback_message : "runtime error";
   }
-  return fallback != nullptr ? std::string(fallback) : std::string{};
+}
+
+const char *proxy_session_hash_or_null(const cmfa_proxy_query_context *query) {
+  if (query == nullptr || query->session_hash[0] == '\0') {
+    return nullptr;
+  }
+  return query->session_hash;
 }
 
 cmfa_status attach_host(void *, const cmfa_backend_host *host, cmfa_error *error) {
@@ -218,12 +416,12 @@ cmfa_status core_version(void *, char *out, size_t capacity, cmfa_error *error) 
   return CMFA_OK;
 }
 
-cmfa_status validate_config(void *, const char *, cmfa_error *error) {
-  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support validate_config");
+cmfa_status validate_config(void *, const char *config_path, cmfa_error *error) {
+  return cmfa_mihomo_validate_config_v1(config_path, error);
 }
 
-cmfa_status load_config(void *, const char *, cmfa_error *error) {
-  return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support load_config");
+cmfa_status load_config(void *, const char *config_path, cmfa_error *error) {
+  return cmfa_mihomo_load_config_v1(config_path, error);
 }
 
 cmfa_status start_local(void *,
@@ -243,10 +441,10 @@ cmfa_status start_local(void *,
   const cmfa_status status =
       cmfa_mihomo_start_local_v1(options->config_path, options->mixed_port, snapshot, error);
   emit_runtime_logs();
-  const std::string message = snapshot_message(*snapshot, status == CMFA_OK ? "local proxy running" : "start failed");
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
-    emit_runtime_event_locked(status == CMFA_OK ? snapshot->state : CMFA_RUNTIME_ERROR, message.c_str());
+    emit_runtime_event_locked(status == CMFA_OK ? snapshot->state : CMFA_RUNTIME_ERROR,
+                              runtime_event_message(status, snapshot->state, "start failed", "local proxy running"));
   }
   return status;
 }
@@ -262,14 +460,15 @@ cmfa_status stop(void *, cmfa_error *error) {
   reset_runtime_snapshot(&snapshot);
   (void)cmfa_mihomo_runtime_state_v1(&snapshot, nullptr);
   if (status != CMFA_OK) {
-    const std::string message = snapshot_message(snapshot, "stop failed");
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
-    emit_runtime_event_locked(snapshot.state == CMFA_RUNTIME_STOPPED ? CMFA_RUNTIME_ERROR : snapshot.state, message.c_str());
+    emit_runtime_event_locked(snapshot.state == CMFA_RUNTIME_STOPPED ? CMFA_RUNTIME_ERROR : snapshot.state,
+                              runtime_event_message(status, snapshot.state, "stop failed", "local proxy stopped"));
     return status;
   }
   {
     std::lock_guard<std::mutex> lock(g_backend_state.mutex);
-    emit_runtime_event_locked(snapshot.state, snapshot_message(snapshot, "local proxy stopped").c_str());
+    emit_runtime_event_locked(snapshot.state,
+                              runtime_event_message(status, snapshot.state, "stop failed", "local proxy stopped"));
   }
   clear_error(error);
   return CMFA_OK;
@@ -281,6 +480,110 @@ cmfa_status runtime_state(void *, cmfa_runtime_snapshot *snapshot, cmfa_error *e
   }
   reset_runtime_snapshot(snapshot);
   return cmfa_mihomo_runtime_state_v1(snapshot, error);
+}
+
+cmfa_status runtime_mode_query(void *, cmfa_runtime_mode *mode, cmfa_error *error) {
+  if (mode == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "runtime mode output must not be null");
+  }
+  return cmfa_mihomo_runtime_mode_v1(mode, error);
+}
+
+cmfa_status runtime_mode_set(void *, cmfa_runtime_mode mode, cmfa_error *error) {
+  return cmfa_mihomo_set_runtime_mode_v1(mode, error);
+}
+
+cmfa_status proxy_groups(void *,
+                         const cmfa_proxy_query_context *query,
+                         uint8_t selectable_only,
+                         cmfa_json_buffer *output,
+                         cmfa_error *error) {
+  if (query == nullptr || output == nullptr || output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query and output must not be null");
+  }
+  return cmfa_mihomo_proxy_groups_v1(query->profile_hash,
+                                     query->revision_hash,
+                                     proxy_session_hash_or_null(query),
+                                     query->generation,
+                                     selectable_only,
+                                     output->data,
+                                     output->capacity,
+                                     &output->length,
+                                     error);
+}
+
+cmfa_status proxy_group(void *,
+                        const cmfa_proxy_query_context *query,
+                        const char *group_name,
+                        cmfa_json_buffer *output,
+                        cmfa_error *error) {
+  if (query == nullptr || group_name == nullptr || output == nullptr || output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query, group name, and output must not be null");
+  }
+  return cmfa_mihomo_proxy_group_v1(query->profile_hash,
+                                    query->revision_hash,
+                                    proxy_session_hash_or_null(query),
+                                    query->generation,
+                                    group_name,
+                                    output->data,
+                                    output->capacity,
+                                    &output->length,
+                                    error);
+}
+
+cmfa_status proxy_select(void *,
+                         const cmfa_proxy_query_context *query,
+                         const char *group_name,
+                         const char *member_name,
+                         cmfa_json_buffer *output,
+                         cmfa_error *error) {
+  if (query == nullptr || group_name == nullptr || member_name == nullptr || output == nullptr ||
+      output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query, names, and output must not be null");
+  }
+  return cmfa_mihomo_proxy_select_v1(query->profile_hash,
+                                     query->revision_hash,
+                                     proxy_session_hash_or_null(query),
+                                     query->generation,
+                                     group_name,
+                                     member_name,
+                                     output->data,
+                                     output->capacity,
+                                     &output->length,
+                                     error);
+}
+
+cmfa_status proxy_delay_start(void *,
+                              const cmfa_proxy_query_context *query,
+                              const char *group_name,
+                              cmfa_json_buffer *output,
+                              cmfa_error *error) {
+  if (query == nullptr || group_name == nullptr || output == nullptr || output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query, group name, and output must not be null");
+  }
+  return cmfa_mihomo_proxy_delay_start_v1(query->profile_hash,
+                                          query->revision_hash,
+                                          proxy_session_hash_or_null(query),
+                                          query->generation,
+                                          group_name,
+                                          output->data,
+                                          output->capacity,
+                                          &output->length,
+                                          error);
+}
+
+cmfa_status proxy_delay_snapshot(void *, const char *job_id, cmfa_json_buffer *output, cmfa_error *error) {
+  if (job_id == nullptr || output == nullptr || output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job id and output must not be null");
+  }
+  return cmfa_mihomo_proxy_delay_snapshot_v1(job_id, output->data, output->capacity, &output->length, error);
+}
+
+cmfa_status proxy_delay_cancel(void *, const char *job_id, cmfa_json_buffer *output, cmfa_error *error) {
+  if (job_id == nullptr || output == nullptr || output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job id and output must not be null");
+  }
+  return cmfa_mihomo_proxy_delay_cancel_v1(job_id, output->data, output->capacity, &output->length, error);
 }
 
 cmfa_status probe_https(void *, const cmfa_probe_request *request, cmfa_probe_result *result, cmfa_error *error) {
@@ -303,14 +606,32 @@ cmfa_status start_tun(void *, const cmfa_tun_options *options, cmfa_tun_snapshot
   if (cmfa_mihomo_start_tun_v1 == nullptr) {
     return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support start_tun");
   }
-  return cmfa_mihomo_start_tun_v1(options, snapshot, error);
+  {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    g_backend_state.active_tun_session_id = options->session_id;
+  }
+  const cmfa_status status = cmfa_mihomo_start_tun_v1(options, snapshot, error);
+  emit_runtime_logs(options->session_id);
+  if (status != CMFA_OK) {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    if (g_backend_state.active_tun_session_id == options->session_id) {
+      g_backend_state.active_tun_session_id.clear();
+    }
+  }
+  return status;
 }
 
 cmfa_status stop_tun(void *, cmfa_error *error) {
   if (cmfa_mihomo_stop_tun_v1 == nullptr) {
     return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support stop_tun");
   }
-  return cmfa_mihomo_stop_tun_v1(error);
+  const cmfa_status status = cmfa_mihomo_stop_tun_v1(error);
+  emit_runtime_logs();
+  if (status == CMFA_OK) {
+    std::lock_guard<std::mutex> lock(g_backend_state.mutex);
+    g_backend_state.active_tun_session_id.clear();
+  }
+  return status;
 }
 
 cmfa_status tun_runtime_state(void *, cmfa_tun_snapshot *snapshot, cmfa_error *error) {
@@ -321,7 +642,9 @@ cmfa_status tun_runtime_state(void *, cmfa_tun_snapshot *snapshot, cmfa_error *e
   if (cmfa_mihomo_tun_runtime_state_v1 == nullptr) {
     return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support tun_runtime_state");
   }
-  return cmfa_mihomo_tun_runtime_state_v1(snapshot, error);
+  const cmfa_status status = cmfa_mihomo_tun_runtime_state_v1(snapshot, error);
+  emit_runtime_logs();
+  return status;
 }
 
 cmfa_status tun_copy_traces(void *, cmfa_tun_trace_collection *traces, cmfa_error *error) {
@@ -344,13 +667,16 @@ cmfa_status tun_copy_traces_ring(void *, cmfa_tun_trace_ring *traces, cmfa_error
   if (cmfa_mihomo_tun_copy_traces_ring_v1 == nullptr) {
     return fail(error, CMFA_CORE_UNAVAILABLE, "mihomo backend does not support tun_copy_traces_ring");
   }
-  return cmfa_mihomo_tun_copy_traces_ring_v1(traces, error);
+  const cmfa_status status = cmfa_mihomo_tun_copy_traces_ring_v1(traces, error);
+  emit_runtime_logs();
+  return status;
 }
 
 cmfa_status shutdown(void *, cmfa_error *error) {
   std::lock_guard<std::mutex> lock(g_backend_state.mutex);
   g_backend_state.host = {};
   g_backend_state.attached = false;
+  g_backend_state.active_tun_session_id.clear();
   clear_error(error);
   return CMFA_OK;
 }
@@ -366,6 +692,14 @@ cmfa_backend_api make_backend_api() {
   api.start_local = start_local;
   api.stop = stop;
   api.runtime_state = runtime_state;
+  api.runtime_mode_query = runtime_mode_query;
+  api.runtime_mode_set = runtime_mode_set;
+  api.proxy_groups = proxy_groups;
+  api.proxy_group = proxy_group;
+  api.proxy_select = proxy_select;
+  api.proxy_delay_start = proxy_delay_start;
+  api.proxy_delay_snapshot = proxy_delay_snapshot;
+  api.proxy_delay_cancel = proxy_delay_cancel;
   api.probe_https = probe_https;
   api.start_tun = start_tun;
   api.stop_tun = stop_tun;
@@ -384,6 +718,49 @@ extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_lo
                                                                    cmfa_error *error) {
   return start_local(nullptr, options, snapshot, error);
 }
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_groups_direct(const cmfa_proxy_query_context *query,
+                                                                    uint8_t selectable_only,
+                                                                    cmfa_json_buffer *output,
+                                                                    cmfa_error *error) {
+  return proxy_groups(nullptr, query, selectable_only, output, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_group_direct(const cmfa_proxy_query_context *query,
+                                                                   const char *group_name,
+                                                                   cmfa_json_buffer *output,
+                                                                   cmfa_error *error) {
+  return proxy_group(nullptr, query, group_name, output, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_select_direct(const cmfa_proxy_query_context *query,
+                                                                    const char *group_name,
+                                                                    const char *member_name,
+                                                                    cmfa_json_buffer *output,
+                                                                    cmfa_error *error) {
+  return proxy_select(nullptr, query, group_name, member_name, output, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_start_direct(const cmfa_proxy_query_context *query,
+                                                                         const char *group_name,
+                                                                         cmfa_json_buffer *output,
+                                                                         cmfa_error *error) {
+  return proxy_delay_start(nullptr, query, group_name, output, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_snapshot_direct(const char *job_id,
+                                                                            cmfa_json_buffer *output,
+                                                                            cmfa_error *error) {
+  return proxy_delay_snapshot(nullptr, job_id, output, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_cancel_direct(const char *job_id,
+                                                                          cmfa_json_buffer *output,
+                                                                          cmfa_error *error) {
+  return proxy_delay_cancel(nullptr, job_id, output, error);
+}
+
+extern "C" void cmfa_mihomo_backend_test_emit_runtime_logs() { emit_runtime_logs("session-test"); }
 
 extern "C" cmfa_status cmfa_mihomo_backend_test_close_stale_tun_connections_impl(const char *session_id,
                                                                                   cmfa_error *error);
@@ -458,6 +835,7 @@ cmfa_status unregister_mihomo_backend(cmfa_error *error) {
   g_backend_state.registered = false;
   g_backend_state.host = {};
   g_backend_state.attached = false;
+  g_backend_state.active_tun_session_id.clear();
   clear_error(error);
   return CMFA_OK;
 }
@@ -492,5 +870,6 @@ extern "C" cmfa_status cmfa_host_emit_runtime_event_bridge_v1(const cmfa_runtime
   if (!g_backend_state.attached || g_backend_state.host.host_emit_event == nullptr) {
     return fail(error, CMFA_BACKEND_ERROR, "host runtime event callback is unavailable");
   }
+  emit_tun_packet_diagnostic_stage_if_allowed(event);
   return g_backend_state.host.host_emit_event(g_backend_state.host.context, event, error);
 }

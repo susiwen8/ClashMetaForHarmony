@@ -16,6 +16,10 @@ extern "C" {
 #define CMFA_MAX_PROBE_KIND_BYTES ((size_t)64)
 #define CMFA_MAX_PROBE_ERROR_BYTES ((size_t)1024)
 #define CMFA_MAX_PROBE_PEM_BYTES ((size_t)16384)
+#define CMFA_MAX_PROXY_HASH_BYTES ((size_t)65)
+#define CMFA_MAX_PROXY_NAME_UTF8_BYTES ((size_t)256)
+#define CMFA_MAX_PROXY_JSON_BYTES ((size_t)(1024 * 1024))
+#define CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES ((size_t)33)
 #define CMFA_MAX_TUN_SESSION_ID_BYTES ((size_t)128)
 #define CMFA_MAX_TUN_TRACE_ID_BYTES ((size_t)128)
 #define CMFA_MAX_TUN_ADDRESS_BYTES ((size_t)256)
@@ -63,6 +67,12 @@ typedef enum cmfa_log_level {
   CMFA_LOG_ERROR = 3
 } cmfa_log_level;
 
+typedef enum cmfa_runtime_mode {
+  CMFA_MODE_RULE = 0,
+  CMFA_MODE_GLOBAL = 1,
+  CMFA_MODE_DIRECT = 2
+} cmfa_runtime_mode;
+
 typedef enum cmfa_tun_state_value {
   CMFA_TUN_IDLE = 0,
   CMFA_TUN_STARTING = 1,
@@ -93,6 +103,20 @@ typedef struct cmfa_runtime_snapshot {
   char last_error[CMFA_MAX_PATH_BYTES];
   uint32_t mixed_port;
 } cmfa_runtime_snapshot;
+
+typedef struct cmfa_proxy_query_context {
+  uint32_t struct_size;
+  char profile_hash[CMFA_MAX_PROXY_HASH_BYTES];
+  char revision_hash[CMFA_MAX_PROXY_HASH_BYTES];
+  char session_hash[CMFA_MAX_PROXY_HASH_BYTES];
+  uint64_t generation;
+} cmfa_proxy_query_context;
+
+typedef struct cmfa_json_buffer {
+  char *data;
+  size_t capacity;
+  size_t length;
+} cmfa_json_buffer;
 
 typedef struct cmfa_probe_request {
   uint32_t struct_size;
@@ -174,6 +198,10 @@ typedef struct cmfa_tun_trace {
   char destination_address[CMFA_MAX_TUN_ADDRESS_BYTES];
   char hashed_tuple[CMFA_MAX_TUN_HASH_BYTES];
   char correlation_hash[CMFA_MAX_TUN_HASH_BYTES];
+  char destination_hash[CMFA_MAX_TUN_HASH_BYTES];
+  char outbound_terminal_hash[CMFA_MAX_TUN_HASH_BYTES];
+  char outbound_chain_hash[CMFA_MAX_TUN_HASH_BYTES];
+  uint32_t outbound_chain_length;
 } cmfa_tun_trace;
 
 typedef struct cmfa_tun_trace_collection {

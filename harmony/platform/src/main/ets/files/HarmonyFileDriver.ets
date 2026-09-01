@@ -4,16 +4,71 @@ import {
   BufferIoOptionsRecord,
   FileStatRecord,
   FileTokenRecord,
+  FILE_MOVE_MODE_OVERWRITE,
   FILE_MOVE_MODE_NO_OVERWRITE
 } from './FileDriver';
 
-export class HarmonyFileDriver implements FileDriver {
-  async mkdir(path: string, recursive: boolean): Promise<void> {
-    try {
-      await fileIo.mkdir(path, recursive);
-    } catch (_) {
-      throw new Error('Sandbox directory preparation failed.');
+type MkdirOperation = (path: string, recursive: boolean) => Promise<void>;
+type StatIfPresentOperation = (path: string) => Promise<FileStat | undefined>;
+
+const SANDBOX_DIRECTORY_PREPARATION_FAILURE: string = 'Sandbox directory preparation failed.';
+const FILE_EXISTS_ERROR_CODE: number = 13900015;
+
+interface HarmonyDirectoryOperations {
+  nativeMkdir?: MkdirOperation;
+  statIfPresent?: StatIfPresentOperation;
+}
+
+async function mkdirWithRecursiveIdempotence(
+  path: string,
+  recursive: boolean,
+  mkdir: MkdirOperation,
+  statIfPresent: StatIfPresentOperation
+): Promise<void> {
+  try {
+    await mkdir(path, recursive);
+    return;
+  } catch (error) {
+    if (recursive && isFileExistsError(error)) {
+      try {
+        const existing: FileStat | undefined = await statIfPresent(path);
+        if (existing !== undefined && existing.isDirectory) {
+          return;
+        }
+      } catch (_) {
+      }
     }
+    throw new Error(SANDBOX_DIRECTORY_PREPARATION_FAILURE);
+  }
+}
+
+export class HarmonyFileDriver implements FileDriver {
+  private readonly nativeMkdir?: MkdirOperation;
+  private readonly statIfPresentOverride?: StatIfPresentOperation;
+
+  constructor(directoryOperations?: HarmonyDirectoryOperations) {
+    this.nativeMkdir = directoryOperations?.nativeMkdir;
+    this.statIfPresentOverride = directoryOperations?.statIfPresent;
+  }
+
+  async mkdir(path: string, recursive: boolean): Promise<void> {
+    await mkdirWithRecursiveIdempotence(
+      path,
+      recursive,
+      async (mkdirPath: string, mkdirRecursive: boolean): Promise<void> => {
+        if (this.nativeMkdir !== undefined) {
+          await this.nativeMkdir(mkdirPath, mkdirRecursive);
+          return;
+        }
+        await fileIo.mkdir(mkdirPath, mkdirRecursive);
+      },
+      async (statPath: string): Promise<FileStat | undefined> => {
+        if (this.statIfPresentOverride !== undefined) {
+          return await this.statIfPresentOverride(statPath);
+        }
+        return await this.statIfPresent(statPath);
+      }
+    );
   }
 
   async list(path: string): Promise<string[]> {
@@ -113,6 +168,14 @@ export class HarmonyFileDriver implements FileDriver {
     }
   }
 
+  async renameReplace(source: string, destination: string): Promise<void> {
+    try {
+      await fileIo.moveFile(source, destination, FILE_MOVE_MODE_OVERWRITE);
+    } catch (_) {
+      throw new Error('Sandbox file replace failed.');
+    }
+  }
+
   async hash(path: string, algorithm: string): Promise<string> {
     try {
       return await hash.hash(path, algorithm);
@@ -129,4 +192,9 @@ interface BusinessErrorShape {
 function isNoSuchFileError(error: Object | undefined): boolean {
   const record = error as BusinessErrorShape;
   return record?.code === 13900002;
+}
+
+function isFileExistsError(error: Object | undefined): boolean {
+  const record = error as BusinessErrorShape;
+  return record?.code === FILE_EXISTS_ERROR_CODE;
 }

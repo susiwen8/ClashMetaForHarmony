@@ -2,6 +2,8 @@ import { describe, expect, it } from '@ohos/hypium';
 import type { Profile } from '@cmfa/shared';
 import { RdbProfileRepository } from '../main/ets/rdb/RdbProfileRepository';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
+import { encodeProxySelectionRow } from '../main/ets/rdb/ProxySelectionRowCodec';
+import { createProxySelectionRecord } from '@cmfa/shared';
 import {
   assertAppErrorExactDetail,
   assertCanonicalTimestampWithinRange,
@@ -332,19 +334,28 @@ export default function rdbProfileRepositoryTestsuite() {
       const driver = new RecordingRdbDriver();
       driver.seedActiveId('delete-me');
       driver.seedRow(encodeProfileRow(buildProfile('delete-me', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/delete-me/current.yaml')));
+      driver.seedSelectionRow(encodeProxySelectionRow(
+        createProxySelectionRecord('delete-me', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
+      ));
       const repository = new RdbProfileRepository(driver);
 
       await repository.deleteAndClearActive('delete-me');
 
-      expect(driver.log.join('>')).assertContain('begin>clearActiveIfMatching:delete-me>deleteProfile:delete-me>commit');
+      expect(driver.log.join('>')).assertContain(
+        'begin>clearActiveIfMatching:delete-me>deleteProfileSelections:delete-me>deleteProfile:delete-me>commit'
+      );
       expect(await repository.get('delete-me')).assertUndefined();
       expect(await repository.getActiveId()).assertUndefined();
+      expect((await driver.listProxySelectionRows('delete-me')).length).assertEqual(0);
     });
 
     it('rollsBackOnTransactionStatementOrCommitFailureAndRemainsReusable', 0, async () => {
       const clearDriver = new RecordingRdbDriver();
       clearDriver.seedActiveId('delete-clear');
       clearDriver.seedRow(encodeProfileRow(buildProfile('delete-clear', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/delete-clear/current.yaml')));
+      clearDriver.seedSelectionRow(encodeProxySelectionRow(
+        createProxySelectionRecord('delete-clear', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
+      ));
       clearDriver.injectFailure('clearActiveIfMatching:delete-clear', new Error(`clear failed ${buildUnsafeUrl('delete-clear')}`));
       const clearRepository = new RdbProfileRepository(clearDriver);
 
@@ -357,6 +368,7 @@ export default function rdbProfileRepositoryTestsuite() {
       );
       expect((await clearRepository.get('delete-clear'))?.id).assertEqual('delete-clear');
       expect(await clearRepository.getActiveId()).assertEqual('delete-clear');
+      expect((await clearDriver.listProxySelectionRows('delete-clear')).length).assertEqual(1);
 
       clearDriver.log.length = 0;
       await clearRepository.setActiveId(undefined);
@@ -365,6 +377,9 @@ export default function rdbProfileRepositoryTestsuite() {
       const commitDriver = new RecordingRdbDriver();
       commitDriver.seedActiveId('tx-commit');
       commitDriver.seedRow(encodeProfileRow(buildProfile('tx-commit', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/tx-commit/current.yaml')));
+      commitDriver.seedSelectionRow(encodeProxySelectionRow(
+        createProxySelectionRecord('tx-commit', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
+      ));
       commitDriver.injectFailure('commit', new Error(`commit body leaked ${buildUnsafeHomePath('tx-commit.yaml')}`));
       const commitRepository = new RdbProfileRepository(commitDriver);
 
@@ -377,6 +392,7 @@ export default function rdbProfileRepositoryTestsuite() {
       );
       expect((await commitRepository.get('tx-commit'))?.id).assertEqual('tx-commit');
       expect(await commitRepository.getActiveId()).assertEqual('tx-commit');
+      expect((await commitDriver.listProxySelectionRows('tx-commit')).length).assertEqual(1);
     });
 
     it('wrapsDriverAndCorruptionFailuresAsStablePersistenceErrorsWithoutLeakingSqlOrSecrets', 0, async () => {

@@ -6,6 +6,7 @@ import type { IdGenerator } from '@cmfa/shared';
 import {
   createHttpTransportFailure,
   isHttpTransportFailure,
+  validateHttpTransportRequestUserAgent,
   type HttpTransport,
   type HttpTransportFailureKind,
   type HttpTransportRequest,
@@ -34,14 +35,16 @@ class RequestAgentCreateConfigRecord implements RequestAgentCreateConfig {
   method: string;
   saveas: string;
   redirect: boolean;
+  headers: RequestAgentHeaderRecord;
 
-  constructor(url: string, saveas: string) {
+  constructor(url: string, saveas: string, userAgent: string) {
     this.action = request.agent.Action.DOWNLOAD;
     this.url = url;
     this.mode = request.agent.Mode.FOREGROUND;
     this.method = 'GET';
     this.saveas = saveas;
     this.redirect = false;
+    this.headers = buildRequestAgentHeaderRecord(userAgent);
   }
 }
 
@@ -78,6 +81,10 @@ export type RequestAgentFaultPort = number;
 
 export interface RequestAgentCreateConfig extends request.agent.Config {}
 
+interface RequestAgentHeaderRecord {
+  'User-Agent': string;
+}
+
 export interface RequestAgentModulePort {
   create(context: common.BaseContext | undefined, config: RequestAgentCreateConfig): Promise<RequestAgentTaskPort>;
   remove(tid: string): Promise<void>;
@@ -106,12 +113,13 @@ export class RequestAgentRedirectTransport implements HttpTransport {
   }
 
   async fetch(requestSpec: HttpTransportRequest): Promise<HttpTransportResponse> {
+    validateHttpTransportRequestUserAgent(requestSpec.userAgent);
     const tempPath: string = await this.prepareOutputPath();
     let task: RequestAgentTaskPort | undefined = undefined;
     try {
       task = await this.requestAgent.create(
         this.context,
-        new RequestAgentCreateConfigRecord(requestSpec.url, tempPath)
+        new RequestAgentCreateConfigRecord(requestSpec.url, tempPath, requestSpec.userAgent)
       );
       return await this.awaitTask(task, tempPath, requestSpec);
     } finally {
@@ -353,4 +361,10 @@ class SystemRequestAgentTimer implements RequestAgentTimerPort {
 
 function createSystemRequestAgentTimer(): RequestAgentTimerPort {
   return new SystemRequestAgentTimer();
+}
+
+function buildRequestAgentHeaderRecord(userAgent: string): RequestAgentHeaderRecord {
+  return {
+    'User-Agent': userAgent
+  };
 }

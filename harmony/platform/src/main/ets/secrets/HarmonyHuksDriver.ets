@@ -1,29 +1,49 @@
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import { huks } from '@kit.UniversalKeystoreKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
+  HUKS_STANDARD_KEY_SIZE_256,
   HUKS_SECRET_KEY_ALIAS_VERSION,
   HUKS_SECRET_NONCE_LENGTH,
   HUKS_SECRET_TAG_LENGTH,
+  type HuksErrorCodeCarrier,
   type HuksOperations,
   type HuksOptionsContract,
   type HuksParamContract,
   type HuksRandomSource,
   type HuksReturnResultContract,
+  type HuksSessionHandleContract,
   type HuksDriver,
   type HuksEncryptedPayload
 } from './HuksDriver';
 
 const APPLICATION_KEY_ALIAS: string = 'cmfa.subscription.secret.master.v1';
+const HUKS_DIAGNOSTIC_DOMAIN: number = 0x0000;
+const HUKS_DIAGNOSTIC_TAG: string = 'CMFAHuks';
+
+interface BusinessErrorShape {
+  code?: number;
+}
+
+export interface HuksDiagnosticSink {
+  report(stage: string, code: number): void;
+}
 
 export class HarmonyHuksDriver implements HuksDriver {
   private ensureKeyPromise?: Promise<void>;
 
   private readonly operations: HuksOperations;
   private readonly randomSource: HuksRandomSource;
+  private readonly diagnostics: HuksDiagnosticSink;
 
-  constructor(operations?: HuksOperations, randomSource?: HuksRandomSource) {
-    this.operations = operations ?? new DefaultHuksOperations();
+  constructor(
+    operations?: HuksOperations,
+    randomSource?: HuksRandomSource,
+    diagnostics?: HuksDiagnosticSink
+  ) {
+    this.operations = operations ?? new HarmonyHuksOperations();
     this.randomSource = randomSource ?? new DefaultHuksRandomSource();
+    this.diagnostics = diagnostics ?? new HilogHuksDiagnosticSink();
   }
 
   async prepare(): Promise<void> {
@@ -33,20 +53,29 @@ export class HarmonyHuksDriver implements HuksDriver {
   async encrypt(plaintext: Uint8Array): Promise<HuksEncryptedPayload> {
     await this.ensureKeyMaterial();
     const nonce: Uint8Array = this.randomSource.nextNonce(HUKS_SECRET_NONCE_LENGTH);
-    const sessionHandle: number = await this.initSession(nonce, huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT);
+    const sessionHandle: number = await this.initSession(
+      nonce,
+      huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT,
+      'encrypt.init'
+    );
     let sessionCompleted: boolean = false;
+    let operationStage: string = 'encrypt.finish';
     try {
-      const updateResult = await this.operations.updateSession(sessionHandle, createUpdateOptions(plaintext));
-      const finishResult = await this.operations.finishSession(sessionHandle, {});
+      const finishResult = await this.operations.finishSession(
+        sessionHandle,
+        createFinishOptions(nonce, huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT, plaintext)
+      );
       sessionCompleted = true;
-      const separated = separateEncryptResult(updateResult, finishResult);
+      operationStage = 'encrypt.result';
+      const separated = separateEncryptResult(finishResult);
       return {
         keyAliasVersion: HUKS_SECRET_KEY_ALIAS_VERSION,
         nonce,
         ciphertext: separated.ciphertext,
         tag: separated.tag
       };
-    } catch (_) {
+    } catch (error) {
+      this.reportFailure(operationStage, error as Object);
       if (!sessionCompleted) {
         await this.abortSessionSafely(sessionHandle);
       }
@@ -57,20 +86,28 @@ export class HarmonyHuksDriver implements HuksDriver {
   async decrypt(payload: HuksEncryptedPayload): Promise<Uint8Array> {
     validatePayloadShape(payload);
     await this.ensureKeyMaterial();
-    const sessionHandle: number = await this.initSession(payload.nonce, huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT, payload.tag);
+    const sessionHandle: number = await this.initSession(
+      payload.nonce,
+      huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT,
+      'decrypt.init',
+      payload.tag
+    );
     let sessionCompleted: boolean = false;
+    let operationStage: string = 'decrypt.finish';
     try {
-      const updateResult: Uint8Array = copyOptionalBytes((await this.operations.updateSession(
-        sessionHandle,
-        createUpdateOptions(payload.ciphertext)
-      )).outData);
       const finishResult: Uint8Array = copyOptionalBytes((await this.operations.finishSession(
         sessionHandle,
-        createFinishDecryptOptions()
+        createFinishOptions(
+          payload.nonce,
+          huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT,
+          payload.ciphertext,
+          payload.tag
+        )
       )).outData);
       sessionCompleted = true;
-      return concatenateBytes(updateResult, finishResult);
-    } catch (_) {
+      return finishResult;
+    } catch (error) {
+      this.reportFailure(operationStage, error as Object);
       if (!sessionCompleted) {
         await this.abortSessionSafely(sessionHandle);
       }
@@ -114,21 +151,36 @@ export class HarmonyHuksDriver implements HuksDriver {
   private async safeIsKeyItemExist(): Promise<boolean> {
     try {
       return await this.operations.isKeyItemExist(APPLICATION_KEY_ALIAS, {});
-    } catch (_) {
+    } catch (error) {
+      if (isKeyItemMissingError(error as Object)) {
+        return false;
+      }
       throw new Error('Subscription secret key lookup failed.');
     }
   }
 
-  private async initSession(nonce: Uint8Array, purpose: number, tag?: Uint8Array): Promise<number> {
+  private async initSession(
+    nonce: Uint8Array,
+    purpose: number,
+    diagnosticStage: string,
+    tag?: Uint8Array
+  ): Promise<number> {
     try {
       const handle = await this.operations.initSession(
         APPLICATION_KEY_ALIAS,
         createInitOptions(nonce, purpose, tag)
       );
       return handle.handle;
-    } catch (_) {
+    } catch (error) {
+      this.reportFailure(diagnosticStage, error as Object);
       throw new Error('Subscription secret session initialization failed.');
     }
+  }
+
+  private reportFailure(stage: string, error: Object): void {
+    const businessError: BusinessErrorShape = error as BusinessErrorShape;
+    const code: number = typeof businessError.code === 'number' ? businessError.code : -1;
+    this.diagnostics.report(stage, code);
   }
 
   private async abortSessionSafely(handle: number): Promise<void> {
@@ -139,7 +191,19 @@ export class HarmonyHuksDriver implements HuksDriver {
   }
 }
 
-class DefaultHuksOperations implements HuksOperations {
+class HilogHuksDiagnosticSink implements HuksDiagnosticSink {
+  report(stage: string, code: number): void {
+    hilog.error(
+      HUKS_DIAGNOSTIC_DOMAIN,
+      HUKS_DIAGNOSTIC_TAG,
+      '%{public}s:%{public}d',
+      stage,
+      code
+    );
+  }
+}
+
+export class HarmonyHuksOperations implements HuksOperations {
   async isKeyItemExist(keyAlias: string, options: HuksOptionsContract): Promise<boolean> {
     return await huks.isKeyItemExist(keyAlias, options as huks.HuksOptions);
   }
@@ -148,19 +212,25 @@ class DefaultHuksOperations implements HuksOperations {
     await huks.generateKeyItem(keyAlias, options as huks.HuksOptions);
   }
 
-  async initSession(keyAlias: string, options: HuksOptionsContract): Promise<SessionHandleContractRecord> {
+  async initSession(keyAlias: string, options: HuksOptionsContract): Promise<HuksSessionHandleContract> {
     const result = await huks.initSession(keyAlias, options as huks.HuksOptions);
-    return new SessionHandleContractRecord(result.handle, result.challenge);
+    return createOwnedHuksSessionHandleContract(result.handle, result.challenge);
   }
 
   async updateSession(handle: number, options: HuksOptionsContract, token?: Uint8Array): Promise<HuksReturnResultContract> {
     const result = await huks.updateSession(handle, options as huks.HuksOptions, token);
-    return new ReturnResultContractRecord(result.outData, result.properties as Array<HuksParamContract> | undefined);
+    return createOwnedHuksReturnResultContract(
+      result.outData,
+      result.properties as Array<HuksParamContract> | undefined
+    );
   }
 
   async finishSession(handle: number, options: HuksOptionsContract, token?: Uint8Array): Promise<HuksReturnResultContract> {
     const result = await huks.finishSession(handle, options as huks.HuksOptions, token);
-    return new ReturnResultContractRecord(result.outData, result.properties as Array<HuksParamContract> | undefined);
+    return createOwnedHuksReturnResultContract(
+      result.outData,
+      result.properties as Array<HuksParamContract> | undefined
+    );
   }
 
   async abortSession(handle: number, options: HuksOptionsContract): Promise<void> {
@@ -179,31 +249,68 @@ class DefaultHuksRandomSource implements HuksRandomSource {
   }
 }
 
-class SessionHandleContractRecord {
+export class OwnedHuksSessionHandleContractRecord implements HuksSessionHandleContract {
   readonly handle: number;
   readonly challenge?: Uint8Array;
 
   constructor(handle: number, challenge?: Uint8Array) {
     this.handle = handle;
-    this.challenge = challenge;
+    this.challenge = cloneOptionalBytesMaybe(challenge);
   }
 }
 
-class ReturnResultContractRecord implements HuksReturnResultContract {
+export class OwnedHuksReturnResultContractRecord implements HuksReturnResultContract {
   readonly outData?: Uint8Array;
   readonly properties?: Array<HuksParamContract>;
 
   constructor(outData?: Uint8Array, properties?: Array<HuksParamContract>) {
-    this.outData = outData;
-    this.properties = properties;
+    this.outData = cloneOptionalBytesMaybe(outData);
+    this.properties = cloneOwnedHuksParamContracts(properties);
   }
+}
+
+export class OwnedHuksParamContractRecord implements HuksParamContract {
+  readonly tag: number;
+  readonly value: boolean | number | bigint | Uint8Array;
+
+  constructor(tag: number, value: boolean | number | bigint | Uint8Array) {
+    this.tag = tag;
+    this.value = cloneHuksParamValue(value);
+  }
+}
+
+export function createOwnedHuksSessionHandleContract(
+  handle: number,
+  challenge?: Uint8Array
+): HuksSessionHandleContract {
+  return new OwnedHuksSessionHandleContractRecord(handle, challenge);
+}
+
+export function createOwnedHuksReturnResultContract(
+  outData?: Uint8Array,
+  properties?: Array<HuksParamContract>
+): HuksReturnResultContract {
+  return new OwnedHuksReturnResultContractRecord(outData, properties);
+}
+
+export function cloneOwnedHuksParamContracts(
+  properties?: Array<HuksParamContract>
+): Array<HuksParamContract> | undefined {
+  if (properties === undefined) {
+    return undefined;
+  }
+  const copy: Array<HuksParamContract> = [];
+  for (let index = 0; index < properties.length; index += 1) {
+    copy.push(new OwnedHuksParamContractRecord(properties[index].tag, properties[index].value));
+  }
+  return copy;
 }
 
 function createKeyGenerationOptions(): HuksOptionsContract {
   return {
     properties: [
       uintParam(huks.HuksTag.HUKS_TAG_ALGORITHM, huks.HuksKeyAlg.HUKS_ALG_AES),
-      uintParam(huks.HuksTag.HUKS_TAG_KEY_SIZE, huks.HuksKeySize.HUKS_AES_KEY_SIZE_256),
+      uintParam(huks.HuksTag.HUKS_TAG_KEY_SIZE, HUKS_STANDARD_KEY_SIZE_256),
       uintParam(
         huks.HuksTag.HUKS_TAG_PURPOSE,
         huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_ENCRYPT | huks.HuksKeyPurpose.HUKS_KEY_PURPOSE_DECRYPT
@@ -217,7 +324,7 @@ function createKeyGenerationOptions(): HuksOptionsContract {
 function createInitOptions(nonce: Uint8Array, purpose: number, tag?: Uint8Array): HuksOptionsContract {
   const properties: Array<HuksParamContract> = [
     uintParam(huks.HuksTag.HUKS_TAG_ALGORITHM, huks.HuksKeyAlg.HUKS_ALG_AES),
-    uintParam(huks.HuksTag.HUKS_TAG_KEY_SIZE, huks.HuksKeySize.HUKS_AES_KEY_SIZE_256),
+    uintParam(huks.HuksTag.HUKS_TAG_KEY_SIZE, HUKS_STANDARD_KEY_SIZE_256),
     uintParam(huks.HuksTag.HUKS_TAG_PURPOSE, purpose),
     uintParam(huks.HuksTag.HUKS_TAG_PADDING, huks.HuksKeyPadding.HUKS_PADDING_NONE),
     uintParam(huks.HuksTag.HUKS_TAG_BLOCK_MODE, huks.HuksCipherMode.HUKS_MODE_GCM),
@@ -231,14 +338,15 @@ function createInitOptions(nonce: Uint8Array, purpose: number, tag?: Uint8Array)
   };
 }
 
-function createUpdateOptions(inData: Uint8Array): HuksOptionsContract {
-  return {
-    inData: cloneBytes(inData)
-  };
-}
-
-function createFinishDecryptOptions(): HuksOptionsContract {
-  return {};
+function createFinishOptions(
+  nonce: Uint8Array,
+  purpose: number,
+  inData: Uint8Array,
+  tag?: Uint8Array
+): HuksOptionsContract {
+  const options: HuksOptionsContract = createInitOptions(nonce, purpose, tag);
+  options.inData = cloneBytes(inData);
+  return options;
 }
 
 function uintParam(tag: huks.HuksTag, value: number): HuksParamContract {
@@ -247,6 +355,25 @@ function uintParam(tag: huks.HuksTag, value: number): HuksParamContract {
 
 function bytesParam(tag: huks.HuksTag, value: Uint8Array): HuksParamContract {
   return { tag, value: cloneBytes(value) };
+}
+
+function cloneOptionalBytesMaybe(value?: Uint8Array): Uint8Array | undefined {
+  if (value === undefined) {
+    return undefined;
+  }
+  return cloneBytes(value);
+}
+
+function cloneHuksParamValue(value: boolean | number | bigint | Uint8Array): boolean | number | bigint | Uint8Array {
+  if (value instanceof Uint8Array) {
+    return cloneBytes(value);
+  }
+  return value;
+}
+
+function isKeyItemMissingError(error: Object): boolean {
+  const businessError: HuksErrorCodeCarrier = error as HuksErrorCodeCarrier;
+  return businessError.code === huks.HuksExceptionErrCode.HUKS_ERR_CODE_ITEM_NOT_EXIST;
 }
 
 function validatePayloadShape(payload: HuksEncryptedPayload): void {
@@ -276,31 +403,28 @@ class SeparatedEncryptResult {
 }
 
 function separateEncryptResult(
-  updateResult: HuksReturnResultContract,
   finishResult: HuksReturnResultContract
 ): SeparatedEncryptResult {
-  const updateBytes: Uint8Array = copyOptionalBytes(updateResult.outData);
-  const finishBytes: Uint8Array = copyOptionalBytes(finishResult.outData);
-  const merged: Uint8Array = concatenateBytes(updateBytes, finishBytes);
+  const outData: Uint8Array = copyOptionalBytes(finishResult.outData);
   const propertyTag: Uint8Array | undefined = extractTagFromProperties(finishResult.properties);
   if (propertyTag !== undefined) {
     if (propertyTag.length !== HUKS_SECRET_TAG_LENGTH) {
       throw new Error('HUKS encryption tag was malformed.');
     }
-    if (merged.length >= propertyTag.length && endsWithBytes(merged, propertyTag)) {
+    if (outData.length >= propertyTag.length && endsWithBytes(outData, propertyTag)) {
       return new SeparatedEncryptResult(
-        sliceBytes(merged, 0, merged.length - propertyTag.length),
+        sliceBytes(outData, 0, outData.length - propertyTag.length),
         propertyTag
       );
     }
-    return new SeparatedEncryptResult(merged, propertyTag);
+    return new SeparatedEncryptResult(outData, propertyTag);
   }
-  if (merged.length < HUKS_SECRET_TAG_LENGTH) {
+  if (outData.length < HUKS_SECRET_TAG_LENGTH) {
     throw new Error('HUKS encryption output was incomplete.');
   }
   return new SeparatedEncryptResult(
-    sliceBytes(merged, 0, merged.length - HUKS_SECRET_TAG_LENGTH),
-    sliceBytes(merged, merged.length - HUKS_SECRET_TAG_LENGTH, HUKS_SECRET_TAG_LENGTH)
+    sliceBytes(outData, 0, outData.length - HUKS_SECRET_TAG_LENGTH),
+    sliceBytes(outData, outData.length - HUKS_SECRET_TAG_LENGTH, HUKS_SECRET_TAG_LENGTH)
   );
 }
 
@@ -323,17 +447,6 @@ function cloneBytes(bytes: Uint8Array): Uint8Array {
     copy[index] = bytes[index];
   }
   return copy;
-}
-
-function concatenateBytes(first: Uint8Array, second: Uint8Array): Uint8Array {
-  const merged = new Uint8Array(first.length + second.length);
-  for (let index = 0; index < first.length; index += 1) {
-    merged[index] = first[index];
-  }
-  for (let index = 0; index < second.length; index += 1) {
-    merged[first.length + index] = second[index];
-  }
-  return merged;
 }
 
 function endsWithBytes(bytes: Uint8Array, suffix: Uint8Array): boolean {

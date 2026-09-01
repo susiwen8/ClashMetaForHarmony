@@ -1,12 +1,19 @@
 package runtime
 
 import (
+	"bufio"
 	"errors"
+	"io"
 	"net"
+	"net/netip"
 	"strconv"
 	"strings"
 	"sync"
 	"testing"
+	"time"
+
+	adapterinbound "github.com/metacubex/mihomo/adapter/inbound"
+	constantpkg "github.com/metacubex/mihomo/constant"
 )
 
 type recordingSink struct {
@@ -47,10 +54,49 @@ func (s *recordingLogSink) Logs() []RuntimeLog {
 	return cloned
 }
 
+type fakeTunnel struct{}
+
+func (fakeTunnel) HandleTCPConn(conn net.Conn, metadata *constantpkg.Metadata) {
+}
+
+func (fakeTunnel) HandleUDPPacket(packet constantpkg.UDPPacket, metadata *constantpkg.Metadata) {
+}
+
+func (fakeTunnel) NatTable() constantpkg.NatTable {
+	return localProxyFakeNatTable{}
+}
+
+type localProxyFakeNatTable struct{}
+
+func (localProxyFakeNatTable) GetOrCreate(key string, maker func() constantpkg.PacketSender) (constantpkg.PacketSender, bool) {
+	return nil, false
+}
+
+func (localProxyFakeNatTable) Delete(key string) {}
+
+func (localProxyFakeNatTable) GetForLocalConn(lAddr, rAddr string) *net.UDPConn {
+	return nil
+}
+
+func (localProxyFakeNatTable) AddForLocalConn(lAddr, rAddr string, conn *net.UDPConn) bool {
+	return false
+}
+
+func (localProxyFakeNatTable) RangeForLocalConn(lAddr string, f func(key string, value *net.UDPConn) bool) {
+}
+
+func (localProxyFakeNatTable) GetOrCreateLockForLocalConn(lAddr string, key string) (*sync.Cond, bool) {
+	return nil, false
+}
+
+func (localProxyFakeNatTable) DeleteForLocalConn(lAddr, key string) {}
+
+func (localProxyFakeNatTable) DeleteLockForLocalConn(lAddr, key string) {}
+
 type fakeListener struct {
-	mu      sync.Mutex
-	address string
-	closed  bool
+	mu       sync.Mutex
+	address  string
+	closed   bool
 	closeErr error
 	closeFn  func() error
 }
@@ -150,6 +196,74 @@ func assertLoopbackAddress(t *testing.T, raw string) {
 	if port == "0" || port == "" {
 		t.Fatalf("port = %q want non-zero", port)
 	}
+}
+
+func withInboundPrefixes(t *testing.T, allowed, disallowed []netip.Prefix) {
+	t.Helper()
+
+	previousAllowed := append([]netip.Prefix(nil), adapterinbound.AllowedIPs()...)
+	previousDisallowed := append([]netip.Prefix(nil), adapterinbound.DisAllowedIPs()...)
+	adapterinbound.SetAllowedIPs(append([]netip.Prefix(nil), allowed...))
+	adapterinbound.SetDisAllowedIPs(append([]netip.Prefix(nil), disallowed...))
+	t.Cleanup(func() {
+		adapterinbound.SetAllowedIPs(previousAllowed)
+		adapterinbound.SetDisAllowedIPs(previousDisallowed)
+	})
+}
+
+func newRealListenerProxy(t *testing.T) *LocalProxy {
+	t.Helper()
+
+	return NewLocalProxyWithDeps(LocalProxyDeps{
+		Prepare: func(string) error {
+			return nil
+		},
+		CloseConnections: func() error { return nil },
+		Shutdown:         func() error { return nil },
+		BaseTunnel:       fakeTunnel{},
+	})
+}
+
+func readHTTPConnectStatusLine(t *testing.T, address string) string {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout(%q): %v", address, err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	if _, err := io.WriteString(conn, "CONNECT example.com:443 HTTP/1.1\r\nHost: example.com:443\r\n\r\n"); err != nil {
+		t.Fatalf("write CONNECT request: %v", err)
+	}
+
+	statusLine, err := bufio.NewReader(conn).ReadString('\n')
+	if err != nil {
+		t.Fatalf("read CONNECT status line: %v", err)
+	}
+	return statusLine
+}
+
+func readSOCKSGreetingResponse(t *testing.T, address string) []byte {
+	t.Helper()
+
+	conn, err := net.DialTimeout("tcp", address, 2*time.Second)
+	if err != nil {
+		t.Fatalf("DialTimeout(%q): %v", address, err)
+	}
+	defer conn.Close()
+	_ = conn.SetDeadline(time.Now().Add(2 * time.Second))
+
+	if _, err := conn.Write([]byte{0x05, 0x01, 0x00}); err != nil {
+		t.Fatalf("write SOCKS greeting: %v", err)
+	}
+
+	reply := make([]byte, 2)
+	if _, err := io.ReadFull(conn, reply); err != nil {
+		t.Fatalf("read SOCKS greeting reply: %v", err)
+	}
+	return reply
 }
 
 func TestLocalProxyAllowsOnlyOneRuntimeAtATime(t *testing.T) {
@@ -553,4 +667,48 @@ func TestLocalProxyRealConstructorsBindLoopbackAndReleasePorts(t *testing.T) {
 		t.Fatalf("SOCKS address not released after Stop: %v", err)
 	}
 	_ = socksRebind.Close()
+}
+
+func TestLocalProxyDefaultHTTPListenerAcceptsLoopbackCONNECTWithoutGlobalAllowLan(t *testing.T) {
+	withInboundPrefixes(t, nil, nil)
+	proxy := newRealListenerProxy(t)
+
+	snapshot, err := proxy.Start(StartOptions{
+		ConfigPath:         "phase2-match-direct.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = proxy.Stop()
+	})
+
+	statusLine := readHTTPConnectStatusLine(t, snapshot.HTTPAddress)
+	if !strings.HasPrefix(statusLine, "HTTP/1.1 200 ") {
+		t.Fatalf("CONNECT status line = %q want 2xx success", statusLine)
+	}
+}
+
+func TestLocalProxyDefaultSOCKSListenerAcceptsLoopbackGreetingWithoutGlobalAllowLan(t *testing.T) {
+	withInboundPrefixes(t, nil, nil)
+	proxy := newRealListenerProxy(t)
+
+	snapshot, err := proxy.Start(StartOptions{
+		ConfigPath:         "phase2-match-direct.yaml",
+		HTTPListenAddress:  "127.0.0.1:0",
+		SOCKSListenAddress: "127.0.0.1:0",
+	})
+	if err != nil {
+		t.Fatalf("Start error: %v", err)
+	}
+	t.Cleanup(func() {
+		_, _ = proxy.Stop()
+	})
+
+	reply := readSOCKSGreetingResponse(t, snapshot.SOCKSAddress)
+	if reply[0] != 0x05 || reply[1] != 0x00 {
+		t.Fatalf("SOCKS greeting reply = %#v want []byte{0x05, 0x00}", reply)
+	}
 }

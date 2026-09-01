@@ -65,6 +65,37 @@ typedef struct cmfa_backend_api {
                              cmfa_error *error);
   cmfa_status (*stop)(void *context, cmfa_error *error);
   cmfa_status (*runtime_state)(void *context, cmfa_runtime_snapshot *snapshot, cmfa_error *error);
+  cmfa_status (*runtime_mode_query)(void *context, cmfa_runtime_mode *mode, cmfa_error *error);
+  cmfa_status (*runtime_mode_set)(void *context, cmfa_runtime_mode mode, cmfa_error *error);
+  cmfa_status (*proxy_groups)(void *context,
+                              const cmfa_proxy_query_context *query,
+                              uint8_t selectable_only,
+                              cmfa_json_buffer *output,
+                              cmfa_error *error);
+  cmfa_status (*proxy_group)(void *context,
+                             const cmfa_proxy_query_context *query,
+                             const char *group_name,
+                             cmfa_json_buffer *output,
+                             cmfa_error *error);
+  cmfa_status (*proxy_select)(void *context,
+                              const cmfa_proxy_query_context *query,
+                              const char *group_name,
+                              const char *member_name,
+                              cmfa_json_buffer *output,
+                              cmfa_error *error);
+  cmfa_status (*proxy_delay_start)(void *context,
+                                   const cmfa_proxy_query_context *query,
+                                   const char *group_name,
+                                   cmfa_json_buffer *output,
+                                   cmfa_error *error);
+  cmfa_status (*proxy_delay_snapshot)(void *context,
+                                      const char *job_id,
+                                      cmfa_json_buffer *output,
+                                      cmfa_error *error);
+  cmfa_status (*proxy_delay_cancel)(void *context,
+                                    const char *job_id,
+                                    cmfa_json_buffer *output,
+                                    cmfa_error *error);
   cmfa_status (*probe_https)(void *context,
                              const cmfa_probe_request *request,
                              cmfa_probe_result *result,

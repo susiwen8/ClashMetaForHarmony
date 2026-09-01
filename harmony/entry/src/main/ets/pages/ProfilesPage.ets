@@ -6,6 +6,8 @@ import { SafeErrorCard, createEmptySafeErrorState } from '../components/SafeErro
 export struct ProfilesPage {
   @Prop state: ProfilesViewState;
   @Prop compactLayout: boolean;
+  onBack: () => void = () => {
+  };
   onOpenAddSheet: () => void = () => {
   };
   onOpenProfile: (profileId: string) => void = (_profileId: string) => {
@@ -14,13 +16,24 @@ export struct ProfilesPage {
   build() {
     Scroll() {
       Column({ space: $r('app.float.space_lg') }) {
-        Row() {
+        Row({ space: $r('app.float.space_md') }) {
+          Button($r('app.string.common_back'))
+            .id('profiles.back')
+            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+            .backgroundColor($r('app.color.color_surface_card'))
+            .fontColor($r('app.color.color_text_primary'))
+            .onClick(() => {
+              this.onBack();
+            })
+
           Text($r('app.string.profiles_title'))
             .fontSize($r('app.float.type_headline'))
             .fontWeight(FontWeight.Bold)
             .fontColor($r('app.color.color_text_primary'))
-
-          Blank()
+            .layoutWeight(1)
+            .textAlign(TextAlign.Start)
+            .maxLines(1)
+            .textOverflow({ overflow: TextOverflow.Ellipsis })
 
           Button($r('app.string.profiles_add'))
             .id('profiles.add')
@@ -35,12 +48,6 @@ export struct ProfilesPage {
 
         if (this.state.error !== undefined) {
           SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
-        }
-
-        if (hasLockedRows(this.state)) {
-          Text($r('app.string.profiles_locked_message'))
-            .fontSize($r('app.float.type_caption'))
-            .fontColor($r('app.color.color_status_warning'))
         }
 
         if (this.state.profiles.length === 0) {
@@ -78,13 +85,4 @@ export struct ProfilesPage {
     .width('100%')
     .height('100%')
   }
-}
-
-function hasLockedRows(state: ProfilesViewState): boolean {
-  for (let index: number = 0; index < state.profiles.length; index += 1) {
-    if (state.profiles[index].actionsLockedByRuntime) {
-      return true;
-    }
-  }
-  return false;
 }

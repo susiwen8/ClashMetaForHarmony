@@ -85,6 +85,8 @@ function resolveErrorMessageResource(resourceName: string) {
       return $r('app.string.error_runtime_start');
     case 'error.runtime.stop':
       return $r('app.string.error_runtime_stop');
+    case 'error.runtime.mode':
+      return $r('app.string.error_runtime_mode');
     case 'error.vpn.permission_denied':
       return $r('app.string.error_vpn_permission_denied');
     case 'error.vpn.already_active':
@@ -101,10 +103,6 @@ function resolveErrorMessageResource(resourceName: string) {
       return $r('app.string.error_vpn_start_failed');
     case 'error.vpn.recovering':
       return $r('app.string.error_vpn_recovering');
-    case 'error.vpn.requires_local_stop':
-      return $r('app.string.error_vpn_requires_local_stop');
-    case 'error.local.blocked_by_vpn':
-      return $r('app.string.error_local_blocked_by_vpn');
     case 'error.persistence':
     default:
       return $r('app.string.error_persistence');

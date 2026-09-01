@@ -1,12 +1,12 @@
 import { spawn as spawnChild } from 'node:child_process';
 import crypto from 'node:crypto';
 import fs from 'node:fs/promises';
-import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 
 import { inspectNativeLibrary } from './inspect-native-lib.mjs';
 import { normalizeNodeVersion } from '../../tools/lib/toolchain.mjs';
+import { prepareGeodata } from '../../tools/prepare-geodata.mjs';
 
 export const BUILD_SCHEMA_VERSION = '1.0.0';
 export const PHASE_NUMBER = 0;
@@ -18,12 +18,19 @@ const MODULE_BUILD_ARGS = ['--mode', 'module', '-p', 'module=entry@default', '-p
 const PROJECT_BUILD_ARGS = ['--mode', 'project', '-p', 'product=default', '-p', 'buildMode=debug', 'assembleApp'];
 const EXECUTABLE_BITS = 0o111;
 const MODULE_DEBUG_OUTPUT_DIRECTORY = ['entry', 'build', 'default', 'outputs', 'default'];
+const SAFE_PRE_BUILD_CLEAN_PATHS = [
+  MODULE_DEBUG_OUTPUT_DIRECTORY,
+  ['entry', 'build', 'default', 'cache'],
+  ['entry', '.cxx', 'default', 'default', 'debug', 'arm64-v8a'],
+  ['entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a']
+];
 const NATIVE_BUILD_OUTPUT_DIRECTORIES = [
   ['entry', '.cxx', 'default', 'default', 'debug', 'arm64-v8a'],
   ['entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a']
 ];
 const RAW_CORE_RELATIVE_PATH = ['artifacts', 'libcmfa_mihomo.so'];
-const PACKAGED_CORE_STAGE_RELATIVE_PATH = ['entry', 'src', 'main', 'libs', 'arm64-v8a', 'libcmfa_mihomo.so'];
+const GEOIP_RAWFILE_REPORT_PATH = 'harmony/entry/src/main/resources/rawfile/geoip.metadb';
+const PREPARE_GEODATA_COMMAND = ['prepare-geodata'];
 const DEFAULT_COMMAND_TIMEOUT_MS = 10 * 60 * 1000;
 const HOME_DIRECTORY = process.env.HOME ?? process.env.USERPROFILE ?? null;
 const FILE_URL_PATTERN = /\bfile:\/\/[^\s"'<>]+/giu;
@@ -182,6 +189,12 @@ function createBuildEvidence({ repoRoot, harmonyRoot, outputPath, startedAt }) {
       executable: false
     },
     phase2SelfTest: createPhase2SelfTestEvidence(false),
+    geodata: {
+      result: 'not-run',
+      path: GEOIP_RAWFILE_REPORT_PATH,
+      sha256: null,
+      sizeBytes: null
+    },
     commands: [],
     hap: {
       path: null,
@@ -412,44 +425,6 @@ async function sha256File({ fsApi, filePath }) {
   };
 }
 
-async function stagePackagedCore({ harmonyRoot, fsApi }) {
-  const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
-  const stagedCorePath = path.join(harmonyRoot, ...PACKAGED_CORE_STAGE_RELATIVE_PATH);
-  const stageDirectories = [
-    path.join(harmonyRoot, 'entry', 'src', 'main', 'libs', 'arm64-v8a'),
-    path.join(harmonyRoot, 'entry', 'src', 'main', 'libs')
-  ];
-
-  await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
-
-  try {
-    await fsApi.access(rawCorePath);
-  } catch {
-    return {
-      stagedCorePath,
-      cleanup: async () => {
-        await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
-        for (const directoryPath of stageDirectories) {
-          await fsApi.rmdir(directoryPath).catch(() => {});
-        }
-      }
-    };
-  }
-
-  await fsApi.mkdir(path.dirname(stagedCorePath), { recursive: true });
-  await fsApi.copyFile(rawCorePath, stagedCorePath);
-
-  return {
-    stagedCorePath,
-    cleanup: async () => {
-      await fsApi.rm(stagedCorePath, { force: true }).catch(() => {});
-      for (const directoryPath of stageDirectories) {
-        await fsApi.rmdir(directoryPath).catch(() => {});
-      }
-    }
-  };
-}
-
 async function validateRawCoreForPackaging({
   harmonyRoot,
   repoRoot,
@@ -495,60 +470,6 @@ async function validateRawCoreForPackaging({
   }
 }
 
-async function injectCoreIntoHap({
-  harmonyRoot,
-  hapPath,
-  fsApi,
-  spawnImpl,
-  timeoutMs,
-  env
-}) {
-  const rawCorePath = path.join(harmonyRoot, ...RAW_CORE_RELATIVE_PATH);
-  try {
-    await fsApi.access(rawCorePath);
-  } catch {
-    return;
-  }
-  const tempRoot = await fsApi.mkdtemp(path.join(os.tmpdir(), 'cmfa-hap-core-'));
-  const archiveRelativePath = path.join('libs', 'arm64-v8a', 'libcmfa_mihomo.so');
-  const stagedArchivePath = path.join(tempRoot, archiveRelativePath);
-
-  try {
-    await fsApi.mkdir(path.dirname(stagedArchivePath), { recursive: true });
-    await fsApi.copyFile(rawCorePath, stagedArchivePath);
-
-    const deleteResult = await runCommand({
-      command: '/usr/bin/zip',
-      args: ['-q', '-d', hapPath, archiveRelativePath.split(path.sep).join('/')],
-      cwd: tempRoot,
-      env,
-      spawnImpl,
-      timeoutMs
-    });
-    if (deleteResult.error || ![0, 12].includes(deleteResult.exitCode ?? -1)) {
-      throw Object.assign(new Error(deleteResult.stderr || deleteResult.stdout || 'Failed to remove stale core entry from HAP.'), {
-        code: deleteResult.error?.code ?? 'HAP_PATCH_FAILED'
-      });
-    }
-
-    const addResult = await runCommand({
-      command: '/usr/bin/zip',
-      args: ['-q', hapPath, archiveRelativePath.split(path.sep).join('/')],
-      cwd: tempRoot,
-      env,
-      spawnImpl,
-      timeoutMs
-    });
-    if (addResult.error || addResult.exitCode !== 0) {
-      throw Object.assign(new Error(addResult.stderr || addResult.stdout || 'Failed to add the real core to the HAP archive.'), {
-        code: addResult.error?.code ?? 'HAP_PATCH_FAILED'
-      });
-    }
-  } finally {
-    await fsApi.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
-  }
-}
-
 function classifyBuildFailure(commandResult, stage) {
   if (commandResult.timedOut) {
     return createFailure('BUILD_TIMEOUT', `The ${stage} hvigor build exceeded the timeout and was terminated.`, { stage });
@@ -589,12 +510,26 @@ function finalizeBuildEvidence(evidence) {
   return evidence;
 }
 
+async function cleanupBuildOutputs(harmonyRoot, fsApi, cleanPaths = SAFE_PRE_BUILD_CLEAN_PATHS) {
+  for (const segments of cleanPaths) {
+    const absolutePath = path.resolve(harmonyRoot, ...segments);
+    if (!absolutePath.startsWith(`${path.resolve(harmonyRoot)}${path.sep}`)) {
+      throw Object.assign(new Error(`Refusing to clean outside harmony root: ${absolutePath}`), { code: 'PATH_OUTSIDE_REPO' });
+    }
+    await fsApi.rm(absolutePath, {
+      recursive: true,
+      force: true
+    });
+  }
+}
+
 export async function buildHap({
   harmonyRoot = HARMONY_ROOT,
   outputPath = DEFAULT_EVIDENCE_PATH,
   fsApi = fs,
   spawnImpl = spawnChild,
   inspectNativeLibraryImpl = inspectNativeLibrary,
+  prepareGeodataImpl = prepareGeodata,
   commandTimeoutMs = DEFAULT_COMMAND_TIMEOUT_MS,
   now = () => new Date(),
   env = process.env,
@@ -612,8 +547,6 @@ export async function buildHap({
     ...evidence.toolchain,
     ...await readToolchainVersions({ fsApi, harmonyRoot })
   };
-  let stagedCore = null;
-
   try {
     const wrapperPath = await findHvigorWrapper({ fsApi, harmonyRoot });
     if (!wrapperPath) {
@@ -635,18 +568,43 @@ export async function buildHap({
       return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);
     }
 
-    stagedCore = await stagePackagedCore({ harmonyRoot, fsApi });
-
-    await fsApi.rm(path.join(harmonyRoot, ...MODULE_DEBUG_OUTPUT_DIRECTORY), {
-      recursive: true,
-      force: true
-    });
-    for (const directorySegments of NATIVE_BUILD_OUTPUT_DIRECTORIES) {
-      await fsApi.rm(path.join(harmonyRoot, ...directorySegments), {
-        recursive: true,
-        force: true
+    try {
+      const preparedGeodata = await prepareGeodataImpl({
+        harmonyRoot,
+        fsApi
       });
+      evidence.geodata = {
+        result: preparedGeodata.result,
+        path: preparedGeodata.asset.path,
+        sha256: preparedGeodata.asset.sha256,
+        sizeBytes: preparedGeodata.asset.sizeBytes
+      };
+    } catch (error) {
+      evidence.geodata = {
+        result: 'fail',
+        path: GEOIP_RAWFILE_REPORT_PATH,
+        sha256: null,
+        sizeBytes: null
+      };
+      evidence.commands.push({
+        stage: 'prepare-geodata',
+        result: 'fail',
+        command: PREPARE_GEODATA_COMMAND,
+        cwd: normalizePathForReport(repoRoot, harmonyRoot),
+        exitCode: 1,
+        signal: null,
+        stdout: '',
+        stderr: ''
+      });
+      pushFailure(evidence.failures, createFailure(
+        'GEODATA_PREPARE_FAILED',
+        sanitizeText(error?.message ?? 'Failed to prepare digest-pinned geoip.metadb.', replacements),
+        { stage: 'prepare-geodata' }
+      ));
+      return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);
     }
+
+    await cleanupBuildOutputs(harmonyRoot, fsApi);
 
     for (const [stage, args] of [
       ['module', MODULE_BUILD_ARGS],
@@ -695,14 +653,6 @@ export async function buildHap({
 
     const candidates = await findDebugHapCandidates({ harmonyRoot, fsApi });
     const selectedHap = selectDebugHapCandidate(candidates);
-    await injectCoreIntoHap({
-      harmonyRoot,
-      hapPath: selectedHap,
-      fsApi,
-      spawnImpl,
-      timeoutMs: commandTimeoutMs,
-      env: laneEnv
-    });
     const digest = await sha256File({ fsApi, filePath: selectedHap });
 
     evidence.hap = {
@@ -732,7 +682,6 @@ export async function buildHap({
     }
   } finally {
     evidence.timestamps.completedAt = isoTimestamp(now());
-    await stagedCore?.cleanup();
   }
 
   return sanitizeForPersistence(finalizeBuildEvidence(evidence), replacements);

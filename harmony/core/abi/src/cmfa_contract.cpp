@@ -163,6 +163,14 @@ cmfa_status fail(cmfa_error *error, cmfa_status status, const char *message) {
   return status;
 }
 
+cmfa_status fail_code_only(cmfa_error *error, cmfa_status status) {
+  if (error != nullptr) {
+    error->code = status;
+    error->length = 0;
+  }
+  return status;
+}
+
 void clear_error(cmfa_error *error) { write_error_with_length(error, CMFA_OK, "", 0); }
 
 cmfa_status finalize_backend_error(cmfa_error *error, cmfa_status status, const char *fallback_message) {
@@ -187,12 +195,35 @@ bool is_valid_runtime_state(cmfa_runtime_state_value state) {
          state == CMFA_RUNTIME_STOPPING || state == CMFA_RUNTIME_ERROR;
 }
 
+bool is_valid_runtime_mode(cmfa_runtime_mode mode) {
+  return mode == CMFA_MODE_RULE || mode == CMFA_MODE_GLOBAL || mode == CMFA_MODE_DIRECT;
+}
+
+bool is_valid_public_status(cmfa_status status) {
+  switch (status) {
+    case CMFA_OK:
+    case CMFA_INVALID_ARGUMENT:
+    case CMFA_INVALID_UTF8:
+    case CMFA_OUT_OF_RANGE:
+    case CMFA_BUFFER_TOO_SMALL:
+    case CMFA_NOT_INITIALIZED:
+    case CMFA_ALREADY_INITIALIZED:
+    case CMFA_INVALID_STATE:
+    case CMFA_BUSY:
+    case CMFA_CORE_UNAVAILABLE:
+    case CMFA_BACKEND_ERROR:
+    case CMFA_SOCKET_PROTECT_FAILED:
+      return true;
+  }
+  return false;
+}
+
 bool is_valid_utf8_span(const char *text, size_t length) {
   if (text == nullptr) {
     return false;
   }
 
-  const unsigned char *bytes = reinterpret_cast<const unsigned char *>(text);
+  const auto *bytes = reinterpret_cast<const unsigned char *>(text);
   size_t index = 0;
   while (index < length) {
     const unsigned char lead = bytes[index];
@@ -242,6 +273,68 @@ bool is_valid_utf8_span(const char *text, size_t length) {
   return true;
 }
 
+bool is_disallowed_control_code_point(uint32_t code_point) {
+  return code_point <= 0x1F || (code_point >= 0x7F && code_point <= 0x9F);
+}
+
+bool is_valid_utf8_span_without_controls(const char *text, size_t length) {
+  if (text == nullptr) {
+    return false;
+  }
+
+  const auto *bytes = reinterpret_cast<const unsigned char *>(text);
+  size_t index = 0;
+  while (index < length) {
+    const unsigned char lead = bytes[index];
+    if (lead <= 0x7F) {
+      if (is_disallowed_control_code_point(lead)) {
+        return false;
+      }
+      index += 1;
+      continue;
+    }
+
+    size_t needed = 0;
+    uint32_t code_point = 0;
+    uint32_t min_code_point = 0;
+    if (lead >= 0xC2 && lead <= 0xDF) {
+      needed = 2;
+      code_point = lead & 0x1F;
+      min_code_point = 0x80;
+    } else if (lead >= 0xE0 && lead <= 0xEF) {
+      needed = 3;
+      code_point = lead & 0x0F;
+      min_code_point = 0x800;
+    } else if (lead >= 0xF0 && lead <= 0xF4) {
+      needed = 4;
+      code_point = lead & 0x07;
+      min_code_point = 0x10000;
+    } else {
+      return false;
+    }
+
+    for (size_t offset = 1; offset < needed; ++offset) {
+      if (index + offset >= length) {
+        return false;
+      }
+      const unsigned char continuation = bytes[index + offset];
+      if ((continuation & 0xC0) != 0x80) {
+        return false;
+      }
+      code_point = (code_point << 6U) | static_cast<uint32_t>(continuation & 0x3F);
+    }
+
+    if (code_point < min_code_point || code_point > 0x10FFFF ||
+        (code_point >= 0xD800 && code_point <= 0xDFFF) || is_disallowed_control_code_point(code_point)) {
+      return false;
+    }
+
+    index += needed;
+  }
+
+  return true;
+}
+
 bool is_ascii_span(const char *text, size_t length) {
   if (text == nullptr) {
     return false;
@@ -253,6 +346,19 @@ bool is_ascii_span(const char *text, size_t length) {
     }
   }
   return true;
+}
+
+bool nonzero_ranges_overlap(const void *first, size_t first_length, const void *second, size_t second_length) {
+  if (first == nullptr || second == nullptr || first_length == 0 || second_length == 0) {
+    return false;
+  }
+
+  const uintptr_t first_address = reinterpret_cast<uintptr_t>(first);
+  const uintptr_t second_address = reinterpret_cast<uintptr_t>(second);
+  if (first_address <= second_address) {
+    return (second_address - first_address) < first_length;
+  }
+  return (first_address - second_address) < second_length;
 }
 
 bool is_valid_tun_state(cmfa_tun_state_value state) {
@@ -309,6 +415,10 @@ void zero_tun_trace(cmfa_tun_trace *trace) {
   zero_text_buffer(trace->destination_address);
   zero_text_buffer(trace->hashed_tuple);
   zero_text_buffer(trace->correlation_hash);
+  zero_text_buffer(trace->destination_hash);
+  zero_text_buffer(trace->outbound_terminal_hash);
+  zero_text_buffer(trace->outbound_chain_hash);
+  trace->outbound_chain_length = 0;
 }
 
 void zero_tun_trace_collection(cmfa_tun_trace_collection *traces) {
@@ -575,6 +685,50 @@ cmfa_status validate_tun_trace_value(const cmfa_tun_trace &trace, cmfa_error *er
   if (status != CMFA_OK) {
     return status;
   }
+  status = validate_tun_hash_text(trace.destination_hash,
+                                  sizeof(trace.destination_hash),
+                                  true,
+                                  "backend tun trace destination_hash must be NUL terminated",
+                                  "backend tun trace destination_hash must be empty or exactly 64 lowercase hex characters",
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  const bool has_outbound_terminal = trace.outbound_terminal_hash[0] != '\0';
+  const bool has_outbound_chain = trace.outbound_chain_hash[0] != '\0';
+  const bool has_outbound_length = trace.outbound_chain_length != 0;
+  if (!has_outbound_terminal && !has_outbound_chain && !has_outbound_length) {
+    clear_error(error);
+    return CMFA_OK;
+  }
+  if (!(has_outbound_terminal && has_outbound_chain && has_outbound_length)) {
+    return fail(error,
+                CMFA_BACKEND_ERROR,
+                "backend tun trace outbound proof must provide terminal hash, chain hash, and positive chain length together");
+  }
+  if (trace.outbound_chain_length > 16) {
+    return fail(error,
+                CMFA_BACKEND_ERROR,
+                "backend tun trace outbound_chain_length exceeds the bounded live tracker chain limit");
+  }
+  status = validate_tun_hash_text(trace.outbound_terminal_hash,
+                                  sizeof(trace.outbound_terminal_hash),
+                                  false,
+                                  "backend tun trace outbound_terminal_hash must be NUL terminated",
+                                  "backend tun trace outbound_terminal_hash must be exactly 64 lowercase hex characters",
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status = validate_tun_hash_text(trace.outbound_chain_hash,
+                                  sizeof(trace.outbound_chain_hash),
+                                  false,
+                                  "backend tun trace outbound_chain_hash must be NUL terminated",
+                                  "backend tun trace outbound_chain_hash must be exactly 64 lowercase hex characters",
+                                  error);
+  if (status != CMFA_OK) {
+    return status;
+  }
   clear_error(error);
   return CMFA_OK;
 }
@@ -609,6 +763,213 @@ cmfa_status validate_tun_trace_ring_value(const cmfa_tun_trace_ring &traces, cmf
       return status;
     }
   }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+void initialize_json_buffer(cmfa_json_buffer *output) {
+  if (output == nullptr) {
+    return;
+  }
+  output->length = 0;
+  if (output->data != nullptr && output->capacity > 0) {
+    output->data[0] = '\0';
+  }
+}
+
+cmfa_status validate_proxy_hash_text(const char *text, bool allow_empty, const char *message, cmfa_error *error) {
+  size_t length = 0;
+  if (!bounded_c_string_length(text, CMFA_MAX_PROXY_HASH_BYTES, &length)) {
+    return fail(error, CMFA_INVALID_ARGUMENT, message);
+  }
+  if (length == 0) {
+    if (allow_empty) {
+      clear_error(error);
+      return CMFA_OK;
+    }
+    return fail(error, CMFA_INVALID_ARGUMENT, message);
+  }
+  if (length != 64) {
+    return fail(error, CMFA_INVALID_ARGUMENT, message);
+  }
+  for (size_t index = 0; index < length; ++index) {
+    if (!is_lowercase_hex_char(text[index])) {
+      return fail(error, CMFA_INVALID_ARGUMENT, message);
+    }
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_proxy_query_context(const cmfa_proxy_query_context *context, cmfa_error *error) {
+  if (context == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query context must not be null");
+  }
+  if (!has_required_size(context->struct_size, sizeof(cmfa_proxy_query_context))) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy query context struct_size is too small");
+  }
+
+  cmfa_status status =
+      validate_proxy_hash_text(context->profile_hash, false, "proxy profile_hash must be exactly 64 lowercase hex characters", error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  status =
+      validate_proxy_hash_text(context->revision_hash, false, "proxy revision_hash must be exactly 64 lowercase hex characters", error);
+  if (status != CMFA_OK) {
+    return status;
+  }
+  if (context->session_hash[0] != '\0') {
+    status =
+        validate_proxy_hash_text(context->session_hash, false, "proxy session_hash must be empty or exactly 64 lowercase hex characters", error);
+    if (status != CMFA_OK) {
+      return status;
+    }
+  } else {
+    for (size_t index = 1; index < sizeof(context->session_hash); ++index) {
+      if (context->session_hash[index] != '\0') {
+        return fail(error,
+                    CMFA_INVALID_ARGUMENT,
+                    "proxy session_hash must be canonical empty or exactly 64 lowercase hex characters");
+      }
+    }
+  }
+  if (context->generation == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy generation must be non-zero");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_proxy_name_argument(const char *name, const char *field_name, cmfa_error *error) {
+  size_t length = 0;
+  if (name == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, field_name);
+  }
+  if (!bounded_c_string_length(name, CMFA_MAX_PROXY_NAME_UTF8_BYTES + 1, &length)) {
+    return fail(error, CMFA_OUT_OF_RANGE, field_name);
+  }
+  if (length == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, field_name);
+  }
+  if (!is_valid_utf8_span_without_controls(name, length)) {
+    return fail(error, CMFA_INVALID_UTF8, field_name);
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_proxy_delay_job_id(const char *job_id, cmfa_error *error) {
+  size_t length = 0;
+  if (job_id == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job_id must be exactly 32 lowercase hex characters");
+  }
+  if (!bounded_c_string_length(job_id, CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES, &length)) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job_id must be exactly 32 lowercase hex characters");
+  }
+  if (length != (CMFA_MAX_PROXY_DELAY_JOB_ID_BYTES - 1U)) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job_id must be exactly 32 lowercase hex characters");
+  }
+  for (size_t index = 0; index < length; ++index) {
+    if (!is_lowercase_hex_char(job_id[index])) {
+      return fail(error, CMFA_INVALID_ARGUMENT, "proxy delay job_id must be exactly 32 lowercase hex characters");
+    }
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_proxy_output(cmfa_json_buffer *output, cmfa_error *error) {
+  if (output == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy output buffer must not be null");
+  }
+  initialize_json_buffer(output);
+  if (output->data == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy output buffer data must not be null");
+  }
+  if (output->capacity == 0) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy output buffer capacity must be greater than zero");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+cmfa_status validate_proxy_output_error_alias(cmfa_json_buffer *output, cmfa_error *error) {
+  if (output == nullptr) {
+    return CMFA_OK;
+  }
+  if (!nonzero_ranges_overlap(output->data,
+                              output->capacity,
+                              error != nullptr ? error->message : nullptr,
+                              error != nullptr ? error->capacity : 0)) {
+    return CMFA_OK;
+  }
+
+  initialize_json_buffer(output);
+  return fail_code_only(error, CMFA_INVALID_ARGUMENT);
+}
+
+bool json_buffer_canaries_intact(const unsigned char *storage, size_t guard_bytes, size_t working_capacity) {
+  if (storage == nullptr) {
+    return false;
+  }
+  for (size_t index = 0; index < guard_bytes; ++index) {
+    if (storage[index] != 0xA5U || storage[guard_bytes + working_capacity + index] != 0xA5U) {
+      return false;
+    }
+  }
+  return true;
+}
+
+cmfa_status validate_backend_proxy_status(cmfa_status status, cmfa_error *error, const char *message) {
+  if (is_valid_public_status(status)) {
+    return status;
+  }
+  return fail(error, CMFA_BACKEND_ERROR, message);
+}
+
+cmfa_status finalize_proxy_json_response(cmfa_json_buffer *public_output,
+                                         cmfa_json_buffer *working_output,
+                                         const unsigned char *storage,
+                                         size_t guard_bytes,
+                                         cmfa_error *error) {
+  if (public_output == nullptr || working_output == nullptr || storage == nullptr) {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "proxy response validation failed");
+  }
+  if (!json_buffer_canaries_intact(storage, guard_bytes, working_output->capacity)) {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy output overran its working buffer");
+  }
+  if (working_output->length > CMFA_MAX_PROXY_JSON_BYTES) {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy response exceeds CMFA_MAX_PROXY_JSON_BYTES");
+  }
+  if (working_output->length >= working_output->capacity) {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy output must be NUL terminated");
+  }
+  if (working_output->data[working_output->length] != '\0') {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy output must be NUL terminated");
+  }
+  if (!is_valid_utf8_span(working_output->data, working_output->length)) {
+    initialize_json_buffer(public_output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy output must be valid UTF-8");
+  }
+  if (public_output->capacity <= working_output->length) {
+    public_output->length = working_output->length;
+    if (public_output->data != nullptr) {
+      public_output->data[0] = '\0';
+    }
+    clear_error(error);
+    return CMFA_BUFFER_TOO_SMALL;
+  }
+  if (working_output->length > 0) {
+    std::memcpy(public_output->data, working_output->data, working_output->length);
+  }
+  public_output->data[working_output->length] = '\0';
+  public_output->length = working_output->length;
   clear_error(error);
   return CMFA_OK;
 }
@@ -914,7 +1275,11 @@ cmfa_status validate_backend_api_complete(const cmfa_backend_api *backend, cmfa_
   }
   if (backend->attach_host == nullptr || backend->core_version == nullptr || backend->validate_config == nullptr ||
       backend->load_config == nullptr || backend->start_local == nullptr || backend->stop == nullptr ||
-      backend->runtime_state == nullptr || backend->probe_https == nullptr || backend->shutdown == nullptr) {
+      backend->runtime_state == nullptr || backend->runtime_mode_query == nullptr ||
+      backend->runtime_mode_set == nullptr || backend->proxy_groups == nullptr || backend->proxy_group == nullptr ||
+      backend->proxy_select == nullptr || backend->proxy_delay_start == nullptr ||
+      backend->proxy_delay_snapshot == nullptr || backend->proxy_delay_cancel == nullptr ||
+      backend->probe_https == nullptr || backend->shutdown == nullptr) {
     return fail(error, CMFA_INVALID_ARGUMENT, "backend lifecycle hooks must all be present");
   }
   clear_error(error);
@@ -1603,6 +1968,313 @@ extern "C" cmfa_status cmfa_runtime_state(cmfa_runtime_snapshot *snapshot, cmfa_
   }
   clear_error(error);
   return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_runtime_mode_query(cmfa_runtime_mode *mode, cmfa_error *error) {
+  if (mode == nullptr) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "runtime mode output must not be null");
+  }
+  *mode = CMFA_MODE_RULE;
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.runtime_mode_query(backend_copy.context, mode, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    *mode = CMFA_MODE_RULE;
+    return finalize_backend_error(error, status, "backend runtime_mode_query failed");
+  }
+  if (!is_valid_runtime_mode(*mode)) {
+    *mode = CMFA_MODE_RULE;
+    return finalize_backend_error(error, CMFA_BACKEND_ERROR, "backend runtime mode output is invalid");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_runtime_mode_set(cmfa_runtime_mode mode, cmfa_error *error) {
+  if (!is_valid_runtime_mode(mode)) {
+    return fail(error, CMFA_INVALID_ARGUMENT, "runtime mode is invalid");
+  }
+
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    return borrow_status;
+  }
+
+  g_backend_call_depth += 1;
+  const cmfa_status status = backend_copy.runtime_mode_set(backend_copy.context, mode, error);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+  if (status != CMFA_OK) {
+    return finalize_backend_error(error, status, "backend runtime_mode_set failed");
+  }
+  clear_error(error);
+  return CMFA_OK;
+}
+
+template <typename InvokeFn>
+cmfa_status execute_proxy_backend_call(cmfa_json_buffer *output,
+                                       cmfa_error *error,
+                                       const char *invalid_status_message,
+                                       const char *backend_failure_message,
+                                       InvokeFn invoke) {
+  cmfa_backend_api backend_copy{};
+  const cmfa_status borrow_status = begin_backend_call(&backend_copy, error);
+  if (borrow_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return borrow_status;
+  }
+
+  const size_t working_capacity = output->capacity < (CMFA_MAX_PROXY_JSON_BYTES + 1U) ? output->capacity
+                                                                                       : (CMFA_MAX_PROXY_JSON_BYTES + 1U);
+  const size_t guard_bytes = 16;
+  const size_t total_bytes = guard_bytes + working_capacity + guard_bytes;
+  auto *storage = static_cast<unsigned char *>(std::malloc(total_bytes));
+  if (storage == nullptr) {
+    end_backend_call();
+    initialize_json_buffer(output);
+    return fail(error, CMFA_BACKEND_ERROR, "failed to allocate proxy working buffer");
+  }
+  std::memset(storage, 0xA5, total_bytes);
+
+  cmfa_json_buffer working_output{};
+  working_output.data = reinterpret_cast<char *>(storage + guard_bytes);
+  working_output.capacity = working_capacity;
+  working_output.length = 0;
+  working_output.data[0] = '\0';
+
+  g_backend_call_depth += 1;
+  const cmfa_status raw_status = invoke(backend_copy, &working_output);
+  g_backend_call_depth -= 1;
+  end_backend_call();
+
+  if (!json_buffer_canaries_intact(storage, guard_bytes, working_capacity)) {
+    std::free(storage);
+    initialize_json_buffer(output);
+    return fail(error, CMFA_BACKEND_ERROR, "backend proxy output overran its working buffer");
+  }
+
+  const cmfa_status status = validate_backend_proxy_status(raw_status, error, invalid_status_message);
+  if (status == CMFA_BUFFER_TOO_SMALL) {
+    if (working_output.length > CMFA_MAX_PROXY_JSON_BYTES) {
+      std::free(storage);
+      initialize_json_buffer(output);
+      return fail(error, CMFA_BACKEND_ERROR, "backend proxy response exceeds CMFA_MAX_PROXY_JSON_BYTES");
+    }
+    output->length = working_output.length;
+    output->data[0] = '\0';
+    clear_error(error);
+    std::free(storage);
+    return CMFA_BUFFER_TOO_SMALL;
+  }
+  if (status != CMFA_OK) {
+    std::free(storage);
+    initialize_json_buffer(output);
+    return finalize_backend_error(error, status, backend_failure_message);
+  }
+
+  const cmfa_status finalize_status = finalize_proxy_json_response(output, &working_output, storage, guard_bytes, error);
+  std::free(storage);
+  return finalize_status;
+}
+
+extern "C" cmfa_status cmfa_proxy_groups(const cmfa_proxy_query_context *context,
+                                         uint8_t selectable_only,
+                                         cmfa_json_buffer *output,
+                                         cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status context_status = validate_proxy_query_context(context, error);
+  if (context_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return context_status;
+  }
+  if (selectable_only > 1U) {
+    initialize_json_buffer(output);
+    return fail(error, CMFA_INVALID_ARGUMENT, "proxy selectable_only must be 0 or 1");
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_groups returned an invalid status",
+                                    "backend proxy_groups failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_groups(
+                                          backend_copy.context, context, selectable_only, working_output, error);
+                                    });
+}
+
+extern "C" cmfa_status cmfa_proxy_group(const cmfa_proxy_query_context *context,
+                                        const char *group_name,
+                                        cmfa_json_buffer *output,
+                                        cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status context_status = validate_proxy_query_context(context, error);
+  if (context_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return context_status;
+  }
+  const cmfa_status group_status =
+      validate_proxy_name_argument(group_name, "proxy group_name must be non-empty UTF-8 without control characters", error);
+  if (group_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return group_status;
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_group returned an invalid status",
+                                    "backend proxy_group failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_group(
+                                          backend_copy.context, context, group_name, working_output, error);
+                                    });
+}
+
+extern "C" cmfa_status cmfa_proxy_select(const cmfa_proxy_query_context *context,
+                                         const char *group_name,
+                                         const char *member_name,
+                                         cmfa_json_buffer *output,
+                                         cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status context_status = validate_proxy_query_context(context, error);
+  if (context_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return context_status;
+  }
+  const cmfa_status group_status =
+      validate_proxy_name_argument(group_name, "proxy group_name must be non-empty UTF-8 without control characters", error);
+  if (group_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return group_status;
+  }
+  const cmfa_status member_status =
+      validate_proxy_name_argument(member_name, "proxy member_name must be non-empty UTF-8 without control characters", error);
+  if (member_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return member_status;
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_select returned an invalid status",
+                                    "backend proxy_select failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_select(
+                                          backend_copy.context, context, group_name, member_name, working_output, error);
+                                    });
+}
+
+extern "C" cmfa_status cmfa_proxy_delay_start(const cmfa_proxy_query_context *context,
+                                              const char *group_name,
+                                              cmfa_json_buffer *output,
+                                              cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status context_status = validate_proxy_query_context(context, error);
+  if (context_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return context_status;
+  }
+  const cmfa_status group_status =
+      validate_proxy_name_argument(group_name, "proxy group_name must be non-empty UTF-8 without control characters", error);
+  if (group_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return group_status;
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_delay_start returned an invalid status",
+                                    "backend proxy_delay_start failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_delay_start(
+                                          backend_copy.context, context, group_name, working_output, error);
+                                    });
+}
+
+extern "C" cmfa_status cmfa_proxy_delay_snapshot(const char *job_id, cmfa_json_buffer *output, cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status job_status = validate_proxy_delay_job_id(job_id, error);
+  if (job_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return job_status;
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_delay_snapshot returned an invalid status",
+                                    "backend proxy_delay_snapshot failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_delay_snapshot(
+                                          backend_copy.context, job_id, working_output, error);
+                                    });
+}
+
+extern "C" cmfa_status cmfa_proxy_delay_cancel(const char *job_id, cmfa_json_buffer *output, cmfa_error *error) {
+  const cmfa_status alias_status = validate_proxy_output_error_alias(output, error);
+  if (alias_status != CMFA_OK) {
+    return alias_status;
+  }
+  const cmfa_status output_status = validate_proxy_output(output, error);
+  if (output_status != CMFA_OK) {
+    return output_status;
+  }
+  const cmfa_status job_status = validate_proxy_delay_job_id(job_id, error);
+  if (job_status != CMFA_OK) {
+    initialize_json_buffer(output);
+    return job_status;
+  }
+
+  return execute_proxy_backend_call(output,
+                                    error,
+                                    "backend proxy_delay_cancel returned an invalid status",
+                                    "backend proxy_delay_cancel failed",
+                                    [&](const cmfa_backend_api &backend_copy, cmfa_json_buffer *working_output) {
+                                      return backend_copy.proxy_delay_cancel(
+                                          backend_copy.context, job_id, working_output, error);
+                                    });
 }
 
 extern "C" cmfa_status cmfa_tun_start(const cmfa_tun_options *options,

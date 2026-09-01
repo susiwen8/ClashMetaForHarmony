@@ -7,7 +7,6 @@ import {
   type VpnPlatformSessionPort
 } from '@cmfa/shared';
 import {
-  PlatformVpnConfigRecord,
   PlatformVpnLinkAddressRecord,
   PlatformVpnNetAddressRecord,
   PlatformVpnRouteInfoRecord
@@ -21,7 +20,6 @@ import type {
   VpnConnectionApi
 } from './VpnConnectionApi';
 
-const API20: number = 20;
 const API22: number = 22;
 const IPV4_FAMILY: number = 1;
 const IPV6_FAMILY: number = 2;
@@ -78,7 +76,7 @@ class LiveHandleRecord implements LiveHandle {
 
 class PreparedOwnerRecord implements PreparedOwner {
   readonly sessionId: string;
-  readonly connection: PlatformVpnConnection;
+  connection: PlatformVpnConnection;
   processProtected: boolean = false;
   createInFlight: boolean = false;
 
@@ -150,7 +148,7 @@ function createRoute(value: string): PlatformVpnRouteInfo {
   );
 }
 
-function createPlatformVpnConfig(vpnId: string): PlatformVpnConfig {
+function createPlatformVpnConfig(): PlatformVpnConfig {
   const addresses: PlatformVpnLinkAddress[] = [
     createLinkAddress(IPV4_FULL_CAPTURE_ADDRESS),
     createLinkAddress(IPV6_FULL_CAPTURE_ADDRESS)
@@ -159,32 +157,36 @@ function createPlatformVpnConfig(vpnId: string): PlatformVpnConfig {
     createRoute(IPV4_DEFAULT_ROUTE),
     createRoute(IPV6_DEFAULT_ROUTE)
   ];
-  return new PlatformVpnConfigRecord(
-    vpnId,
+  const platformConfig: PlatformVpnConfig = {
     addresses,
     routes,
-    [IPV4_DNS, IPV6_DNS],
-    undefined,
-    1500,
-    true,
-    true,
-    undefined,
-    false,
-    undefined,
-    [SELF_PACKAGE_NAME]
-  );
+    dnsAddresses: [IPV4_DNS, IPV6_DNS],
+    mtu: 1500,
+    isIPv4Accepted: true,
+    isIPv6Accepted: true,
+    isBlocking: false,
+    trustedApplications: [],
+    blockedApplications: [SELF_PACKAGE_NAME]
+  };
+  return platformConfig;
 }
 
 export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
   private readonly api: VpnConnectionApi;
   private readonly sessionId: string;
+  private readonly reportStageLifecycle?: (stage: string) => void;
   private pendingOwner?: PreparedOwner;
   private preparePromise?: Promise<PreparedOwner>;
   private liveHandle?: LiveHandle;
 
-  constructor(api: VpnConnectionApi, sessionId: string) {
+  constructor(
+    api: VpnConnectionApi,
+    sessionId: string,
+    reportStageLifecycle?: (stage: string) => void
+  ) {
     this.api = api;
     this.sessionId = normalizeSessionId(sessionId);
+    this.reportStageLifecycle = reportStageLifecycle;
   }
 
   async protectProcess(): Promise<void> {
@@ -195,7 +197,14 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
   }
 
   async create(config: VpnCaptureConfig): Promise<TunHandle> {
-    this.assertExactCaptureConfig(config);
+    this.reportStage('platform.config.begin');
+    try {
+      this.assertExactCaptureConfig(config);
+      this.reportStage('platform.config.ok');
+    } catch (error) {
+      this.reportStage('platform.config.failed');
+      throw error as Error;
+    }
     if (this.liveHandle !== undefined) {
       throw new Error('Vpn connection driver already owns a live handle.');
     }
@@ -206,11 +215,10 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
     owner.createInFlight = true;
 
-    let generatedVpnId: string | undefined = undefined;
     try {
-      generatedVpnId = await this.generateVpnIdInternal(owner.connection);
-      const fd: number = await this.createTunFdInternal(owner.connection, generatedVpnId);
+      const fd: number = await this.createTunFdInternal(owner);
       if (!isPositiveSafeInteger(fd)) {
+        this.reportStage('platform.fd.failed');
         throw new VpnPlatformPortError(
           'PLATFORM_CREATE_FAILED',
           vpnFailureDetail(
@@ -219,15 +227,16 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
           )
         );
       }
+      this.reportStage('platform.fd.ok');
 
-      this.liveHandle = new LiveHandleRecord(this.sessionId, generatedVpnId, owner.connection);
+      this.liveHandle = new LiveHandleRecord(this.sessionId, this.sessionId, owner.connection);
       this.pendingOwner = undefined;
       owner.createInFlight = false;
-      return createTunHandle(fd, generatedVpnId, this.sessionId);
+      return createTunHandle(fd, this.sessionId, this.sessionId);
     } catch (error) {
       const primaryError: Error = error as Error;
       try {
-        await this.cleanupCreateFailure(owner.connection, generatedVpnId);
+        await this.cleanupCreateFailure(owner.connection);
       } finally {
         owner.createInFlight = false;
         if (this.pendingOwner === owner) {
@@ -271,7 +280,7 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
 
     try {
-      await liveHandle.connection.destroyWithVpnId(vpnId);
+      await liveHandle.connection.destroy();
       this.liveHandle = undefined;
     } catch (_) {
       throw new Error(vpnFailureDetail('VPN_STOP_FAILED', 'HarmonyOS VPN destroy failed.'));
@@ -407,41 +416,36 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
   }
 
-  private async generateVpnIdInternal(connection: PlatformVpnConnection): Promise<string> {
-    if (this.api.sdkApiVersion() < API20) {
-      throw new VpnPlatformPortError(
-        'PLATFORM_CREATE_FAILED',
-        vpnFailureDetail('VPN_CREATE_FAILED', 'HarmonyOS VPN id generation requires API 20+.')
-      );
-    }
+  private async createTunFdInternal(owner: PreparedOwner): Promise<number> {
+    const connection: PlatformVpnConnection = owner.connection;
+    const platformConfig: PlatformVpnConfig = createPlatformVpnConfig();
+    this.reportStage('platform.connection.begin');
     try {
-      return await connection.generateVpnId();
-    } catch (_) {
-      throw new VpnPlatformPortError(
-        'PLATFORM_CREATE_FAILED',
-        vpnFailureDetail('VPN_CREATE_FAILED', 'HarmonyOS vpn id generation failed.')
-      );
-    }
-  }
-
-  private async createTunFdInternal(
-    connection: PlatformVpnConnection,
-    vpnId: string
-  ): Promise<number> {
-    try {
-      return await connection.create(createPlatformVpnConfig(vpnId));
+      const fd: number = await connection.create(platformConfig);
+      this.reportStage('platform.connection.ok');
+      return fd;
     } catch (error) {
       if (isBusinessErrorWithCode(error, 2203001)) {
+        this.reportStage('platform.connection.consent');
         throw new VpnPlatformPortError(
           'CONSENT_DENIED',
           vpnFailureDetail('VPN_PERMISSION_DENIED', 'HarmonyOS VPN consent was denied.')
         );
       }
       if (isBusinessErrorWithCode(error, 2203002)) {
-        throw new VpnPlatformPortError(
-          'ALREADY_ACTIVE',
-          vpnFailureDetail('VPN_ALREADY_ACTIVE', 'HarmonyOS VPN session is already active.')
-        );
+        this.reportStage('platform.connection.active');
+        return await this.reclaimLegacyVpnAndRetryCreate(owner, platformConfig);
+      }
+      if (isBusinessErrorWithCode(error, 401)) {
+        this.reportStage('platform.connection.parameter');
+      } else if (isBusinessErrorWithCode(error, 2200001)) {
+        this.reportStage('platform.connection.invalid');
+      } else if (isBusinessErrorWithCode(error, 2200002)) {
+        this.reportStage('platform.connection.service');
+      } else if (isBusinessErrorWithCode(error, 2200003)) {
+        this.reportStage('platform.connection.internal');
+      } else {
+        this.reportStage('platform.connection.failed');
       }
       throw new VpnPlatformPortError(
         'PLATFORM_CREATE_FAILED',
@@ -450,15 +454,71 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
   }
 
-  private async cleanupCreateFailure(
-    connection: PlatformVpnConnection,
-    vpnId?: string
-  ): Promise<void> {
+  private async reclaimLegacyVpnAndRetryCreate(
+    owner: PreparedOwner,
+    platformConfig: PlatformVpnConfig
+  ): Promise<number> {
+    this.reportStage('platform.connection.reclaim.begin');
     try {
-      if (vpnId !== undefined) {
-        await connection.destroyWithVpnId(vpnId);
-        return;
+      await owner.connection.destroy();
+      this.reportStage('platform.connection.reclaim.ok');
+    } catch (_) {
+      this.reportStage('platform.connection.reclaim.failed');
+      throw new VpnPlatformPortError(
+        'ALREADY_ACTIVE',
+        vpnFailureDetail('VPN_ALREADY_ACTIVE', 'HarmonyOS VPN session is already active.')
+      );
+    }
+
+    this.reportStage('platform.connection.retry.begin');
+    try {
+      const retryConnection: PlatformVpnConnection = this.api.createConnection();
+      owner.connection = retryConnection;
+      const fd: number = await retryConnection.create(platformConfig);
+      this.reportStage('platform.connection.retry.ok');
+      return fd;
+    } catch (error) {
+      if (isBusinessErrorWithCode(error, 2203001)) {
+        this.reportStage('platform.connection.retry.consent');
+        throw new VpnPlatformPortError(
+          'CONSENT_DENIED',
+          vpnFailureDetail('VPN_PERMISSION_DENIED', 'HarmonyOS VPN consent was denied.')
+        );
       }
+      if (isBusinessErrorWithCode(error, 2203002)) {
+        this.reportStage('platform.connection.retry.active');
+        throw new VpnPlatformPortError(
+          'ALREADY_ACTIVE',
+          vpnFailureDetail('VPN_ALREADY_ACTIVE', 'HarmonyOS VPN session is already active.')
+        );
+      }
+      if (isBusinessErrorWithCode(error, 401)) {
+        this.reportStage('platform.connection.retry.parameter');
+      } else if (isBusinessErrorWithCode(error, 2200001)) {
+        this.reportStage('platform.connection.retry.invalid');
+      } else if (isBusinessErrorWithCode(error, 2200002)) {
+        this.reportStage('platform.connection.retry.service');
+      } else if (isBusinessErrorWithCode(error, 2200003)) {
+        this.reportStage('platform.connection.retry.internal');
+      } else {
+        this.reportStage('platform.connection.retry.failed');
+      }
+      throw new VpnPlatformPortError(
+        'PLATFORM_CREATE_FAILED',
+        vpnFailureDetail('VPN_CREATE_FAILED', 'HarmonyOS vpn create failed.')
+      );
+    }
+  }
+
+  private reportStage(stage: string): void {
+    try {
+      this.reportStageLifecycle?.(stage);
+    } catch (_) {
+    }
+  }
+
+  private async cleanupCreateFailure(connection: PlatformVpnConnection): Promise<void> {
+    try {
       await connection.destroy();
     } catch (_) {
     }

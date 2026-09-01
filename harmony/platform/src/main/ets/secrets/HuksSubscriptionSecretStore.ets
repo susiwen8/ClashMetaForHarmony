@@ -20,6 +20,7 @@ import {
   type HuksDriver,
   type HuksEncryptedPayload
 } from './HuksDriver';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 
 const ENVELOPE_VERSION: number = 1;
 const SECRET_DIRECTORY: string = 'profile-secrets';
@@ -27,8 +28,18 @@ const SECRET_SUFFIX: string = '.json';
 const TEMP_SUFFIX: string = '.tmp';
 const MAX_ENVELOPE_BYTES: number = 64 * 1024;
 const BASE64_ALPHABET: string = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+const SECRET_DIAGNOSTIC_DOMAIN: number = 0x0000;
+const SECRET_DIAGNOSTIC_TAG: string = 'CMFASecret';
 
 type SecretFailureKind = 'MISSING' | 'DECRYPT' | 'UNSUPPORTED' | 'WRITE';
+
+interface BusinessErrorShape {
+  code?: number;
+}
+
+export interface SecretStoreDiagnosticSink {
+  report(stage: string, code: number): void;
+}
 
 class SecretEnvelopeShape {
   readonly version: number;
@@ -61,34 +72,76 @@ export class HuksSubscriptionSecretStore implements SubscriptionSecretStore {
   private readonly fileDriver: FileDriver;
   private readonly filesDir: string;
   private readonly idGenerator: IdGenerator;
+  private readonly diagnostics: SecretStoreDiagnosticSink;
 
-  constructor(huksDriver: HuksDriver, fileDriver: FileDriver, filesDir: string, idGenerator: IdGenerator) {
+  constructor(
+    huksDriver: HuksDriver,
+    fileDriver: FileDriver,
+    filesDir: string,
+    idGenerator: IdGenerator,
+    diagnostics?: SecretStoreDiagnosticSink
+  ) {
     this.huksDriver = huksDriver;
     this.fileDriver = fileDriver;
     this.filesDir = normalizeAbsoluteSandboxPath(filesDir, 'Sandbox root path');
     this.idGenerator = idGenerator;
+    this.diagnostics = diagnostics ?? new HilogSecretStoreDiagnosticSink();
   }
 
   async encrypt(plaintext: string): Promise<string> {
     let temporaryPath: string = '';
+    let operationStage: string = 'store.encrypt.id.opaque';
     try {
       const opaqueId: string = normalizeOpaqueId(this.idGenerator.nextId(), false);
+      operationStage = 'store.encrypt.id.temporary';
       const temporaryId: string = normalizeOpaqueId(this.idGenerator.nextId(), false);
       const targetPath: string = secretEnvelopePath(this.filesDir, opaqueId);
       temporaryPath = secretTemporaryPath(this.filesDir, opaqueId, temporaryId);
+      operationStage = 'store.encrypt.huks';
       const payload: HuksEncryptedPayload = await this.huksDriver.encrypt(encodeUtf8(plaintext));
+      operationStage = 'store.encrypt.payload';
       validatePayloadForSerialization(payload);
+      operationStage = 'store.encrypt.serialize';
       const serializedEnvelope: Uint8Array = encodeUtf8(serializeEnvelope(payload));
-      await this.fileDriver.mkdir(secretDirectoryPath(this.filesDir), true);
+      operationStage = 'store.encrypt.mkdir';
+      await this.ensureSecretDirectory();
+      operationStage = 'store.encrypt.write';
       await this.writeTemporaryEnvelope(temporaryPath, serializedEnvelope);
+      operationStage = 'store.encrypt.rename';
       await this.fileDriver.renameNoOverwrite(temporaryPath, targetPath);
       return opaqueId;
     } catch (error) {
+      this.reportFailure(operationStage, error as Object);
       if (temporaryPath.length > 0) {
         await this.cleanupTemporaryEnvelope(temporaryPath);
       }
       throw this.mapFailure(error, 'WRITE');
     }
+  }
+
+  private async ensureSecretDirectory(): Promise<void> {
+    const directoryPath: string = secretDirectoryPath(this.filesDir);
+    const existing: FileStat | undefined = await this.fileDriver.statIfPresent(directoryPath);
+    if (existing !== undefined) {
+      if (!existing.isDirectory) {
+        throw new SecretStoreFailure('WRITE');
+      }
+      return;
+    }
+    try {
+      await this.fileDriver.mkdir(directoryPath, true);
+    } catch (_) {
+      const createdByRace: FileStat | undefined = await this.fileDriver.statIfPresent(directoryPath);
+      if (createdByRace === undefined || !createdByRace.isDirectory) {
+        throw new SecretStoreFailure('WRITE');
+      }
+    }
+  }
+
+  private reportFailure(stage: string, error: Object): void {
+    const businessError: BusinessErrorShape = error as BusinessErrorShape;
+    const code: number = typeof businessError.code === 'number' ? businessError.code : -1;
+    this.diagnostics.report(stage, code);
   }
 
   async decrypt(secretRef: string): Promise<string> {
@@ -315,6 +368,18 @@ export class HuksSubscriptionSecretStore implements SubscriptionSecretStore {
       default:
         return createSubscriptionSecretError('SOURCE_SECRET_WRITE_FAILED', 'Subscription secret source could not be stored.');
     }
+  }
+}
+
+class HilogSecretStoreDiagnosticSink implements SecretStoreDiagnosticSink {
+  report(stage: string, code: number): void {
+    hilog.error(
+      SECRET_DIAGNOSTIC_DOMAIN,
+      SECRET_DIAGNOSTIC_TAG,
+      '%{public}s:%{public}d',
+      stage,
+      code
+    );
   }
 }
 

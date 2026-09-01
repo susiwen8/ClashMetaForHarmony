@@ -5,6 +5,7 @@ import { fileURLToPath } from 'node:url';
 
 import { auditMihomoApi } from './audit-mihomo-api.mjs';
 import { buildGoComponent, GO_OHOS_PROOF_PATH } from './build-go-ohos-probe.mjs';
+import { CORE_EXPORTS } from './lib/native-provenance.mjs';
 import { createRedactionReplacements, sanitizeForPersistence, sanitizeText } from './lib/proof-redaction.mjs';
 
 const HARMONY_ROOT = fileURLToPath(new URL('..', import.meta.url));
@@ -19,20 +20,10 @@ const PROBE_COMPONENT_CONFIG = {
   packagePath: '.',
   targetName: 'HarmonyOS 6/API 20/arm64'
 };
-const CORE_PRIVATE_EXPORTS = [
-  'cmfa_mihomo_core_build_info_json_cstr_v1',
-  'cmfa_mihomo_core_version_cstr_v1',
-  'cmfa_mihomo_probe_cancel_v1',
-  'cmfa_mihomo_probe_https_v1',
-  'cmfa_mihomo_runtime_state_v1',
-  'cmfa_mihomo_start_local_v1',
-  'cmfa_mihomo_stop_v1',
-  'cmfa_mihomo_take_runtime_log_v1'
-];
 const CORE_COMPONENT_CONFIG = {
   component: 'mihomoCore',
   artifactFileName: 'libcmfa_mihomo.so',
-  expectedExports: CORE_PRIVATE_EXPORTS,
+  expectedExports: CORE_EXPORTS,
   modulePath: 'core/go',
   packagePath: './cmd/cmfa_core',
   targetName: 'HarmonyOS 6/API 20/arm64'
@@ -259,8 +250,10 @@ export async function buildMihomoOhos(options = {}) {
       toolchainInspectorImpl: options.toolchainInspectorImpl,
       inspectNativeLibraryImpl: options.inspectNativeLibraryImpl,
       readGoVersionImpl: options.readGoVersionImpl,
+      readGoRootImpl: options.readGoRootImpl,
       readToolchainVersionsImpl: options.readToolchainVersionsImpl,
-      resolveGoBinaryImpl: options.resolveGoBinaryImpl
+      resolveGoBinaryImpl: options.resolveGoBinaryImpl,
+      runtimeOverlayRoot: options.runtimeOverlayRoot
     });
     mergeComponent(aggregateProof, probeProof);
 
@@ -274,8 +267,10 @@ export async function buildMihomoOhos(options = {}) {
       toolchainInspectorImpl: options.toolchainInspectorImpl,
       inspectNativeLibraryImpl: options.inspectNativeLibraryImpl,
       readGoVersionImpl: options.readGoVersionImpl,
+      readGoRootImpl: options.readGoRootImpl,
       readToolchainVersionsImpl: options.readToolchainVersionsImpl,
       resolveGoBinaryImpl: options.resolveGoBinaryImpl,
+      runtimeOverlayRoot: options.runtimeOverlayRoot,
       extraGoArgs: [
         '-ldflags',
         [

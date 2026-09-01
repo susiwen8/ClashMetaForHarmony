@@ -1,0 +1,31 @@
+{
+  "appendixAVersion": 1,
+  "inputs": {
+    "rootKey": "000102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f",
+    "serverNonce": "202122232425262728292a2b2c2d2e2f303132333435363738393a3b3c3d3e3f",
+    "clientNonce": "404142434445464748494a4b4c4d4e4f505152535455565758595a5b5c5d5e5f",
+    "serverInstance": "606162636465666768696a6b6c6d6e6f",
+    "clientEpoch": 7,
+    "profileHash": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "revisionHash": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+  },
+  "authentication": {
+    "clientProof": "971120fc74215711b7de184881eb809ef8cb8bff91b23cf5452f1b3c797918d6",
+    "serverProof": "3cb796ee27a9e40d0ee39dd41321673242dd4c25b33a3efb06fa181fabdec5cf",
+    "c2sKey": "17490f3b8bcfcabf9fea8acbfb448aa912d0c4c000ea6404603201571ca79f34",
+    "s2cKey": "547dcc95ad1dea16c6b87b305be8f228fe56e73492f5649a485dfa35223d83aa",
+    "socketAddress": "cmfa_vpn_rpc_v1_f3c721d1d7466775b7f4687f04762580"
+  },
+  "catalog": {
+    "catalogSalt": "6ed74afc4b4442d50cb34e3d7d3dcf194f08eefcfe362d55d2d896572c9101ab",
+    "groupId": "f7a7aa5db9ab84e06fb3574ed2f710fc00aead954d247956fd0d482e90dec1a1",
+    "nodeId": "b0a8d82ab2b6e1ad9a5e2eccc169707e55492a94a5f346435864b66a78284757",
+    "catalogDigest": "439490f7d5c249e4568e736a9e7a0f45c674f6fb355adf8d61d82a1d0276f219"
+  },
+  "ping": {
+    "bodyLength": 282,
+    "body": "{\"protocolVersion\":1,\"kind\":\"REQUEST\",\"sequence\":1,\"clientEpoch\":7,\"requestOrdinal\":1,\"requestId\":\"00000000-0000-4000-8000-000000000001\",\"method\":\"PING\",\"sessionGeneration\":0,\"guards\":{\"profileHash\":null,\"revisionHash\":null,\"catalogDigest\":null},\"ok\":null,\"error\":null,\"payload\":{}}",
+    "bodyHex": "7b2270726f746f636f6c56657273696f6e223a312c226b696e64223a2252455155455354222c2273657175656e6365223a312c22636c69656e7445706f6368223a372c22726571756573744f7264696e616c223a312c22726571756573744964223a2230303030303030302d303030302d343030302d383030302d303030303030303030303031222c226d6574686f64223a2250494e47222c2273657373696f6e47656e65726174696f6e223a302c22677561726473223a7b2270726f66696c6548617368223a6e756c6c2c227265766973696f6e48617368223a6e756c6c2c22636174616c6f67446967657374223a6e756c6c7d2c226f6b223a6e756c6c2c226572726f72223a6e756c6c2c227061796c6f6164223a7b7d7d",
+    "frameMac": "483e45b6d88e7ba872ec135d4049e334acc7230c36bd60c23f39bf7fd4f28f32"
+  }
+}

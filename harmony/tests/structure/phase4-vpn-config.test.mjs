@@ -39,25 +39,76 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   assertContains(combinedSource, 'isBlocking', 'Harmony VPN source');
   assertContains(combinedSource, 'blockedApplications', 'Harmony VPN source');
   assertContains(driverSource, 'implements VpnPlatformSessionPort', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'constructor(api: VpnConnectionApi, sessionId: string)', 'HarmonyVpnConnectionDriver');
+  assert.match(
+    driverSource,
+    /constructor\(\s*api:\s*VpnConnectionApi,\s*sessionId:\s*string,\s*reportStageLifecycle\?:\s*\(stage:\s*string\)\s*=>\s*void\s*\)/u,
+    'HarmonyVpnConnectionDriver must keep the exact constructor signature independent of formatting'
+  );
   assertContains(driverSource, 'async protectProcess(): Promise<void>', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'async create(config: VpnCaptureConfig): Promise<TunHandle>', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'async protectSocket(fd: number): Promise<void>', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'destroy(vpnId: string)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'protectProcessNet', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'generateVpnId', 'HarmonyVpnConnectionDriver');
+  assertNotContains(driverSource, 'generateVpnId', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'Number.isSafeInteger', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'destroyWithVpnId', 'VpnConnectionApi');
+  assertNotContains(driverSource, 'destroyWithVpnId', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'if (this.api.sdkApiVersion() >= API22)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'if (this.api.sdkApiVersion() < API22)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'PROCESS_PROTECT_FAILED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'PROTECT_SOCKET_FAILED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'CONSENT_DENIED', 'HarmonyVpnConnectionDriver');
+  for (const stage of [
+    'platform.config.begin',
+    'platform.config.ok',
+    'platform.config.failed',
+    'platform.connection.begin',
+    'platform.connection.ok',
+    'platform.connection.consent',
+    'platform.connection.active',
+    'platform.connection.reclaim.begin',
+    'platform.connection.reclaim.ok',
+    'platform.connection.reclaim.failed',
+    'platform.connection.retry.begin',
+    'platform.connection.retry.ok',
+    'platform.connection.retry.consent',
+    'platform.connection.retry.active',
+    'platform.connection.retry.parameter',
+    'platform.connection.retry.invalid',
+    'platform.connection.retry.service',
+    'platform.connection.retry.internal',
+    'platform.connection.retry.failed',
+    'platform.connection.parameter',
+    'platform.connection.invalid',
+    'platform.connection.service',
+    'platform.connection.internal',
+    'platform.connection.failed',
+    'platform.fd.ok',
+    'platform.fd.failed'
+  ]) {
+    assertContains(driverSource, `'${stage}'`, 'HarmonyVpnConnectionDriver');
+  }
+  assertNotContains(driverSource, 'JSON.stringify(error)', 'HarmonyVpnConnectionDriver');
   assertContains(apiSource, 'deviceInfo.sdkApiVersion', 'VpnConnectionApi');
   assertNotContains(driverSource, 'create(sessionId: string', 'HarmonyVpnConnectionDriver');
   assertNotContains(driverSource, 'SessionIdResolver', 'HarmonyVpnConnectionDriver');
   assertNotContains(driverSource, 'resolveSessionId', 'HarmonyVpnConnectionDriver');
-  assertNotContains(driverSource, 'trustedApplications:', 'HarmonyVpnConnectionDriver');
+  assertNotContains(
+    driverSource,
+    'PlatformVpnConfigRecord',
+    'HarmonyVpnConnectionDriver must omit absent optional VpnConfig properties'
+  );
+  assertNotContains(
+    apiSource,
+    'class PlatformVpnConfigRecord',
+    'VpnConnectionApi must not expose a record that materializes absent optional VpnConfig properties'
+  );
+  assertContains(
+    driverSource,
+    'const platformConfig: PlatformVpnConfig = {',
+    'HarmonyVpnConnectionDriver'
+  );
+  assertContains(driverSource, 'trustedApplications: []', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'blockedApplications: [SELF_PACKAGE_NAME]', 'HarmonyVpnConnectionDriver');
   assertNotContains(driverSource, 'MANAGE_VPN', 'HarmonyVpnConnectionDriver');
   assertNotContains(driverSource, 'ohos.permission.', 'HarmonyVpnConnectionDriver');
   assertNotContains(apiSource, 'MANAGE_VPN', 'VpnConnectionApi');

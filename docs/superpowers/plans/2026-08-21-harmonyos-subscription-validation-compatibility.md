@@ -100,7 +100,9 @@ timeout, size, NetworkKit, Request Agent, and new user-agent cases. Run
 
 The lock schema requires exactly one asset with canonical name
 `geoip.metadb`, expected byte length `8593535`, SHA-256
-`9d500c84613994153b531de7153b3602f2b9adde253a28307c74dba1bea1a957`,
+`71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd`,
+
+Review note (2026-08-22): official release API size/digest were re-verified as `8593535` and `sha256:71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd`, and a real `mihomo v1.19.29` `ParseWithBytes` replay accepted the prepared-home fixture.
 the official release URL, and no credentials or machine paths.
 
 The official URL may use the mutable `latest` alias only because size and
@@ -228,6 +230,16 @@ Run scoped diff/leak checks.
 ## Chunk 2: Initialize One Stable Core Home and Prove the Real Subscription
 
 ### Task 4: Resolve managed config paths to one stable mihomo home
+
+**Managed-root authority:** The native ABI receives only `configPath`; the
+calling app supplies that path from its app-owned files directory. The first
+successfully prepared canonical files root therefore establishes the managed
+root authority for the process. In this task, "foreign absolute path" means a
+later managed-looking path whose canonical root differs from that established
+root; it must fail before parsing with `GEODATA_HOME_DRIFT`. Rejecting an
+arbitrary managed-looking root before the first call would require a separate
+trusted-root ABI input and is outside Plan A. Do not hard-code device paths or
+weaken the existing HarmonyOS app-sandbox boundary.
 
 **Files:**
 - Create: `harmony/core/go/internal/config/home.go`

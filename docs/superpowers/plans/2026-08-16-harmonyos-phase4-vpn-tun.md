@@ -158,7 +158,7 @@
 
 - [ ] **Step 4: Write failing coordinator lifecycle and rollback tests**
 
-  Cover: happy start order; process protection before platform create/core start; `Running` only after TUN readiness and notification start; duplicate start rejection; exact version resolution; stop while starting; repeated stop; each partial-start failure rolling back `tun.stop -> core/local runtime stop -> platform.destroy -> notification.stop`; late event from an old session ignored; consent denial returning `STOPPED`; network loss entering `RECOVERING`; recovery delays `250, 500, 1000, 2000, 4000` ms then terminal error; and cancellation preventing late retries.
+  Cover: happy start order; process protection before platform create/core start; `Running` only after TUN readiness and notification start; duplicate start rejection; exact version resolution; stop while starting; repeated stop; each partial-start failure rolling back `tun.stop -> core/local runtime stop -> platform.destroy -> notification.stop`; late event from an old session ignored; consent denial returning `STOPPED`; network loss entering `RECOVERING`; recovery delays `250, 500, 1000, 2000, 4000, 8000` ms then terminal error; and cancellation preventing late retries.
 
 - [ ] **Step 5: Run the coordinator test and confirm RED**
 
@@ -406,7 +406,7 @@
 
 - [ ] **Step 3: Implement the permission-free recovery seam**
 
-  Keep `HarmonyNetworkMonitor` driven by an injected platform-neutral driver for deterministic tests, but do not ship a driver that calls default-network APIs: those APIs require the unapproved `ohos.permission.GET_NETWORK_INFO`. The production factory returns an opaque/unavailable monitor. Treat this port as a best-effort hint only; shared recovery must schedule `recover(sessionId)` with the existing `250/500/1000/2000/4000 ms` bound even when the hint remains unavailable, and the TUN recovery result is the reachability probe.
+  Keep `HarmonyNetworkMonitor` driven by an injected platform-neutral driver for deterministic tests, but do not ship a driver that calls default-network APIs: those APIs require the unapproved `ohos.permission.GET_NETWORK_INFO`. The production factory returns an opaque/unavailable monitor. Treat this port as a best-effort hint only; shared recovery must schedule `recover(sessionId)` with the bounded `250/500/1000/2000/4000/8000 ms` sequence even when the hint remains unavailable, and the TUN recovery result is the reachability probe.
 
 - [ ] **Step 4: Write failing continuous-task tests**
 
@@ -643,7 +643,7 @@
 
 - [ ] **Step 1: Write failing probe-isolation tests**
 
-  Require a standalone project root, application bundle `com.github.kr328.clash.harmony.trafficprobe`, only `ohos.permission.INTERNET`, API 20 compatibility, and no dependency/path from the production root `build-profile.json5`, production modules, resources, CMake, HAP build, or package manifests. Reject the production bundle name in the probe and probe bundle/resources/native payload in production source lists.
+  Require a standalone project root, application bundle `com.cmfa.phase4.trafficprobe`, only `ohos.permission.INTERNET`, API 20 compatibility, and no dependency/path from the production root `build-profile.json5`, production modules, resources, CMake, HAP build, or package manifests. Reject the production bundle name in the probe and probe bundle/resources/native payload in production source lists.
 
 - [ ] **Step 2: Run the structure test and confirm RED**
 
@@ -693,6 +693,12 @@
 
 ### Task 11: Correlate controlled origin, probe, TUN, and mihomo evidence
 
+> **2026-08-29 verification update:** Keep the controlled LAN origin for HTTPS
+> identity and local HTTP/SOCKS proof. Run global TCP exchange plus UDP/DNS
+> exact-echo native sockets against the validated public endpoint set.
+> Connected-LAN capture and the removed `/32`/historical probe-only trusted-app
+> allowlist experiments are not release gates.
+
 **Files:**
 - Create: `harmony/tests/bin/phase4-origin.mjs`
 - Create: `harmony/tests/structure/phase4-origin-contract.test.mjs`
@@ -732,7 +738,7 @@
 
 - [ ] **Step 6: Write failing two-HAP package-inspection tests**
 
-  Inject archive listing/extraction, hash, signature, native inspection, and manifest readers. Require production `com.github.kr328.clash.harmony`, probe `com.github.kr328.clash.harmony.trafficprobe`, distinct hashes/signatures, exact permission sets, real production addon/core/TUN symbols, no native payload in probe, and bidirectional rejection of the other bundle's resources/entry points. Unsigned HAP names or missing signature blocks fail.
+  Inject archive listing/extraction, hash, signature, native inspection, and manifest readers. Require production `com.github.kr328.clash.harmony`, probe `com.cmfa.phase4.trafficprobe`, distinct hashes/signatures, exact permission sets, real production addon/core/TUN symbols, no native payload in probe, and bidirectional rejection of the other bundle's resources/entry points. Unsigned HAP names or missing signature blocks fail.
 
 - [ ] **Step 7: Implement the package inspector**
 
@@ -760,16 +766,16 @@
 
   ```text
   hdc -t <target> file recv -b com.github.kr328.clash.harmony /data/storage/el2/base/haps/entry/files/phase4-runtime-evidence.json <temp>/runtime.json
-  hdc -t <target> file recv -b com.github.kr328.clash.harmony.trafficprobe /data/storage/el2/base/haps/entry/files/phase4-probe-evidence.json <temp>/probe.json
+  hdc -t <target> file recv -b com.cmfa.phase4.trafficprobe /data/storage/el2/base/haps/entry/files/phase4-probe-evidence.json <temp>/probe.json
   ```
 
   Verify help exposes `file recv -b` before install, enforce the 1 MiB cap while reading, validate each JSON independently, and delete only the host temporary directory afterward.
 
 - [ ] **Step 10: Implement the runner as a fail-closed state machine**
 
-  Derive HDC from the pinned toolchain, accept repo-scoped `--production-hap` and `--probe-hap`, and call the package inspector before installation. Start the LAN origin and first launch the probe with VPN stopped to prove direct TCP/UDP IPv4 reachability and optional IPv6; client isolation, firewall, or unreachable LAN origin yields `ORIGIN_REACHABILITY_NOT_PROVEN` and `incomplete` before VPN claims begin. Then launch production, click `home.vpn.primary`, accept system consent through Step 9's semantic automation, run new unique probe flows, and poll both evidence files.
+  Derive HDC from the pinned toolchain, accept repo-scoped `--production-hap` and `--probe-hap`, and call the package inspector before installation. Start the LAN origin for controlled HTTPS/local checks and first launch the probe with VPN stopped to prove TCP exchange plus UDP/DNS exact-echo reachability against the validated public endpoint set. LAN HTTPS failure yields `ORIGIN_REACHABILITY_NOT_PROVEN`; external-origin failure yields `EXTERNAL_ORIGIN_REACHABILITY_NOT_PROVEN` before VPN claims begin. Then launch production, click `home.vpn.primary`, accept system consent through Step 9's semantic automation, run new unique public probe flows, and poll both evidence files.
 
-  For continuity, leave the UI, turn screen off/on, and run a second direct probe. For recovery, use the same UITest layout/click surface to open the system network controls, snapshot Wi-Fi/mobile switch state, produce a bounded real network loss, restore the exact state in `finally`, and require `RECOVERING -> RUNNING`; if the controls cannot be uniquely identified or device policy forbids the action, write `incomplete` with `NETWORK_RECOVERY_NOT_PROVEN`. Always stop VPN/app/probe/origin and restore screen/network state in `finally`.
+  For continuity, leave the UI and turn screen off/on. For recovery, use the same UITest layout/click surface to open the system network controls, snapshot Wi-Fi/mobile switch state, produce a bounded real network loss, restore the exact state in `finally`, and require `RECOVERING -> RUNNING`; if the controls cannot be uniquely identified or device policy forbids the action, write `incomplete` with `NETWORK_RECOVERY_NOT_PROVEN`. When a VPN-round external-origin echo fails, gracefully stop, confirm the stopped journal, and check the same endpoint once before bundle force-stop and origin close. Always restore screen/network state in `finally`.
 
 - [ ] **Step 11: Complete schema validation and redaction tests**
 

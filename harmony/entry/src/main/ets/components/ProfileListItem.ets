@@ -43,11 +43,8 @@ export struct ProfileListItem {
       width: 1,
       color: $r('app.color.color_border_subtle')
     })
-    .opacity(this.row.actionsLockedByRuntime ? 0.6 : 1)
     .onClick(() => {
-      if (!this.row.actionsLockedByRuntime) {
-        this.onOpenProfile(this.row.id);
-      }
+      this.onOpenProfile(this.row.id);
     })
   }
 }

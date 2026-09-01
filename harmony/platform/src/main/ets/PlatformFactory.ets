@@ -1,5 +1,6 @@
 import { util } from '@kit.ArkTS';
 import { deviceInfo } from '@kit.BasicServicesKit';
+import { hilog } from '@kit.PerformanceAnalysisKit';
 import common from '@ohos.app.ability.common';
 import {
   createAppError,
@@ -16,15 +17,29 @@ import {
   type ContinuousNotificationPort,
   type NetworkRecoveryPort
 } from '@cmfa/shared';
-import { HarmonyVpnNotificationDriver } from './background/HarmonyVpnNotificationDriver';
+import type { ProxyIdentityHasher, ProxySelectionRepository } from '@cmfa/shared';
+import {
+  HarmonyVpnNotificationDriver,
+  UiAbilityOwnedContinuousNotificationPort
+} from './background/HarmonyVpnNotificationDriver';
 import type { PlatformContinuousTaskContext } from './background/ContinuousTaskDriver';
 import type { FileDriver } from './files/FileDriver';
 import { HarmonyFileDriver } from './files/HarmonyFileDriver';
+import {
+  HarmonyGeodataInstaller,
+  HilogGeodataDiagnosticSink,
+  type GeodataInstaller,
+  type HarmonyGeodataInstallerDependencies,
+  type PackagedRawfileReader
+} from './geodata/HarmonyGeodataInstaller';
 import { SandboxProfileContentStore } from './files/SandboxProfileContentStore';
 import { HarmonyNetworkMonitor } from './network/HarmonyNetworkMonitor';
+import { HarmonyNetworkConnectionDriver } from './network/HarmonyNetworkConnectionDriver';
 import { HarmonyRdbDriver } from './rdb/HarmonyRdbDriver';
 import { RdbProfileRepository } from './rdb/RdbProfileRepository';
+import { RdbProxySelectionRepository } from './rdb/RdbProxySelectionRepository';
 import type { RdbDriver } from './rdb/RdbDriver';
+import { HarmonyProxyIdentityHasher } from './proxy/HarmonyProxyIdentityHasher';
 import { HarmonyHuksDriver } from './secrets/HarmonyHuksDriver';
 import type { HuksDriver } from './secrets/HuksDriver';
 import { HuksSubscriptionSecretStore } from './secrets/HuksSubscriptionSecretStore';
@@ -36,6 +51,11 @@ import { HarmonyProfileSourceGateway, type HarmonyProfileSourceGatewayDependenci
 import type { HttpTransport } from './source/HttpTransport';
 
 const DEFAULT_DATABASE_NAME: string = 'cmfa_profiles.db';
+const GEOIP_METADB_SIZE_BYTES: number = 8593535;
+const GEOIP_METADB_SHA256: string = '71def3ab45393093baf9d39b69787b3e0d0685607c13dd135bfdbb603bd475dd';
+const GEOIP_METADB_RAWFILE_NAME: string = 'geoip.metadb';
+const INITIALIZATION_LOG_DOMAIN: number = 0x0000;
+const INITIALIZATION_LOG_TAG: string = 'CMFAInit';
 
 export interface PlatformPaths {
   filesDir: string;
@@ -86,9 +106,13 @@ export interface PlatformFactoryDependencies {
   createClock?: () => Clock;
   createIdGenerator?: () => IdGenerator;
   createFileDriver?: () => FileDriver;
+  createGeodataResourceReader?: (context: common.Context) => PackagedRawfileReader;
+  createGeodataInstaller?: (dependencies: HarmonyGeodataInstallerDependencies) => GeodataInstaller;
   createRdbDriver?: (context: common.Context, paths: PlatformPaths) => CloseableRdbDriver;
   createHuksDriver?: () => PrepareableHuksDriver;
   createRepository?: (driver: CloseableRdbDriver) => ProfileRepository;
+  createProxySelectionRepository?: (driver: CloseableRdbDriver) => ProxySelectionRepository;
+  createProxyIdentityHasher?: () => ProxyIdentityHasher;
   createContentStore?: (fileDriver: FileDriver, paths: PlatformPaths) => ProfileContentStore;
   createSecretStore?: (
     huksDriver: PrepareableHuksDriver,
@@ -109,18 +133,44 @@ export interface PlatformFactoryDependencies {
 }
 
 export interface PlatformGraph {
-  repository: ProfileRepository;
-  contentStore: ProfileContentStore;
-  sourceGateway: ProfileSourceGateway;
-  secretStore: SubscriptionSecretStore;
-  clock: Clock;
-  idGenerator: IdGenerator;
+  readonly repository: ProfileRepository;
+  readonly proxySelectionRepository: ProxySelectionRepository;
+  readonly proxyIdentityHasher: ProxyIdentityHasher;
+  readonly contentStore: ProfileContentStore;
+  readonly sourceGateway: ProfileSourceGateway;
+  readonly secretStore: SubscriptionSecretStore;
+  readonly clock: Clock;
+  readonly idGenerator: IdGenerator;
   close(): Promise<void>;
 }
 
 class UnsupportedLocalProfileAcquirer implements LocalProfileAcquirer {
   async acquire(_command: LocalAcquireCommand): Promise<never> {
     throw new Error('Local profile acquisition requires UIAbilityContext.');
+  }
+}
+
+interface RawfileResourceManager {
+  getRawFileContentSync(fileName: string): Uint8Array;
+}
+
+interface RawfileCapableContext {
+  resourceManager?: RawfileResourceManager;
+}
+
+class ContextPackagedRawfileReader implements PackagedRawfileReader {
+  private readonly context: common.Context;
+
+  constructor(context: common.Context) {
+    this.context = context;
+  }
+
+  async readRawfile(name: string): Promise<Uint8Array> {
+    const manager: RawfileResourceManager | undefined = (this.context as RawfileCapableContext).resourceManager;
+    if (manager === undefined || typeof manager.getRawFileContentSync !== 'function') {
+      throw new Error('Packaged rawfile access was unavailable.');
+    }
+    return manager.getRawFileContentSync(name);
   }
 }
 
@@ -163,6 +213,8 @@ const GRAPH_CLOSED_FLAGS: WeakMap<PlatformGraphRecord, boolean> = new WeakMap();
 
 class PlatformGraphRecord implements PlatformGraph {
   readonly repository: ProfileRepository;
+  readonly proxySelectionRepository: ProxySelectionRepository;
+  readonly proxyIdentityHasher: ProxyIdentityHasher;
   readonly contentStore: ProfileContentStore;
   readonly sourceGateway: ProfileSourceGateway;
   readonly secretStore: SubscriptionSecretStore;
@@ -171,6 +223,8 @@ class PlatformGraphRecord implements PlatformGraph {
 
   constructor(
     repository: ProfileRepository,
+    proxySelectionRepository: ProxySelectionRepository,
+    proxyIdentityHasher: ProxyIdentityHasher,
     contentStore: ProfileContentStore,
     sourceGateway: ProfileSourceGateway,
     secretStore: SubscriptionSecretStore,
@@ -179,6 +233,8 @@ class PlatformGraphRecord implements PlatformGraph {
     closeRdb: () => Promise<void>
   ) {
     this.repository = repository;
+    this.proxySelectionRepository = proxySelectionRepository;
+    this.proxyIdentityHasher = proxyIdentityHasher;
     this.contentStore = contentStore;
     this.sourceGateway = sourceGateway;
     this.secretStore = secretStore;
@@ -246,7 +302,7 @@ export class PlatformFactory {
     if (this.dependencies.createNetworkRecoveryPort !== undefined) {
       return await this.dependencies.createNetworkRecoveryPort();
     }
-    const monitor = new HarmonyNetworkMonitor();
+    const monitor = new HarmonyNetworkMonitor(new HarmonyNetworkConnectionDriver());
     await monitor.initialize();
     return monitor;
   }
@@ -259,8 +315,13 @@ export class PlatformFactory {
         sdkApiVersion
       );
     }
+    if (!hasUiAbilityInfo(this.context)) {
+      return new UiAbilityOwnedContinuousNotificationPort();
+    }
     return new HarmonyVpnNotificationDriver(
-      toPlatformContinuousTaskContext(this.context)
+      toPlatformContinuousTaskContext(this.context),
+      undefined,
+      this.context
     );
   }
 
@@ -271,14 +332,35 @@ export class PlatformFactory {
     const fileDriver: FileDriver = this.dependencies.createFileDriver?.() ?? new HarmonyFileDriver();
     let rdbDriver: CloseableRdbDriver | undefined = undefined;
     let graph: PlatformGraph | undefined = undefined;
+    let initializationStage: string = 'construct-drivers';
 
     try {
+      initializationStage = 'geodata.install';
+      const geodataDependencies: HarmonyGeodataInstallerDependencies = {
+        resourceReader: this.dependencies.createGeodataResourceReader?.(this.context) ??
+          new ContextPackagedRawfileReader(this.context),
+        fileDriver,
+        filesDir: paths.filesDir,
+        expectedByteLength: GEOIP_METADB_SIZE_BYTES,
+        expectedSha256Digest: GEOIP_METADB_SHA256,
+        createTempId: (): string => idGenerator.nextId(),
+        diagnostics: new HilogGeodataDiagnosticSink()
+      };
+      const geodataInstaller: GeodataInstaller = this.dependencies.createGeodataInstaller?.(geodataDependencies) ??
+        new HarmonyGeodataInstaller(geodataDependencies);
+      await geodataInstaller.ensureInstalled();
+      hilog.info(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'geodata.install.ok');
+
       rdbDriver = this.dependencies.createRdbDriver?.(this.context, paths) ??
         new HarmonyRdbDriver(this.context, paths.databaseName);
       const huksDriver: PrepareableHuksDriver = this.dependencies.createHuksDriver?.() ?? new HarmonyHuksDriver();
       const sdkApiVersion: number = resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion);
       const repository: ProfileRepository = this.dependencies.createRepository?.(rdbDriver) ??
         new RdbProfileRepository(rdbDriver);
+      const proxySelectionRepository: ProxySelectionRepository =
+        this.dependencies.createProxySelectionRepository?.(rdbDriver) ?? new RdbProxySelectionRepository(rdbDriver);
+      const proxyIdentityHasher: ProxyIdentityHasher =
+        this.dependencies.createProxyIdentityHasher?.() ?? new HarmonyProxyIdentityHasher();
       const contentStore: ProfileContentStore = this.dependencies.createContentStore?.(fileDriver, paths) ??
         new SandboxProfileContentStore(fileDriver, paths.filesDir);
       const secretStore: PlatformSecretStore = this.dependencies.createSecretStore?.(
@@ -333,14 +415,24 @@ export class PlatformFactory {
         remoteAcquirer: downloader
       });
 
-      const profiles: Profile[] = await repository.list();
-      await contentStore.reconcile(collectReferencedRevisions(profiles));
-      await secretStore.reconcile(collectReferencedSecretIds(profiles));
+      initializationStage = 'huks.prepare';
       await huksDriver.prepare();
+      hilog.info(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'huks.prepare.ok');
+      initializationStage = 'repository.list';
+      const profiles: Profile[] = await repository.list();
+      hilog.info(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'repository.list.ok');
+      initializationStage = 'content.reconcile';
+      await contentStore.reconcile(collectReferencedRevisions(profiles));
+      hilog.info(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'content.reconcile.ok');
+      initializationStage = 'secret.reconcile';
+      await secretStore.reconcile(collectReferencedSecretIds(profiles));
+      hilog.info(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', 'secret.reconcile.ok');
 
       const readyRdbDriver: CloseableRdbDriver = rdbDriver;
       graph = new PlatformGraphRecord(
         repository,
+        proxySelectionRepository,
+        proxyIdentityHasher,
         contentStore,
         sourceGateway,
         secretStore,
@@ -353,6 +445,7 @@ export class PlatformFactory {
       const readyGraph: PlatformGraph = graph;
       return readyGraph;
     } catch (error) {
+      hilog.error(INITIALIZATION_LOG_DOMAIN, INITIALIZATION_LOG_TAG, '%{public}s', initializationStage);
       if (graph !== undefined) {
         await safeCloseGraph(graph);
       } else if (rdbDriver !== undefined) {

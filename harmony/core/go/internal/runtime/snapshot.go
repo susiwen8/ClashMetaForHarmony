@@ -41,14 +41,18 @@ type TunFailure struct {
 }
 
 type TunTrace struct {
-	SessionID        string
-	TraceID          string
-	Ingress          string
-	Protocol         string
-	SourceAddress    string
+	SessionID          string
+	TraceID            string
+	Ingress            string
+	Protocol           string
+	SourceAddress      string
 	DestinationAddress string
-	HashedTuple      string
-	CorrelationHash  string
+	HashedTuple        string
+	CorrelationHash    string
+	DestinationHash    string
+	OutboundTerminalHash string
+	OutboundChainHash    string
+	OutboundChainLength  uint32
 }
 
 type TunSnapshot struct {

@@ -18,6 +18,9 @@ const NETWORK_KIT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'm
 const REQUEST_AGENT_TRANSPORT_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'source', 'RequestAgentRedirectTransport.ets');
 const PLATFORM_INDEX_PATH = path.join(HARMONY_ROOT, 'platform', 'Index.ets');
 const PLATFORM_FACTORY_PATH = path.join(HARMONY_ROOT, 'platform', 'src', 'main', 'ets', 'PlatformFactory.ets');
+const PROFILE_APPLICATION_PATH = path.join(HARMONY_ROOT, 'shared', 'src', 'main', 'ets', 'profile', 'ProfileApplication.ets');
+const INDEX_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'pages', 'Index.ets');
+const PROXY_VIEW_MODEL_PATH = path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'presentation', 'ProxyViewModel.ets');
 
 async function readJson(relativePath) {
   return JSON.parse(await fs.readFile(path.join(HARMONY_ROOT, relativePath), 'utf8'));
@@ -535,6 +538,8 @@ test('Task 9 platform barrel exposes only the shared-compatible factory surface'
   assert.doesNotMatch(source, /PlatformSecretStore/u);
   assert.doesNotMatch(source, /PlatformPickerDependencies/u);
   assert.doesNotMatch(source, /PlatformRequestAgentTransportDependencies/u);
+  assert.doesNotMatch(source, /HarmonyProxyIdentityHasher/u);
+  assert.doesNotMatch(source, /RdbProxySelectionRepository/u);
   assert.doesNotMatch(source, /HarmonyRdbDriver/u);
   assert.doesNotMatch(source, /HarmonyFileDriver/u);
   assert.doesNotMatch(source, /HarmonyHuksDriver/u);
@@ -625,12 +630,11 @@ test('Task 5 Harmony driver lifecycle source contract waits for pending acquisit
 });
 
 test('Task 8 platform source contract keeps transport selection and manual redirect ownership inside the platform HAR', async () => {
-  const [downloaderSource, httpTransportSource, networkKitSource, requestAgentSource, entryModule] = await Promise.all([
+  const [downloaderSource, httpTransportSource, networkKitSource, requestAgentSource] = await Promise.all([
     fs.readFile(SUBSCRIPTION_DOWNLOADER_PATH, 'utf8'),
     fs.readFile(HTTP_TRANSPORT_PATH, 'utf8'),
     fs.readFile(NETWORK_KIT_TRANSPORT_PATH, 'utf8'),
-    fs.readFile(REQUEST_AGENT_TRANSPORT_PATH, 'utf8'),
-    readJson('entry/src/main/module.json5')
+    fs.readFile(REQUEST_AGENT_TRANSPORT_PATH, 'utf8')
   ]);
 
   assert.match(downloaderSource, /type RemoteAcquireCommand/u);
@@ -671,5 +675,64 @@ test('Task 8 platform source contract keeps transport selection and manual redir
   assert.match(requestAgentSource, /task\.on\('faultOccur'/u);
   assert.match(requestAgentSource, /requestAgent\.remove\(task\.tid\)|request\.agent\.remove\(task\.tid\)/u);
   assert.doesNotMatch(requestAgentSource, /requestSpec\.url.*createHttpTransportFailure|\$\{requestSpec\.url\}/u);
-  assert.deepEqual(entryModule.module.requestPermissions, [{ name: 'ohos.permission.INTERNET' }]);
+});
+
+test('Plan C keeps proxy policy package-neutral while platform and entry own concrete adapters', async () => {
+  const [serviceSource, portsSource, platformFactorySource, coreCompositionSource] = await Promise.all([
+    fs.readFile(path.join(SHARED_ETS_ROOT, 'proxy', 'ProxyService.ets'), 'utf8'),
+    fs.readFile(path.join(SHARED_ETS_ROOT, 'proxy', 'ProxyPorts.ets'), 'utf8'),
+    fs.readFile(PLATFORM_FACTORY_PATH, 'utf8'),
+    fs.readFile(path.join(HARMONY_ROOT, 'entry', 'src', 'main', 'ets', 'bootstrap', 'CoreComposition.ets'), 'utf8')
+  ]);
+
+  assert.doesNotMatch(serviceSource, /@cmfa\/(?:platform|entry)|@kit\.|@ohos\./u);
+  assert.doesNotMatch(portsSource, /@cmfa\/(?:platform|entry)|@kit\.|@ohos\./u);
+  assert.match(platformFactorySource, /proxySelectionRepository:\s*ProxySelectionRepository/u);
+  assert.match(platformFactorySource, /proxyIdentityHasher:\s*ProxyIdentityHasher/u);
+  assert.match(coreCompositionSource, /import[\s\S]*ProxyService[\s\S]*VpnProxyCommandBus[\s\S]*from '@cmfa\/shared'/u);
+});
+
+test('phase 3 delay contracts stay out of platform persistence and factory boundaries', async () => {
+  const [driverSource, platformIndexSource, platformFactorySource] = await Promise.all([
+    fs.readFile(HARMONY_DRIVER_PATH, 'utf8'),
+    fs.readFile(PLATFORM_INDEX_PATH, 'utf8'),
+    fs.readFile(PLATFORM_FACTORY_PATH, 'utf8')
+  ]);
+  const joined = `${driverSource}\n${platformIndexSource}\n${platformFactorySource}`;
+
+  assert.doesNotMatch(joined, /from\s+['"][^'"]*(?:ProxyDelayNativeCodec|CoreProxyDelayModels|ProxyDelayModels)['"]/u,
+    'platform/RDB surfaces must not import delay codecs or delay model authorities'
+  );
+  assert.doesNotMatch(driverSource, /\b(?:delayJobId|delayGroupName|delayNodeName|delayProvider|delayUrl|delayEndpoint)\b/u,
+    'the relational store contract must not add durable delay-specific private fields'
+  );
+  assert.doesNotMatch(platformIndexSource, /\bProxyDelay/u, 'platform package public surface must stay free of delay-specific exports');
+});
+
+test('phase 3 vpn-only one-click proxy authority keeps vpn mutations inside ProfileApplication', async () => {
+  const [applicationSource, indexSource, viewModelSource] = await Promise.all([
+    fs.readFile(PROFILE_APPLICATION_PATH, 'utf8'),
+    fs.readFile(INDEX_PATH, 'utf8'),
+    fs.readFile(PROXY_VIEW_MODEL_PATH, 'utf8')
+  ]);
+
+  assert.doesNotMatch(applicationSource, /async startLocal\(\): Promise<LocalRuntimeStartResult>/u,
+    'ProfileApplication must not expose a public startLocal authority in the VPN-only surface'
+  );
+  assert.doesNotMatch(applicationSource, /async stopLocal\(\): Promise<LocalRuntimeStopResult>/u,
+    'ProfileApplication must not expose a public stopLocal authority in the VPN-only surface'
+  );
+  assert.match(applicationSource, /async startVpnGlobalCapture\(\): Promise<VpnControllerStartResult>[\s\S]*tryAcquireRuntimeMutationOwner\('VPN'\)/u);
+  assert.match(applicationSource, /async stopVpnGlobalCapture\(\): Promise<VpnControllerStopResult>[\s\S]*tryAcquireRuntimeMutationOwner\('VPN'\)/u);
+  assert.match(applicationSource, /async selectNodeAndEnsureVpn\([\s\S]*tryAcquireRuntimeMutationOwner\('ONE_CLICK'\)/u);
+
+  assert.doesNotMatch(indexSource, /\.(?:startLocal|stopLocal|startVpnGlobalCapture|stopVpnGlobalCapture)\(/u,
+    'Index must not own proxy-route runtime mutations'
+  );
+  assert.doesNotMatch(viewModelSource, /\.(?:startLocal|stopLocal|startVpnGlobalCapture|stopVpnGlobalCapture)\(/u,
+    'ProxyViewModel must not sequence Home or VPN mutations directly'
+  );
+  assert.match(viewModelSource, /await this\.application\.selectNodeAndEnsureVpn\(\s*groupName,\s*row\.name,\s*generation,\s*this\.cloneDisplayedGroupPath\(\)\s*\)/u,
+    'ProxyViewModel must delegate one-click activation to the application layer'
+  );
 });

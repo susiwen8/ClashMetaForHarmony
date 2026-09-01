@@ -19,6 +19,12 @@ const macHomePrefix = ['/Us', 'ers/'];
 const windowsHomePrefix = [':\\\\Us', 'ers\\\\'];
 const binaryExtensions = new Set(['.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.ico', '.so', '.jar', '.zip']);
 const escapedWindowsSourceSeparator = joinFragments(['\\', '\\']);
+const GIT_LS_FILES_MAX_BUFFER = 32 * 1024 * 1024;
+const generatedCoreGoCachePrefixes = Object.freeze([
+  'core/go/.codex-tmp/',
+  'core/go/.tmp-go-build/',
+  'core/go/.tmp-go-cache/'
+]);
 const pathFixtureLiteralReplacements = new Map([
   [
     'tests/structure/toolchain-discovery.test.mjs',
@@ -30,7 +36,21 @@ const pathFixtureLiteralReplacements = new Map([
       `file:///C:/${joinFragments(['Us', 'ers/name/My%20Repo'])}/harmony/tools/preflight.mjs`,
       buildWindowsSourcePath([joinFragments(['Us', 'ers']), 'name', 'My Repo'])
     ]
-  ]
+  ],
+  [
+    'shared/src/test/VpnModels.test.ets',
+    [
+      joinFragments(['/Us', 'ers/susiwen8/Documents']),
+      joinFragments(['/Us', 'ers/susiwen8/Documents/token.txt'])
+    ]
+  ],
+  [
+    'platform/src/test/HarmonyVpnRpcKeyProvider.test.ets',
+    [
+      'keyAlias',
+      'VPN_RPC_ROOT_HUKS_ALIAS'
+    ]
+  ],
 ]);
 
 function escapeRegex(value) {
@@ -57,19 +77,23 @@ function listTrackedAndCandidateHarmonyFiles() {
   const output = execFileSync(
     'git',
     ['ls-files', '--cached', '--others', '--exclude-standard', '-z', '--', 'harmony'],
-    { cwd: repoRoot, encoding: 'utf8' }
+    { cwd: repoRoot, encoding: 'utf8', maxBuffer: GIT_LS_FILES_MAX_BUFFER }
   );
 
   return output
     .split('\u0000')
     .filter(Boolean)
     .map((filePath) => path.posix.relative('harmony', filePath))
-    .filter((relativePath) => !isGeneratedModuleTestArtifact(relativePath))
+    .filter((relativePath) => !isGeneratedOutputPath(relativePath))
     .sort();
 }
 
 function isGeneratedModuleTestArtifact(relativePath) {
   return /^(?:core|entry|platform|shared)\/\.test(?:\/|$)/u.test(relativePath);
+}
+
+function isGeneratedOutputPath(relativePath) {
+  return isGeneratedModuleTestArtifact(relativePath) || generatedCoreGoCachePrefixes.some((prefix) => relativePath.startsWith(prefix));
 }
 
 function isBinaryPath(relativePath) {
@@ -181,6 +205,17 @@ test('signing isolation excludes generated module .test artifacts without exclud
   assert.equal(isGeneratedModuleTestArtifact('shared/src/test/VpnModels.test.ets'), false);
   assert.equal(isGeneratedModuleTestArtifact('core/src/test/List.test.ets'), false);
   assert.equal(isGeneratedModuleTestArtifact('platform/.testing/generated.txt'), false);
+});
+
+test('signing isolation excludes only generated cache paths and keeps neighboring Go sources scannable', () => {
+  assert.equal(isGeneratedOutputPath('core/.test/default/cache/default/default@UnitTestArkTS/esmodule/.ts_checker_cache'), true);
+  assert.equal(isGeneratedOutputPath('core/go/.codex-tmp/gotmp/xcrun_db'), true);
+  assert.equal(isGeneratedOutputPath('core/go/.codex-tmp/gocache/61/cache-entry'), true);
+  assert.equal(isGeneratedOutputPath('core/go/.tmp-go-build/00/cache-entry'), true);
+  assert.equal(isGeneratedOutputPath('core/go/.tmp-go-cache/ab/cache-entry'), true);
+  assert.equal(isGeneratedOutputPath('core/go/internal/config/validate_test.go'), false);
+  assert.equal(isGeneratedOutputPath('core/go/main.go'), false);
+  assert.equal(isGeneratedOutputPath('shared/src/test/VpnModels.test.ets'), false);
 });
 
 test('tracked and candidate harmony files stay free of embedded signing material and machine-specific paths', async () => {

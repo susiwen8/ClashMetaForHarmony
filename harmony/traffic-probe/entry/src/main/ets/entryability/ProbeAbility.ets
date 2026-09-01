@@ -4,10 +4,12 @@ import type common from '@ohos.app.ability.common';
 import { DirectTrafficProbe, ProbeRuntimeFactory } from '../probe/DirectTrafficProbe';
 import {
   ProbeCommand,
+  ProbeExternalOriginConfig,
   ProbeFlowIdSet,
   ProbeLocalListenerConfig,
   ProbeOriginConfig,
   ProbePageState,
+  PROBE_PARAM_CAPTURE_MODE,
   PROBE_PARAM_FLOW_DNS_LOOKUP,
   PROBE_PARAM_FLOW_DNS_PACKET_IPV4,
   PROBE_PARAM_FLOW_DNS_PACKET_IPV6,
@@ -17,9 +19,15 @@ import {
   PROBE_PARAM_FLOW_TCP,
   PROBE_PARAM_FLOW_UDP_IPV4,
   PROBE_PARAM_FLOW_UDP_IPV6,
+  PROBE_PARAM_EXTERNAL_ORIGIN_DNS_PORT,
+  PROBE_PARAM_EXTERNAL_ORIGIN_HOST,
+  PROBE_PARAM_EXTERNAL_TCP_HOST,
+  PROBE_PARAM_EXTERNAL_ORIGIN_TCP_PORT,
+  PROBE_PARAM_EXTERNAL_ORIGIN_UDP_PORT,
   PROBE_PARAM_LOCAL_HTTP_CONNECT_PORT,
   PROBE_PARAM_LOCAL_SOCKS5_PORT,
   PROBE_PARAM_ORIGIN_DNS_PORT,
+  PROBE_PARAM_ORIGIN_CA_PEM,
   PROBE_PARAM_ORIGIN_HOST,
   PROBE_PARAM_ORIGIN_HTTPS_PORT,
   PROBE_PARAM_ORIGIN_TCP_PORT,
@@ -88,45 +96,33 @@ export function readProbeCommandForTesting(want: Want): ProbeCommand {
     return command;
   }
 
+  command.requireExternalOrigin = true;
   command.runId = readString(parameters, PROBE_PARAM_RUN_ID);
   command.sessionId = readString(parameters, PROBE_PARAM_SESSION_ID);
+  command.captureMode = readProbeCaptureMode(parameters);
   command.pinnedCertificateHash = readString(parameters, PROBE_PARAM_PINNED_PUBLIC_KEY_HASH);
+  command.originCaPem = readString(parameters, PROBE_PARAM_ORIGIN_CA_PEM);
   command.flowIds = readFlatFlowIds(parameters);
   command.lanOrigin = readFlatOrigin(parameters);
+  command.externalOrigin = readFlatExternalOrigin(parameters);
   command.localListeners = readFlatListeners(parameters);
 
-  if (!areFlatFieldsComplete(command)) {
-    const nestedFlowIds: ProbeFlowIdSet = readFlowIds(readObject(parameters, 'flowIds'));
-    const nestedOrigin: ProbeOriginConfig = readOrigin(readObject(parameters, 'lanOrigin'));
-    const nestedListeners: ProbeLocalListenerConfig = readListeners(readObject(parameters, 'localListeners'));
-    fillMissingFlowIds(command.flowIds, nestedFlowIds);
-    fillMissingOrigin(command.lanOrigin, nestedOrigin);
-    fillMissingListeners(command.localListeners, nestedListeners);
-    if (command.pinnedCertificateHash.length === 0) {
-      command.pinnedCertificateHash = readString(parameters, 'pinnedCertificateHash');
-    }
+  const nestedFlowIds: ProbeFlowIdSet = readFlowIds(readObject(parameters, 'flowIds'));
+  const nestedOrigin: ProbeOriginConfig = readOrigin(readObject(parameters, 'lanOrigin'));
+  const nestedExternalOrigin: ProbeExternalOriginConfig = readExternalOrigin(readObject(parameters, 'externalOrigin'));
+  const nestedListeners: ProbeLocalListenerConfig = readListeners(readObject(parameters, 'localListeners'));
+  fillMissingFlowIds(command.flowIds, nestedFlowIds);
+  fillMissingOrigin(command.lanOrigin, nestedOrigin);
+  fillMissingExternalOrigin(command.externalOrigin, nestedExternalOrigin);
+  fillMissingListeners(command.localListeners, nestedListeners);
+  if (command.pinnedCertificateHash.length === 0) {
+    command.pinnedCertificateHash = readString(parameters, 'pinnedCertificateHash');
   }
   return command;
 }
 
-function areFlatFieldsComplete(command: ProbeCommand): boolean {
-  return command.flowIds.https.length > 0 &&
-    command.flowIds.tcp.length > 0 &&
-    command.flowIds.udpIpv4.length > 0 &&
-    command.flowIds.udpIpv6.length > 0 &&
-    command.flowIds.dnsLookup.length > 0 &&
-    command.flowIds.dnsPacketIpv4.length > 0 &&
-    command.flowIds.dnsPacketIpv6.length > 0 &&
-    command.flowIds.httpConnect.length > 0 &&
-    command.flowIds.socks5.length > 0 &&
-    command.lanOrigin.host.length > 0 &&
-    command.lanOrigin.httpsPort > 0 &&
-    command.lanOrigin.tcpPort > 0 &&
-    command.lanOrigin.udpPort > 0 &&
-    command.lanOrigin.dnsPort > 0 &&
-    command.localListeners.httpConnectPort > 0 &&
-    command.localListeners.socks5Port > 0 &&
-    command.pinnedCertificateHash.length > 0;
+function readProbeCaptureMode(parameters: Record<string, Object>): 'baseline' | 'vpn' {
+  return readString(parameters, PROBE_PARAM_CAPTURE_MODE) === 'vpn' ? 'vpn' : 'baseline';
 }
 
 function fillMissingFlowIds(target: ProbeFlowIdSet, fallback: ProbeFlowIdSet): void {
@@ -144,6 +140,14 @@ function fillMissingFlowIds(target: ProbeFlowIdSet, fallback: ProbeFlowIdSet): v
 function fillMissingOrigin(target: ProbeOriginConfig, fallback: ProbeOriginConfig): void {
   if (target.host.length === 0) target.host = fallback.host;
   if (target.httpsPort === 0) target.httpsPort = fallback.httpsPort;
+  if (target.tcpPort === 0) target.tcpPort = fallback.tcpPort;
+  if (target.udpPort === 0) target.udpPort = fallback.udpPort;
+  if (target.dnsPort === 0) target.dnsPort = fallback.dnsPort;
+}
+
+function fillMissingExternalOrigin(target: ProbeExternalOriginConfig, fallback: ProbeExternalOriginConfig): void {
+  if (target.host.length === 0) target.host = fallback.host;
+  if (target.tcpHost.length === 0) target.tcpHost = fallback.tcpHost;
   if (target.tcpPort === 0) target.tcpPort = fallback.tcpPort;
   if (target.udpPort === 0) target.udpPort = fallback.udpPort;
   if (target.dnsPort === 0) target.dnsPort = fallback.dnsPort;
@@ -178,6 +182,16 @@ function readFlatOrigin(source: Record<string, Object>): ProbeOriginConfig {
   return origin;
 }
 
+function readFlatExternalOrigin(source: Record<string, Object>): ProbeExternalOriginConfig {
+  const origin: ProbeExternalOriginConfig = new ProbeExternalOriginConfig();
+  origin.host = readString(source, PROBE_PARAM_EXTERNAL_ORIGIN_HOST);
+  origin.tcpHost = readString(source, PROBE_PARAM_EXTERNAL_TCP_HOST);
+  origin.tcpPort = readNumber(source, PROBE_PARAM_EXTERNAL_ORIGIN_TCP_PORT);
+  origin.udpPort = readNumber(source, PROBE_PARAM_EXTERNAL_ORIGIN_UDP_PORT);
+  origin.dnsPort = readNumber(source, PROBE_PARAM_EXTERNAL_ORIGIN_DNS_PORT);
+  return origin;
+}
+
 function readFlatListeners(source: Record<string, Object>): ProbeLocalListenerConfig {
   const listeners: ProbeLocalListenerConfig = new ProbeLocalListenerConfig();
   listeners.httpConnectPort = readNumber(source, PROBE_PARAM_LOCAL_HTTP_CONNECT_PORT);
@@ -203,6 +217,16 @@ function readOrigin(source: Record<string, Object>): ProbeOriginConfig {
   const origin: ProbeOriginConfig = new ProbeOriginConfig();
   origin.host = readString(source, 'host');
   origin.httpsPort = readNumber(source, 'httpsPort');
+  origin.tcpPort = readNumber(source, 'tcpPort');
+  origin.udpPort = readNumber(source, 'udpPort');
+  origin.dnsPort = readNumber(source, 'dnsPort');
+  return origin;
+}
+
+function readExternalOrigin(source: Record<string, Object>): ProbeExternalOriginConfig {
+  const origin: ProbeExternalOriginConfig = new ProbeExternalOriginConfig();
+  origin.host = readString(source, 'host');
+  origin.tcpHost = readString(source, 'tcpHost');
   origin.tcpPort = readNumber(source, 'tcpPort');
   origin.udpPort = readNumber(source, 'udpPort');
   origin.dnsPort = readNumber(source, 'dnsPort');

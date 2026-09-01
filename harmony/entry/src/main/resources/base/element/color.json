@@ -54,11 +54,11 @@
     },
     {
       "name": "color_status_success",
-      "value": "#1F8B4C"
+      "value": "#197A42"
     },
     {
       "name": "color_status_warning",
-      "value": "#B26A00"
+      "value": "#9A5600"
     },
     {
       "name": "color_status_danger",

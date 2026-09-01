@@ -90,6 +90,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'schemaVersion',
   'phase',
   'result',
+  'stubDetected',
   'runId',
   'outputPath',
   'timestamps',
@@ -103,6 +104,7 @@ const ALLOWED_TOP_LEVEL_KEYS = new Set([
   'tun',
   'failures'
 ]);
+const FORBIDDEN_IDENTIFIER_KEYS = new Set(['sessionId', 'traceId']);
 
 function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
   if (Array.isArray(value)) {
@@ -123,6 +125,9 @@ function collectForbiddenShapeErrors(value, trail = 'proof', errors = []) {
   }
 
   for (const [key, entry] of Object.entries(value)) {
+    if (FORBIDDEN_IDENTIFIER_KEYS.has(key)) {
+      errors.push(`${trail}.${key} must not persist identifiers`);
+    }
     if (/(?:serial|udid|imei|deviceid|sn)/iu.test(key)) {
       errors.push(`${trail}.${key} must not use serial-like keys`);
     }
@@ -140,6 +145,7 @@ function createValidPhase4Proof() {
     schemaVersion: '4.0.0',
     phase: 4,
     result: 'pass',
+    stubDetected: false,
     runId: '4b6ec0a3-47cd-4776-96f1-b03df8a09472',
     outputPath: 'harmony/artifacts/phase4-device-proof.json',
     timestamps: {
@@ -159,7 +165,7 @@ function createValidPhase4Proof() {
         bundleName: 'com.github.kr328.clash.harmony'
       },
       probe: {
-        bundleName: 'com.github.kr328.clash.harmony.trafficprobe'
+        bundleName: 'com.cmfa.phase4.trafficprobe'
       },
       hapSha256: [digest('a'), digest('b')]
     },
@@ -180,37 +186,33 @@ function createValidPhase4Proof() {
     traffic: {
       tcp: {
         result: 'pass',
-        sessionId: 'session-tcp',
-        traceId: 'trace-tcp',
+        correlated: true,
         captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.tcp.capture },
         coreEvent: { event: TRAFFIC_EVENT_CONTRACT.tcp.core }
       },
       udp: {
         result: 'pass',
-        sessionId: 'session-udp',
-        traceId: 'trace-udp',
+        correlated: true,
         captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.udp.capture },
         coreEvent: { event: TRAFFIC_EVENT_CONTRACT.udp.core }
       },
       dns: {
         result: 'pass',
-        sessionId: 'session-dns',
-        traceId: 'trace-dns',
+        correlated: true,
         captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.dns.capture },
         coreEvent: { event: TRAFFIC_EVENT_CONTRACT.dns.core }
       },
       ipv4: {
         result: 'pass',
-        sessionId: 'session-ipv4',
-        traceId: 'trace-ipv4',
+        correlated: true,
         captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.ipv4.capture },
         coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv4.core }
       },
       ipv6: { result: 'not-run', reason: 'network-not-provisioned' }
     },
     localEvidence: {
-      http: { result: 'pass', ingress: 'local-http', sessionId: 'local-http-session', traceId: 'local-http-trace' },
-      socks: { result: 'pass', ingress: 'local-socks', sessionId: 'local-socks-session', traceId: 'local-socks-trace' }
+      http: { result: 'pass', ingress: 'local-http', correlated: true },
+      socks: { result: 'pass', ingress: 'local-socks', correlated: true }
     },
     lifecycle: {
       notification: { result: 'pass' },
@@ -245,6 +247,7 @@ function validatePhase4Proof(proof) {
   if (proof.schemaVersion !== '4.0.0') errors.push('schemaVersion must be 4.0.0');
   if (proof.phase !== 4) errors.push('phase must be 4');
   if (proof.result !== 'pass') errors.push('result must be pass');
+  if (proof.stubDetected !== false) errors.push('stubDetected must be false');
   if (!isUuid(proof.runId)) errors.push('runId must be a UUID');
   if (proof.outputPath !== 'harmony/artifacts/phase4-device-proof.json') errors.push('outputPath must be canonical');
 
@@ -274,7 +277,7 @@ function validatePhase4Proof(proof) {
     if (proof.bundles.production.bundleName !== 'com.github.kr328.clash.harmony') {
       errors.push('production bundleName must be the canonical app bundle');
     }
-    if (proof.bundles.probe.bundleName !== 'com.github.kr328.clash.harmony.trafficprobe') {
+    if (proof.bundles.probe.bundleName !== 'com.cmfa.phase4.trafficprobe') {
       errors.push('probe bundleName must be the approved traffic probe bundle');
     }
     if ('hapSha256' in proof.bundles.production || 'hapSha256' in proof.bundles.probe) {
@@ -335,8 +338,7 @@ function validatePhase4Proof(proof) {
     if (
       !isObject(entry) ||
       entry.result !== 'pass' ||
-      typeof entry.sessionId !== 'string' ||
-      typeof entry.traceId !== 'string' ||
+      entry.correlated !== true ||
       !isObject(entry.captureTrace) ||
       entry.captureTrace.ingress !== 'tun' ||
       entry.captureTrace.event !== expected.capture ||
@@ -351,8 +353,7 @@ function validatePhase4Proof(proof) {
     if (
       isObject(ipv6) &&
       ipv6.result === 'pass' &&
-      typeof ipv6.sessionId === 'string' &&
-      typeof ipv6.traceId === 'string' &&
+      ipv6.correlated === true &&
       isObject(ipv6.captureTrace) &&
       ipv6.captureTrace.ingress === 'tun' &&
       ipv6.captureTrace.event === TRAFFIC_EVENT_CONTRACT.ipv6.capture &&
@@ -378,7 +379,7 @@ function validatePhase4Proof(proof) {
 
   for (const [key, expectedIngress] of Object.entries({ http: 'local-http', socks: 'local-socks' })) {
     const entry = proof.localEvidence?.[key];
-    if (!isObject(entry) || entry.result !== 'pass' || entry.ingress !== expectedIngress) {
+    if (!isObject(entry) || entry.result !== 'pass' || entry.ingress !== expectedIngress || entry.correlated !== true) {
       errors.push(`localEvidence.${key} must use ${expectedIngress}`);
     }
   }
@@ -411,10 +412,12 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.additionalProperties, false);
   assert.equal(schema.properties.schemaVersion.const, '4.0.0');
   assert.equal(schema.properties.phase.const, 4);
+  assert.equal(schema.properties.stubDetected.const, false);
   assert.deepEqual(schema.required, [
     'schemaVersion',
     'phase',
     'result',
+    'stubDetected',
     'runId',
     'outputPath',
     'timestamps',
@@ -435,7 +438,7 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.lifecycle.additionalProperties, false);
   assert.equal(schema.properties.tun.additionalProperties, false);
   assert.equal(schema.$defs.productionBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony');
-  assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.github.kr328.clash.harmony.trafficprobe');
+  assert.equal(schema.$defs.probeBundle.properties.bundleName.const, 'com.cmfa.phase4.trafficprobe');
   assert.equal('hapSha256' in schema.$defs.productionBundle.properties, false);
   assert.equal('hapSha256' in schema.$defs.probeBundle.properties, false);
   assert.equal(schema.properties.bundles.properties.hapSha256.uniqueItems, true);
@@ -457,6 +460,10 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
   assert.equal(schema.properties.assertions.properties.blockedApplications.items, false);
   assert.equal(schema.$defs.localHttpEvidence.properties.ingress.const, 'local-http');
   assert.equal(schema.$defs.localSocksEvidence.properties.ingress.const, 'local-socks');
+  assert.equal('sessionId' in schema.$defs.trafficTcp.properties, false);
+  assert.equal('traceId' in schema.$defs.trafficTcp.properties, false);
+  assert.equal(schema.$defs.trafficTcp.properties.correlated.const, true);
+  assert.equal(schema.$defs.localHttpEvidence.properties.correlated.const, true);
   assert.equal('ipv6' in schema.properties.traffic.properties, true);
   assert.deepEqual(
     Object.keys(schema.properties.traffic.properties),
@@ -482,6 +489,8 @@ test('Phase 4 proof schema and example lock the closed production contract', asy
 test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, and broken correlation invariants', () => {
   const cases = [
     ['wrong schema version', (proof) => { proof.schemaVersion = '1.0.0'; }, /schemaVersion/u],
+    ['stub flag missing', (proof) => { delete proof.stubDetected; }, /stubDetected/u],
+    ['stub flag true', (proof) => { proof.stubDetected = true; }, /stubDetected/u],
     ['full URL leaked', (proof) => { proof.device.modelAlias = leakedUrlValue; }, /full URLs/u],
     ['file URL leaked', (proof) => { proof.device.productAlias = leakedFileUrlValue; }, /full URLs/u],
     ['ssh URL leaked', (proof) => { proof.device.productAlias = leakedSshUrlValue; }, /full URLs/u],
@@ -506,6 +515,8 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['blocked applications drifted', (proof) => { proof.assertions.blockedApplications = []; }, /VPN contract/u],
     ['local ingress broke', (proof) => { proof.localEvidence.http.ingress = 'tun'; }, /localEvidence\.http/u],
     ['socks ingress broke', (proof) => { proof.localEvidence.socks.ingress = 'tun'; }, /localEvidence\.socks/u],
+    ['traffic tcp identifier leaked', (proof) => { proof.traffic.tcp.sessionId = 'session-tcp'; }, /must not persist identifiers/u],
+    ['local http identifier leaked', (proof) => { proof.localEvidence.http.traceId = 'trace-http'; }, /must not persist identifiers/u],
     ['unexpected top-level correlations field leaked', (proof) => { proof.correlations = {}; }, /unexpected key correlations/u],
     ['capture ingress broke', (proof) => { proof.traffic.tcp.captureTrace.ingress = 'local-http'; }, /traffic\.tcp/u],
     ['tcp capture event drifted', (proof) => { proof.traffic.tcp.captureTrace.event = TRAFFIC_EVENT_CONTRACT.udp.capture; }, /traffic\.tcp/u],
@@ -513,12 +524,11 @@ test('Phase 4 proof validation rejects old tags, secrets, URLs, signing paths, a
     ['capture trace omitted', (proof) => { delete proof.traffic.tcp.captureTrace; }, /traffic\.tcp/u],
     ['core event omitted', (proof) => { delete proof.traffic.tcp.coreEvent; }, /traffic\.tcp/u],
     ['ipv6 not-run missing reason', (proof) => { proof.traffic.ipv6 = { result: 'not-run' }; }, /ipv6/u],
-    ['ipv6 partial pass evidence', (proof) => { proof.traffic.ipv6 = { result: 'pass', sessionId: 'session-ipv6', traceId: 'trace-ipv6' }; }, /ipv6/u],
+    ['ipv6 partial pass evidence', (proof) => { proof.traffic.ipv6 = { result: 'pass', correlated: true }; }, /ipv6/u],
     ['ipv6 wrong capture event', (proof) => {
       proof.traffic.ipv6 = {
         result: 'pass',
-        sessionId: 'session-ipv6',
-        traceId: 'trace-ipv6',
+        correlated: true,
         captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.tcp.capture },
         coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv6.core }
       };
@@ -554,8 +564,7 @@ test('Phase 4 proof validation accepts canonical ipv6 pass and not-run branches'
   const passProof = createValidPhase4Proof();
   passProof.traffic.ipv6 = {
     result: 'pass',
-    sessionId: 'session-ipv6',
-    traceId: 'trace-ipv6',
+    correlated: true,
     captureTrace: { ingress: 'tun', event: TRAFFIC_EVENT_CONTRACT.ipv6.capture },
     coreEvent: { event: TRAFFIC_EVENT_CONTRACT.ipv6.core }
   };
@@ -607,28 +616,33 @@ test('Phase 4 runner correlated pass output matches the closed production schema
         { flowId, stepId: 'tcp', ingressExpectation: 'tun', outcome: 'pass', transport: 'tcp', targetPort: 443, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
         { flowId, stepId: 'udp-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
         { flowId, stepId: 'dns-packet-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
-        { flowId: 'local-http-flow', stepId: 'http-connect', ingressExpectation: 'local-http-connect-listener', outcome: 'pass', transport: 'tcp', targetPort: 7890, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
-        { flowId: 'local-socks-flow', stepId: 'socks5', ingressExpectation: 'local-socks5-listener', outcome: 'pass', transport: 'tcp', targetPort: 7891, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 }
+        { flowId: 'local-http-flow', stepId: 'http-connect', ingressExpectation: 'local-http-connect-listener', outcome: 'fail', transport: 'tcp', targetPort: 7890, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 0 },
+        { flowId: 'local-socks-flow', stepId: 'socks5', ingressExpectation: 'local-socks5-listener', outcome: 'fail', transport: 'tcp', targetPort: 7891, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 0 }
       ],
       failures: []
+    },
+    localProof: {
+      http: { ingress: 'local-http', outcome: 'pass', correlated: true },
+      socks: { ingress: 'local-socks', outcome: 'pass', correlated: true }
     },
     runtime: {
       counters: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 },
       records: [
-        { sequence: 1, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-tcp', coreAlias: '', protocol: 'tcp', hashedTuple: 'hash-tcp', correlationHash: markerHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'tcp' },
-        { sequence: 2, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-udp', coreAlias: '', protocol: 'udp', hashedTuple: 'hash-udp', correlationHash: markerHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'udp' },
-        { sequence: 3, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: dnsHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-dns', coreAlias: '', protocol: 'dns', hashedTuple: 'hash-dns', correlationHash: dnsHash, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'dns' }
+        { sequence: 1, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-tcp', coreAlias: '', protocol: 'tcp', hashedTuple: 'hash-tcp', correlationHash: markerHash, destinationHash: hashHex('dest-tcp'), outboundTerminalHash: hashHex('term-tcp'), outboundChainHash: hashHex('chain-tcp'), outboundChainLength: 2, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'tcp' },
+        { sequence: 2, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-udp', coreAlias: '', protocol: 'udp', hashedTuple: 'hash-udp', correlationHash: markerHash, destinationHash: hashHex('dest-udp'), outboundTerminalHash: hashHex('term-udp'), outboundChainHash: hashHex('chain-udp'), outboundChainLength: 2, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'udp' },
+        { sequence: 3, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: dnsHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-dns', coreAlias: '', protocol: 'dns', hashedTuple: 'hash-dns', correlationHash: dnsHash, destinationHash: hashHex('dest-dns'), outboundTerminalHash: hashHex('term-dns'), outboundChainHash: hashHex('chain-dns'), outboundChainLength: 1, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'dns' }
       ]
     },
     packages: {
       result: 'pass',
       production: {
         bundleName: 'com.github.kr328.clash.harmony',
+        stubDetected: false,
         hapSha256: digest('a'),
         signatureSha256: digest('b')
       },
       probe: {
-        bundleName: 'com.github.kr328.clash.harmony.trafficprobe',
+        bundleName: 'com.cmfa.phase4.trafficprobe',
         hapSha256: digest('c'),
         signatureSha256: digest('d')
       }
@@ -644,8 +658,110 @@ test('Phase 4 runner correlated pass output matches the closed production schema
     }
   });
 
+  assert.equal(proof.result, 'pass', JSON.stringify(proof.failures));
+  assert.equal(proof.stubDetected, false);
   assert.deepEqual(validatePhase4Proof(proof), { valid: true, errors: [] });
   assert.equal(collectForbiddenShapeErrors(proof).length, 0);
+});
+
+test('Phase 4 runner fail-closes correlated output when production stub detection is missing or true', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const base = createValidPhase4Proof();
+  const runId = base.runId;
+  const sessionId = '0eaf3b3d-5d04-4cd7-b1f4-e2a7d5ccf7a1';
+  const flowId = '5e55ea90-9911-489f-93b3-fffd53605025';
+  const markerHash = hashHex(`cmfa-${flowId}`);
+  const dnsHash = createDnsPacketHash(runId, flowId);
+  const evidence = {
+    runId,
+    origin: {
+      runId,
+      observations: [
+        { protocol: 'https', runId, sessionId, flowId, responseBodySha256: digest('6') },
+        { protocol: 'tcp', runId, sessionId, flowId, payloadSha256: digest('7'), correlationHash: markerHash },
+        { protocol: 'udp', runId, sessionId, flowId, payloadSha256: digest('8'), correlationHash: markerHash, dnsShaped: false }
+      ]
+    },
+    probe: {
+      version: '1.0.0',
+      result: 'pass',
+      runId,
+      sessionId,
+      records: [
+        { flowId: 'https-flow', stepId: 'https', ingressExpectation: 'origin-https', outcome: 'pass', transport: 'https', targetPort: 443, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1, statusCode: 200 },
+        { flowId, stepId: 'tcp', ingressExpectation: 'tun', outcome: 'pass', transport: 'tcp', targetPort: 443, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId, stepId: 'udp-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 },
+        { flowId, stepId: 'dns-packet-ipv4', ingressExpectation: 'tun', outcome: 'pass', transport: 'udp', targetPort: 53, startedAt: '2026-08-17T00:00:00.000Z', completedAt: '2026-08-17T00:00:01.000Z', bytesSent: 1, bytesReceived: 1 }
+      ],
+      failures: []
+    },
+    localProof: {
+      http: { ingress: 'local-http', outcome: 'pass', correlated: true },
+      socks: { ingress: 'local-socks', outcome: 'pass', correlated: true }
+    },
+    runtime: {
+      counters: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 },
+      records: [
+        { sequence: 1, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-tcp', coreAlias: '', protocol: 'tcp', hashedTuple: 'hash-tcp', correlationHash: markerHash, destinationHash: hashHex('dest-tcp'), outboundTerminalHash: hashHex('term-tcp'), outboundChainHash: hashHex('chain-tcp'), outboundChainLength: 2, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'tcp' },
+        { sequence: 2, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: markerHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-udp', coreAlias: '', protocol: 'udp', hashedTuple: 'hash-udp', correlationHash: markerHash, destinationHash: hashHex('dest-udp'), outboundTerminalHash: hashHex('term-udp'), outboundChainHash: hashHex('chain-udp'), outboundChainLength: 2, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'udp' },
+        { sequence: 3, kind: 'traffic', ingress: 'tun', linkageStatus: 'linked', flowIdHash: dnsHash, sessionIdHash: runner.hashOpaqueCorrelationId(sessionId), traceAlias: 'trace-dns', coreAlias: '', protocol: 'dns', hashedTuple: 'hash-dns', correlationHash: dnsHash, destinationHash: hashHex('dest-dns'), outboundTerminalHash: hashHex('term-dns'), outboundChainHash: hashHex('chain-dns'), outboundChainLength: 1, counterDelta: 1, counterSnapshot: { rxPackets: 41, txPackets: 38, rxBytes: 4096, txBytes: 6144 }, detail: 'dns' }
+      ]
+    },
+    packages: {
+      result: 'pass',
+      production: {
+        bundleName: 'com.github.kr328.clash.harmony',
+        hapSha256: digest('a'),
+        signatureSha256: digest('b')
+      },
+      probe: {
+        bundleName: 'com.cmfa.phase4.trafficprobe',
+        hapSha256: digest('c'),
+        signatureSha256: digest('d')
+      }
+    },
+    lifecycle: {
+      launcherContinuity: true,
+      screenOffContinuity: true,
+      vpnIndicatorVisible: true,
+      ongoingNotificationVisible: true,
+      networkLossRecovery: true,
+      stopCleanup: true,
+      networkingRestored: true
+    }
+  };
+
+  const missingStub = runner.correlatePhase4Evidence(evidence);
+  assert.equal(missingStub.result, 'incomplete');
+  assert.equal(missingStub.stubDetected, true);
+  assert.match(missingStub.failures.map((entry) => entry.code).join(','), /PACKAGE_STUB_DETECTED/u);
+
+  const explicitStub = runner.correlatePhase4Evidence({
+    ...evidence,
+    packages: {
+      ...evidence.packages,
+      production: {
+        ...evidence.packages.production,
+        stubDetected: true
+      }
+    }
+  });
+  assert.equal(explicitStub.result, 'incomplete');
+  assert.equal(explicitStub.stubDetected, true);
+  assert.match(explicitStub.failures.map((entry) => entry.code).join(','), /PACKAGE_STUB_DETECTED/u);
+});
+
+test('Phase 4 runner incomplete proof defaults stubDetected to fail-closed true until package inspection proves false', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const baseProof = runner.createBaseProofForTesting();
+  assert.equal(baseProof.result, 'incomplete');
+  assert.equal(baseProof.stubDetected, true);
+
+  const tempRoot = await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'phase4-proof-schema-stub-'));
+  const outputPath = path.join(tempRoot, 'phase4-device-proof.json');
+  const argumentProof = await runner.writeArgumentErrorProof({ outputPath });
+  assert.equal(argumentProof.result, 'incomplete');
+  assert.equal(argumentProof.stubDetected, true);
 });
 
 test('Phase 4 runner generic schema validator enforces additionalProperties, required, const/type/pattern/minimum, tuples, uniqueItems, oneOf, and bad refs', async () => {
@@ -694,7 +810,7 @@ test('Phase 4 runner generic schema validator enforces additionalProperties, req
   oneOfBoth.traffic.ipv6 = {
     result: 'not-run',
     reason: 'network-not-provisioned',
-    sessionId: 'extra'
+    correlated: true
   };
   assert.equal((await runner.validatePhase4ProofDocument(oneOfBoth)).valid, false);
 

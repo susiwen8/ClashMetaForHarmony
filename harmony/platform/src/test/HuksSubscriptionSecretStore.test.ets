@@ -1,6 +1,6 @@
 import { describe, expect, it } from '@ohos/hypium';
 import { isSubscriptionSecretError } from '@cmfa/shared';
-import { HarmonyHuksDriver } from '../main/ets/secrets/HarmonyHuksDriver';
+import { HarmonyHuksDriver, type HuksDiagnosticSink } from '../main/ets/secrets/HarmonyHuksDriver';
 import {
   type HuksEncryptedPayload,
   type HuksOperations,
@@ -9,7 +9,10 @@ import {
   type HuksRandomSource,
   type HuksReturnResultContract
 } from '../main/ets/secrets/HuksDriver';
-import { HuksSubscriptionSecretStore } from '../main/ets/secrets/HuksSubscriptionSecretStore';
+import {
+  HuksSubscriptionSecretStore,
+  type SecretStoreDiagnosticSink
+} from '../main/ets/secrets/HuksSubscriptionSecretStore';
 import {
   DeterministicHuksDriver,
   FakeFileDriver,
@@ -34,6 +37,34 @@ class RecordedUpdateCall {
     this.handle = handle;
     this.inDataLength = inDataLength;
     this.tokenLength = tokenLength;
+  }
+}
+
+class RecordedFinishCall {
+  readonly handle: number;
+  readonly inDataLength: number;
+  readonly tokenLength: number;
+  readonly nonceLength: number;
+  readonly tagLength: number;
+  readonly nonceBytes: Uint8Array;
+  readonly tagBytes: Uint8Array;
+
+  constructor(
+    handle: number,
+    inDataLength: number,
+    tokenLength: number,
+    nonceLength: number,
+    tagLength: number,
+    nonceBytes: Uint8Array,
+    tagBytes: Uint8Array
+  ) {
+    this.handle = handle;
+    this.inDataLength = inDataLength;
+    this.tokenLength = tokenLength;
+    this.nonceLength = nonceLength;
+    this.tagLength = tagLength;
+    this.nonceBytes = nonceBytes;
+    this.tagBytes = tagBytes;
   }
 }
 
@@ -100,12 +131,56 @@ class ReturnResultRecord implements HuksReturnResultContract {
   }
 }
 
+class FakeHuksBusinessError extends Error {
+  readonly code: number;
+
+  constructor(code: number, message: string) {
+    super(message);
+    this.code = code;
+  }
+}
+
+class HuksDiagnosticEvent {
+  readonly stage: string;
+  readonly code: number;
+
+  constructor(stage: string, code: number) {
+    this.stage = stage;
+    this.code = code;
+  }
+}
+
+class RecordingHuksDiagnostics implements HuksDiagnosticSink {
+  readonly events: HuksDiagnosticEvent[] = [];
+
+  report(stage: string, code: number): void {
+    this.events.push(new HuksDiagnosticEvent(stage, code));
+  }
+}
+
+class RecordingSecretStoreDiagnostics implements SecretStoreDiagnosticSink {
+  readonly events: HuksDiagnosticEvent[] = [];
+
+  report(stage: string, code: number): void {
+    this.events.push(new HuksDiagnosticEvent(stage, code));
+  }
+}
+
 class ScriptedSessionOperations implements HuksOperations {
   readonly initCalls: RecordedInitCall[] = [];
   readonly updateCalls: RecordedUpdateCall[] = [];
+  readonly finishCalls: RecordedFinishCall[] = [];
   isKeyItemExistCallCount: number = 0;
   generateKeyItemCallCount: number = 0;
   abortSessionCallCount: number = 0;
+  private readonly finishError?: FakeHuksBusinessError;
+  private readonly finishBytes?: Uint8Array;
+  private firstUpdateData?: Uint8Array;
+
+  constructor(finishError?: FakeHuksBusinessError, finishBytes?: Uint8Array) {
+    this.finishError = finishError;
+    this.finishBytes = finishBytes;
+  }
 
   async isKeyItemExist(_: string, __: HuksOptionsContract): Promise<boolean> {
     this.isKeyItemExistCallCount += 1;
@@ -125,6 +200,9 @@ class ScriptedSessionOperations implements HuksOperations {
   }
 
   async updateSession(handle: number, options: HuksOptionsContract, token?: Uint8Array): Promise<ReturnResultRecord> {
+    if (this.firstUpdateData === undefined && options.inData !== undefined) {
+      this.firstUpdateData = cloneBytes(options.inData);
+    }
     this.updateCalls.push(new RecordedUpdateCall(
       handle,
       options.inData?.length ?? 0,
@@ -136,23 +214,42 @@ class ScriptedSessionOperations implements HuksOperations {
     return new ReturnResultRecord(options.inData);
   }
 
-  async finishSession(_: number, options: HuksOptionsContract): Promise<ReturnResultRecord> {
-    if ((options.properties?.length ?? 0) > 0) {
-      return new ReturnResultRecord(new Uint8Array(0));
+  async finishSession(handle: number, options: HuksOptionsContract, token?: Uint8Array): Promise<ReturnResultRecord> {
+    const nonceBytes: Uint8Array = readBytesParamClone(options.properties, 1342177280 + 9);
+    const tagBytes: Uint8Array = readBytesParamClone(options.properties, 1342177280 + 10009);
+    this.finishCalls.push(new RecordedFinishCall(
+      handle,
+      options.inData?.length ?? 0,
+      token?.length ?? 0,
+      nonceBytes.length,
+      tagBytes.length,
+      nonceBytes,
+      tagBytes
+    ));
+    if (this.finishError !== undefined) {
+      throw this.finishError;
     }
-    if (this.updateCalls.length >= 2) {
-      return new ReturnResultRecord(new Uint8Array(0));
+    if (this.finishBytes !== undefined) {
+      return new ReturnResultRecord(this.finishBytes);
     }
-    const ciphertext = utf8Bytes('cipher');
-    const tag = utf8Bytes('tag-16-byte-long');
-    const merged = new Uint8Array(ciphertext.length + tag.length);
-    for (let index = 0; index < ciphertext.length; index += 1) {
-      merged[index] = ciphertext[index];
+    if (this.finishCalls.length === 1) {
+      const ciphertext = options.inData !== undefined && options.inData.length > 0
+        ? cloneBytes(options.inData)
+        : cloneOptionalBytes(this.firstUpdateData);
+      const tag = utf8Bytes('tag-16-byte-long');
+      const merged = new Uint8Array(ciphertext.length + tag.length);
+      for (let index = 0; index < ciphertext.length; index += 1) {
+        merged[index] = ciphertext[index];
+      }
+      for (let index = 0; index < tag.length; index += 1) {
+        merged[ciphertext.length + index] = tag[index];
+      }
+      return new ReturnResultRecord(merged);
     }
-    for (let index = 0; index < tag.length; index += 1) {
-      merged[ciphertext.length + index] = tag[index];
+    if (options.inData !== undefined) {
+      return new ReturnResultRecord(cloneBytes(options.inData));
     }
-    return new ReturnResultRecord(merged);
+    return new ReturnResultRecord(new Uint8Array(0));
   }
 
   async abortSession(_: number, __: HuksOptionsContract): Promise<void> {
@@ -165,14 +262,23 @@ class KeyLifecycleOperations implements HuksOperations {
   generateKeyItemCallCount: number = 0;
   private readonly existenceSequence: boolean[];
   private readonly generateDeferred?: DeferredBox<void>;
+  private readonly lookupErrorCode?: number;
 
-  constructor(existenceSequence: boolean[], generateDeferred?: DeferredBox<void>) {
+  constructor(
+    existenceSequence: boolean[],
+    generateDeferred?: DeferredBox<void>,
+    lookupErrorCode?: number
+  ) {
     this.existenceSequence = existenceSequence.slice();
     this.generateDeferred = generateDeferred;
+    this.lookupErrorCode = lookupErrorCode;
   }
 
   async isKeyItemExist(_: string, __: HuksOptionsContract): Promise<boolean> {
     this.isKeyItemExistCallCount += 1;
+    if (this.lookupErrorCode !== undefined) {
+      throw new FakeHuksBusinessError(this.lookupErrorCode, 'queried entity does not exist');
+    }
     if (this.existenceSequence.length === 0) {
       return true;
     }
@@ -196,8 +302,8 @@ class KeyLifecycleOperations implements HuksOperations {
   }
 
   async finishSession(_: number, __: HuksOptionsContract): Promise<ReturnResultRecord> {
-    const ciphertext = utf8Bytes('cipher');
     const tag = utf8Bytes('tag-16-byte-long');
+    const ciphertext = utf8Bytes('cipher');
     const merged = new Uint8Array(ciphertext.length + tag.length);
     for (let index = 0; index < ciphertext.length; index += 1) {
       merged[index] = ciphertext[index];
@@ -256,24 +362,84 @@ async function expectSecretFailure(
 
 export default function huksSubscriptionSecretStoreTestsuite() {
   describe('HarmonyHuksDriverTest', () => {
-    it('passesBusinessBytesViaInDataInsteadOfTheTokenArgument', 0, async () => {
+    it('passesBusinessBytesAndCompleteGcmPropertiesToFinishSession', 0, async () => {
       const operations = new ScriptedSessionOperations();
-      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
+      const seededNonce = utf8Bytes('nonce-value1');
+      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(seededNonce));
+      const plaintext = utf8Bytes('hello');
 
-      const encrypted = await driver.encrypt(utf8Bytes('hello'));
+      const encrypted = await driver.encrypt(plaintext);
       const decrypted = await driver.decrypt(encrypted);
 
       expect(operations.initCalls.length).assertEqual(2);
       expect(operations.initCalls[0].nonceLength).assertEqual(12);
       expect(operations.initCalls[0].tagLength).assertEqual(0);
+      expect(operations.initCalls[1].nonceLength).assertEqual(12);
       expect(operations.initCalls[1].tagLength).assertEqual(16);
-      expect(operations.updateCalls.length).assertEqual(2);
-      expect(operations.updateCalls[0].handle).assertEqual(41);
-      expect(operations.updateCalls[0].inDataLength).assertEqual(5);
-      expect(operations.updateCalls[0].tokenLength).assertEqual(0);
-      expect(operations.updateCalls[1].inDataLength).assertEqual(encrypted.ciphertext.length);
-      expect(operations.updateCalls[1].tokenLength).assertEqual(0);
-      expect(decrypted.length).assertEqual(encrypted.ciphertext.length);
+      expect(operations.updateCalls.length).assertEqual(0);
+      expect(operations.finishCalls.length).assertEqual(2);
+      expect(operations.finishCalls[0].handle).assertEqual(41);
+      expect(operations.finishCalls[0].inDataLength).assertEqual(plaintext.length);
+      expect(operations.finishCalls[0].tokenLength).assertEqual(0);
+      expect(operations.finishCalls[0].nonceLength).assertEqual(12);
+      expect(operations.finishCalls[0].tagLength).assertEqual(0);
+      expectBytesEqual(operations.finishCalls[0].nonceBytes, seededNonce);
+      expect(operations.finishCalls[0].tagBytes.length).assertEqual(0);
+      expect(operations.finishCalls[1].handle).assertEqual(41);
+      expect(operations.finishCalls[1].inDataLength).assertEqual(encrypted.ciphertext.length);
+      expect(operations.finishCalls[1].tokenLength).assertEqual(0);
+      expect(operations.finishCalls[1].nonceLength).assertEqual(12);
+      expect(operations.finishCalls[1].tagLength).assertEqual(16);
+      expectBytesEqual(operations.finishCalls[1].nonceBytes, seededNonce);
+      expectBytesEqual(operations.finishCalls[1].tagBytes, encrypted.tag);
+      expect(encrypted.nonce.length).assertEqual(12);
+      expect(encrypted.tag.length).assertEqual(16);
+      expectBytesEqual(decrypted, plaintext);
+    });
+
+    it('reportsOnlyStageAndNumericBusinessCodeWhenEncryptFinishFails', 0, async () => {
+      const operations = new ScriptedSessionOperations(new FakeHuksBusinessError(12000006, PLAINTEXT_URL));
+      const diagnostics = new RecordingHuksDiagnostics();
+      const driver = new HarmonyHuksDriver(
+        operations,
+        new ScriptedNonceSource(utf8Bytes('nonce-value1')),
+        diagnostics
+      );
+
+      try {
+        await driver.encrypt(utf8Bytes('sensitive plaintext'));
+        expect(false).assertTrue();
+      } catch (error) {
+        expect(extractErrorDetail(error as Object)).assertEqual('Subscription secret encryption failed.');
+      }
+
+      expect(diagnostics.events.length).assertEqual(1);
+      expect(diagnostics.events[0].stage).assertEqual('encrypt.finish');
+      expect(diagnostics.events[0].code).assertEqual(12000006);
+      expect(operations.abortSessionCallCount).assertEqual(1);
+      assertNoLeak(JSON.stringify(diagnostics.events), [PLAINTEXT_URL, 'sensitive plaintext']);
+    });
+
+    it('reportsEncryptResultWithANumericSentinelWhenHuksReturnsIncompleteOutput', 0, async () => {
+      const operations = new ScriptedSessionOperations(undefined, new Uint8Array(0));
+      const diagnostics = new RecordingHuksDiagnostics();
+      const driver = new HarmonyHuksDriver(
+        operations,
+        new ScriptedNonceSource(utf8Bytes('nonce-value1')),
+        diagnostics
+      );
+
+      try {
+        await driver.encrypt(utf8Bytes('sensitive plaintext'));
+        expect(false).assertTrue();
+      } catch (error) {
+        expect(extractErrorDetail(error as Object)).assertEqual('Subscription secret encryption failed.');
+      }
+
+      expect(diagnostics.events.length).assertEqual(1);
+      expect(diagnostics.events[0].stage).assertEqual('encrypt.result');
+      expect(diagnostics.events[0].code).assertEqual(-1);
+      assertNoLeak(JSON.stringify(diagnostics.events), ['sensitive plaintext']);
     });
 
     it('createsTheMasterKeyOnFirstUseOnlyOnce', 0, async () => {
@@ -281,6 +447,16 @@ export default function huksSubscriptionSecretStoreTestsuite() {
       const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
 
       await driver.encrypt(utf8Bytes('hello'));
+
+      expect(operations.isKeyItemExistCallCount).assertEqual(1);
+      expect(operations.generateKeyItemCallCount).assertEqual(1);
+    });
+
+    it('treatsItemNotExistLookupAsFirstUseAndGeneratesTheMasterKey', 0, async () => {
+      const operations = new KeyLifecycleOperations([], undefined, 12000011);
+      const driver = new HarmonyHuksDriver(operations, new ScriptedNonceSource(utf8Bytes('nonce-value1')));
+
+      await driver.prepare();
 
       expect(operations.isKeyItemExistCallCount).assertEqual(1);
       expect(operations.generateKeyItemCallCount).assertEqual(1);
@@ -321,6 +497,8 @@ export default function huksSubscriptionSecretStoreTestsuite() {
       driver.seedNonce(utf8Bytes('nonce-value2'));
       const fileDriver = new FakeFileDriver();
       fileDriver.seedDirectory(FILES_DIR);
+      fileDriver.seedDirectory(SECRETS_DIR);
+      fileDriver.injectFailure('mkdir', SECRETS_DIR, new Error('Existing directory must not be recreated.'));
       const idGenerator = new SequenceIdGenerator(['secret-alpha', 'tmp-a', 'secret-beta', 'tmp-b']);
       const store = new HuksSubscriptionSecretStore(driver, fileDriver, FILES_DIR, idGenerator);
 
@@ -547,12 +725,14 @@ export default function huksSubscriptionSecretStoreTestsuite() {
       driver.seedNonce(utf8Bytes('nonce-value1'));
       const fileDriver = new FakeFileDriver();
       fileDriver.seedDirectory(FILES_DIR);
-      fileDriver.injectFailure('write', `${SECRETS_DIR}/secret-beta.tmp-b.tmp`, new Error('write failed /private/secret'));
+      fileDriver.injectFailure('write', `${SECRETS_DIR}/secret-beta.tmp-b.tmp`, new Error(PLAINTEXT_URL));
+      const diagnostics = new RecordingSecretStoreDiagnostics();
       const store = new HuksSubscriptionSecretStore(
         driver,
         fileDriver,
         FILES_DIR,
-        new SequenceIdGenerator(['secret-beta', 'tmp-b'])
+        new SequenceIdGenerator(['secret-beta', 'tmp-b']),
+        diagnostics
       );
 
       await expectSecretFailure(
@@ -560,11 +740,15 @@ export default function huksSubscriptionSecretStoreTestsuite() {
           await store.encrypt(PLAINTEXT_URL);
         },
         'SOURCE_SECRET_WRITE_FAILED',
-        ['/private/secret', 'secret-beta', 'tmp-b', PLAINTEXT_URL]
+        ['secret-beta', 'tmp-b', PLAINTEXT_URL]
       );
 
       expect(fileDriver.fileExists(`${SECRETS_DIR}/secret-beta.tmp-b.tmp`)).assertFalse();
       expect(fileDriver.fileExists(`${SECRETS_DIR}/secret-beta.json`)).assertFalse();
+      expect(diagnostics.events.length).assertEqual(1);
+      expect(diagnostics.events[0].stage).assertEqual('store.encrypt.write');
+      expect(diagnostics.events[0].code).assertEqual(-1);
+      assertNoLeak(JSON.stringify(diagnostics.events), [PLAINTEXT_URL]);
     });
 
     it('mapsInvalidGeneratedOpaqueAndTemporaryIdsToWriteFailuresWithoutLeakingTheRawIds', 0, async () => {
@@ -674,6 +858,28 @@ export default function huksSubscriptionSecretStoreTestsuite() {
   });
 }
 
+function cloneBytes(bytes: Uint8Array): Uint8Array {
+  const copy = new Uint8Array(bytes.length);
+  for (let index = 0; index < bytes.length; index += 1) {
+    copy[index] = bytes[index];
+  }
+  return copy;
+}
+
+function cloneOptionalBytes(bytes: Uint8Array | undefined): Uint8Array {
+  if (bytes === undefined) {
+    return new Uint8Array(0);
+  }
+  return cloneBytes(bytes);
+}
+
+function expectBytesEqual(actual: Uint8Array, expected: Uint8Array): void {
+  expect(actual.length).assertEqual(expected.length);
+  for (let index = 0; index < expected.length; index += 1) {
+    expect(actual[index]).assertEqual(expected[index]);
+  }
+}
+
 function readNumberParam(properties: Array<HuksParamContract> | undefined, tag: number): number {
   if (properties === undefined) {
     return 0;
@@ -698,4 +904,17 @@ function readBytesParamLength(properties: Array<HuksParamContract> | undefined, 
     }
   }
   return 0;
+}
+
+function readBytesParamClone(properties: Array<HuksParamContract> | undefined, tag: number): Uint8Array {
+  if (properties === undefined) {
+    return new Uint8Array(0);
+  }
+  for (let index = 0; index < properties.length; index += 1) {
+    const property = properties[index];
+    if (property.tag === tag && property.value instanceof Uint8Array) {
+      return cloneBytes(property.value);
+    }
+  }
+  return new Uint8Array(0);
 }

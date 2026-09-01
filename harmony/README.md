@@ -1,21 +1,21 @@
-# HarmonyOS native rewrite (Phase 0–2)
+# HarmonyOS native rewrite
 
 This directory contains the isolated native HarmonyOS rewrite of
 ClashMetaForAndroid. It targets HarmonyOS 6.x, API 20 or later, and AArch64.
 The Android application is not a compatibility target for this work.
 
-The repository currently proves the toolchain, native ABI, ArkTS/N-API bridge,
-real mihomo cross-build, and unsigned HAP packaging. Phase 2 is deliberately
-still `incomplete`: this checkout has neither a developer signing profile nor a
-physical HarmonyOS 6 phone. A Simulator is useful for development but cannot
-satisfy the physical-device proof gate.
+The repository currently proves the API 24 toolchain, native ABI, ArkTS/N-API
+bridge, real mihomo cross-build, signed HAP packaging, cross-process VPN RPC,
+full-device TUN capture, proxy selection, and physical-device start/stop flow.
+Signing material remains local and ignored even though signed-device builds are
+part of the verified development workflow.
 
 | Area | Current evidence |
 | --- | --- |
-| Phase 0: toolchain and empty application | Local build and structure checks pass; signing/device proof incomplete |
-| Phase 1: native core and ArkTS bridge | Real AArch64 core/addon and HAP packaging pass; signing/device proof incomplete |
-| Phase 2: HTTP CONNECT and SOCKS5 traffic | Host and package inspection pass; physical-phone traffic proof incomplete |
-| Phase 3/4 UI and VPN/TUN | Out of scope until the Phase 2 phone gate passes |
+| Phase 0: toolchain and application skeleton | API 24 toolchain, build, signing, install, and launch checks pass |
+| Phase 1: native core and ArkTS bridge | Fresh AArch64 core/addon and signed HAP provenance pass |
+| Phase 2: HTTP CONNECT and SOCKS5 traffic | Host, package, and physical-phone traffic paths are implemented |
+| Phase 3/4 UI and VPN/TUN | Native UI, authenticated cross-process RPC, TUN capture, node management, and graceful stop are implemented |
 
 See [the Phase 0–2 verification guide](../docs/harmony/phase-0-2-verification.md)
 for the evidence model and deferred phone procedure. Third-party source and
@@ -25,12 +25,12 @@ license information is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
 The checked-in locks currently require:
 
-- DevEco Studio `6.1.0.860`
-- HarmonyOS SDK and NDK `6.1.0.105`
-- target API `23`, compatible API `20`
-- Hvigor `6.23.7`
-- OHPM `6.1.1.830`
-- hdc `6.1.0.105`
+- DevEco Studio `6.1.1.300`
+- HarmonyOS SDK and NDK `6.1.1.125`
+- target API `24`, compatible API `20`
+- Hvigor `6.24.4`
+- OHPM `6.1.2.285`
+- hdc `6.1.1.125`
 - Node.js `22.17.0`
 - mihomo `v1.19.29` at commit
   `e26714a181ac0e2fa803453c0a8e9a9ce94e31cb`

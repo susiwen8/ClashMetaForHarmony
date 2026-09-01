@@ -12,6 +12,8 @@ import type {
   VpnRuntimeEvent,
   VpnRuntimeSnapshot
 } from './VpnModels';
+import type { VpnRpcGuards } from './rpc/VpnRpcModels';
+import type { VpnProxyRuntimeLifecyclePort } from '../proxy/ProxyPorts';
 import { createTunRuntimeFailure, createVpnFailure } from './VpnModels';
 
 export type VpnPlatformErrorCode =
@@ -56,8 +58,16 @@ export class TunRuntimePortError extends Error {
 export interface VpnControllerPort {
   start(profileId: string, versionId: string, sessionId: string): Promise<VpnControllerStartResult>;
   stop(sessionId?: string): Promise<VpnControllerStopResult>;
+  initializeRuntimeMirror?(): Promise<void>;
+  dispose?(): Promise<void> | void;
   snapshot(): VpnRuntimeSnapshot;
   subscribe(listener: (event: VpnRuntimeEvent) => void): number;
+  unsubscribe(subscriptionId: number): void;
+}
+
+export interface VpnRpcClientContext {
+  sessionGeneration: number;
+  guards: VpnRpcGuards;
 }
 
 export interface VpnPlatformSessionPort {
@@ -70,6 +80,7 @@ export interface VpnPlatformSessionPort {
 export interface TunRuntimeEvent {
   sessionId: string;
   snapshot: TunRuntimeSnapshot;
+  diagnosticStage?: string;
 }
 
 export interface TunRuntimePort {
@@ -80,17 +91,24 @@ export interface TunRuntimePort {
   snapshot(): TunRuntimeSnapshot;
   subscribe(listener: (event: TunRuntimeEvent) => void): number;
   unsubscribe(subscriptionId: number): void;
+  dispose(): void;
 }
 
 export interface NetworkRecoveryPort {
   currentNetwork(): NetworkStatus;
   subscribeUsableNetwork(listener: (status: NetworkStatus) => void): number;
   unsubscribeUsableNetwork(subscriptionId: number): void;
+  dispose?(): Promise<void> | void;
 }
 
 export interface ContinuousNotificationPort {
   start(sessionId: string): Promise<void>;
   stop(sessionId: string): Promise<void>;
+  updateTraffic(
+    sessionId: string,
+    uploadBytesPerSecond: number,
+    downloadBytesPerSecond: number
+  ): Promise<void>;
   subscribeCancellation(listener: (sessionId: string) => void): number;
   unsubscribeCancellation(subscriptionId: number): void;
 }
@@ -111,12 +129,36 @@ export interface BoundedDelaySchedulerPort {
   schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask;
 }
 
+export type OneClickVpnConfirmationResultKind =
+  | 'RUNNING'
+  | 'STOPPED'
+  | 'ERROR'
+  | 'SESSION_CHANGED'
+  | 'TIMEOUT'
+  | 'CANCELLED';
+
+export interface OneClickVpnConfirmationResult {
+  kind: OneClickVpnConfirmationResultKind;
+}
+
+export interface OneClickVpnConfirmationHandle {
+  wait(): Promise<OneClickVpnConfirmationResult>;
+  markStartAccepted(): void;
+  cancel(): void;
+}
+
+export interface OneClickVpnConfirmationPort {
+  arm(expectedSessionId: string, timeoutMs: number): OneClickVpnConfirmationHandle;
+}
+
 export interface VpnRuntimeCoordinatorDependencies {
   resolver: CommittedProfileResolverPort;
   platform: VpnPlatformSessionPort;
   tunRuntime: TunRuntimePort;
   networkRecovery: NetworkRecoveryPort;
   notification: ContinuousNotificationPort;
+  proxyLifecycle: VpnProxyRuntimeLifecyclePort;
   scheduler: BoundedDelaySchedulerPort;
   clock: ClockPort;
+  reportStageLifecycle?: (stage: string) => void;
 }

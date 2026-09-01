@@ -1,6 +1,7 @@
 import { http } from '@kit.NetworkKit';
 import {
   createHttpTransportFailure,
+  validateHttpTransportRequestUserAgent,
   type HttpTransport,
   type HttpTransportRequest,
   type HttpTransportResponse
@@ -9,6 +10,34 @@ import {
 interface BusinessErrorShape {
   code?: number;
   message?: string;
+}
+
+export interface NetworkKitResponsePort {
+  responseCode: number;
+  header: Object;
+  result: string | Object | ArrayBuffer;
+}
+
+export interface NetworkKitRequestOptions {
+  method: http.RequestMethod;
+  expectDataType: http.HttpDataType;
+  usingCache: boolean;
+  connectTimeout: number;
+  readTimeout: number;
+  maxLimit: number;
+  maxRedirects: number;
+  header: NetworkKitHeaderRecord;
+}
+
+export interface NetworkKitClientPort {
+  request(url: string, options: NetworkKitRequestOptions): Promise<NetworkKitResponsePort>;
+  destroy(): void;
+}
+
+export type NetworkKitClientFactory = () => NetworkKitClientPort;
+
+export interface NetworkKitHeaderRecord {
+  'User-Agent': string;
 }
 
 class HttpTransportResponseRecord implements HttpTransportResponse {
@@ -24,18 +53,17 @@ class HttpTransportResponseRecord implements HttpTransportResponse {
 }
 
 export class NetworkKitHttpTransport implements HttpTransport {
+  private readonly clientFactory: NetworkKitClientFactory;
+
+  constructor(clientFactory?: NetworkKitClientFactory) {
+    this.clientFactory = clientFactory ?? createSystemNetworkKitClient;
+  }
+
   async fetch(request: HttpTransportRequest): Promise<HttpTransportResponse> {
-    const client: http.HttpRequest = http.createHttp();
+    validateHttpTransportRequestUserAgent(request.userAgent);
+    const client: NetworkKitClientPort = this.clientFactory();
     try {
-      const response: http.HttpResponse = await client.request(request.url, {
-        method: http.RequestMethod.GET,
-        expectDataType: http.HttpDataType.ARRAY_BUFFER,
-        usingCache: false,
-        connectTimeout: 30 * 1000,
-        readTimeout: 30 * 1000,
-        maxLimit: 16 * 1024 * 1024,
-        maxRedirects: 0
-      });
+      const response: NetworkKitResponsePort = await client.request(request.url, buildNetworkKitRequestOptions(request));
       return new HttpTransportResponseRecord(
         response.responseCode as number,
         normalizeHeaderMap(response.header),
@@ -50,6 +78,19 @@ export class NetworkKitHttpTransport implements HttpTransport {
       }
     }
   }
+}
+
+export function buildNetworkKitRequestOptions(request: HttpTransportRequest): NetworkKitRequestOptions {
+  return {
+    method: http.RequestMethod.GET,
+    expectDataType: http.HttpDataType.ARRAY_BUFFER,
+    usingCache: false,
+    connectTimeout: 30 * 1000,
+    readTimeout: 30 * 1000,
+    maxLimit: 16 * 1024 * 1024,
+    maxRedirects: 0,
+    header: buildNetworkKitHeaderRecord(request.userAgent)
+  };
 }
 
 function normalizeHeaderMap(rawHeaders: Object): Map<string, Array<string>> {
@@ -130,4 +171,14 @@ function encodeUtf8(value: string): ArrayBuffer {
     target[index] = bytes[index];
   }
   return target.buffer;
+}
+
+function createSystemNetworkKitClient(): NetworkKitClientPort {
+  return http.createHttp() as http.HttpRequest as NetworkKitClientPort;
+}
+
+function buildNetworkKitHeaderRecord(userAgent: string): NetworkKitHeaderRecord {
+  return {
+    'User-Agent': userAgent
+  };
 }

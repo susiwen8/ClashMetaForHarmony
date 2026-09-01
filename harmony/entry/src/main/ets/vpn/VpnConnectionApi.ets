@@ -84,49 +84,6 @@ export class PlatformVpnRouteInfoRecord implements PlatformVpnRouteInfo {
   }
 }
 
-export class PlatformVpnConfigRecord implements PlatformVpnConfig {
-  readonly vpnId?: string;
-  readonly addresses: PlatformVpnLinkAddress[];
-  readonly routes?: PlatformVpnRouteInfo[];
-  readonly dnsAddresses?: string[];
-  readonly searchDomains?: string[];
-  readonly mtu?: number;
-  readonly isIPv4Accepted?: boolean;
-  readonly isIPv6Accepted?: boolean;
-  readonly isInternal?: boolean;
-  readonly isBlocking?: boolean;
-  readonly trustedApplications?: string[];
-  readonly blockedApplications?: string[];
-
-  constructor(
-    vpnId: string | undefined,
-    addresses: PlatformVpnLinkAddress[],
-    routes?: PlatformVpnRouteInfo[],
-    dnsAddresses?: string[],
-    searchDomains?: string[],
-    mtu?: number,
-    isIPv4Accepted?: boolean,
-    isIPv6Accepted?: boolean,
-    isInternal?: boolean,
-    isBlocking?: boolean,
-    trustedApplications?: string[],
-    blockedApplications?: string[]
-  ) {
-    this.vpnId = vpnId;
-    this.addresses = addresses;
-    this.routes = routes;
-    this.dnsAddresses = dnsAddresses;
-    this.searchDomains = searchDomains;
-    this.mtu = mtu;
-    this.isIPv4Accepted = isIPv4Accepted;
-    this.isIPv6Accepted = isIPv6Accepted;
-    this.isInternal = isInternal;
-    this.isBlocking = isBlocking;
-    this.trustedApplications = trustedApplications;
-    this.blockedApplications = blockedApplications;
-  }
-}
-
 export interface PlatformVpnConnection {
   create(config: PlatformVpnConfig): Promise<number>;
   generateVpnId(): Promise<string>;

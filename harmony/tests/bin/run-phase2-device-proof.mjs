@@ -20,7 +20,7 @@ export const PROOF_SCHEMA_VERSION = '1.0.0';
 export const PHASE_NUMBER = 2;
 export const BUNDLE_NAME = 'com.github.kr328.clash.harmony';
 export const ENTRY_ABILITY_NAME = 'EntryAbility';
-export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/files/phase2-device-proof.json';
+export const APP_PROOF_REMOTE_PATH = '/data/storage/el2/base/haps/entry/files/phase2-device-proof.json';
 export const MAX_PHASE2_APP_EVIDENCE_BYTES = 1024 * 1024;
 
 const HARMONY_ROOT = fileURLToPath(new URL('../..', import.meta.url));
@@ -343,6 +343,35 @@ function originObservationMap(origin) {
   return map;
 }
 
+function normalizeExpectedProvenance(record) {
+  return {
+    version: record?.version ?? null,
+    commit: record?.commit ?? record?.upstreamCommit ?? null,
+    buildInfo: isNonEmptyString(record?.buildInfo) ? record.buildInfo : null,
+    buildId: isNonEmptyString(record?.buildId) ? record.buildId : null
+  };
+}
+
+function normalizeObservedProvenance(record) {
+  const version = record?.version ?? null;
+  const commit = record?.commit ?? record?.upstreamCommit ?? null;
+  const buildId = record?.buildId ?? null;
+  const synthesizedBuildInfo = isNonEmptyString(version) && isNonEmptyString(commit) && isNonEmptyString(buildId)
+    ? JSON.stringify({
+      version,
+      upstreamCommit: commit,
+      abiVersion: record?.abiVersion ?? null,
+      buildId
+    })
+    : null;
+  return {
+    version,
+    commit,
+    buildInfo: isNonEmptyString(record?.buildInfo) ? record.buildInfo : synthesizedBuildInfo,
+    buildId
+  };
+}
+
 function canPass(proof) {
   if (!['devecoVersion', 'sdkVersion', 'ndkVersion', 'hvigorVersion', 'nodeVersion', 'hdcVersion'].every((key) => isNonEmptyString(proof.toolchain?.[key]))) {
     return false;
@@ -373,8 +402,13 @@ function canPass(proof) {
   if (proof.core?.provenance?.verified !== 'pass') {
     return false;
   }
+  for (const key of ['version', 'commit']) {
+    if (!isNonEmptyString(proof.core?.provenance?.expected?.[key])) {
+      return false;
+    }
+  }
   for (const key of ['version', 'commit', 'buildInfo', 'buildId']) {
-    if (!isNonEmptyString(proof.core?.provenance?.expected?.[key]) || !isNonEmptyString(proof.core?.provenance?.observed?.[key])) {
+    if (!isNonEmptyString(proof.core?.provenance?.observed?.[key])) {
       return false;
     }
   }
@@ -557,6 +591,12 @@ export function validatePhase2Proof(proof) {
       }
       if (proof.core?.provenance?.verified !== 'pass') {
         errors.push('pass requires provenance verified pass.');
+      }
+      if (!['version', 'commit'].every((key) => isNonEmptyString(proof.core?.provenance?.expected?.[key]))) {
+        errors.push('pass requires expected provenance version and commit.');
+      }
+      if (!['version', 'commit', 'buildInfo', 'buildId'].every((key) => isNonEmptyString(proof.core?.provenance?.observed?.[key]))) {
+        errors.push('pass requires observed provenance version, commit, buildInfo, and buildId.');
       }
       const observations = originObservationMap(proof.origin);
       for (const protocol of ['http', 'socks']) {
@@ -783,24 +823,70 @@ export function classifyHarmonyTarget(device) {
   return { kind: 'physical' };
 }
 
-function buildLaunchArgs(target, runId, runnerStartedAt, originPayload) {
-  const wantParameters = {
-    'cmfa.phase1.selfTest': true,
-    'cmfa.phase1.runId': runId,
-    'cmfa.phase1.runnerStartedAt': runnerStartedAt,
-    'cmfa.phase2.originRunId': originPayload.originRunId ?? runId,
-    'cmfa.phase2.originUrl': originPayload.originUrl,
-    'cmfa.phase2.caPem': originPayload.caPem,
-    'cmfa.phase2.expectedBodySha256': originPayload.bodySha256,
-    'cmfa.phase2.fixturePath': originPayload.fixturePath ?? '',
-    'cmfa.phase2.fixtureSha256': originPayload.fixtureSha256 ?? ''
-  };
+export function buildLaunchArgs(target, runId, runnerStartedAt, originPayload) {
   return buildTargetedHdcArgs(target, [
     'shell', 'aa', 'start',
     '-a', ENTRY_ABILITY_NAME,
     '-b', BUNDLE_NAME,
-    '-p', JSON.stringify(wantParameters)
+    '--pb', 'cmfa.phase1.selfTest', 'true',
+    '--ps', 'cmfa.phase1.runId', runId,
+    '--ps', 'cmfa.phase1.runnerStartedAt', runnerStartedAt,
+    '--ps', 'cmfa.phase2.originRunId', originPayload.originRunId ?? runId,
+    '--ps', 'cmfa.phase2.originUrl', originPayload.originUrl,
+    '--ps', 'cmfa.phase2.caPem', originPayload.caPem,
+    '--ps', 'cmfa.phase2.expectedBodySha256', originPayload.bodySha256,
+    '--ps', 'cmfa.phase2.fixturePath', originPayload.fixturePath ?? '',
+    '--ps', 'cmfa.phase2.fixtureSha256', originPayload.fixtureSha256 ?? ''
   ]);
+}
+
+export function createReversePortMapping({ target, originUrl, devicePort }) {
+  const parsedOrigin = new URL(originUrl);
+  const hostPort = Number.parseInt(parsedOrigin.port, 10);
+  if (parsedOrigin.protocol !== 'https:' || parsedOrigin.hostname !== '127.0.0.1' || !Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535) {
+    throw Object.assign(new Error('Phase 2 originUrl must be an explicit HTTPS IPv4 loopback endpoint.'), { code: 'ORIGIN_ENDPOINT_INVALID' });
+  }
+  if (!Number.isInteger(devicePort) || devicePort < 1 || devicePort > 65535) {
+    throw Object.assign(new Error('Phase 2 reverse-port devicePort must be between 1 and 65535.'), { code: 'HDC_RPORT_INVALID' });
+  }
+
+  const remoteNode = `tcp:${devicePort}`;
+  const localNode = `tcp:${hostPort}`;
+  const deviceOrigin = new URL(parsedOrigin);
+  deviceOrigin.port = String(devicePort);
+  return {
+    devicePort,
+    hostPort,
+    deviceOriginUrl: deviceOrigin.href,
+    createArgs: buildTargetedHdcArgs(target, ['rport', remoteNode, localNode]),
+    cleanupArgs: buildTargetedHdcArgs(target, ['fport', 'rm', remoteNode, localNode])
+  };
+}
+
+export function createReversePortCandidates(hostPort, attemptCount = 8) {
+  if (!Number.isInteger(hostPort) || hostPort < 1 || hostPort > 65535 || !Number.isInteger(attemptCount) || attemptCount < 1) {
+    throw Object.assign(new Error('Phase 2 reverse-port candidates require a valid host port and attempt count.'), { code: 'HDC_RPORT_INVALID' });
+  }
+  const candidates = [hostPort];
+  for (let index = 1; candidates.length < attemptCount; index += 1) {
+    const candidate = 49152 + ((hostPort + (index * 7919)) % 16384);
+    if (!candidates.includes(candidate)) {
+      candidates.push(candidate);
+    }
+  }
+  return candidates;
+}
+
+function hdcOutput(result) {
+  return `${result?.stdout ?? ''}\n${result?.stderr ?? ''}`;
+}
+
+function reversePortCreated(result) {
+  return !result?.timedOut && !result?.error && result?.exitCode === 0 && /Forwardport\s+result:\s*OK/iu.test(hdcOutput(result));
+}
+
+function reversePortRemoved(result) {
+  return !result?.timedOut && !result?.error && result?.exitCode === 0 && /Remove\s+forward\s+ruler\s+success/iu.test(hdcOutput(result));
 }
 
 function buildPullArgs(target, localPath) {
@@ -897,7 +983,6 @@ export async function startOriginProcess({ repoRoot, originBodyPath, runId, spaw
       const startedRecord = parser.snapshot().started.at(0);
       if (startedRecord && !settled) {
         settled = true;
-        child.stdout?.off?.('data', onData);
         child.off?.('error', onError);
         child.off?.('exit', onExitBeforeStart);
         resolve(startedRecord);
@@ -1158,11 +1243,17 @@ export async function pullPhase2AppEvidence({
             sizeBytes: evidenceDigest.sizeBytes
           };
         }
-        lastFailure = createFailure('APP_EVIDENCE_INVALID', validation.errors.join('; '), 'app-proof');
-        return { ok: false, result, invalid: lastFailure };
+        if (parsedEvidence?.runId !== expectedRunId || parsedEvidence?.originRunId !== expectedRunId) {
+          lastFailure = createFailure('APP_EVIDENCE_STALE', 'The pulled app evidence belongs to a prior Phase 2 run.', 'app-proof');
+        } else {
+          lastFailure = createFailure('APP_EVIDENCE_INVALID', validation.errors.join('; '), 'app-proof');
+          return { ok: false, result, invalid: lastFailure };
+        }
       } catch (error) {
         lastFailure = createFailure(error?.code ?? 'APP_EVIDENCE_INVALID', error?.message ?? 'Unable to parse app evidence.', 'app-proof');
-        return { ok: false, result, invalid: lastFailure };
+        if (error?.code !== 'ENOENT') {
+          return { ok: false, result, invalid: lastFailure };
+        }
       } finally {
         if (fileHandle) {
           await fileHandle.close().catch(() => {});
@@ -1274,7 +1365,8 @@ export async function runPhase2DeviceProof({
   pullPhase2AppEvidenceImpl = pullPhase2AppEvidence,
   randomUUID = () => crypto.randomUUID(),
   now = () => new Date(),
-  waitImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+  waitImpl = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds)),
+  reversePortCandidatesImpl = createReversePortCandidates
 } = {}) {
   const startedAt = now();
   const replacements = createRedactionReplacements({ repoRoot, env: process.env });
@@ -1283,6 +1375,8 @@ export async function runPhase2DeviceProof({
   let target = null;
   let hdcCommand = null;
   let installed = false;
+  let reversePortMapping = null;
+  let finishedProof = null;
 
   const finish = async () => {
     proof.timestamps.runnerFinishedAt = isoTimestamp(now());
@@ -1292,8 +1386,16 @@ export async function runPhase2DeviceProof({
       sanitized.result = 'fail';
       sanitized.failures.push(createFailure('PHASE2_PROOF_INVALID', validation.errors.join('; '), 'proof'));
     }
-    await writeProof(sanitized, outputPath, fsApi, repoRoot);
-    return sanitized;
+    if (finishedProof === null) {
+      finishedProof = sanitized;
+    } else {
+      for (const key of Object.keys(finishedProof)) {
+        delete finishedProof[key];
+      }
+      Object.assign(finishedProof, sanitized);
+    }
+    await writeProof(finishedProof, outputPath, fsApi, repoRoot);
+    return finishedProof;
   };
 
   try {
@@ -1374,8 +1476,8 @@ export async function runPhase2DeviceProof({
     copyArtifact(proof.packaged.prePackageAddon, inspection.packaged?.prePackageAddon);
     copyArtifact(proof.packaged.core, inspection.packaged?.core);
     copyArtifact(proof.packaged.addon, inspection.packaged?.addon);
-    proof.core.provenance.expected = inspection.provenance?.expected ?? proof.core.provenance.expected;
-    proof.core.provenance.observed = inspection.provenance?.observed ?? proof.core.provenance.observed;
+    proof.core.provenance.expected = normalizeExpectedProvenance(inspection.provenance?.expected);
+    proof.core.provenance.observed = normalizeObservedProvenance(inspection.provenance?.observed);
     proof.core.provenance.verified = inspection.provenance?.verified ?? 'fail';
     proof.stubDetection.stubDetected = inspection.stubDetected;
     proof.stubDetection.checks = [
@@ -1457,7 +1559,30 @@ export async function runPhase2DeviceProof({
     }
     installed = true;
 
-    const launchResult = await execImpl(hdcCommand, buildLaunchArgs(target, proof.runId, proof.timestamps.runnerStartedAt, originHandle), { cwd: repoRoot });
+    const originPort = Number.parseInt(new URL(originHandle.originUrl).port, 10);
+    const reversePortCandidates = reversePortCandidatesImpl(originPort);
+    for (const devicePort of reversePortCandidates) {
+      const candidateMapping = createReversePortMapping({
+        target,
+        originUrl: originHandle.originUrl,
+        devicePort
+      });
+      const createResult = await execImpl(hdcCommand, candidateMapping.createArgs, { cwd: repoRoot });
+      if (reversePortCreated(createResult)) {
+        reversePortMapping = candidateMapping;
+        break;
+      }
+    }
+    if (!reversePortMapping) {
+      pushFailure(proof, 'HDC_RPORT_FAILED', 'HDC could not reserve a device loopback port for the host HTTPS origin.', 'rport');
+      return await finish();
+    }
+
+    const launchOriginPayload = {
+      ...originHandle,
+      originUrl: reversePortMapping.deviceOriginUrl
+    };
+    const launchResult = await execImpl(hdcCommand, buildLaunchArgs(target, proof.runId, proof.timestamps.runnerStartedAt, launchOriginPayload), { cwd: repoRoot });
     if (launchResult?.timedOut || launchResult?.error || launchResult?.exitCode !== 0) {
       pushFailure(proof, 'HDC_LAUNCH_FAILED', 'The self-test ability did not launch successfully.', 'launch');
       return await finish();
@@ -1577,6 +1702,19 @@ export async function runPhase2DeviceProof({
         proof.stop.forceStopResult = 'fail';
         pushFailure(proof, 'DEVICE_FORCE_STOP_FAILED', 'The Phase 2 runner could not force-stop the installed proof app.', 'cleanup');
       }
+    }
+    if (reversePortMapping && hdcCommand) {
+      try {
+        const cleanupResult = await execImpl(hdcCommand, reversePortMapping.cleanupArgs, { cwd: repoRoot });
+        if (!reversePortRemoved(cleanupResult)) {
+          pushFailure(proof, 'HDC_RPORT_CLEANUP_FAILED', 'HDC could not remove the Phase 2 reverse-port task.', 'cleanup');
+        }
+      } catch {
+        pushFailure(proof, 'HDC_RPORT_CLEANUP_FAILED', 'HDC could not remove the Phase 2 reverse-port task.', 'cleanup');
+      }
+    }
+    if (finishedProof !== null) {
+      await finish();
     }
   }
 

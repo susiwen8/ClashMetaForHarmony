@@ -15,12 +15,12 @@
     "runnerFinishedAt": "2026-08-11T02:00:01.000Z"
   },
   "toolchain": {
-    "devecoVersion": "6.1.0.860",
-    "sdkVersion": "6.1.0.105",
-    "ndkVersion": "6.1.0.105",
-    "hvigorVersion": "6.23.7",
+    "devecoVersion": "6.1.1.300",
+    "sdkVersion": "6.1.1.125",
+    "ndkVersion": "6.1.1.125",
+    "hvigorVersion": "6.24.4",
     "nodeVersion": "22.17.0",
-    "hdcVersion": "6.1.0.105"
+    "hdcVersion": "6.1.1.125"
   },
   "target": {
     "targetKind": "host",

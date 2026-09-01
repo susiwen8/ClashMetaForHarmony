@@ -23,9 +23,46 @@ namespace {
 extern "C" cmfa_status cmfa_mihomo_backend_test_start_local_direct(const cmfa_local_options *options,
                                                                    cmfa_runtime_snapshot *snapshot,
                                                                    cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_start_direct(const cmfa_proxy_query_context *query,
+                                                                         const char *group_name,
+                                                                         cmfa_json_buffer *output,
+                                                                         cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_snapshot_direct(const char *job_id,
+                                                                            cmfa_json_buffer *output,
+                                                                            cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_cancel_direct(const char *job_id,
+                                                                          cmfa_json_buffer *output,
+                                                                          cmfa_error *error);
+extern "C" void cmfa_mihomo_backend_test_emit_runtime_logs();
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_groups_direct(const cmfa_proxy_query_context *query,
+                                                                    uint8_t selectable_only,
+                                                                    cmfa_json_buffer *output,
+                                                                    cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_group_direct(const cmfa_proxy_query_context *query,
+                                                                   const char *group_name,
+                                                                   cmfa_json_buffer *output,
+                                                                   cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_select_direct(const cmfa_proxy_query_context *query,
+                                                                    const char *group_name,
+                                                                    const char *member_name,
+                                                                    cmfa_json_buffer *output,
+                                                                    cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_start_direct(const cmfa_proxy_query_context *query,
+                                                                         const char *group_name,
+                                                                         cmfa_json_buffer *output,
+                                                                         cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_snapshot_direct(const char *job_id,
+                                                                            cmfa_json_buffer *output,
+                                                                            cmfa_error *error);
+extern "C" cmfa_status cmfa_mihomo_backend_test_proxy_delay_cancel_direct(const char *job_id,
+                                                                          cmfa_json_buffer *output,
+                                                                          cmfa_error *error);
 
 char *g_raw_version = nullptr;
+std::string g_last_validate_config_path;
+std::string g_last_load_config_path;
 cmfa_runtime_snapshot g_runtime_snapshot{};
+cmfa_runtime_mode g_runtime_mode = CMFA_MODE_RULE;
 bool g_preserve_error_on_stop = false;
 cmfa_probe_result g_probe_result{};
 cmfa_status g_probe_status = CMFA_OK;
@@ -33,6 +70,45 @@ std::string g_last_cancel_probe_run_id;
 cmfa_status g_cancel_probe_status = CMFA_OK;
 std::string g_last_close_stale_session_id;
 cmfa_status g_close_stale_status = CMFA_OK;
+constexpr const char *kProxyProfileHash =
+    "1111111111111111111111111111111111111111111111111111111111111111";
+constexpr const char *kProxyRevisionHash =
+    "2222222222222222222222222222222222222222222222222222222222222222";
+constexpr const char *kProxySessionHash =
+    "3333333333333333333333333333333333333333333333333333333333333333";
+constexpr const char *kProxyGroupsPayload = "{\"kind\":\"groups\"}";
+constexpr const char *kProxyGroupPayload = "{\"kind\":\"group\"}";
+constexpr const char *kProxySelectPayload = "{\"kind\":\"select\"}";
+constexpr const char *kProxyDelayStartPayload = "{\"kind\":\"delay-start\"}";
+constexpr const char *kProxyDelaySnapshotPayload = "{\"kind\":\"delay-snapshot\"}";
+constexpr const char *kProxyDelayCancelPayload = "{\"kind\":\"delay-cancel\"}";
+constexpr const char *kProxyDelayJobId = "0123456789abcdef0123456789abcdef";
+enum class RawProxyMode {
+  Success,
+  BufferTooSmall,
+  BackendError,
+};
+struct RawProxyCapture {
+  bool called = false;
+  std::string profile_hash;
+  std::string revision_hash;
+  const char *session_hash = reinterpret_cast<const char *>(static_cast<uintptr_t>(1));
+  uint64_t generation = 0;
+  uint8_t selectable_only = 0xFF;
+  std::string group_name;
+  std::string member_name;
+  char *output = nullptr;
+  size_t output_capacity = 0;
+  size_t *output_length = nullptr;
+  cmfa_error *error = nullptr;
+};
+RawProxyMode g_proxy_mode = RawProxyMode::Success;
+RawProxyCapture g_proxy_groups_capture{};
+RawProxyCapture g_proxy_group_capture{};
+RawProxyCapture g_proxy_select_capture{};
+RawProxyCapture g_proxy_delay_start_capture{};
+RawProxyCapture g_proxy_delay_snapshot_capture{};
+RawProxyCapture g_proxy_delay_cancel_capture{};
 struct cmfa_mihomo_runtime_log_record_v1 {
   uint32_t struct_size;
   cmfa_log_level level;
@@ -57,6 +133,7 @@ void reset_runtime_snapshot_storage() {
   g_runtime_snapshot = {};
   g_runtime_snapshot.struct_size = sizeof(g_runtime_snapshot);
   g_runtime_snapshot.state = CMFA_RUNTIME_STOPPED;
+  g_runtime_mode = CMFA_MODE_RULE;
   g_runtime_logs.clear();
   g_probe_result = {};
   g_probe_result.struct_size = sizeof(g_probe_result);
@@ -67,6 +144,171 @@ void reset_runtime_snapshot_storage() {
   g_cancel_probe_status = CMFA_OK;
   g_last_close_stale_session_id.clear();
   g_close_stale_status = CMFA_OK;
+}
+
+void reset_raw_proxy_capture(RawProxyCapture *capture) {
+  if (capture == nullptr) {
+    return;
+  }
+  *capture = {};
+  capture->session_hash = reinterpret_cast<const char *>(static_cast<uintptr_t>(1));
+  capture->selectable_only = 0xFF;
+}
+
+void reset_raw_proxy_state() {
+  g_proxy_mode = RawProxyMode::Success;
+  reset_raw_proxy_capture(&g_proxy_groups_capture);
+  reset_raw_proxy_capture(&g_proxy_group_capture);
+  reset_raw_proxy_capture(&g_proxy_select_capture);
+  reset_raw_proxy_capture(&g_proxy_delay_start_capture);
+  reset_raw_proxy_capture(&g_proxy_delay_snapshot_capture);
+  reset_raw_proxy_capture(&g_proxy_delay_cancel_capture);
+}
+
+void set_fixed_text(char *buffer, size_t capacity, const char *value) {
+  if (buffer == nullptr || capacity == 0) {
+    throw std::runtime_error("fixed proxy buffer must be writable");
+  }
+  std::memset(buffer, 0, capacity);
+  if (value == nullptr) {
+    return;
+  }
+  const size_t value_length = std::strlen(value);
+  const size_t copy_length = value_length < (capacity - 1) ? value_length : (capacity - 1);
+  if (copy_length > 0) {
+    std::memcpy(buffer, value, copy_length);
+  }
+  buffer[copy_length] = '\0';
+}
+
+cmfa_proxy_query_context make_proxy_query_context(bool include_session_hash) {
+  cmfa_proxy_query_context context{};
+  context.struct_size = sizeof(context);
+  set_fixed_text(context.profile_hash, sizeof(context.profile_hash), kProxyProfileHash);
+  set_fixed_text(context.revision_hash, sizeof(context.revision_hash), kProxyRevisionHash);
+  set_fixed_text(context.session_hash,
+                 sizeof(context.session_hash),
+                 include_session_hash ? kProxySessionHash : nullptr);
+  context.generation = 987654321ULL;
+  return context;
+}
+
+struct JsonOutputBox {
+  std::vector<char> storage;
+  cmfa_json_buffer buffer{};
+
+  explicit JsonOutputBox(size_t capacity) : storage(capacity + 1, '\0') {
+    if (capacity == 0) {
+      throw std::runtime_error("json output box capacity must be nonzero");
+    }
+    storage.front() = '\0';
+    storage.back() = static_cast<char>(0x7F);
+    buffer.data = storage.data();
+    buffer.capacity = capacity;
+    buffer.length = 0;
+  }
+
+  std::string str() const { return std::string(buffer.data != nullptr ? buffer.data : ""); }
+
+  void fill(char value) {
+    std::fill(storage.begin(), storage.end(), value);
+    storage.back() = static_cast<char>(0x7F);
+    buffer.length = 0;
+  }
+};
+
+cmfa_status write_raw_proxy_response(RawProxyCapture *capture,
+                                     uint8_t selectable_only,
+                                     const char *payload,
+                                     char *output,
+                                     size_t output_capacity,
+                                     size_t *output_length,
+                                     cmfa_error *error) {
+  if (capture == nullptr) {
+    throw std::runtime_error("raw proxy capture must exist");
+  }
+  capture->called = true;
+  capture->selectable_only = selectable_only;
+  capture->output = output;
+  capture->output_capacity = output_capacity;
+  capture->output_length = output_length;
+  capture->error = error;
+
+  const size_t required_length = std::strlen(payload);
+  if (output_length != nullptr) {
+    *output_length = required_length;
+  }
+  switch (g_proxy_mode) {
+    case RawProxyMode::Success:
+      if (output == nullptr || output_capacity <= required_length) {
+        throw std::runtime_error("raw proxy success requires full writable caller output");
+      }
+      std::memcpy(output, payload, required_length);
+      output[required_length] = '\0';
+      if (error != nullptr) {
+        error->code = CMFA_OK;
+        error->length = 0;
+        if (error->message != nullptr && error->capacity > 0) {
+          error->message[0] = '\0';
+        }
+      }
+      return CMFA_OK;
+    case RawProxyMode::BufferTooSmall:
+      if (output == nullptr) {
+        throw std::runtime_error("raw proxy buffer-too-small requires output");
+      }
+      if (output_capacity > 0) {
+        output[0] = '\0';
+      }
+      if (error != nullptr) {
+        error->code = CMFA_OK;
+        error->length = 0;
+        if (error->message != nullptr && error->capacity > 0) {
+          error->message[0] = '\0';
+        }
+      }
+      return CMFA_BUFFER_TOO_SMALL;
+    case RawProxyMode::BackendError:
+      if (output == nullptr) {
+        throw std::runtime_error("raw proxy backend error requires output");
+      }
+      if (output_capacity > 0) {
+        output[0] = '\0';
+      }
+      if (output_length != nullptr) {
+        *output_length = 0;
+      }
+      if (error != nullptr) {
+        error->code = CMFA_BACKEND_ERROR;
+        const char *message = "synthetic backend failure";
+        const size_t message_length = std::strlen(message);
+        error->length = message_length;
+        if (error->message != nullptr && error->capacity > 0) {
+          const size_t writable = error->capacity - 1;
+          const size_t copy_length = message_length < writable ? message_length : writable;
+          if (copy_length > 0) {
+            std::memcpy(error->message, message, copy_length);
+          }
+          error->message[copy_length] = '\0';
+        }
+      }
+      return CMFA_BACKEND_ERROR;
+  }
+  return CMFA_BACKEND_ERROR;
+}
+
+void capture_raw_proxy_context(RawProxyCapture *capture,
+                               const char *profile_hash,
+                               const char *revision_hash,
+                               const char *session_hash,
+                               uint64_t generation) {
+  if (capture == nullptr) {
+    throw std::runtime_error("raw proxy capture must exist");
+  }
+  capture->profile_hash = profile_hash != nullptr ? profile_hash : "";
+  capture->revision_hash = revision_hash != nullptr ? revision_hash : "";
+  capture->session_hash = session_hash;
+  capture->generation = generation;
 }
 
 class TestFailure : public std::runtime_error {
@@ -94,6 +336,31 @@ void expect_string_eq(const std::string &actual, const std::string &expected, co
   }
 }
 
+void expect_string_vector_eq(const std::vector<std::string> &actual,
+                             const std::vector<std::string> &expected,
+                             const std::string &message) {
+  if (actual.size() != expected.size()) {
+    throw TestFailure(message + " size mismatch (actual=" + std::to_string(actual.size()) +
+                      ", expected=" + std::to_string(expected.size()) + ")");
+  }
+  for (size_t index = 0; index < actual.size(); ++index) {
+    if (actual[index] != expected[index]) {
+      throw TestFailure(message + " mismatch at index " + std::to_string(index) + " (actual=\"" + actual[index] +
+                        "\", expected=\"" + expected[index] + "\")");
+    }
+  }
+}
+
+void expect_vector_strings_do_not_contain(const std::vector<std::string> &values,
+                                          const std::string &needle,
+                                          const std::string &message) {
+  for (const auto &value : values) {
+    if (!needle.empty() && value.find(needle) != std::string::npos) {
+      throw TestFailure(message + " (value=\"" + value + "\", needle=\"" + needle + "\")");
+    }
+  }
+}
+
 struct ErrorBox {
   std::array<char, 128> storage{};
   cmfa_error error{};
@@ -113,9 +380,12 @@ struct HostCapture {
   uint32_t log_count = 0;
   uint32_t event_count = 0;
   std::vector<cmfa_runtime_state_value> states;
+  std::vector<std::string> event_messages;
   std::vector<std::string> event_codes;
   std::vector<std::string> event_session_ids;
   std::vector<std::string> event_trace_ids;
+  std::vector<std::string> event_ingresses;
+  std::vector<std::string> event_protocols;
   std::vector<cmfa_log_level> log_levels;
   std::vector<std::string> log_messages;
   std::vector<int> protected_fds;
@@ -133,9 +403,12 @@ void capture_event(void *context, const cmfa_runtime_event *event) {
   auto *capture = static_cast<HostCapture *>(context);
   capture->event_count += 1;
   capture->states.push_back(event != nullptr ? event->state : CMFA_RUNTIME_ERROR);
+  capture->event_messages.push_back(event != nullptr && event->message != nullptr ? event->message : "");
   capture->event_codes.push_back(event != nullptr && event->code != nullptr ? event->code : "");
   capture->event_session_ids.push_back(event != nullptr && event->session_id != nullptr ? event->session_id : "");
   capture->event_trace_ids.push_back(event != nullptr && event->trace_id != nullptr ? event->trace_id : "");
+  capture->event_ingresses.push_back(event != nullptr && event->ingress != nullptr ? event->ingress : "");
+  capture->event_protocols.push_back(event != nullptr && event->protocol != nullptr ? event->protocol : "");
 }
 
 cmfa_status capture_protect_socket(void *context, int fd, uint32_t timeout_ms) {
@@ -171,8 +444,11 @@ void reset_contract() {
   (void)cmfa_shutdown(&error.error);
   (void)cmfa::unregister_mihomo_backend(&error.error);
   g_raw_version = nullptr;
+  g_last_validate_config_path.clear();
+  g_last_load_config_path.clear();
   g_preserve_error_on_stop = false;
   reset_runtime_snapshot_storage();
+  reset_raw_proxy_state();
 }
 
 #if defined(__unix__) || defined(__APPLE__)
@@ -386,18 +662,22 @@ void test_start_stop_and_runtime_snapshot() {
   reset_contract();
   HostCapture capture;
   initialize_backend(&capture);
+  const std::string endpoint_fragment_a = "127.0.0.1:7890";
+  const std::string endpoint_fragment_b = "127.0.0.1:19090";
 
   ErrorBox error;
   expect_status_message(cmfa_validate_config("config.yaml", &error.error),
-                        CMFA_CORE_UNAVAILABLE,
+                        CMFA_OK,
                         error,
-                        "mihomo backend does not support validate_config",
-                        "validate_config should stay unavailable");
+                        "",
+                        "validate_config should forward to the Go backend");
+  expect_string_eq(g_last_validate_config_path, "config.yaml", "validate_config path");
   expect_status_message(cmfa_load_config("config.yaml", &error.error),
-                        CMFA_CORE_UNAVAILABLE,
+                        CMFA_OK,
                         error,
-                        "mihomo backend does not support load_config",
-                        "load_config should stay unavailable");
+                        "",
+                        "load_config should forward to the Go backend");
+  expect_string_eq(g_last_load_config_path, "config.yaml", "load_config path");
 
   cmfa_runtime_snapshot start_snapshot{};
   start_snapshot.struct_size = sizeof(start_snapshot);
@@ -414,6 +694,15 @@ void test_start_stop_and_runtime_snapshot() {
   expect_eq(capture.event_count, static_cast<uint32_t>(2), "start_local should emit STARTING and RUNNING");
   expect_eq(capture.states[0], CMFA_RUNTIME_STARTING, "first event should be STARTING");
   expect_eq(capture.states[1], CMFA_RUNTIME_RUNNING, "second event should be RUNNING");
+  expect_string_vector_eq(capture.event_messages,
+                          {"starting local proxy", "local proxy running"},
+                          "start_local event messages should stay on the fixed safe allowlist");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       endpoint_fragment_a,
+                                       "start_local events must not include HTTP endpoint");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       endpoint_fragment_b,
+                                       "start_local events must not include SOCKS endpoint");
   expect_eq(capture.log_count, static_cast<uint32_t>(2), "start should emit runtime logs through host");
   expect_string_eq(capture.log_messages[0], "{\"category\":\"runtime.starting\",\"message\":\"starting local proxy\"}",
                    "first log should be structured starting log");
@@ -434,6 +723,15 @@ void test_start_stop_and_runtime_snapshot() {
   expect_eq(capture.log_count, static_cast<uint32_t>(4), "stop should append runtime logs through host");
   expect_eq(capture.states[2], CMFA_RUNTIME_STOPPING, "third event should be STOPPING");
   expect_eq(capture.states[3], CMFA_RUNTIME_STOPPED, "fourth event should be STOPPED");
+  expect_string_vector_eq(capture.event_messages,
+                          {"starting local proxy", "local proxy running", "stopping local proxy", "local proxy stopped"},
+                          "start/stop event messages should stay on the fixed safe allowlist");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       endpoint_fragment_a,
+                                       "start/stop events must not include HTTP endpoint");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       endpoint_fragment_b,
+                                       "start/stop events must not include SOCKS endpoint");
   expect_string_eq(capture.log_messages[2], "{\"category\":\"runtime.stopping\",\"message\":\"stopping local proxy\"}",
                    "third log should be structured stopping log");
   expect_string_eq(capture.log_messages[3], "{\"category\":\"runtime.stopped\",\"message\":\"local proxy stopped\"}",
@@ -445,6 +743,11 @@ void test_stop_preserves_error_snapshot_event_and_redacted_failure_log() {
   reset_contract();
   HostCapture capture;
   initialize_backend(&capture);
+  const std::string forbidden_fragment_a = "127.0.0.1:7890";
+  const std::string forbidden_fragment_b = "https://alice:secret@example.invalid/config.yaml?token=abc123&password=hunter2";
+  const std::string forbidden_fragment_c = "abc123";
+  const std::string forbidden_fragment_d = "hunter2";
+  const std::string forbidden_fragment_e = "secret";
 
   ErrorBox error;
   cmfa_runtime_snapshot start_snapshot{};
@@ -471,9 +774,28 @@ void test_stop_preserves_error_snapshot_event_and_redacted_failure_log() {
                    "fetch https://alice:secret@example.invalid/config.yaml?token=abc123&password=hunter2 failed",
                    "runtime_state should preserve diagnostic after stop");
   expect_eq(capture.states.back(), CMFA_RUNTIME_ERROR, "final event should remain ERROR");
+  expect_string_vector_eq(capture.event_messages,
+                          {"starting local proxy", "local proxy running", "stopping local proxy", "runtime error"},
+                          "runtime error events should stay on the fixed safe allowlist");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       forbidden_fragment_a,
+                                       "runtime error events must not include HTTP endpoint");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       forbidden_fragment_b,
+                                       "runtime error events must not include sensitive URL");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       forbidden_fragment_c,
+                                       "runtime error events must not include token");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       forbidden_fragment_d,
+                                       "runtime error events must not include password");
+  expect_vector_strings_do_not_contain(capture.event_messages,
+                                       forbidden_fragment_e,
+                                       "runtime error events must not include secret fragments");
   expect(capture.log_messages.back().find("secret") == std::string::npos, "failure log should redact userinfo/password");
   expect(capture.log_messages.back().find("abc123") == std::string::npos, "failure log should redact token");
   expect(capture.log_messages.back().find("hunter2") == std::string::npos, "failure log should redact password");
+  reset_contract();
 }
 
 void test_backend_start_local_direct_null_options_preserves_snapshot() {
@@ -607,6 +929,356 @@ void test_close_stale_tun_connections_rejects_empty_session_id() {
   reset_contract();
 }
 
+void test_proxy_wrapper_direct_forwarding_and_success_payload() {
+  reset_contract();
+  ErrorBox error;
+  JsonOutputBox groups_output(64);
+  JsonOutputBox group_output(64);
+  JsonOutputBox select_output(64);
+  const auto sessionless_query = make_proxy_query_context(false);
+  const auto session_query = make_proxy_query_context(true);
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_groups_direct(&sessionless_query, 1, &groups_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_groups wrapper should succeed");
+  expect(g_proxy_groups_capture.called, "raw proxy_groups stub should be invoked");
+  expect_string_eq(g_proxy_groups_capture.profile_hash, kProxyProfileHash, "proxy_groups should forward profile hash");
+  expect_string_eq(g_proxy_groups_capture.revision_hash,
+                   kProxyRevisionHash,
+                   "proxy_groups should forward revision hash");
+  expect(g_proxy_groups_capture.session_hash == nullptr, "proxy_groups should canonicalize empty session as null");
+  expect_eq(g_proxy_groups_capture.generation, sessionless_query.generation, "proxy_groups should forward generation");
+  expect_eq(g_proxy_groups_capture.selectable_only, static_cast<uint8_t>(1), "proxy_groups should forward selectable_only");
+  expect(g_proxy_groups_capture.output == groups_output.buffer.data, "proxy_groups should forward caller output pointer");
+  expect_eq(g_proxy_groups_capture.output_capacity,
+            groups_output.buffer.capacity,
+            "proxy_groups should forward caller output capacity");
+  expect(g_proxy_groups_capture.output_length == &groups_output.buffer.length,
+         "proxy_groups should forward caller output length pointer");
+  expect(g_proxy_groups_capture.error == &error.error, "proxy_groups should forward caller error pointer");
+  expect_string_eq(groups_output.str(), kProxyGroupsPayload, "proxy_groups should write the synthetic payload");
+  expect_eq(groups_output.buffer.length, std::strlen(kProxyGroupsPayload), "proxy_groups should preserve payload length");
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_group_direct(&session_query, "alpha", &group_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_group wrapper should succeed");
+  expect(g_proxy_group_capture.called, "raw proxy_group stub should be invoked");
+  expect(g_proxy_group_capture.session_hash != nullptr, "proxy_group should forward nonempty session");
+  expect_string_eq(g_proxy_group_capture.session_hash, kProxySessionHash, "proxy_group should preserve exact session hash");
+  expect_eq(g_proxy_group_capture.generation, session_query.generation, "proxy_group should forward generation");
+  expect_string_eq(g_proxy_group_capture.group_name, "alpha", "proxy_group should forward group name");
+  expect(g_proxy_group_capture.output == group_output.buffer.data, "proxy_group should forward caller output pointer");
+  expect_eq(g_proxy_group_capture.output_capacity,
+            group_output.buffer.capacity,
+            "proxy_group should forward caller output capacity");
+  expect(g_proxy_group_capture.output_length == &group_output.buffer.length,
+         "proxy_group should forward caller output length pointer");
+  expect(g_proxy_group_capture.error == &error.error, "proxy_group should forward caller error pointer");
+  expect_string_eq(group_output.str(), kProxyGroupPayload, "proxy_group should write the synthetic payload");
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_select_direct(&session_query, "alpha", "beta", &select_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_select wrapper should succeed");
+  expect(g_proxy_select_capture.called, "raw proxy_select stub should be invoked");
+  expect_string_eq(g_proxy_select_capture.group_name, "alpha", "proxy_select should forward group name");
+  expect_string_eq(g_proxy_select_capture.member_name, "beta", "proxy_select should forward member name");
+  expect(g_proxy_select_capture.output == select_output.buffer.data,
+         "proxy_select should forward caller output pointer");
+  expect_eq(g_proxy_select_capture.output_capacity,
+            select_output.buffer.capacity,
+            "proxy_select should forward caller output capacity");
+  expect(g_proxy_select_capture.output_length == &select_output.buffer.length,
+         "proxy_select should forward caller output length pointer");
+  expect(g_proxy_select_capture.error == &error.error, "proxy_select should forward caller error pointer");
+  expect_string_eq(select_output.str(), kProxySelectPayload, "proxy_select should write the synthetic payload");
+
+  reset_contract();
+}
+
+void test_proxy_wrapper_direct_buffer_too_small_and_backend_error_preserve_contract() {
+  reset_contract();
+  const auto query = make_proxy_query_context(true);
+  ErrorBox error;
+  JsonOutputBox small_output(8);
+  small_output.fill('Q');
+  g_proxy_mode = RawProxyMode::BufferTooSmall;
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_groups_direct(&query, 0, &small_output.buffer, &error.error),
+            CMFA_BUFFER_TOO_SMALL,
+            "direct proxy_groups wrapper should surface buffer-too-small");
+  expect(g_proxy_groups_capture.called, "buffer-too-small should still invoke raw proxy_groups");
+  expect_eq(small_output.buffer.length,
+            std::strlen(kProxyGroupsPayload),
+            "buffer-too-small should report required payload length");
+  expect_eq(small_output.buffer.data[0], '\0', "buffer-too-small should not leave partial payload");
+
+  JsonOutputBox failed_output(64);
+  failed_output.fill('R');
+  error.storage.fill('\0');
+  error.error.code = CMFA_OK;
+  error.error.length = 0;
+  g_proxy_mode = RawProxyMode::BackendError;
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_select_direct(&query, "alpha", "beta", &failed_output.buffer, &error.error),
+            CMFA_BACKEND_ERROR,
+            "direct proxy_select wrapper should preserve backend error status");
+  expect(g_proxy_select_capture.called, "backend error should still invoke raw proxy_select");
+  expect_eq(failed_output.buffer.length, static_cast<size_t>(0), "backend error should clear public length");
+  expect_eq(failed_output.buffer.data[0], '\0', "backend error should clear public output");
+  expect_eq(error.error.code, CMFA_BACKEND_ERROR, "backend error code should be preserved");
+  expect_string_eq(error.message(), "synthetic backend failure", "backend error detail should be preserved");
+
+  reset_contract();
+}
+
+void test_proxy_delay_wrapper_direct_forwarding_and_success_payload() {
+  reset_contract();
+  ErrorBox error;
+  JsonOutputBox start_output(64);
+  JsonOutputBox snapshot_output(64);
+  JsonOutputBox cancel_output(64);
+  const auto sessionless_query = make_proxy_query_context(false);
+  const auto session_query = make_proxy_query_context(true);
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_start_direct(&sessionless_query, "alpha", &start_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_delay_start wrapper should succeed");
+  expect(g_proxy_delay_start_capture.called, "raw proxy_delay_start stub should be invoked");
+  expect_string_eq(g_proxy_delay_start_capture.profile_hash, kProxyProfileHash,
+                   "proxy_delay_start should forward profile hash");
+  expect_string_eq(g_proxy_delay_start_capture.revision_hash, kProxyRevisionHash,
+                   "proxy_delay_start should forward revision hash");
+  expect(g_proxy_delay_start_capture.session_hash == nullptr,
+         "proxy_delay_start should canonicalize empty session as null");
+  expect_eq(g_proxy_delay_start_capture.generation, sessionless_query.generation,
+            "proxy_delay_start should forward generation");
+  expect_string_eq(g_proxy_delay_start_capture.group_name, "alpha", "proxy_delay_start should forward group name");
+  expect(g_proxy_delay_start_capture.output == start_output.buffer.data,
+         "proxy_delay_start should forward caller output pointer");
+  expect_eq(g_proxy_delay_start_capture.output_capacity,
+            start_output.buffer.capacity,
+            "proxy_delay_start should forward caller output capacity");
+  expect(g_proxy_delay_start_capture.output_length == &start_output.buffer.length,
+         "proxy_delay_start should forward caller output length pointer");
+  expect(g_proxy_delay_start_capture.error == &error.error, "proxy_delay_start should forward caller error pointer");
+  expect_string_eq(start_output.str(), kProxyDelayStartPayload, "proxy_delay_start should write the synthetic payload");
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_snapshot_direct(kProxyDelayJobId, &snapshot_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_delay_snapshot wrapper should succeed");
+  expect(g_proxy_delay_snapshot_capture.called, "raw proxy_delay_snapshot stub should be invoked");
+  expect_string_eq(g_proxy_delay_snapshot_capture.group_name, kProxyDelayJobId,
+                   "proxy_delay_snapshot should forward job id");
+  expect(g_proxy_delay_snapshot_capture.output == snapshot_output.buffer.data,
+         "proxy_delay_snapshot should forward caller output pointer");
+  expect_eq(g_proxy_delay_snapshot_capture.output_capacity,
+            snapshot_output.buffer.capacity,
+            "proxy_delay_snapshot should forward caller output capacity");
+  expect(g_proxy_delay_snapshot_capture.output_length == &snapshot_output.buffer.length,
+         "proxy_delay_snapshot should forward caller output length pointer");
+  expect(g_proxy_delay_snapshot_capture.error == &error.error,
+         "proxy_delay_snapshot should forward caller error pointer");
+  expect_string_eq(snapshot_output.str(), kProxyDelaySnapshotPayload,
+                   "proxy_delay_snapshot should write the synthetic payload");
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_start_direct(&session_query, "beta", &cancel_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_delay_start wrapper should preserve nonempty session");
+  expect(g_proxy_delay_start_capture.session_hash != nullptr, "proxy_delay_start should forward nonempty session");
+  expect_string_eq(g_proxy_delay_start_capture.session_hash, kProxySessionHash,
+                   "proxy_delay_start should preserve exact session hash");
+
+  JsonOutputBox cancel_direct_output(64);
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_cancel_direct(kProxyDelayJobId, &cancel_direct_output.buffer, &error.error),
+            CMFA_OK,
+            "direct proxy_delay_cancel wrapper should succeed");
+  expect(g_proxy_delay_cancel_capture.called, "raw proxy_delay_cancel stub should be invoked");
+  expect_string_eq(g_proxy_delay_cancel_capture.group_name, kProxyDelayJobId,
+                   "proxy_delay_cancel should forward job id via capture");
+  expect(g_proxy_delay_cancel_capture.output == cancel_direct_output.buffer.data,
+         "proxy_delay_cancel should forward caller output pointer");
+  expect_eq(g_proxy_delay_cancel_capture.output_capacity,
+            cancel_direct_output.buffer.capacity,
+            "proxy_delay_cancel should forward caller output capacity");
+  expect(g_proxy_delay_cancel_capture.output_length == &cancel_direct_output.buffer.length,
+         "proxy_delay_cancel should forward caller output length pointer");
+  expect(g_proxy_delay_cancel_capture.error == &error.error,
+         "proxy_delay_cancel should forward caller error pointer");
+  expect_string_eq(cancel_direct_output.str(), kProxyDelayCancelPayload,
+                   "proxy_delay_cancel should write the synthetic payload");
+
+  reset_contract();
+}
+
+void test_proxy_delay_wrapper_direct_buffer_too_small_and_backend_error_preserve_contract() {
+  reset_contract();
+  ErrorBox error;
+  JsonOutputBox small_output(8);
+  small_output.fill('Q');
+  g_proxy_mode = RawProxyMode::BufferTooSmall;
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_snapshot_direct(kProxyDelayJobId, &small_output.buffer, &error.error),
+            CMFA_BUFFER_TOO_SMALL,
+            "direct proxy_delay_snapshot wrapper should surface buffer-too-small");
+  expect(g_proxy_delay_snapshot_capture.called, "buffer-too-small should still invoke raw proxy_delay_snapshot");
+  expect_eq(small_output.buffer.length,
+            std::strlen(kProxyDelaySnapshotPayload),
+            "buffer-too-small should report required payload length");
+  expect_eq(small_output.buffer.data[0], '\0', "buffer-too-small should not leave partial payload");
+
+  JsonOutputBox failed_output(64);
+  failed_output.fill('R');
+  error.storage.fill('\0');
+  error.error.code = CMFA_OK;
+  error.error.length = 0;
+  g_proxy_mode = RawProxyMode::BackendError;
+
+  expect_eq(cmfa_mihomo_backend_test_proxy_delay_cancel_direct(kProxyDelayJobId, &failed_output.buffer, &error.error),
+            CMFA_BACKEND_ERROR,
+            "direct proxy_delay_cancel wrapper should preserve backend error status");
+  expect(g_proxy_delay_cancel_capture.called, "backend error should still invoke raw proxy_delay_cancel");
+  expect_eq(failed_output.buffer.length, static_cast<size_t>(0), "backend error should clear public length");
+  expect_eq(failed_output.buffer.data[0], '\0', "backend error should clear public output");
+  expect_eq(error.error.code, CMFA_BACKEND_ERROR, "backend error code should be preserved");
+  expect_string_eq(error.message(), "synthetic backend failure", "backend error detail should be preserved");
+
+  reset_contract();
+}
+
+void test_registered_proxy_callbacks_complete_abi_smoke_and_lifecycle() {
+  reset_contract();
+  HostCapture capture;
+  ErrorBox error;
+  expect_eq(cmfa::register_mihomo_backend(&error.error), CMFA_OK, "register should succeed when proxy callbacks are complete");
+  auto callbacks = make_host_callbacks(&capture);
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+  const auto sessionless_query = make_proxy_query_context(false);
+  JsonOutputBox groups_output(64);
+  g_proxy_mode = RawProxyMode::Success;
+  expect_eq(cmfa_proxy_groups(&sessionless_query, 1, &groups_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_groups should reach registered backend wrapper");
+  expect(g_proxy_groups_capture.called, "public proxy_groups should invoke raw proxy_groups");
+  expect(g_proxy_groups_capture.session_hash == nullptr, "public proxy_groups should canonicalize empty session as null");
+  expect_eq(g_proxy_groups_capture.selectable_only, static_cast<uint8_t>(1), "public proxy_groups should forward selectable_only");
+  expect_eq(g_proxy_groups_capture.output_capacity,
+            groups_output.buffer.capacity,
+            "public proxy_groups should pass the working output capacity");
+  expect_eq(groups_output.buffer.length, std::strlen(kProxyGroupsPayload), "public proxy_groups should preserve payload length");
+  expect_string_eq(groups_output.str(), kProxyGroupsPayload, "public proxy_groups should copy payload back to caller");
+
+  const auto session_query = make_proxy_query_context(true);
+  JsonOutputBox group_output(64);
+  expect_eq(cmfa_proxy_group(&session_query, "alpha", &group_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_group should reach registered backend wrapper");
+  expect_string_eq(g_proxy_group_capture.group_name, "alpha", "public proxy_group should forward group name");
+  expect(g_proxy_group_capture.session_hash != nullptr, "public proxy_group should forward nonempty session");
+  expect_string_eq(g_proxy_group_capture.session_hash, kProxySessionHash, "public proxy_group should preserve exact session hash");
+
+  JsonOutputBox select_output(64);
+  expect_eq(cmfa_proxy_select(&session_query, "alpha", "beta", &select_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_select should reach registered backend wrapper");
+  expect_string_eq(g_proxy_select_capture.group_name, "alpha", "public proxy_select should forward group name");
+  expect_string_eq(g_proxy_select_capture.member_name, "beta", "public proxy_select should forward member name");
+  expect_eq(g_proxy_select_capture.generation, session_query.generation, "public proxy_select should forward generation");
+  expect_eq(select_output.buffer.length, std::strlen(kProxySelectPayload), "public proxy_select should preserve payload length");
+  expect_string_eq(select_output.str(), kProxySelectPayload, "public proxy_select should copy payload back to caller");
+
+  JsonOutputBox delay_start_output(64);
+  expect_eq(cmfa_proxy_delay_start(&sessionless_query, "alpha", &delay_start_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_delay_start should reach registered backend wrapper");
+  expect(g_proxy_delay_start_capture.called, "public proxy_delay_start should invoke raw proxy_delay_start");
+  expect(g_proxy_delay_start_capture.session_hash == nullptr,
+         "public proxy_delay_start should canonicalize empty session as null");
+  expect_string_eq(g_proxy_delay_start_capture.group_name, "alpha", "public proxy_delay_start should forward group name");
+  expect_eq(delay_start_output.buffer.length,
+            std::strlen(kProxyDelayStartPayload),
+            "public proxy_delay_start should preserve payload length");
+  expect_string_eq(delay_start_output.str(), kProxyDelayStartPayload,
+                   "public proxy_delay_start should copy payload back to caller");
+
+  JsonOutputBox delay_snapshot_output(64);
+  expect_eq(cmfa_proxy_delay_snapshot(kProxyDelayJobId, &delay_snapshot_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_delay_snapshot should reach registered backend wrapper");
+  expect(g_proxy_delay_snapshot_capture.called,
+         "public proxy_delay_snapshot should invoke raw proxy_delay_snapshot");
+  expect_string_eq(g_proxy_delay_snapshot_capture.group_name, kProxyDelayJobId,
+                   "public proxy_delay_snapshot should forward job id");
+  expect_eq(delay_snapshot_output.buffer.length,
+            std::strlen(kProxyDelaySnapshotPayload),
+            "public proxy_delay_snapshot should preserve payload length");
+
+  JsonOutputBox delay_cancel_output(64);
+  expect_eq(cmfa_proxy_delay_cancel(kProxyDelayJobId, &delay_cancel_output.buffer, &error.error),
+            CMFA_OK,
+            "public proxy_delay_cancel should reach registered backend wrapper");
+  expect(g_proxy_delay_cancel_capture.called, "public proxy_delay_cancel should invoke raw proxy_delay_cancel");
+  expect_string_eq(g_proxy_delay_cancel_capture.group_name, kProxyDelayJobId,
+                   "public proxy_delay_cancel should forward job id");
+  expect_eq(delay_cancel_output.buffer.length,
+            std::strlen(kProxyDelayCancelPayload),
+            "public proxy_delay_cancel should preserve payload length");
+
+  JsonOutputBox small_output(8);
+  g_proxy_mode = RawProxyMode::BufferTooSmall;
+  expect_eq(cmfa_proxy_groups(&session_query, 0, &small_output.buffer, &error.error),
+            CMFA_BUFFER_TOO_SMALL,
+            "public proxy_groups should surface raw buffer-too-small");
+  expect_eq(small_output.buffer.length,
+            std::strlen(kProxyGroupsPayload),
+            "public proxy_groups should preserve required length on buffer-too-small");
+  expect_eq(small_output.buffer.data[0], '\0', "public proxy_groups should not expose partial payload");
+
+  JsonOutputBox failed_output(64);
+  g_proxy_mode = RawProxyMode::BackendError;
+  expect_eq(cmfa_proxy_select(&session_query, "alpha", "beta", &failed_output.buffer, &error.error),
+            CMFA_BACKEND_ERROR,
+            "public proxy_select should preserve raw backend error");
+  expect_eq(failed_output.buffer.length, static_cast<size_t>(0), "public proxy_select should clear output on backend error");
+  expect_eq(failed_output.buffer.data[0], '\0', "public proxy_select should clear bytes on backend error");
+  expect_eq(error.error.code, CMFA_BACKEND_ERROR, "public proxy_select should preserve raw error code");
+  expect_string_eq(error.message(), "synthetic backend failure", "public proxy_select should preserve raw error detail");
+
+  JsonOutputBox delay_small_output(8);
+  g_proxy_mode = RawProxyMode::BufferTooSmall;
+  expect_eq(cmfa_proxy_delay_snapshot(kProxyDelayJobId, &delay_small_output.buffer, &error.error),
+            CMFA_BUFFER_TOO_SMALL,
+            "public proxy_delay_snapshot should surface raw buffer-too-small");
+  expect_eq(delay_small_output.buffer.length,
+            std::strlen(kProxyDelaySnapshotPayload),
+            "public proxy_delay_snapshot should preserve required length on buffer-too-small");
+  expect_eq(delay_small_output.buffer.data[0], '\0',
+            "public proxy_delay_snapshot should not expose partial payload");
+
+  JsonOutputBox delay_failed_output(64);
+  g_proxy_mode = RawProxyMode::BackendError;
+  expect_eq(cmfa_proxy_delay_cancel(kProxyDelayJobId, &delay_failed_output.buffer, &error.error), CMFA_BACKEND_ERROR,
+            "public proxy_delay_cancel should preserve raw backend error");
+  expect_eq(delay_failed_output.buffer.length, static_cast<size_t>(0),
+            "public proxy_delay_cancel should clear output on backend error");
+  expect_eq(delay_failed_output.buffer.data[0], '\0',
+            "public proxy_delay_cancel should clear bytes on backend error");
+  expect_eq(error.error.code, CMFA_BACKEND_ERROR, "public proxy_delay_cancel should preserve raw error code");
+  expect_string_eq(error.message(), "synthetic backend failure",
+                   "public proxy_delay_cancel should preserve raw error detail");
+
+  expect_eq(cmfa_shutdown(&error.error), CMFA_OK, "shutdown should succeed after proxy operations");
+  expect_eq(cmfa::unregister_mihomo_backend(&error.error), CMFA_OK, "unregister should succeed after shutdown");
+  JsonOutputBox post_unregister_output(64);
+  expect_eq(cmfa_proxy_groups(&session_query, 0, &post_unregister_output.buffer, &error.error),
+            CMFA_NOT_INITIALIZED,
+            "proxy API should reject calls after shutdown and unregister lifecycle completes");
+  expect_eq(post_unregister_output.buffer.length, static_cast<size_t>(0), "post-unregister proxy call should clear output length");
+  expect_eq(post_unregister_output.buffer.data[0], '\0', "post-unregister proxy call should clear output bytes");
+
+  reset_contract();
+}
+
 void test_visible_host_protect_bridge_symbol_can_be_found_and_called() {
   reset_contract();
   HostCapture capture;
@@ -629,9 +1301,128 @@ void test_visible_host_protect_bridge_symbol_can_be_found_and_called() {
   reset_contract();
 }
 
+void test_runtime_log_pump_consumes_fixed_tun_stage_diagnostics() {
+  reset_contract();
+  HostCapture capture;
+  ErrorBox error;
+  expect_eq(cmfa::register_mihomo_backend(&error.error), CMFA_OK, "register should succeed");
+  auto callbacks = make_host_callbacks(&capture);
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+  constexpr std::array<const char *, 15> kFixedTunStopStages = {
+      "tun.stop.listener.begin",
+      "tun.stop.listener.ok",
+      "tun.stop.listener.failed",
+      "tun.stop.http-listener.begin",
+      "tun.stop.http-listener.ok",
+      "tun.stop.http-listener.failed",
+      "tun.stop.socks-listener.begin",
+      "tun.stop.socks-listener.ok",
+      "tun.stop.socks-listener.failed",
+      "tun.stop.connections.begin",
+      "tun.stop.connections.ok",
+      "tun.stop.connections.failed",
+      "tun.stop.executor.begin",
+      "tun.stop.executor.ok",
+      "tun.stop.executor.failed",
+  };
+
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "ordinary-runtime-log"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.prepare.begin"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.listener.endpoint-enter"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.listener.failure.stack-start"});
+  for (const char *stage : kFixedTunStopStages) {
+    g_runtime_logs.push_back({CMFA_LOG_INFO, stage});
+  }
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.packet.read-loop-enter"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.listener.failed:secret"});
+  g_runtime_logs.push_back({CMFA_LOG_INFO, "tun.stop.listener.failed:secret"});
+  cmfa_mihomo_backend_test_emit_runtime_logs();
+
+  expect_eq(capture.log_count,
+            static_cast<uint32_t>(3),
+            "only the exact fixed stage should be consumed by native diagnostics");
+  expect_string_eq(capture.log_messages[0], "ordinary-runtime-log", "ordinary log should be delivered");
+  expect_string_eq(capture.log_messages[1],
+                   "tun.listener.failed:secret",
+                   "dynamic stage suffix should remain an ordinary log");
+  expect_string_eq(capture.log_messages[2],
+                   "tun.stop.listener.failed:secret",
+                   "dynamic stop stage suffix should remain an ordinary log");
+  expect_eq(capture.event_count,
+            static_cast<uint32_t>(1),
+            "fixed packet diagnostics should use the private runtime event fallback");
+  expect_string_eq(capture.event_messages[0],
+                   "tun.packet.read-loop-enter",
+                   "packet diagnostic fallback should keep only the fixed stage");
+  expect_string_eq(capture.event_session_ids[0],
+                   "session-test",
+                   "packet diagnostic fallback should preserve only the current session correlation");
+  expect_string_eq(capture.event_ingresses[0], "diagnostic", "packet diagnostic fallback ingress should be fixed");
+  expect_string_eq(capture.event_protocols[0],
+                   "tun.packet.read-loop-enter",
+                   "packet diagnostic fallback protocol should equal the fixed stage");
+  expect_string_eq(capture.event_codes[0], "", "packet diagnostic fallback must not copy an error code");
+  expect_string_eq(capture.event_trace_ids[0], "", "packet diagnostic fallback must not copy a trace payload");
+  reset_contract();
+}
+
+void test_visible_host_runtime_event_bridge_preserves_packet_diagnostic_forwarding() {
+  reset_contract();
+  HostCapture capture;
+  ErrorBox error;
+  expect_eq(cmfa::register_mihomo_backend(&error.error), CMFA_OK, "register should succeed");
+  auto callbacks = make_host_callbacks(&capture);
+  expect_eq(cmfa_initialize(&callbacks, &error.error), CMFA_OK, "initialize should succeed");
+
+#if defined(__unix__) || defined(__APPLE__)
+  void *symbol = dlsym(RTLD_DEFAULT, "cmfa_host_emit_runtime_event_bridge_v1");
+  expect(symbol != nullptr, "visible host runtime event bridge symbol should be discoverable via dlsym");
+  using bridge_fn = cmfa_status (*)(const cmfa_runtime_event *, cmfa_error *);
+  auto bridge = reinterpret_cast<bridge_fn>(symbol);
+
+  cmfa_runtime_event event{};
+  event.struct_size = sizeof(event);
+  event.state = CMFA_RUNTIME_RUNNING;
+  event.message = "tun.packet.raw-read";
+  event.code = "ignored-code";
+  event.session_id = "session-forward";
+  event.trace_id = "trace-forward";
+  event.ingress = "diagnostic";
+  event.protocol = "tun.packet.raw-read";
+
+  expect_eq(bridge(&event, &error.error), CMFA_OK, "visible host runtime event bridge should call through successfully");
+  expect_eq(capture.event_count, static_cast<uint32_t>(1), "event callback should be invoked exactly once");
+  expect_eq(capture.states[0], CMFA_RUNTIME_RUNNING, "event state should be forwarded");
+  expect_string_eq(capture.event_messages[0], "tun.packet.raw-read", "event message should be forwarded");
+  expect_string_eq(capture.event_codes[0], "ignored-code", "event code should be forwarded");
+  expect_string_eq(capture.event_session_ids[0], "session-forward", "event session id should be forwarded");
+  expect_string_eq(capture.event_trace_ids[0], "trace-forward", "event trace id should be forwarded");
+  expect_string_eq(capture.event_ingresses[0], "diagnostic", "event ingress should be forwarded");
+  expect_string_eq(capture.event_protocols[0], "tun.packet.raw-read", "event protocol should be forwarded");
+#endif
+
+  reset_contract();
+}
+
 } // namespace
 
 extern "C" char *cmfa_mihomo_core_version_cstr_v1(void) { return g_raw_version; }
+
+extern "C" cmfa_status cmfa_mihomo_validate_config_v1(const char *config_path, cmfa_error *) {
+  if (config_path == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+  g_last_validate_config_path = config_path;
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_mihomo_load_config_v1(const char *config_path, cmfa_error *) {
+  if (config_path == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+  g_last_load_config_path = config_path;
+  return CMFA_OK;
+}
 
 extern "C" cmfa_status cmfa_mihomo_start_local_v1(const char *config_path,
                                                   uint32_t mixed_port,
@@ -679,6 +1470,19 @@ extern "C" cmfa_status cmfa_mihomo_runtime_state_v1(cmfa_runtime_snapshot *snaps
   return CMFA_OK;
 }
 
+extern "C" cmfa_status cmfa_mihomo_runtime_mode_v1(cmfa_runtime_mode *mode, cmfa_error *) {
+  if (mode == nullptr) {
+    return CMFA_INVALID_ARGUMENT;
+  }
+  *mode = g_runtime_mode;
+  return CMFA_OK;
+}
+
+extern "C" cmfa_status cmfa_mihomo_set_runtime_mode_v1(cmfa_runtime_mode mode, cmfa_error *) {
+  g_runtime_mode = mode;
+  return CMFA_OK;
+}
+
 extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *request,
                                                   cmfa_probe_result *result,
                                                   cmfa_error *) {
@@ -693,6 +1497,91 @@ extern "C" cmfa_status cmfa_mihomo_probe_https_v1(const cmfa_probe_request *requ
 extern "C" cmfa_status cmfa_mihomo_probe_cancel_v1(const char *probe_run_id, cmfa_error *) {
   g_last_cancel_probe_run_id = probe_run_id != nullptr ? probe_run_id : "";
   return g_cancel_probe_status;
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_groups_v1(const char *profile_hash,
+                                                   const char *revision_hash,
+                                                   const char *session_hash,
+                                                   uint64_t generation,
+                                                   uint8_t selectable_only,
+                                                   char *output,
+                                                   size_t output_capacity,
+                                                   size_t *output_length,
+                                                   cmfa_error *error) {
+  capture_raw_proxy_context(&g_proxy_groups_capture, profile_hash, revision_hash, session_hash, generation);
+  return write_raw_proxy_response(
+      &g_proxy_groups_capture, selectable_only, kProxyGroupsPayload, output, output_capacity, output_length, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_group_v1(const char *profile_hash,
+                                                  const char *revision_hash,
+                                                  const char *session_hash,
+                                                  uint64_t generation,
+                                                  const char *group_name,
+                                                  char *output,
+                                                  size_t output_capacity,
+                                                  size_t *output_length,
+                                                  cmfa_error *error) {
+  capture_raw_proxy_context(&g_proxy_group_capture, profile_hash, revision_hash, session_hash, generation);
+  g_proxy_group_capture.group_name = group_name != nullptr ? group_name : "";
+  return write_raw_proxy_response(
+      &g_proxy_group_capture, 0xFF, kProxyGroupPayload, output, output_capacity, output_length, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_select_v1(const char *profile_hash,
+                                                   const char *revision_hash,
+                                                   const char *session_hash,
+                                                   uint64_t generation,
+                                                   const char *group_name,
+                                                   const char *member_name,
+                                                   char *output,
+                                                   size_t output_capacity,
+                                                   size_t *output_length,
+                                                   cmfa_error *error) {
+  capture_raw_proxy_context(&g_proxy_select_capture, profile_hash, revision_hash, session_hash, generation);
+  g_proxy_select_capture.group_name = group_name != nullptr ? group_name : "";
+  g_proxy_select_capture.member_name = member_name != nullptr ? member_name : "";
+  return write_raw_proxy_response(
+      &g_proxy_select_capture, 0xFF, kProxySelectPayload, output, output_capacity, output_length, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_start_v1(const char *profile_hash,
+                                                        const char *revision_hash,
+                                                        const char *session_hash,
+                                                        uint64_t generation,
+                                                        const char *group_name,
+                                                        char *output,
+                                                        size_t output_capacity,
+                                                        size_t *output_length,
+                                                        cmfa_error *error) {
+  capture_raw_proxy_context(&g_proxy_delay_start_capture, profile_hash, revision_hash, session_hash, generation);
+  g_proxy_delay_start_capture.group_name = group_name != nullptr ? group_name : "";
+  return write_raw_proxy_response(
+      &g_proxy_delay_start_capture, 0xFF, kProxyDelayStartPayload, output, output_capacity, output_length, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_snapshot_v1(const char *job_id,
+                                                           char *output,
+                                                           size_t output_capacity,
+                                                           size_t *output_length,
+                                                           cmfa_error *error) {
+  reset_raw_proxy_capture(&g_proxy_delay_snapshot_capture);
+  g_proxy_delay_snapshot_capture.called = true;
+  g_proxy_delay_snapshot_capture.group_name = job_id != nullptr ? job_id : "";
+  return write_raw_proxy_response(
+      &g_proxy_delay_snapshot_capture, 0xFF, kProxyDelaySnapshotPayload, output, output_capacity, output_length, error);
+}
+
+extern "C" cmfa_status cmfa_mihomo_proxy_delay_cancel_v1(const char *job_id,
+                                                         char *output,
+                                                         size_t output_capacity,
+                                                         size_t *output_length,
+                                                         cmfa_error *error) {
+  reset_raw_proxy_capture(&g_proxy_delay_cancel_capture);
+  g_proxy_delay_cancel_capture.called = true;
+  g_proxy_delay_cancel_capture.group_name = job_id != nullptr ? job_id : "";
+  return write_raw_proxy_response(
+      &g_proxy_delay_cancel_capture, 0xFF, kProxyDelayCancelPayload, output, output_capacity, output_length, error);
 }
 
 extern "C" cmfa_status cmfa_mihomo_backend_test_close_stale_tun_connections_impl(const char *session_id, cmfa_error *) {
@@ -744,9 +1633,23 @@ int main() {
        test_close_stale_tun_connections_forwards_session_id_to_go_backend},
       {"close stale tun connections rejects empty session id",
        test_close_stale_tun_connections_rejects_empty_session_id},
+      {"proxy wrapper direct forwarding and success payload",
+       test_proxy_wrapper_direct_forwarding_and_success_payload},
+      {"proxy wrapper direct buffer too small and backend error preserve contract",
+       test_proxy_wrapper_direct_buffer_too_small_and_backend_error_preserve_contract},
+      {"proxy delay wrapper direct forwarding and success payload",
+       test_proxy_delay_wrapper_direct_forwarding_and_success_payload},
+      {"proxy delay wrapper direct buffer too small and backend error preserve contract",
+       test_proxy_delay_wrapper_direct_buffer_too_small_and_backend_error_preserve_contract},
+      {"registered proxy callbacks complete abi smoke and lifecycle",
+       test_registered_proxy_callbacks_complete_abi_smoke_and_lifecycle},
       {"shutdown and repeated unregister", test_shutdown_and_repeated_unregister_are_safe},
       {"visible host protect bridge symbol can be found and called",
        test_visible_host_protect_bridge_symbol_can_be_found_and_called},
+      {"runtime log pump consumes fixed tun stage diagnostics",
+       test_runtime_log_pump_consumes_fixed_tun_stage_diagnostics},
+      {"visible host runtime event bridge preserves packet diagnostic forwarding",
+       test_visible_host_runtime_event_bridge_preserves_packet_diagnostic_forwarding},
   };
 
   size_t failures = 0;

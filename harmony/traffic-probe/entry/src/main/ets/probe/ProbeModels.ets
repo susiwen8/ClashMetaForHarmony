@@ -5,7 +5,9 @@ export const PROBE_HTTP_HEADER_SESSION_ID: string = 'XCMFAProbeSessionId';
 export const PROBE_HTTP_HEADER_FLOW_ID: string = 'XCMFAProbeFlowId';
 export const PROBE_PARAM_RUN_ID: string = 'runId';
 export const PROBE_PARAM_SESSION_ID: string = 'sessionId';
+export const PROBE_PARAM_CAPTURE_MODE: string = 'captureMode';
 export const PROBE_PARAM_PINNED_PUBLIC_KEY_HASH: string = 'pinnedPublicKeyHash';
+export const PROBE_PARAM_ORIGIN_CA_PEM: string = 'originCaPem';
 export const PROBE_PARAM_FLOW_HTTPS: string = 'flowHttps';
 export const PROBE_PARAM_FLOW_TCP: string = 'flowTcp';
 export const PROBE_PARAM_FLOW_UDP_IPV4: string = 'flowUdpIpv4';
@@ -20,6 +22,11 @@ export const PROBE_PARAM_ORIGIN_HTTPS_PORT: string = 'originHttpsPort';
 export const PROBE_PARAM_ORIGIN_TCP_PORT: string = 'originTcpPort';
 export const PROBE_PARAM_ORIGIN_UDP_PORT: string = 'originUdpPort';
 export const PROBE_PARAM_ORIGIN_DNS_PORT: string = 'originDnsPort';
+export const PROBE_PARAM_EXTERNAL_ORIGIN_HOST: string = 'externalOriginHost';
+export const PROBE_PARAM_EXTERNAL_TCP_HOST: string = 'externalTcpHost';
+export const PROBE_PARAM_EXTERNAL_ORIGIN_TCP_PORT: string = 'externalOriginTcpPort';
+export const PROBE_PARAM_EXTERNAL_ORIGIN_UDP_PORT: string = 'externalOriginUdpPort';
+export const PROBE_PARAM_EXTERNAL_ORIGIN_DNS_PORT: string = 'externalOriginDnsPort';
 export const PROBE_PARAM_LOCAL_HTTP_CONNECT_PORT: string = 'localHttpConnectPort';
 export const PROBE_PARAM_LOCAL_SOCKS5_PORT: string = 'localSocks5Port';
 export const PROBE_FAILURE_DETAIL_DNS_LOOKUP_FAILED: string = 'Standalone DNS correlation lookup failed.';
@@ -231,13 +238,25 @@ export class ProbeLocalListenerConfig {
   socks5Port: number = 0;
 }
 
+export class ProbeExternalOriginConfig {
+  host: string = '';
+  tcpHost: string = '';
+  tcpPort: number = 0;
+  udpPort: number = 0;
+  dnsPort: number = 0;
+}
+
 export class ProbeCommand {
   runId: string = '';
   sessionId: string = '';
+  captureMode: 'baseline' | 'vpn' = 'baseline';
+  originCaPem: string = '';
   flowIds: ProbeFlowIdSet = new ProbeFlowIdSet();
   lanOrigin: ProbeOriginConfig = new ProbeOriginConfig();
+  externalOrigin: ProbeExternalOriginConfig = new ProbeExternalOriginConfig();
   localListeners: ProbeLocalListenerConfig = new ProbeLocalListenerConfig();
   pinnedCertificateHash: string = '';
+  requireExternalOrigin: boolean = false;
 }
 
 export class ProbeSocketAddress {
@@ -293,6 +312,7 @@ export class ProbeHttpRequestOptions {
   maxRedirects: number = 0;
   usingCache: boolean = false;
   expectDataType: string = 'ARRAY_BUFFER';
+  caData: string = '';
   headers: ProbeHttpHeaders = new ProbeHttpHeaders();
   certificatePinning: ProbeCertificatePinning = new ProbeCertificatePinning();
 }
@@ -334,6 +354,9 @@ export function isValidOpaqueProbeId(value: string): boolean {
 
 export function isValidProbeHost(value: string): boolean {
   const trimmed: string = value.trim();
+  if (trimmed !== value) {
+    return false;
+  }
   if (!(trimmed.length > 0 &&
     trimmed.length <= 255 &&
     !/\s/u.test(trimmed) &&
@@ -355,6 +378,14 @@ export function isValidProbePort(value: number): boolean {
 
 export function isValidPinnedCertificateHash(value: string): boolean {
   return /^sha256\/[0-9A-Za-z+/=]{20,}$/u.test(value.trim());
+}
+
+export function isValidOriginCaPem(value: string): boolean {
+  const trimmed: string = value.trim();
+  return trimmed.length > 0 && trimmed.length <= 8000 &&
+    trimmed.startsWith('-----BEGIN CERTIFICATE-----') &&
+    trimmed.endsWith('-----END CERTIFICATE-----') &&
+    !trimmed.includes('PRIVATE KEY');
 }
 
 export function areCompleteUniqueFlowIds(flowIds: ProbeFlowIdSet): boolean {
@@ -381,6 +412,17 @@ export function areCompleteUniqueFlowIds(flowIds: ProbeFlowIdSet): boolean {
 }
 
 export function isCompleteProbeCommand(command: ProbeCommand): boolean {
+  const hasExplicitExternalOrigin: boolean = command.externalOrigin.host.length > 0 ||
+    command.externalOrigin.tcpHost.length > 0 ||
+    command.externalOrigin.tcpPort > 0 ||
+    command.externalOrigin.udpPort > 0 ||
+    command.externalOrigin.dnsPort > 0;
+  const externalOriginValid: boolean =
+    isPublicIpv4Literal(command.externalOrigin.host) &&
+    isPublicIpv4Literal(command.externalOrigin.tcpHost) &&
+    isValidProbePort(command.externalOrigin.tcpPort) &&
+    isValidProbePort(command.externalOrigin.udpPort) &&
+    isValidProbePort(command.externalOrigin.dnsPort);
   return isValidOpaqueProbeId(command.runId) &&
     isValidOpaqueProbeId(command.sessionId) &&
     areCompleteUniqueFlowIds(command.flowIds) &&
@@ -389,9 +431,13 @@ export function isCompleteProbeCommand(command: ProbeCommand): boolean {
     isValidProbePort(command.lanOrigin.tcpPort) &&
     isValidProbePort(command.lanOrigin.udpPort) &&
     isValidProbePort(command.lanOrigin.dnsPort) &&
+    (!command.requireExternalOrigin
+      ? (!hasExplicitExternalOrigin || externalOriginValid)
+      : externalOriginValid) &&
     isValidProbePort(command.localListeners.httpConnectPort) &&
     isValidProbePort(command.localListeners.socks5Port) &&
-    isValidPinnedCertificateHash(command.pinnedCertificateHash);
+    isValidPinnedCertificateHash(command.pinnedCertificateHash) &&
+    isValidOriginCaPem(command.originCaPem);
 }
 
 export function formatTerminalOutcome(outcome: string): string {
@@ -405,6 +451,9 @@ export function formatTerminalOutcome(outcome: string): string {
 }
 
 export function isValidIpv4Literal(value: string): boolean {
+  if (value.trim() !== value) {
+    return false;
+  }
   const segments: Array<string> = value.split('.');
   if (segments.length !== 4) {
     return false;
@@ -414,10 +463,51 @@ export function isValidIpv4Literal(value: string): boolean {
     if (!/^\d{1,3}$/u.test(next)) {
       return false;
     }
-    const parsed: number = Number(next);
-    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 255) {
+    if (next.length > 1 && next.startsWith('0')) {
       return false;
     }
+    const parsed: number = Number(next);
+    if (!Number.isInteger(parsed) || parsed < 0 || parsed > 255 || `${parsed}` !== next) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isPublicIpv4Literal(value: string): boolean {
+  if (!isValidIpv4Literal(value)) {
+    return false;
+  }
+  const segments: Array<string> = value.split('.');
+  const first: number = Number(segments[0]);
+  const second: number = Number(segments[1]);
+  const third: number = Number(segments[2]);
+  if (first === 0 || first === 10 || first === 127 || first >= 224) {
+    return false;
+  }
+  if (first === 172 && second >= 16 && second <= 31) {
+    return false;
+  }
+  if (first === 192 && second === 168) {
+    return false;
+  }
+  if (first === 100 && second >= 64 && second <= 127) {
+    return false;
+  }
+  if (first === 169 && second === 254) {
+    return false;
+  }
+  if (first === 192 && second === 0 && third === 2) {
+    return false;
+  }
+  if (first === 198 && second === 51 && third === 100) {
+    return false;
+  }
+  if (first === 203 && second === 0 && third === 113) {
+    return false;
+  }
+  if (first === 198 && (second === 18 || second === 19)) {
+    return false;
   }
   return true;
 }

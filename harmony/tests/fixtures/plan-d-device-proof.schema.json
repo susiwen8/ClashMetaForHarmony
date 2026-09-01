@@ -1,0 +1,142 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Plan D Device Proof",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "result",
+    "runId",
+    "timestamps",
+    "packages",
+    "layout",
+    "selection",
+    "network",
+    "cleanup",
+    "failures"
+  ],
+  "properties": {
+    "schemaVersion": { "const": "1.0.0" },
+    "result": {
+      "oneOf": [
+        { "const": "pass" },
+        { "const": "incomplete" }
+      ]
+    },
+    "runId": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "timestamps": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["startedAt", "completedAt"],
+      "properties": {
+        "startedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        },
+        "completedAt": {
+          "type": "string",
+          "pattern": "^\\d{4}-\\d{2}-\\d{2}T\\d{2}:\\d{2}:\\d{2}\\.\\d{3}Z$"
+        }
+      }
+    },
+    "packages": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["production", "probe"],
+      "properties": {
+        "production": { "$ref": "#/$defs/packageProof" },
+        "probe": { "$ref": "#/$defs/packageProof" }
+      }
+    },
+    "layout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["groupCount", "nodeCount", "semanticIdsHash"],
+      "properties": {
+        "groupCount": { "type": "integer", "minimum": 0 },
+        "nodeCount": { "type": "integer", "minimum": 0 },
+        "semanticIdsHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" }
+      }
+    },
+    "selection": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "initialResultKind",
+        "initialRowCorrelationHash",
+        "postVpnRowCorrelationHash",
+        "relaunchResultKind",
+        "relaunchRowCorrelationHash",
+        "startSelectionMatched",
+        "relaunchReplay"
+      ],
+      "properties": {
+        "initialResultKind": { "type": "string", "minLength": 1 },
+        "initialRowCorrelationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "postVpnRowCorrelationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "relaunchResultKind": { "type": "string", "minLength": 1 },
+        "relaunchRowCorrelationHash": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "startSelectionMatched": { "type": "boolean" },
+        "relaunchReplay": { "type": "boolean" }
+      }
+    },
+    "network": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "statusClass",
+        "responseSha256",
+        "httpsTraceMatched",
+        "selectedProxyMatched",
+        "tunIngress",
+        "counterDelta",
+        "replayBeforeRunning"
+      ],
+      "properties": {
+        "statusClass": { "type": "string", "pattern": "^(?:[1-5]xx|unknown)$" },
+        "responseSha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "httpsTraceMatched": { "type": "boolean" },
+        "selectedProxyMatched": { "type": "boolean" },
+        "tunIngress": { "type": "boolean" },
+        "counterDelta": { "type": "integer", "minimum": 0 },
+        "replayBeforeRunning": { "type": "boolean" }
+      }
+    },
+    "cleanup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["phase4CleanupSucceeded", "relaunchCleanupSucceeded", "layoutTempRemoved"],
+      "properties": {
+        "phase4CleanupSucceeded": { "type": "boolean" },
+        "relaunchCleanupSucceeded": { "type": "boolean" },
+        "layoutTempRemoved": { "type": "boolean" }
+      }
+    },
+    "failures": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["code", "stage"],
+        "properties": {
+          "code": { "type": "string", "minLength": 1 },
+          "stage": { "type": "string", "minLength": 1 }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "packageProof": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["sha256", "sizeBytes"],
+      "properties": {
+        "sha256": { "type": "string", "pattern": "^[a-f0-9]{64}$" },
+        "sizeBytes": { "type": "integer", "minimum": 0 }
+      }
+    }
+  }
+}

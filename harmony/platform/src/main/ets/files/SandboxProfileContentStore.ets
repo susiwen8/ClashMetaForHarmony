@@ -46,7 +46,7 @@ export class SandboxProfileContentStore implements ProfileContentStore {
       'Profile revision relative path'
     );
     const targetAbsolutePath: string = joinAbsoluteSandboxPath(this.filesDir, targetRelativePath);
-    await this.fileDriver.mkdir(parentDirectory(targetAbsolutePath), true);
+    await this.ensureDirectory(parentDirectory(targetAbsolutePath));
     await this.fileDriver.renameNoOverwrite(stageResolution.absolutePath, targetAbsolutePath);
     return createProfileRevision(targetRelativePath, staged.sha256Digest, staged.byteLength, staged.validatedAt);
   }
@@ -197,6 +197,35 @@ export class SandboxProfileContentStore implements ProfileContentStore {
       throw new Error('Sandbox directory listing failed.');
     }
     return await this.fileDriver.list(path);
+  }
+
+  private async ensureDirectory(path: string): Promise<void> {
+    let stat: FileStat | undefined;
+    try {
+      stat = await this.fileDriver.statIfPresent(path);
+    } catch (_) {
+      throw new Error('Sandbox directory preparation failed.');
+    }
+    if (stat !== undefined) {
+      if (stat.isDirectory) {
+        return;
+      }
+      throw new Error('Sandbox directory preparation failed.');
+    }
+    try {
+      await this.fileDriver.mkdir(path, true);
+      return;
+    } catch (_) {
+      try {
+        stat = await this.fileDriver.statIfPresent(path);
+      } catch (_) {
+        throw new Error('Sandbox directory preparation failed.');
+      }
+      if (stat !== undefined && stat.isDirectory) {
+        return;
+      }
+      throw new Error('Sandbox directory preparation failed.');
+    }
   }
 
   private async requireFileStat(path: string, fallback: string): Promise<FileStat> {

@@ -1,5 +1,8 @@
 import { describe, expect, it } from '@ohos/hypium';
 import {
+  CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+  CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE,
+  decodeContinuousTaskNotificationInfo,
   decodeContinuousTaskCancelInfo,
   HarmonyVpnNotificationDriver
 } from '../main/ets/background/HarmonyVpnNotificationDriver';
@@ -40,10 +43,14 @@ class ContinuousTaskWantRequestRecord implements ContinuousTaskWantRequest {
 class ContinuousTaskNotificationInfoValue implements ContinuousTaskNotificationInfo {
   readonly continuousTaskId?: number;
   readonly notificationId?: number;
+  readonly slotType?: number;
+  readonly contentType?: number;
 
-  constructor(continuousTaskId?: number, notificationId?: number) {
+  constructor(continuousTaskId?: number, notificationId?: number, slotType?: number, contentType?: number) {
     this.continuousTaskId = continuousTaskId;
     this.notificationId = notificationId;
+    this.slotType = slotType;
+    this.contentType = contentType;
   }
 }
 
@@ -65,6 +72,32 @@ class PlatformContinuousTaskCancelInfoValue {
   }
 }
 
+class PlatformContinuousTaskNotificationInfoValue {
+  readonly continuousTaskId?: number;
+  readonly notificationId?: number;
+  readonly slotType?: number;
+  readonly contentType?: number;
+
+  constructor(continuousTaskId?: number, notificationId?: number, slotType?: number, contentType?: number) {
+    this.continuousTaskId = continuousTaskId;
+    this.notificationId = notificationId;
+    this.slotType = slotType;
+    this.contentType = contentType;
+  }
+}
+
+class NotificationUpdateRecordValue {
+  readonly notificationId: number;
+  readonly title: string;
+  readonly text: string;
+
+  constructor(notificationId: number, title: string, text: string) {
+    this.notificationId = notificationId;
+    this.title = title;
+    this.text = text;
+  }
+}
+
 class FakeContinuousTaskContext implements PlatformContinuousTaskContext {
   readonly abilityInfo: FakeAbilityIdentity;
 
@@ -80,11 +113,13 @@ class FakeContinuousTaskDriver implements ContinuousTaskDriver {
   readonly onCallbacks: Array<(info: ContinuousTaskCancelInfo) => void> = [];
   readonly offCallbacks: Array<(info: ContinuousTaskCancelInfo) => void> = [];
   readonly wantAgents: Object[] = [];
+  readonly updateRecords: NotificationUpdateRecordValue[] = [];
   createWantAgentError?: Error;
   startError?: Error;
   stopError?: Error;
   onCancelError?: Error;
   offCancelError?: Error;
+  updateError?: Error;
   nextNotificationInfo: ContinuousTaskNotificationInfo | null = null;
 
   async createWantAgent(want: ContinuousTaskWantRequest): Promise<Object> {
@@ -112,7 +147,9 @@ class FakeContinuousTaskDriver implements ContinuousTaskDriver {
     }
     return new ContinuousTaskNotificationInfoValue(
       this.nextNotificationInfo.continuousTaskId,
-      this.nextNotificationInfo.notificationId
+      this.nextNotificationInfo.notificationId,
+      this.nextNotificationInfo.slotType,
+      this.nextNotificationInfo.contentType
     );
   }
 
@@ -137,6 +174,13 @@ class FakeContinuousTaskDriver implements ContinuousTaskDriver {
     }
   }
 
+  async updateNotification(notificationId: number, title: string, text: string): Promise<void> {
+    this.updateRecords.push(new NotificationUpdateRecordValue(notificationId, title, text));
+    if (this.updateError !== undefined) {
+      throw this.updateError;
+    }
+  }
+
   emitCancellation(info: ContinuousTaskCancelInfo): void {
     const callbacks = this.onCallbacks.slice();
     for (let index = 0; index < callbacks.length; index += 1) {
@@ -154,7 +198,12 @@ export default function harmonyVpnNotificationDriverTestsuite() {
         'CmfaVpnExtensionAbility'
       );
       const driver = new FakeContinuousTaskDriver();
-      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(42, 7);
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
       const notification = new HarmonyVpnNotificationDriver(context, driver);
       const cancellations: string[] = [];
       notification.subscribeCancellation((sessionId: string) => {
@@ -184,6 +233,22 @@ export default function harmonyVpnNotificationDriverTestsuite() {
       expect(driver.stopIds[0]).assertEqual(42);
       expect(driver.offCallbacks.length).assertEqual(1);
       expect(driver.offCallbacks[0] === driver.onCallbacks[0]).assertTrue();
+    });
+
+    it('decodesNotificationOwnershipMetadataFromThePlatformObject', 0, () => {
+      const decoded: ContinuousTaskNotificationInfo | null = decodeContinuousTaskNotificationInfo(
+        new PlatformContinuousTaskNotificationInfoValue(
+          42,
+          7,
+          CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+          CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+        )
+      );
+
+      expect(decoded?.continuousTaskId).assertEqual(42);
+      expect(decoded?.notificationId).assertEqual(7);
+      expect(decoded?.slotType).assertEqual(CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE);
+      expect(decoded?.contentType).assertEqual(CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE);
     });
 
     it('rejectsDuplicateStartCleansUpPartialStartAndKeepsRepeatedStopIdempotent', 0, async () => {
@@ -261,6 +326,108 @@ export default function harmonyVpnNotificationDriverTestsuite() {
       await notification.stop('session-open');
       expect(driver.stopIds.length).assertEqual(1);
       expect(driver.stopIds[0]).assertUndefined();
+    });
+
+    it('updatesOnlyTheLiveViewNotificationOwnedByTheActiveSession', 0, async () => {
+      const context = new FakeContinuousTaskContext(
+        'com.github.kr328.clash.harmony',
+        'entry',
+        'CmfaVpnExtensionAbility'
+      );
+      const driver = new FakeContinuousTaskDriver();
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
+      const notification = new HarmonyVpnNotificationDriver(context, driver);
+
+      await notification.start('session-live');
+      await notification.updateTraffic('wrong-session', 10, 20);
+      expect(driver.updateRecords.length).assertEqual(0);
+
+      await notification.updateTraffic('session-live', 0, 0);
+      await notification.updateTraffic('session-live', 512, 1023);
+      await notification.updateTraffic('session-live', 1024, 1536);
+      await notification.updateTraffic('session-live', 1048576, 1572864);
+      await notification.updateTraffic('session-live', 1073741824, 2147483648);
+
+      expect(driver.updateRecords.length).assertEqual(5);
+      expect(driver.updateRecords[0].notificationId).assertEqual(7);
+      expect(driver.updateRecords[0].title).assertEqual('Clash Meta VPN');
+      expect(driver.updateRecords[0].text).assertEqual('↑ 0 B/s  ↓ 0 B/s');
+      expect(driver.updateRecords[1].text).assertEqual('↑ 512 B/s  ↓ 1023 B/s');
+      expect(driver.updateRecords[2].text).assertEqual('↑ 1.0 KiB/s  ↓ 1.5 KiB/s');
+      expect(driver.updateRecords[3].text).assertEqual('↑ 1.0 MiB/s  ↓ 1.5 MiB/s');
+      expect(driver.updateRecords[4].text).assertEqual('↑ 1.0 GiB/s  ↓ 2.0 GiB/s');
+    });
+
+    it('formatsInvalidOrUnsafeTrafficInputsAsZeroWithoutLeakingOtherState', 0, async () => {
+      const context = new FakeContinuousTaskContext(
+        'com.github.kr328.clash.harmony',
+        'entry',
+        'CmfaVpnExtensionAbility'
+      );
+      const driver = new FakeContinuousTaskDriver();
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
+      const notification = new HarmonyVpnNotificationDriver(context, driver);
+
+      await notification.start('session-live');
+      await notification.updateTraffic('session-live', -1, 1.5);
+      await notification.updateTraffic('session-live', Number.NaN, Number.MAX_SAFE_INTEGER + 1);
+
+      expect(driver.updateRecords.length).assertEqual(2);
+      expect(driver.updateRecords[0].text).assertEqual('↑ 0 B/s  ↓ 0 B/s');
+      expect(driver.updateRecords[1].text).assertEqual('↑ 0 B/s  ↓ 0 B/s');
+    });
+
+    it('ignoresTrafficUpdatesWhenNotificationOwnershipIsMissingWrongSessionOrStoppedAndStillUpdatesNonLiveMetadataWhenIdExists', 0, async () => {
+      const context = new FakeContinuousTaskContext(
+        'com.github.kr328.clash.harmony',
+        'entry',
+        'CmfaVpnExtensionAbility'
+      );
+
+      const missingIdDriver = new FakeContinuousTaskDriver();
+      missingIdDriver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        undefined,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
+      const missingIdNotification = new HarmonyVpnNotificationDriver(context, missingIdDriver);
+      await missingIdNotification.start('session-missing');
+      await missingIdNotification.updateTraffic('session-missing', 100, 200);
+      expect(missingIdDriver.updateRecords.length).assertEqual(0);
+
+      const nonLiveDriver = new FakeContinuousTaskDriver();
+      nonLiveDriver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(42, 7, 99, 88);
+      const nonLiveNotification = new HarmonyVpnNotificationDriver(context, nonLiveDriver);
+      await nonLiveNotification.start('session-nonlive');
+      await nonLiveNotification.updateTraffic('session-nonlive', 100, 200);
+      expect(nonLiveDriver.updateRecords.length).assertEqual(1);
+      expect(nonLiveDriver.updateRecords[0].notificationId).assertEqual(7);
+      expect(nonLiveDriver.updateRecords[0].title).assertEqual('Clash Meta VPN');
+      expect(nonLiveDriver.updateRecords[0].text).assertEqual('↑ 100 B/s  ↓ 200 B/s');
+
+      const stoppedDriver = new FakeContinuousTaskDriver();
+      stoppedDriver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
+      const stoppedNotification = new HarmonyVpnNotificationDriver(context, stoppedDriver);
+      await stoppedNotification.start('session-stopped');
+      await stoppedNotification.stop('session-stopped');
+      await stoppedNotification.updateTraffic('session-stopped', 100, 200);
+      expect(stoppedDriver.updateRecords.length).assertEqual(0);
     });
 
     it('decodesThePlatformCancellationIdAsTheContinuousTaskId', 0, () => {
@@ -349,7 +516,12 @@ export default function harmonyVpnNotificationDriverTestsuite() {
         'CmfaVpnExtensionAbility'
       );
       const driver = new FakeContinuousTaskDriver();
-      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(42, 7);
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
       const notification = new HarmonyVpnNotificationDriver(context, driver);
 
       await notification.start('session-stop');
@@ -376,10 +548,16 @@ export default function harmonyVpnNotificationDriverTestsuite() {
         'CmfaVpnExtensionAbility'
       );
       const driver = new FakeContinuousTaskDriver();
-      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(42, 7);
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
       const notification = new HarmonyVpnNotificationDriver(context, driver);
 
       await notification.start('session-retry-stop');
+      await notification.updateTraffic('session-retry-stop', 1024, 2048);
       driver.stopError = new Error('stop failed');
       let rejected: boolean = false;
       try {
@@ -389,9 +567,53 @@ export default function harmonyVpnNotificationDriverTestsuite() {
       }
 
       expect(rejected).assertTrue();
+      await notification.updateTraffic('session-retry-stop', 2048, 3072);
       driver.stopError = undefined;
       await notification.stop('session-retry-stop');
       expect(driver.stopIds.join(',')).assertEqual('42,42');
+      expect(driver.updateRecords.length).assertEqual(2);
+    });
+
+    it('surfacesPublishFailuresButKeepsOwnershipAndCancellationStateForRetry', 0, async () => {
+      const context = new FakeContinuousTaskContext(
+        'com.github.kr328.clash.harmony',
+        'entry',
+        'CmfaVpnExtensionAbility'
+      );
+      const driver = new FakeContinuousTaskDriver();
+      driver.nextNotificationInfo = new ContinuousTaskNotificationInfoValue(
+        42,
+        7,
+        CONTINUOUS_TASK_LIVE_VIEW_SLOT_TYPE,
+        CONTINUOUS_TASK_SYSTEM_LIVE_VIEW_CONTENT_TYPE
+      );
+      const notification = new HarmonyVpnNotificationDriver(context, driver);
+      const cancellations: string[] = [];
+      notification.subscribeCancellation((sessionId: string) => {
+        cancellations.push(sessionId);
+      });
+
+      await notification.start('session-retry');
+      driver.updateError = new Error('publish failed');
+
+      let rejected: boolean = false;
+      try {
+        await notification.updateTraffic('session-retry', 1024, 2048);
+      } catch (error) {
+        rejected = (error as Error).message === 'publish failed';
+      }
+
+      expect(rejected).assertTrue();
+      expect(driver.stopIds.length).assertEqual(0);
+      expect(cancellations.length).assertEqual(0);
+
+      driver.updateError = undefined;
+      await notification.updateTraffic('session-retry', 2048, 4096);
+      driver.emitCancellation(new ContinuousTaskCancelInfoValue(42, 999));
+
+      expect(driver.updateRecords.length).assertEqual(2);
+      expect(driver.updateRecords[1].text).assertEqual('↑ 2.0 KiB/s  ↓ 4.0 KiB/s');
+      expect(cancellations.join(',')).assertEqual('session-retry');
     });
   });
 }

@@ -55,7 +55,7 @@ async function createPhase3TempRepo(label) {
   const prePackageAddonPath = path.join(harmonyRoot, 'entry', 'build', 'default', 'intermediates', 'cmake', 'default', 'obj', 'arm64-v8a', 'libentry.so');
   const fixtureBody = 'mode: rule\nrules:\n  - MATCH,DIRECT\n';
 
-  await writeFileWithParents(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({ installed: { hdcVersion: '6.1.0.105' } }));
+  await writeFileWithParents(path.join(harmonyRoot, 'toolchain.lock.json'), JSON.stringify({ installed: { hdcVersion: '6.1.1.125' } }));
   await writeFileWithParents(fixturePath, fixtureBody);
   await writeFileWithParents(productionHapPath, 'prod-hap');
   await writeFileWithParents(entryTestHapPath, 'test-hap');

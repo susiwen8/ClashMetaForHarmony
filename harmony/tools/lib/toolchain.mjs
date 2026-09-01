@@ -8,6 +8,7 @@ const DEFAULT_REQUIREMENTS_PATH = fileURLToPath(new URL('../../toolchain.require
 const HOST_TOOL_NAMES = ['node', 'java', 'hvigor', 'ohpm', 'hdc'];
 const EXECUTABLE_BITS = 0o111;
 const BASE_NATIVE_NEEDED = ['libc.so', 'libdl.so', 'libm.so'];
+const PROBE_ADDON_NEEDED = ['libace_napi.z.so'];
 const NODE_ADDON_NEEDED = ['libace_napi.z.so', 'libcmfa_mihomo.so', 'libhilog_ndk.z.so'];
 const execFile = promisify(execFileCallback);
 const FAILURE_DETAILS = {
@@ -77,8 +78,8 @@ function createToolStatus(found, version) {
 function createTargetContract(target = {}) {
   return {
     name: target.name ?? 'HarmonyOS 6/API 20/arm64',
-    targetSdkVersion: target.targetSdkVersion ?? '6.1.0(23)',
-    targetApiVersion: normalizeInteger(target.targetApiVersion) ?? 23,
+    targetSdkVersion: target.targetSdkVersion ?? '6.1.1(24)',
+    targetApiVersion: normalizeInteger(target.targetApiVersion) ?? 24,
     compatibleSdkVersion: target.compatibleSdkVersion ?? '6.0.0(20)',
     compatibleApiVersion: normalizeInteger(target.compatibleApiVersion) ?? 20,
     runtimeOS: target.runtimeOS ?? 'HarmonyOS',
@@ -647,6 +648,7 @@ export function buildToolchainLock(report) {
 
 export function buildNativeAllowlist(inspection) {
   const baseNeeded = BASE_NATIVE_NEEDED.filter((entry) => inspection.resolved.sharedLibraries.includes(entry));
+  const probeAddon = unique([...baseNeeded, ...PROBE_ADDON_NEEDED.filter((entry) => inspection.resolved.sharedLibraries.includes(entry))]).sort();
   const nodeAddon = unique([...baseNeeded, ...NODE_ADDON_NEEDED.filter((entry) => entry === 'libcmfa_mihomo.so' || inspection.resolved.sharedLibraries.includes(entry))]).sort();
 
   return {
@@ -657,6 +659,7 @@ export function buildNativeAllowlist(inspection) {
       sdkApiVersion: inspection.report.installed.sdkApiVersion
     },
     goProbe: [...baseNeeded],
+    probeAddon,
     mihomoCore: [...baseNeeded],
     nodeAddon
   };

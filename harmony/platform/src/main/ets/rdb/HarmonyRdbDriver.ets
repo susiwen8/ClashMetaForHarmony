@@ -1,6 +1,6 @@
 import { relationalStore } from '@kit.ArkData';
 import common from '@ohos.app.ability.common';
-import type { DurableProfileRow, RdbDriver, RdbTransaction } from './RdbDriver';
+import type { DurableProfileRow, DurableProxySelectionRow, RdbDriver, RdbTransaction } from './RdbDriver';
 
 type RelationalValueType = relationalStore.ValueType;
 type RelationalValuesBucket = relationalStore.ValuesBucket;
@@ -26,9 +26,89 @@ const APP_STATE_TABLE_SQL =
   'id INTEGER PRIMARY KEY CHECK (id = 1),' +
   'active_profile_id TEXT' +
   ')';
+const PROXY_SELECTIONS_TABLE = 'proxy_selections';
+const PROXY_SELECTIONS_TABLE_SQL =
+  'CREATE TABLE IF NOT EXISTS ' + PROXY_SELECTIONS_TABLE + ' (' +
+  'profile_id TEXT NOT NULL,' +
+  'group_name TEXT NOT NULL,' +
+  'selected_node_name TEXT NOT NULL,' +
+  'revision_id TEXT NOT NULL,' +
+  'updated_at TEXT NOT NULL,' +
+  'PRIMARY KEY (profile_id, group_name)' +
+  ')';
 const APP_STATE_SEED_SQL = 'INSERT OR IGNORE INTO app_state (id, active_profile_id) VALUES (1, NULL)';
 const PROFILE_COLUMNS =
   'schema_version, id, name, source_kind, source_display, source_secret_ref, current_revision_json, failed_candidate_json, availability, last_error_json, created_at, updated_at, last_success_at';
+const PROXY_SELECTION_COLUMNS =
+  'profile_id, group_name, selected_node_name, revision_id, updated_at';
+
+class TableColumnSpec {
+  readonly name: string;
+  readonly type: string;
+  readonly notNull: number;
+  readonly primaryKeyPosition: number;
+
+  constructor(name: string, type: string, notNull: number, primaryKeyPosition: number) {
+    this.name = name;
+    this.type = type;
+    this.notNull = notNull;
+    this.primaryKeyPosition = primaryKeyPosition;
+  }
+}
+
+const PROFILE_TABLE_SPECS: TableColumnSpec[] = [
+  new TableColumnSpec('schema_version', 'INTEGER', 1, 0),
+  new TableColumnSpec('id', 'TEXT', 1, 1),
+  new TableColumnSpec('name', 'TEXT', 1, 0),
+  new TableColumnSpec('source_kind', 'TEXT', 1, 0),
+  new TableColumnSpec('source_display', 'TEXT', 1, 0),
+  new TableColumnSpec('source_secret_ref', 'TEXT', 0, 0),
+  new TableColumnSpec('current_revision_json', 'TEXT', 0, 0),
+  new TableColumnSpec('failed_candidate_json', 'TEXT', 0, 0),
+  new TableColumnSpec('availability', 'TEXT', 1, 0),
+  new TableColumnSpec('last_error_json', 'TEXT', 0, 0),
+  new TableColumnSpec('created_at', 'TEXT', 1, 0),
+  new TableColumnSpec('updated_at', 'TEXT', 1, 0),
+  new TableColumnSpec('last_success_at', 'TEXT', 0, 0)
+];
+
+const PROXY_SELECTION_TABLE_SPECS: TableColumnSpec[] = [
+  new TableColumnSpec('profile_id', 'TEXT', 1, 1),
+  new TableColumnSpec('group_name', 'TEXT', 1, 2),
+  new TableColumnSpec('selected_node_name', 'TEXT', 1, 0),
+  new TableColumnSpec('revision_id', 'TEXT', 1, 0),
+  new TableColumnSpec('updated_at', 'TEXT', 1, 0)
+];
+
+export interface HarmonyRdbInitializationOperations {
+  currentVersion(): number;
+  createProfilesTable(): Promise<void>;
+  createAppStateTable(): Promise<void>;
+  seedAppState(): Promise<void>;
+  createProxySelectionsTable(): Promise<void>;
+  validateProfilesTable(): Promise<void>;
+  validateProxySelectionsTable(): Promise<void>;
+  writeVersion(version: number): void;
+}
+
+export async function runRdbInitialization(
+  version: number,
+  operations: HarmonyRdbInitializationOperations
+): Promise<void> {
+  const currentVersion: number = operations.currentVersion();
+  if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== version) {
+    throw new Error(`Unsupported database version ${currentVersion}.`);
+  }
+  await operations.createProfilesTable();
+  await operations.createAppStateTable();
+  await operations.seedAppState();
+  await operations.createProxySelectionsTable();
+  await operations.validateProfilesTable();
+  await operations.validateProxySelectionsTable();
+  if (currentVersion !== version) {
+    operations.writeVersion(version);
+  }
+}
 
 function toDriverError(error: Object | undefined, fallback: string): Error {
   if (error instanceof Error && error.message.trim().length > 0) {
@@ -84,6 +164,16 @@ function rowFromBucket(bucket: RelationalValuesBucket): DurableProfileRow {
   };
 }
 
+function proxySelectionRowFromBucket(bucket: RelationalValuesBucket): DurableProxySelectionRow {
+  return {
+    profileId: requireStringValue(bucket.profile_id, 'proxy_selections.profile_id'),
+    groupName: requireStringValue(bucket.group_name, 'proxy_selections.group_name'),
+    selectedNodeName: requireStringValue(bucket.selected_node_name, 'proxy_selections.selected_node_name'),
+    revisionId: requireStringValue(bucket.revision_id, 'proxy_selections.revision_id'),
+    updatedAt: requireStringValue(bucket.updated_at, 'proxy_selections.updated_at')
+  };
+}
+
 function bindRow(row: DurableProfileRow): Array<RelationalValueType> {
   const values: Array<RelationalValueType> = [
     row.schemaVersion,
@@ -103,8 +193,14 @@ function bindRow(row: DurableProfileRow): Array<RelationalValueType> {
   return values;
 }
 
-function schemaVersionBindArgs(version: number): Array<RelationalValueType> {
-  return [version];
+function bindProxySelectionRow(row: DurableProxySelectionRow): Array<RelationalValueType> {
+  return [
+    row.profileId,
+    row.groupName,
+    row.selectedNodeName,
+    row.revisionId,
+    row.updatedAt
+  ];
 }
 
 function upsertActiveIdBindArgs(activeId: string | undefined): Array<RelationalValueType> {
@@ -240,6 +336,25 @@ export class HarmonyRdbDriver implements RdbDriver {
     );
   }
 
+  async listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]> {
+    const store = await this.getStore();
+    return await this.queryProxySelectionRows(
+      store,
+      `SELECT ${PROXY_SELECTION_COLUMNS} FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ? ORDER BY group_name ASC`,
+      [profileId]
+    );
+  }
+
+  async getProxySelectionRow(profileId: string, groupName: string): Promise<DurableProxySelectionRow | undefined> {
+    const store = await this.getStore();
+    const rows = await this.queryProxySelectionRows(
+      store,
+      `SELECT ${PROXY_SELECTION_COLUMNS} FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ? AND group_name = ?`,
+      [profileId, groupName]
+    );
+    return rows.length === 0 ? undefined : rows[0];
+  }
+
   async readActiveId(): Promise<string | undefined> {
     const store = await this.getStore();
     const resultSet = await this.querySql(
@@ -349,19 +464,31 @@ export class HarmonyRdbDriver implements RdbDriver {
     }
   }
 
+  private async queryProxySelectionRows(
+    store: relationalStore.RdbStore,
+    sql: string,
+    bindArgs?: Array<RelationalValueType>
+  ): Promise<DurableProxySelectionRow[]> {
+    const resultSet = await this.querySql(store, sql, bindArgs);
+    let primaryError: Error | undefined = undefined;
+    try {
+      const rows: DurableProxySelectionRow[] = [];
+      while (resultSet.goToNextRow()) {
+        rows.push(proxySelectionRowFromBucket(resultSet.getRow()));
+      }
+      return rows;
+    } catch (error) {
+      primaryError = toDriverError(error, 'Proxy selection row query failed.');
+      throw primaryError;
+    } finally {
+      this.closeResultSet(resultSet, primaryError);
+    }
+  }
+
   private async runInitialize(version: number): Promise<void> {
     try {
       const store = await this.getStore();
-      await this.executeSql(store, PROFILES_TABLE_SQL);
-      await this.executeSql(store, APP_STATE_TABLE_SQL);
-      await this.executeSql(store, APP_STATE_SEED_SQL);
-      await this.assertProfilesSchemaVersionColumn(store);
-      if (store.version !== version && store.version !== 0) {
-        throw new Error(`Unsupported database version ${store.version}.`);
-      }
-      if (store.version !== version) {
-        store.version = version;
-      }
+      await runRdbInitialization(version, this.createInitializationOperations(store));
       this.initializedVersion = version;
     } catch (error) {
       this.initializePromise = undefined;
@@ -413,23 +540,46 @@ export class HarmonyRdbDriver implements RdbDriver {
     }
   }
 
-  private async assertProfilesSchemaVersionColumn(store: relationalStore.RdbStore): Promise<void> {
-    const resultSet = await this.querySql(store, 'PRAGMA table_info(profiles)');
+  private createInitializationOperations(store: relationalStore.RdbStore): HarmonyRdbInitializationOperations {
+    return new HarmonyRdbStoreInitializationOperations(this, store);
+  }
+
+  async assertTableSchema(
+    store: relationalStore.RdbStore,
+    tableName: string,
+    expectedColumns: TableColumnSpec[],
+    fallback: string
+  ): Promise<void> {
+    const resultSet = await this.querySql(store, `PRAGMA table_info(${tableName})`);
     let primaryError: Error | undefined = undefined;
     try {
-      let hasSchemaVersion: boolean = false;
+      const observedColumns: TableColumnSpec[] = [];
       while (resultSet.goToNextRow()) {
         const row = resultSet.getRow();
-        if (requireStringValue(row.name, 'pragma.name') === 'schema_version') {
-          hasSchemaVersion = true;
-          break;
+        observedColumns.push(new TableColumnSpec(
+          requireStringValue(row.name, `${tableName}.pragma.name`),
+          requireStringValue(row.type, `${tableName}.pragma.type`),
+          requireNumberValue(row.notnull, `${tableName}.pragma.notnull`),
+          requireNumberValue(row.pk, `${tableName}.pragma.pk`)
+        ));
+      }
+      if (observedColumns.length !== expectedColumns.length) {
+        throw new Error(`${tableName} column count mismatch.`);
+      }
+      for (let index = 0; index < expectedColumns.length; index += 1) {
+        const expected: TableColumnSpec = expectedColumns[index];
+        const observed: TableColumnSpec = observedColumns[index];
+        if (
+          observed.name !== expected.name ||
+          observed.type !== expected.type ||
+          observed.notNull !== expected.notNull ||
+          observed.primaryKeyPosition !== expected.primaryKeyPosition
+        ) {
+          throw new Error(`${tableName} column mismatch.`);
         }
       }
-      if (!hasSchemaVersion) {
-        throw new Error('profiles schema_version column is required.');
-      }
     } catch (error) {
-      primaryError = toDriverError(error, 'Profiles schema validation failed.');
+      primaryError = toDriverError(error, fallback);
       throw primaryError;
     } finally {
       this.closeResultSet(resultSet, primaryError);
@@ -444,7 +594,7 @@ export class HarmonyRdbDriver implements RdbDriver {
     return await querySqlWithSafeFallback(store, sql, bindArgs, 'Query execution failed.');
   }
 
-  private async executeSql(
+  async executeSql(
     store: relationalStore.RdbStore,
     sql: string,
     bindArgs?: Array<RelationalValueType>
@@ -503,6 +653,53 @@ export class HarmonyRdbDriver implements RdbDriver {
   }
 }
 
+class HarmonyRdbStoreInitializationOperations implements HarmonyRdbInitializationOperations {
+  private readonly driver: HarmonyRdbDriver;
+  private readonly store: relationalStore.RdbStore;
+
+  constructor(driver: HarmonyRdbDriver, store: relationalStore.RdbStore) {
+    this.driver = driver;
+    this.store = store;
+  }
+
+  currentVersion(): number {
+    return this.store.version;
+  }
+
+  async createProfilesTable(): Promise<void> {
+    await this.driver.executeSql(this.store, PROFILES_TABLE_SQL);
+  }
+
+  async createAppStateTable(): Promise<void> {
+    await this.driver.executeSql(this.store, APP_STATE_TABLE_SQL);
+  }
+
+  async seedAppState(): Promise<void> {
+    await this.driver.executeSql(this.store, APP_STATE_SEED_SQL);
+  }
+
+  async createProxySelectionsTable(): Promise<void> {
+    await this.driver.executeSql(this.store, PROXY_SELECTIONS_TABLE_SQL);
+  }
+
+  async validateProfilesTable(): Promise<void> {
+    await this.driver.assertTableSchema(this.store, 'profiles', PROFILE_TABLE_SPECS, 'Profiles schema validation failed.');
+  }
+
+  async validateProxySelectionsTable(): Promise<void> {
+    await this.driver.assertTableSchema(
+      this.store,
+      PROXY_SELECTIONS_TABLE,
+      PROXY_SELECTION_TABLE_SPECS,
+      'Proxy selections schema validation failed.'
+    );
+  }
+
+  writeVersion(version: number): void {
+    this.store.version = version;
+  }
+}
+
 class HarmonyRdbTransaction implements RdbTransaction {
   private readonly store: relationalStore.RdbStore;
 
@@ -531,6 +728,82 @@ class HarmonyRdbTransaction implements RdbTransaction {
     }
   }
 
+  async listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]> {
+    const resultSet = await querySqlWithSafeFallback(
+      this.store,
+      `SELECT ${PROXY_SELECTION_COLUMNS} FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ? ORDER BY group_name ASC`,
+      toBindValues([profileId]),
+      'Transaction proxy selection list failed.'
+    );
+    let primaryError: Error | undefined = undefined;
+    try {
+      const rows: DurableProxySelectionRow[] = [];
+      while (advanceResultSetWithSafeFallback(resultSet, 'Transaction proxy selection list failed.')) {
+        rows.push(proxySelectionRowFromBucket(
+          readResultSetRowWithSafeFallback(resultSet, 'Transaction proxy selection list failed.')
+        ));
+      }
+      return rows;
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
+    } finally {
+      closeResultSetWithSafeFallback(resultSet, primaryError, 'Transaction result set close failed.');
+    }
+  }
+
+  async getProxySelectionRow(profileId: string, groupName: string): Promise<DurableProxySelectionRow | undefined> {
+    const resultSet = await querySqlWithSafeFallback(
+      this.store,
+      `SELECT ${PROXY_SELECTION_COLUMNS} FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ? AND group_name = ?`,
+      toBindValues([profileId, groupName]),
+      'Transaction proxy selection lookup failed.'
+    );
+    let primaryError: Error | undefined = undefined;
+    try {
+      if (!advanceResultSetWithSafeFallback(resultSet, 'Transaction proxy selection lookup failed.')) {
+        return undefined;
+      }
+      return proxySelectionRowFromBucket(
+        readResultSetRowWithSafeFallback(resultSet, 'Transaction proxy selection lookup failed.')
+      );
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
+    } finally {
+      closeResultSetWithSafeFallback(resultSet, primaryError, 'Transaction result set close failed.');
+    }
+  }
+
+  async upsertProxySelectionRow(row: DurableProxySelectionRow): Promise<void> {
+    await executeSqlWithSafeFallback(
+      this.store,
+      'INSERT OR REPLACE INTO ' + PROXY_SELECTIONS_TABLE + ' (' +
+      PROXY_SELECTION_COLUMNS +
+      ') VALUES (?, ?, ?, ?, ?)',
+      bindProxySelectionRow(row),
+      'Transaction proxy selection write failed.'
+    );
+  }
+
+  async deleteProxySelection(profileId: string, groupName: string): Promise<void> {
+    await executeSqlWithSafeFallback(
+      this.store,
+      `DELETE FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ? AND group_name = ?`,
+      toBindValues([profileId, groupName]),
+      'Transaction proxy selection delete failed.'
+    );
+  }
+
+  async deleteProfileSelections(profileId: string): Promise<void> {
+    await executeSqlWithSafeFallback(
+      this.store,
+      `DELETE FROM ${PROXY_SELECTIONS_TABLE} WHERE profile_id = ?`,
+      toBindValues([profileId]),
+      'Transaction profile selection delete failed.'
+    );
+  }
+
   async setActiveId(activeId: string | undefined): Promise<void> {
     await executeSqlWithSafeFallback(
       this.store,
@@ -550,6 +823,7 @@ class HarmonyRdbTransaction implements RdbTransaction {
   }
 
   async deleteProfile(id: string): Promise<void> {
+    await this.deleteProfileSelections(id);
     await executeSqlWithSafeFallback(
       this.store,
       'DELETE FROM profiles WHERE id = ?',

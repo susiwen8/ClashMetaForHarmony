@@ -1,5 +1,6 @@
 export type RuntimeState = 'STOPPED' | 'STARTING' | 'RUNNING' | 'STOPPING' | 'ERROR';
 export type LogLevel = 'DEBUG' | 'INFO' | 'WARN' | 'ERROR';
+export type RuntimeMode = 'RULE' | 'GLOBAL' | 'DIRECT';
 
 export interface LocalOptions {
   configPath: string;
@@ -13,6 +14,13 @@ export interface RuntimeSnapshot {
   socksAddress: string;
   lastError: string;
   mixedPort: number;
+}
+
+export interface ProxyQueryContext {
+  profileHash: string;
+  revisionHash: string;
+  sessionHash: string | null;
+  generation: number;
 }
 
 export type CoreEvent =
@@ -72,6 +80,10 @@ export interface TunTrace {
   destinationAddress: string;
   hashedTuple: string;
   correlationHash: string;
+  destinationHash: string;
+  outboundTerminalHash: string;
+  outboundChainHash: string;
+  outboundChainLength: number;
 }
 
 export interface CoreErrorContext {
@@ -96,6 +108,14 @@ export declare function loadConfiguration(path: string): Promise<void>;
 export declare function startLocal(options: LocalOptions): Promise<RuntimeSnapshot>;
 export declare function stopRuntime(): Promise<RuntimeSnapshot>;
 export declare function runtimeSnapshot(): RuntimeSnapshot;
+export declare function queryRuntimeMode(): RuntimeMode;
+export declare function setRuntimeMode(mode: RuntimeMode): RuntimeMode;
+export declare function queryProxyGroups(context: ProxyQueryContext, selectableOnly: boolean): Promise<string>;
+export declare function queryProxyGroup(context: ProxyQueryContext, groupName: string): Promise<string>;
+export declare function selectProxy(context: ProxyQueryContext, groupName: string, memberName: string): Promise<string>;
+export declare function startProxyDelayTest(context: ProxyQueryContext, groupName: string): Promise<string>;
+export declare function readProxyDelayTest(jobId: string): Promise<string>;
+export declare function cancelProxyDelayTest(jobId: string): Promise<string>;
 export declare function startTun(options: TunStartOptions): Promise<TunSnapshot>;
 export declare function stopTun(): Promise<TunSnapshot>;
 export declare function closeStaleOutboundConnections(sessionId: string): Promise<void>;

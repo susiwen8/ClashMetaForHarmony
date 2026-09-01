@@ -43,6 +43,11 @@ export interface VpnEvidenceObservationRecord {
   protocol: string;
   hashedTuple: string;
   correlationHash: string;
+  destinationHash: string;
+  outboundTerminalHash: string;
+  outboundChainHash: string;
+  outboundChainLength: number;
+  counterDelta: number;
   linkageStatus: VpnEvidenceLinkageStatus;
   counterSnapshot: VpnEvidenceCounters;
   detail: string;
@@ -51,6 +56,7 @@ export interface VpnEvidenceObservationRecord {
 export interface VpnEvidenceJournalDocument {
   schemaVersion: '1.0.0';
   phase: 4;
+  runId: string;
   sessionAlias: string;
   sequence: number;
   updatedAt: string;
@@ -133,10 +139,20 @@ function createEmptyCounters(): VpnEvidenceCounters {
   };
 }
 
+function positivePacketDelta(previous: VpnEvidenceCounters, current: VpnEvidenceCounters): number {
+  const rxDelta: number = current.rxPackets - previous.rxPackets;
+  const txDelta: number = current.txPackets - previous.txPackets;
+  if (rxDelta < 0 || txDelta < 0) {
+    return 0;
+  }
+  return rxDelta + txDelta;
+}
+
 function createEmptyDocument(clock: VpnEvidenceJournalClock): VpnEvidenceJournalDocument {
   return {
     schemaVersion: '1.0.0',
     phase: 4,
+    runId: '',
     sessionAlias: 'session-00000000',
     sequence: 0,
     updatedAt: clock.isoNow(),
@@ -155,9 +171,10 @@ function createEmptyDocument(clock: VpnEvidenceJournalClock): VpnEvidenceJournal
 }
 
 export interface VpnEvidenceJournalPort {
-  rotateSession(sessionId: string): void;
+  rotateSession(sessionId: string, runId: string): void;
   recordCoordinatorEvent(event: VpnRuntimeEvent): void;
   recordTunEvent(event: TunRuntimeEvent): void;
+  recordDiagnosticStage(stage: string): void;
   recordLifecycleFact(state: string, detail: string): void;
   recordTunCounters(counters: VpnEvidenceCounters): void;
   recordObservationAdapter(record: VpnEvidenceObservationRecord): void;
@@ -181,6 +198,8 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
   private readonly targetPath: string;
   private document: VpnEvidenceJournalDocument;
   private currentSessionHash: string = '00000000';
+  private readonly seenTrafficTraceAliases: Set<string> = new Set();
+  private lastTunCounters: VpnEvidenceCounters = createEmptyCounters();
 
   constructor(
     storage: VpnEvidenceJournalStorage = new FileJournalStorage(),
@@ -193,9 +212,12 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
     this.document = createEmptyDocument(clock);
   }
 
-  rotateSession(sessionId: string): void {
+  rotateSession(sessionId: string, runId: string): void {
     this.currentSessionHash = hashOpaque(sessionId);
     this.document = createEmptyDocument(this.clock);
+    this.seenTrafficTraceAliases.clear();
+    this.lastTunCounters = createEmptyCounters();
+    this.document.runId = runId;
     this.document.sessionAlias = aliasId(sessionId);
     this.persist();
   }
@@ -222,6 +244,11 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
       protocol: '',
       hashedTuple: '',
       correlationHash: '',
+      destinationHash: '',
+      outboundTerminalHash: '',
+      outboundChainHash: '',
+      outboundChainLength: 0,
+      counterDelta: 0,
       linkageStatus: 'missing',
       counterSnapshot: this.document.counters,
       detail: sanitizeDetail(`${event.type}:${event.snapshot.state}`)
@@ -232,13 +259,29 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
     if (!this.acceptsSession(event.sessionId)) {
       return;
     }
-    this.document.counters = cloneCounters(event.snapshot);
+    const currentCounters: VpnEvidenceCounters = cloneCounters(event.snapshot);
+    const newTraceIndexes: number[] = [];
     for (let index: number = 0; index < event.snapshot.ingressTraces.length; index += 1) {
-      const trace = event.snapshot.ingressTraces[index];
+      const traceAlias: string = event.snapshot.ingressTraces[index].traceId;
+      if (traceAlias.length > 0 && !this.seenTrafficTraceAliases.has(traceAlias)) {
+        newTraceIndexes.push(index);
+      }
+    }
+    const packetDelta: number = positivePacketDelta(this.lastTunCounters, currentCounters);
+    const perTraceCounterDelta: number = newTraceIndexes.length > 0 && packetDelta >= newTraceIndexes.length ? 1 : 0;
+    this.document.counters = currentCounters;
+    for (let newIndex: number = 0; newIndex < newTraceIndexes.length; newIndex += 1) {
+      const trace = event.snapshot.ingressTraces[newTraceIndexes[newIndex]];
+      this.seenTrafficTraceAliases.add(trace.traceId);
+      const hasOutboundProof: boolean = trace.destinationHash.length > 0 &&
+        trace.outboundTerminalHash.length > 0 &&
+        trace.outboundChainHash.length > 0 &&
+        trace.outboundChainLength > 0;
       const linked: boolean = trace.traceId.length > 0 &&
         trace.correlationHash.length > 0 &&
         trace.protocol.length > 0 &&
-        trace.ingress === 'tun';
+        trace.ingress === 'tun' &&
+        (trace.protocol !== 'tcp' || hasOutboundProof);
       this.appendRecord({
         sequence: 0,
         recordedAt: this.clock.isoNow(),
@@ -251,11 +294,41 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
         protocol: trace.protocol,
         hashedTuple: trace.hashedTuple,
         correlationHash: trace.correlationHash,
+        destinationHash: trace.destinationHash,
+        outboundTerminalHash: trace.outboundTerminalHash,
+        outboundChainHash: trace.outboundChainHash,
+        outboundChainLength: trace.outboundChainLength,
+        counterDelta: perTraceCounterDelta,
         linkageStatus: linked ? 'linked' : 'missing',
         counterSnapshot: this.document.counters,
         detail: sanitizeDetail(trace.detail)
       });
     }
+    this.lastTunCounters = currentCounters;
+  }
+
+  recordDiagnosticStage(stage: string): void {
+    this.appendRecord({
+      sequence: 0,
+      recordedAt: this.clock.isoNow(),
+      kind: 'lifecycle',
+      sessionIdHash: this.currentSessionHash,
+      ingress: 'lifecycle',
+      traceAlias: `trace-${this.document.sequence + 1}`,
+      coreAlias: '',
+      flowIdHash: 'none',
+      protocol: '',
+      hashedTuple: '',
+      correlationHash: '',
+      destinationHash: '',
+      outboundTerminalHash: '',
+      outboundChainHash: '',
+      outboundChainLength: 0,
+      counterDelta: 0,
+      linkageStatus: 'missing',
+      counterSnapshot: this.document.counters,
+      detail: sanitizeDetail(stage)
+    });
   }
 
   recordLifecycleFact(state: string, detail: string): void {
@@ -273,6 +346,11 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
       protocol: '',
       hashedTuple: '',
       correlationHash: '',
+      destinationHash: '',
+      outboundTerminalHash: '',
+      outboundChainHash: '',
+      outboundChainLength: 0,
+      counterDelta: 0,
       linkageStatus: 'missing',
       counterSnapshot: this.document.counters,
       detail: sanitizeDetail(detail)
@@ -297,6 +375,9 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
   }
 
   finalizeStop(event: VpnRuntimeEvent | null): void {
+    if (this.document.lifecycle.stopped) {
+      return;
+    }
     if (event !== null) {
       this.recordCoordinatorEvent(event);
     }
@@ -314,6 +395,11 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
       protocol: '',
       hashedTuple: '',
       correlationHash: '',
+      destinationHash: '',
+      outboundTerminalHash: '',
+      outboundChainHash: '',
+      outboundChainLength: 0,
+      counterDelta: 0,
       linkageStatus: 'missing',
       counterSnapshot: this.document.counters,
       detail: sanitizeDetail(this.document.lifecycle.detail)
@@ -322,6 +408,9 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
 
   finalizeStopWithDetail(sessionId: string, detail: string): void {
     if (!this.acceptsSession(sessionId)) {
+      return;
+    }
+    if (this.document.lifecycle.stopped) {
       return;
     }
     this.document.lifecycle.detail = sanitizeDetail(detail);
@@ -349,6 +438,11 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
       protocol: ingress === 'tun' ? 'tcp' : '',
       hashedTuple: '',
       correlationHash: hashOpaque(flowId),
+      destinationHash: '',
+      outboundTerminalHash: '',
+      outboundChainHash: '',
+      outboundChainLength: 0,
+      counterDelta: 0,
       linkageStatus,
       counterSnapshot: this.document.counters,
       detail: kind
@@ -377,6 +471,11 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
       protocol: sanitizeDetail(record.protocol),
       hashedTuple: sanitizeDetail(record.hashedTuple),
       correlationHash: sanitizeDetail(record.correlationHash),
+      destinationHash: sanitizeDetail(record.destinationHash),
+      outboundTerminalHash: sanitizeDetail(record.outboundTerminalHash),
+      outboundChainHash: sanitizeDetail(record.outboundChainHash),
+      outboundChainLength: record.outboundChainLength,
+      counterDelta: record.counterDelta,
       linkageStatus: record.linkageStatus,
       counterSnapshot: {
         txPackets: record.counterSnapshot.txPackets,
@@ -403,6 +502,7 @@ export class VpnEvidenceJournal implements VpnEvidenceJournalPort {
     }
     if (serialized.length > MAX_EVIDENCE_BYTES) {
       const fallback: VpnEvidenceJournalDocument = createEmptyDocument(this.clock);
+      fallback.runId = this.document.runId;
       fallback.sessionAlias = this.document.sessionAlias;
       fallback.sequence = this.document.sequence;
       fallback.updatedAt = this.document.updatedAt;

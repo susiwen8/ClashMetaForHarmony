@@ -80,8 +80,47 @@ async function expectSafeFailure(
   }
 }
 
+class MkdirRaceFakeFileDriver extends FakeFileDriver {
+  private readonly racedPath: string;
+
+  constructor(racedPath: string) {
+    super();
+    this.racedPath = racedPath;
+  }
+
+  override async mkdir(path: string, recursive: boolean): Promise<void> {
+    if (path === this.racedPath) {
+      this.operationLog.push(`mkdir:${path}:${recursive ? 'recursive' : 'single'}`);
+      this.seedDirectory(path);
+      throw new Error('Concurrent directory creation.');
+    }
+    await super.mkdir(path, recursive);
+  }
+}
+
 export default function sandboxProfileContentStoreTestsuite() {
   describe('SandboxProfileContentStoreTest', () => {
+    it('fakeRenameRequiresExistingDestinationParent', 0, async () => {
+      const driver = new FakeFileDriver();
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedFile(`${FILES_DIR}/tmp/source.yaml`, buildBytes(12));
+
+      await expectSafeFailure(
+        async () => {
+          await driver.renameNoOverwrite(
+            `${FILES_DIR}/tmp/source.yaml`,
+            `${FILES_DIR}/profiles/alpha/failed/source.yaml`
+          );
+        },
+        'Destination parent',
+        ['source.yaml', `${FILES_DIR}/profiles/alpha/failed`]
+      );
+
+      expect(driver.fileExists(`${FILES_DIR}/tmp/source.yaml`)).assertTrue();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/failed/source.yaml`)).assertFalse();
+    });
+
     it('retainsCurrentAndFailedCandidateAtImmutableManagedPathsAndResolvesCorePath', 0, async () => {
       const driver = new FakeFileDriver();
       driver.seedDirectory(FILES_DIR);
@@ -102,6 +141,82 @@ export default function sandboxProfileContentStoreTestsuite() {
       expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/failed/stage-failed.yaml`)).assertTrue();
       expect(store.resolveCorePath(current)).assertEqual(`${FILES_DIR}/profiles/alpha/valid/stage-current.yaml`);
       expect(store.resolveCorePath(failed)).assertEqual(`${FILES_DIR}/profiles/alpha/failed/stage-failed.yaml`);
+    });
+
+    it('createsMissingRetentionDirectoryBeforeRename', 0, async () => {
+      const driver = new FakeFileDriver();
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedFile(`${FILES_DIR}/tmp/stage-create-parent.yaml`, buildBytes(192));
+      const store = new SandboxProfileContentStore(driver, FILES_DIR);
+
+      const retained = await store.retain('alpha', buildStaged('stage-create-parent', 192), 'FAILED_CANDIDATE');
+
+      expect(retained.relativePath).assertEqual('profiles/alpha/failed/stage-create-parent.yaml');
+      expect(driver.operationLog.includes(`mkdir:${FILES_DIR}/profiles/alpha/failed:recursive`)).assertTrue();
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stage-create-parent.yaml`)).assertFalse();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/failed/stage-create-parent.yaml`)).assertTrue();
+    });
+
+    it('reusesExistingRetentionDirectoryWithoutRecreatingIt', 0, async () => {
+      const driver = new FakeFileDriver();
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedDirectory(`${FILES_DIR}/profiles/alpha/failed`);
+      driver.seedFile(`${FILES_DIR}/tmp/stage-reuse.yaml`, buildBytes(256));
+      driver.injectFailure(
+        'mkdir',
+        `${FILES_DIR}/profiles/alpha/failed`,
+        new Error('Existing directory must not be recreated.')
+      );
+      const store = new SandboxProfileContentStore(driver, FILES_DIR);
+
+      const retained = await store.retain('alpha', buildStaged('stage-reuse', 256), 'FAILED_CANDIDATE');
+
+      expect(retained.relativePath).assertEqual('profiles/alpha/failed/stage-reuse.yaml');
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stage-reuse.yaml`)).assertFalse();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/failed/stage-reuse.yaml`)).assertTrue();
+      expect(driver.operationLog.includes(`mkdir:${FILES_DIR}/profiles/alpha/failed:recursive`)).assertFalse();
+      expect(driver.renamePairs).assertDeepEquals([
+        `${FILES_DIR}/tmp/stage-reuse.yaml->${FILES_DIR}/profiles/alpha/failed/stage-reuse.yaml`
+      ]);
+    });
+
+    it('retainsWhenRetentionDirectoryAppearsDuringMkdirRace', 0, async () => {
+      const driver = new MkdirRaceFakeFileDriver(`${FILES_DIR}/profiles/alpha/failed`);
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedFile(`${FILES_DIR}/tmp/stage-race.yaml`, buildBytes(224));
+      const store = new SandboxProfileContentStore(driver, FILES_DIR);
+
+      const retained = await store.retain('alpha', buildStaged('stage-race', 224), 'FAILED_CANDIDATE');
+
+      expect(retained.relativePath).assertEqual('profiles/alpha/failed/stage-race.yaml');
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stage-race.yaml`)).assertFalse();
+      expect(driver.fileExists(`${FILES_DIR}/profiles/alpha/failed/stage-race.yaml`)).assertTrue();
+      expect(driver.renamePairs).assertDeepEquals([
+        `${FILES_DIR}/tmp/stage-race.yaml->${FILES_DIR}/profiles/alpha/failed/stage-race.yaml`
+      ]);
+    });
+
+    it('failsClosedWhenRetentionDirectoryPathIsAnExistingFile', 0, async () => {
+      const driver = new FakeFileDriver();
+      driver.seedDirectory(FILES_DIR);
+      driver.seedDirectory(`${FILES_DIR}/tmp`);
+      driver.seedFile(`${FILES_DIR}/tmp/stage-parent-file.yaml`, buildBytes(208));
+      driver.seedFile(`${FILES_DIR}/profiles/alpha/failed`, buildBytes(4));
+      const store = new SandboxProfileContentStore(driver, FILES_DIR);
+
+      await expectSafeFailure(
+        async () => {
+          await store.retain('alpha', buildStaged('stage-parent-file', 208), 'FAILED_CANDIDATE');
+        },
+        'Sandbox directory preparation failed.',
+        [`${FILES_DIR}/profiles/alpha/failed`, 'stage-parent-file', 'alpha']
+      );
+
+      expect(driver.fileExists(`${FILES_DIR}/tmp/stage-parent-file.yaml`)).assertTrue();
+      expect(driver.renamePairs.some((value: string): boolean => value.includes('stage-parent-file'))).assertFalse();
     });
 
     it('acceptsExactlySixteenMiBAndRejectsOversizeStagesBeforeRename', 0, async () => {
