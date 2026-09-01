@@ -53,6 +53,7 @@ import {
   type ProxyGroupQueryResult,
   type ProxyRejectedResult,
   type ProxySelectionResult,
+  type RefreshAllSubscriptionsResult,
   type ProfileApplicationErrorSnapshot,
   type ProfileApplicationListener,
   type ProfileApplicationProfileSnapshot,
@@ -67,6 +68,8 @@ import {
   type RemoteImportCommand,
   type ProfileSourceKind,
   type RefreshProfileResult,
+  type RefreshProfilesItemResult,
+  type RefreshProfilesResult,
   type RemoteAcquireCommand,
   type RemoteProfileAcquisition,
   type RuntimeSnapshot,
@@ -472,6 +475,7 @@ export class PresentationTestApplication extends ProfileApplication {
   private readonly importLocalResults: Promise<ImportProfileResult>[] = [];
   private readonly importUrlResults: Promise<ImportProfileResult>[] = [];
   private readonly refreshResults: Promise<RefreshProfileResult>[] = [];
+  private readonly refreshAllSubscriptionsResults: Promise<RefreshAllSubscriptionsResult>[] = [];
   private readonly enableResults: Promise<ManageEnableResult>[] = [];
   private readonly deleteResults: Promise<ManageDeleteResult>[] = [];
   private readonly replaceResults: Promise<ManageReplaceResult>[] = [];
@@ -481,6 +485,7 @@ export class PresentationTestApplication extends ProfileApplication {
   private readonly homeProxySelectionResults: Promise<HomeProxySelectionSummary | undefined>[] = [];
   private readonly oneClickListeners: Map<number, OneClickVpnOperationListener> = new Map();
   private nextOneClickListenerId: number = 0;
+  private refreshAllSubscriptionsCalls: number = 0;
   private oneClickSnapshot: OneClickVpnOperationSnapshot = createOneClickVpnOperationSnapshot('IDLE', false, 'NONE');
 
   constructor(snapshot?: ProfileApplicationSnapshot) {
@@ -509,6 +514,10 @@ export class PresentationTestApplication extends ProfileApplication {
     return this.presentationListeners.size;
   }
 
+  refreshAllSubscriptionsCallCount(): number {
+    return this.refreshAllSubscriptionsCalls;
+  }
+
   queueImportLocalResult(result: ImportProfileResult | Promise<ImportProfileResult>): void {
     this.importLocalResults.push(Promise.resolve(result));
   }
@@ -519,6 +528,10 @@ export class PresentationTestApplication extends ProfileApplication {
 
   queueRefreshResult(result: RefreshProfileResult | Promise<RefreshProfileResult>): void {
     this.refreshResults.push(Promise.resolve(result));
+  }
+
+  queueRefreshAllSubscriptionsResult(result: RefreshAllSubscriptionsResult | Promise<RefreshAllSubscriptionsResult>): void {
+    this.refreshAllSubscriptionsResults.push(Promise.resolve(result));
   }
 
   queueEnableResult(result: ManageEnableResult | Promise<ManageEnableResult>): void {
@@ -549,6 +562,12 @@ export class PresentationTestApplication extends ProfileApplication {
     result: HomeProxySelectionSummary | Promise<HomeProxySelectionSummary | undefined> | undefined
   ): void {
     this.homeProxySelectionResults.push(Promise.resolve(result));
+  }
+
+  deferRefreshAllSubscriptions(): DeferredResult<RefreshAllSubscriptionsResult> {
+    const deferred: DeferredResult<RefreshAllSubscriptionsResult> = new DeferredResult<RefreshAllSubscriptionsResult>();
+    this.refreshAllSubscriptionsResults.push(deferred.promise);
+    return deferred;
   }
 
   deferStart(): DeferredCommand {
@@ -676,6 +695,15 @@ export class PresentationTestApplication extends ProfileApplication {
     this.commandLog.push(`refresh:${profileId}:${allowPlainHttp === true ? 'plain' : 'secure'}`);
     this.refreshCommands.push(createSafeRefreshRecord(profileId, allowPlainHttp === true));
     return await shiftOrDefault<RefreshProfileResult>(this.refreshResults, createCancelledRefreshResult());
+  }
+
+  async refreshAllSubscriptions(): Promise<RefreshAllSubscriptionsResult> {
+    this.commandLog.push('refreshAllSubscriptions');
+    this.refreshAllSubscriptionsCalls += 1;
+    return await shiftOrDefault<RefreshAllSubscriptionsResult>(
+      this.refreshAllSubscriptionsResults,
+      createRefreshAllSubscriptionsCompletedResult([])
+    );
   }
 
   async enable(profileId: string): Promise<ManageEnableResult> {
@@ -1178,6 +1206,42 @@ export function createFailedRefreshResult(
   stage: AppErrorStage,
   technicalDetail: string
 ): RefreshProfileResult {
+  return {
+    kind: 'FAILED',
+    error: createAppError(stage, technicalDetail, {
+      code,
+      retryable: false,
+      timestamp: '2026-08-11T12:30:00.000Z'
+    })
+  };
+}
+
+export function createRefreshAllSubscriptionsCompletedResult(
+  items: RefreshProfilesItemResult[],
+  deadlineReached: boolean = false,
+  cancelled: boolean = false,
+  remainingCount: number = 0
+): RefreshAllSubscriptionsResult {
+  const result: RefreshProfilesResult = {
+    items: items.map((item: RefreshProfilesItemResult): RefreshProfilesItemResult => ({
+      profileId: item.profileId,
+      status: item.status
+    })),
+    deadlineReached,
+    cancelled,
+    remainingCount
+  };
+  return {
+    kind: 'COMPLETED',
+    result
+  };
+}
+
+export function createFailedRefreshAllSubscriptionsResult(
+  code: string,
+  stage: AppErrorStage,
+  technicalDetail: string
+): RefreshAllSubscriptionsResult {
   return {
     kind: 'FAILED',
     error: createAppError(stage, technicalDetail, {

@@ -71,14 +71,29 @@ export interface ProfileRowState {
   id: string;
   name: string;
   sourceDisplay: string;
+  sourceKind: ProfileSourceKind;
   availability: ProfileAvailability;
   active: boolean;
   updatedAt: string;
 }
 
+export interface ProfilesSummaryState {
+  totalCount: number;
+  remoteCount: number;
+  localCount: number;
+  validCount: number;
+  invalidCount: number;
+  updateFailedUsingValidCount: number;
+}
+
 export interface ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR';
   profiles: ProfileRowState[];
+  pendingRefreshCount: number;
+  completedRefreshCount: number;
+  totalRefreshCount: number;
+  summary?: ProfilesSummaryState;
+  refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
 }
 
@@ -176,14 +191,29 @@ class ProfileRowStateValue implements ProfileRowState {
   id: string = '';
   name: string = '';
   sourceDisplay: string = '';
+  sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   availability: ProfileAvailability = 'INVALID';
   active: boolean = false;
   updatedAt: string = '';
 }
 
+class ProfilesSummaryStateValue implements ProfilesSummaryState {
+  totalCount: number = 0;
+  remoteCount: number = 0;
+  localCount: number = 0;
+  validCount: number = 0;
+  invalidCount: number = 0;
+  updateFailedUsingValidCount: number = 0;
+}
+
 class ProfilesViewStateValue implements ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   profiles: ProfileRowState[] = [];
+  pendingRefreshCount: number = 0;
+  completedRefreshCount: number = 0;
+  totalRefreshCount: number = 0;
+  summary?: ProfilesSummaryState;
+  refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
 }
 
@@ -274,6 +304,7 @@ export function createProfileRowState(
   row.id = profile.id;
   row.name = profile.name;
   row.sourceDisplay = sanitizePresentationSourceDisplay(profile.sourceDisplay);
+  row.sourceKind = profile.sourceKind;
   row.availability = profile.availability;
   row.active = activeProfileId === profile.id;
   row.updatedAt = profile.updatedAt;
@@ -287,12 +318,45 @@ export function cloneProfileRowStates(rows: ProfileRowState[]): ProfileRowState[
     row.id = rows[index].id;
     row.name = rows[index].name;
     row.sourceDisplay = rows[index].sourceDisplay;
+    row.sourceKind = rows[index].sourceKind;
     row.availability = rows[index].availability;
     row.active = rows[index].active;
     row.updatedAt = rows[index].updatedAt;
     cloned.push(row);
   }
   return cloned;
+}
+
+export function createProfilesSummaryState(
+  totalCount: number,
+  remoteCount: number,
+  localCount: number,
+  validCount: number,
+  invalidCount: number,
+  updateFailedUsingValidCount: number
+): ProfilesSummaryState {
+  const state: ProfilesSummaryStateValue = new ProfilesSummaryStateValue();
+  state.totalCount = normalizeCount(totalCount);
+  state.remoteCount = normalizeCount(remoteCount);
+  state.localCount = normalizeCount(localCount);
+  state.validCount = normalizeCount(validCount);
+  state.invalidCount = normalizeCount(invalidCount);
+  state.updateFailedUsingValidCount = normalizeCount(updateFailedUsingValidCount);
+  return state;
+}
+
+export function cloneProfilesSummaryState(state: ProfilesSummaryState | undefined): ProfilesSummaryState | undefined {
+  if (state === undefined) {
+    return undefined;
+  }
+  return createProfilesSummaryState(
+    state.totalCount,
+    state.remoteCount,
+    state.localCount,
+    state.validCount,
+    state.invalidCount,
+    state.updateFailedUsingValidCount
+  );
 }
 
 export function createHomeViewState(
@@ -443,17 +507,36 @@ export function cloneVpnGlobalCaptureState(state: VpnGlobalCaptureState): VpnGlo
 export function createProfilesViewState(
   initialization: 'LOADING' | 'READY' | 'ERROR',
   profiles: ProfileRowState[],
-  error: SafeErrorState | undefined
+  error: SafeErrorState | undefined,
+  pendingRefreshCount: number = 0,
+  completedRefreshCount: number = 0,
+  totalRefreshCount: number = 0,
+  summary: ProfilesSummaryState | undefined = undefined,
+  refreshAllError: SafeErrorState | undefined = undefined
 ): ProfilesViewState {
   const state: ProfilesViewStateValue = new ProfilesViewStateValue();
   state.initialization = initialization;
   state.profiles = cloneProfileRowStates(profiles);
+  state.pendingRefreshCount = normalizeCount(pendingRefreshCount);
+  state.completedRefreshCount = normalizeCount(completedRefreshCount);
+  state.totalRefreshCount = normalizeCount(totalRefreshCount);
+  state.summary = cloneProfilesSummaryState(summary);
+  state.refreshAllError = cloneSafeErrorState(refreshAllError);
   state.error = cloneSafeErrorState(error);
   return state;
 }
 
 export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewState {
-  return createProfilesViewState(state.initialization, state.profiles, state.error);
+  return createProfilesViewState(
+    state.initialization,
+    state.profiles,
+    state.error,
+    state.pendingRefreshCount,
+    state.completedRefreshCount,
+    state.totalRefreshCount,
+    state.summary,
+    state.refreshAllError
+  );
 }
 
 export function createImportProfileViewState(
@@ -563,6 +646,13 @@ export function cloneProfileDetailViewState(state: ProfileDetailViewState): Prof
 }
 
 function normalizeTrafficBytes(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return 0;
+  }
+  return value;
+}
+
+function normalizeCount(value: number): number {
   if (!Number.isSafeInteger(value) || value < 0) {
     return 0;
   }
