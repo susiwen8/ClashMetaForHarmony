@@ -36,6 +36,7 @@ class RecordingLeasePort implements ProfileRefreshLeasePort {
   readonly acquireCalls: AcquireCall[] = [];
   readonly releaseCalls: ReleaseCall[] = [];
   tryAcquireResult: boolean = true;
+  releaseResult: boolean = true;
   tryAcquireError?: Error;
   releaseError?: Error;
 
@@ -56,7 +57,7 @@ class RecordingLeasePort implements ProfileRefreshLeasePort {
     if (this.releaseError !== undefined) {
       throw this.releaseError;
     }
-    return true;
+    return this.releaseResult;
   }
 }
 
@@ -126,6 +127,19 @@ async function expectRejectsWithMessage(
   }
 }
 
+async function expectRejectsWithSameError(promise: Promise<Object>, expectedError: Error): Promise<void> {
+  let capturedError: Object | undefined = undefined;
+  try {
+    await promise;
+  } catch (error) {
+    capturedError = error as Object;
+  }
+  if (capturedError === undefined) {
+    throw new Error('Expected promise to reject.');
+  }
+  expect(capturedError === expectedError).assertTrue();
+}
+
 export default function leasedRemoteProfileRefresherTestsuite() {
   describe('LeasedRemoteProfileRefresherTest', () => {
     it('acquiresExactDefaultTtlRunsOperationAndReleasesSameOwner', 0, async () => {
@@ -145,6 +159,7 @@ export default function leasedRemoteProfileRefresherTestsuite() {
         return;
       }
       expect(result.value).assertEqual('ok');
+      expect(result.leaseReleased).assertTrue();
       expect(leasePort.acquireCalls.length).assertEqual(1);
       expect(leasePort.acquireCalls[0].profileId).assertEqual('profile-remote-1');
       expect(leasePort.acquireCalls[0].ownerToken).assertEqual('lease-owner-1');
@@ -178,59 +193,66 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       expect(leasePort.releaseCalls.length).assertEqual(0);
     });
 
-    it('releasesLeaseAndPreservesOriginalOperationErrorWhenOperationFails', 0, async () => {
+    it('releasesLeaseAndPreservesOriginalOperationErrorIdentityWhenOperationFails', 0, async () => {
       const leasePort = new RecordingLeasePort();
       const refresher = new LeasedRemoteProfileRefresher({
         leasePort,
         clock: new FixedClock('2026-09-01T10:02:00.000Z'),
         idGenerator: new FixedIdGenerator('lease-owner-3')
       });
+      const operationError: Error = new Error('refresh failed for expected reason');
 
-      await expectRejectsWithMessage(
+      await expectRejectsWithSameError(
         refresher.execute('profile-remote-3', async () => {
-          throw new Error('refresh failed for expected reason');
+          throw operationError;
         }),
-        'refresh failed for expected reason'
+        operationError
       );
 
       expect(leasePort.releaseCalls.length).assertEqual(1);
       expect(leasePort.releaseCalls[0].ownerToken).assertEqual('lease-owner-3');
     });
 
-    it('bestEffortReleaseDoesNotOverrideSuccessfulOrFailedOperationOutcome', 0, async () => {
-      const successLeasePort = new RecordingLeasePort();
-      successLeasePort.releaseError = new Error('release failed');
-      const successRefresher = new LeasedRemoteProfileRefresher({
-        leasePort: successLeasePort,
+    it('returnsCompletedWithLeaseReleasedFalseWhenReleasePortReturnsFalse', 0, async () => {
+      const leasePort = new RecordingLeasePort();
+      leasePort.releaseResult = false;
+      const refresher = new LeasedRemoteProfileRefresher({
+        leasePort,
         clock: new FixedClock('2026-09-01T10:03:00.000Z'),
         idGenerator: new FixedIdGenerator('lease-owner-4')
       });
 
-      const successResult = await successRefresher.execute('profile-remote-4', async () => 'still-success');
+      const result = await refresher.execute('profile-remote-4', async () => 'still-success');
 
-      expect(successResult.kind).assertEqual('COMPLETED');
-      if (successResult.kind !== 'COMPLETED') {
+      expect(result.kind).assertEqual('COMPLETED');
+      if (result.kind !== 'COMPLETED') {
         expect(false).assertTrue();
         return;
       }
-      expect(successResult.value).assertEqual('still-success');
-      expect(successLeasePort.releaseCalls.length).assertEqual(1);
+      expect(result.value).assertEqual('still-success');
+      expect(result.leaseReleased).assertFalse();
+      expect(leasePort.releaseCalls.length).assertEqual(1);
+    });
 
-      const failureLeasePort = new RecordingLeasePort();
-      failureLeasePort.releaseError = new Error('release failed');
-      const failureRefresher = new LeasedRemoteProfileRefresher({
-        leasePort: failureLeasePort,
+    it('returnsCompletedWithLeaseReleasedFalseWhenReleaseThrows', 0, async () => {
+      const leasePort = new RecordingLeasePort();
+      leasePort.releaseError = new Error('release failed');
+      const refresher = new LeasedRemoteProfileRefresher({
+        leasePort,
         clock: new FixedClock('2026-09-01T10:04:00.000Z'),
         idGenerator: new FixedIdGenerator('lease-owner-5')
       });
 
-      await expectRejectsWithMessage(
-        failureRefresher.execute('profile-remote-5', async () => {
-          throw new Error('operation failure survives release failure');
-        }),
-        'operation failure survives release failure'
-      );
-      expect(failureLeasePort.releaseCalls.length).assertEqual(1);
+      const result = await refresher.execute('profile-remote-5', async () => 'success survives release throw');
+
+      expect(result.kind).assertEqual('COMPLETED');
+      if (result.kind !== 'COMPLETED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.value).assertEqual('success survives release throw');
+      expect(result.leaseReleased).assertFalse();
+      expect(leasePort.releaseCalls.length).assertEqual(1);
     });
 
     it('wrapsAcquireFailuresWithFixedSafeLeaseErrorWithoutProfileOrTokenLeak', 0, async () => {
@@ -255,7 +277,7 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       expect(leasePort.releaseCalls.length).assertEqual(0);
     });
 
-    it('rejectsInvalidClockValuesUnsafeExpiryAndBlankOwnerBeforeLeaseOrOperation', 0, async () => {
+    it('rejectsInvalidClockValuesNonCanonicalTimestampsUnsafeExpiryAndBlankOwnerBeforeLeaseOrOperation', 0, async () => {
       const leasePort = new RecordingLeasePort();
       let didRunOperation: boolean = false;
       const invalidClockRefresher = new LeasedRemoteProfileRefresher({
@@ -279,6 +301,44 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       expectSafeLeaseError(invalidClockError);
       expect(didRunOperation).assertFalse();
       expect(leasePort.acquireCalls.length).assertEqual(0);
+
+      const nonCanonicalMissingMillisecondsLeasePort = new RecordingLeasePort();
+      const nonCanonicalMissingMillisecondsRefresher = new LeasedRemoteProfileRefresher({
+        leasePort: nonCanonicalMissingMillisecondsLeasePort,
+        clock: new FixedClock('2026-09-01T10:05:00Z'),
+        idGenerator: new FixedIdGenerator('lease-owner-7b')
+      });
+
+      let nonCanonicalMissingMillisecondsError: Object | undefined = undefined;
+      try {
+        await nonCanonicalMissingMillisecondsRefresher.execute('profile-remote-7b', async () => 'nope');
+      } catch (error) {
+        nonCanonicalMissingMillisecondsError = error as Object;
+      }
+      if (nonCanonicalMissingMillisecondsError === undefined) {
+        throw new Error('Expected noncanonical timestamp rejection.');
+      }
+      expectSafeLeaseError(nonCanonicalMissingMillisecondsError);
+      expect(nonCanonicalMissingMillisecondsLeasePort.acquireCalls.length).assertEqual(0);
+
+      const nonCanonicalOffsetLeasePort = new RecordingLeasePort();
+      const nonCanonicalOffsetRefresher = new LeasedRemoteProfileRefresher({
+        leasePort: nonCanonicalOffsetLeasePort,
+        clock: new FixedClock('2026-09-01T18:05:00.000+08:00'),
+        idGenerator: new FixedIdGenerator('lease-owner-7c')
+      });
+
+      let nonCanonicalOffsetError: Object | undefined = undefined;
+      try {
+        await nonCanonicalOffsetRefresher.execute('profile-remote-7c', async () => 'nope');
+      } catch (error) {
+        nonCanonicalOffsetError = error as Object;
+      }
+      if (nonCanonicalOffsetError === undefined) {
+        throw new Error('Expected offset timestamp rejection.');
+      }
+      expectSafeLeaseError(nonCanonicalOffsetError);
+      expect(nonCanonicalOffsetLeasePort.acquireCalls.length).assertEqual(0);
 
       const overflowLeasePort = new RecordingLeasePort();
       const overflowRefresher = new LeasedRemoteProfileRefresher({

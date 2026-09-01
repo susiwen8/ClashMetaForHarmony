@@ -1,3 +1,4 @@
+import { normalizeCanonicalUtcIsoTimestamp } from './AppErrors';
 import type { Clock, IdGenerator, ProfileRefreshLeasePort } from './ProfilePorts';
 
 export const REMOTE_PROFILE_REFRESH_LEASE_TTL_MS: number = 120000;
@@ -14,6 +15,7 @@ export interface LeasedRemoteProfileRefresherDependencies {
 export interface LeasedRemoteProfileRefreshCompleted<T> {
   kind: 'COMPLETED';
   value: T;
+  leaseReleased: boolean;
 }
 
 export interface LeasedRemoteProfileRefreshBusy {
@@ -32,9 +34,11 @@ export interface LeasedRemoteProfileRefreshError extends Error {
 class LeasedRemoteProfileRefreshCompletedValue<T> implements LeasedRemoteProfileRefreshCompleted<T> {
   kind: 'COMPLETED' = 'COMPLETED';
   value: T;
+  leaseReleased: boolean;
 
-  constructor(value: T) {
+  constructor(value: T, leaseReleased: boolean) {
     this.value = value;
+    this.leaseReleased = leaseReleased;
   }
 }
 
@@ -81,9 +85,12 @@ export class LeasedRemoteProfileRefresher {
     }
 
     try {
-      return new LeasedRemoteProfileRefreshCompletedValue(await operation());
-    } finally {
+      const value: T = await operation();
+      const leaseReleased: boolean = await this.releaseBestEffort(profileId, ownerToken);
+      return new LeasedRemoteProfileRefreshCompletedValue(value, leaseReleased);
+    } catch (error) {
       await this.releaseBestEffort(profileId, ownerToken);
+      throw error;
     }
   }
 
@@ -101,9 +108,11 @@ export class LeasedRemoteProfileRefresher {
   }
 
   private resolveNowMs(): number {
+    let timestamp: string;
     let nowMs: number;
     try {
-      nowMs = this.parseTimestampMs(this.clock.now());
+      timestamp = normalizeCanonicalUtcIsoTimestamp(this.clock.now(), 'Profile refresh lease timestamp');
+      nowMs = this.parseTimestampMs(timestamp);
     } catch (_) {
       throw this.createLeaseError();
     }
@@ -124,10 +133,11 @@ export class LeasedRemoteProfileRefresher {
     return expiresAtMs;
   }
 
-  private async releaseBestEffort(profileId: string, ownerToken: string): Promise<void> {
+  private async releaseBestEffort(profileId: string, ownerToken: string): Promise<boolean> {
     try {
-      await this.leasePort.release(profileId, ownerToken);
+      return await this.leasePort.release(profileId, ownerToken);
     } catch (_) {
+      return false;
     }
   }
 
