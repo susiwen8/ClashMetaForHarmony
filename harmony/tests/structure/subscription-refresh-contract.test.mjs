@@ -60,12 +60,17 @@ test('subscription refresh detail UI exposes remote-only interval presets and la
   assert.match(page, /\.id\(`detail\.auto-update\.\$\{intervalMs\}`\)/u);
   assert.match(page, /requestAutoUpdateInterval\(intervalMs\)/u);
   assert.match(page, /\.id\('detail\.last-successful-update'\)/u);
+  assert.match(page, /\.id\('detail\.auto-update\.current'\)/u);
+  assert.match(page, /return \$r\('app\.string\.detail_auto_update_custom'\);/u);
+  assert.doesNotMatch(page, /case 0:[\s\S]*default:[\s\S]*detail_auto_update_off/u);
 
   for (const name of [
     'detail_last_successful_update',
     'detail_last_successful_update_never',
     'detail_auto_update_title',
     'detail_auto_update_note',
+    'detail_auto_update_current',
+    'detail_auto_update_custom',
     'detail_auto_update_off',
     'detail_auto_update_2h',
     'detail_auto_update_6h',

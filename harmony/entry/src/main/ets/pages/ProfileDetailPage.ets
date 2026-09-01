@@ -182,6 +182,19 @@ export struct ProfileDetailPage {
         .fontColor($r('app.color.color_text_secondary'))
         .width('100%')
 
+      Row({ space: $r('app.float.space_sm') }) {
+        Text($r('app.string.detail_auto_update_current'))
+          .fontSize($r('app.float.type_caption'))
+          .fontColor($r('app.color.color_text_secondary'))
+
+        Text(currentAutoUpdateIntervalValue(this.state.profile?.autoUpdateIntervalMs ?? 0))
+          .id('detail.auto-update.current')
+          .fontSize($r('app.float.type_caption'))
+          .fontWeight(FontWeight.Medium)
+          .fontColor($r('app.color.color_text_primary'))
+      }
+      .width('100%')
+
       Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Center }) {
         ForEach(PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS, (intervalMs: number) => {
           Button(autoUpdateIntervalLabel(intervalMs))
@@ -420,9 +433,26 @@ function autoUpdateIntervalLabel(intervalMs: number): Resource {
     case 7 * 24 * 60 * 60 * 1000:
       return $r('app.string.detail_auto_update_7d');
     case 0:
-    default:
       return $r('app.string.detail_auto_update_off');
+    default:
+      return $r('app.string.detail_auto_update_custom');
   }
+}
+
+function currentAutoUpdateIntervalValue(intervalMs: number): Resource | string {
+  if (isKnownAutoUpdatePreset(intervalMs)) {
+    return autoUpdateIntervalLabel(intervalMs);
+  }
+  return `${intervalMs} ms`;
+}
+
+function isKnownAutoUpdatePreset(intervalMs: number): boolean {
+  for (let index: number = 0; index < PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS.length; index += 1) {
+    if (PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS[index] === intervalMs) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function refreshLabel(state: ProfileDetailViewState) {

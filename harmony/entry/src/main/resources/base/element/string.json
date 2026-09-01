@@ -669,6 +669,14 @@
       "value": "系统会在条件允许时更新，不保证精确时间。"
     },
     {
+      "name": "detail_auto_update_current",
+      "value": "当前间隔"
+    },
+    {
+      "name": "detail_auto_update_custom",
+      "value": "自定义"
+    },
+    {
       "name": "detail_auto_update_off",
       "value": "关闭"
     },
