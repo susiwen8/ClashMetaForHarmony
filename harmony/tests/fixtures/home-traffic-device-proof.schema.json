@@ -1,0 +1,85 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "home-traffic-device-proof.schema.json",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "result",
+    "packageSha256",
+    "traffic"
+  ],
+  "properties": {
+    "schemaVersion": {
+      "const": "1.0.0"
+    },
+    "result": {
+      "enum": [
+        "pass",
+        "incomplete"
+      ]
+    },
+    "packageSha256": {
+      "type": "string",
+      "pattern": "^[a-f0-9]{64}$"
+    },
+    "traffic": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "uploadRateObserved",
+        "downloadRateObserved",
+        "uploadTotalMonotonic",
+        "downloadTotalMonotonic",
+        "homeTrafficCardCount",
+        "homeUploadSpeedSelectorCount",
+        "homeUploadTotalSelectorCount",
+        "homeDownloadSpeedSelectorCount",
+        "homeDownloadTotalSelectorCount",
+        "notificationTrafficUpdateCount",
+        "homeNotificationAgreement"
+      ],
+      "properties": {
+        "uploadRateObserved": {
+          "type": "boolean"
+        },
+        "downloadRateObserved": {
+          "type": "boolean"
+        },
+        "uploadTotalMonotonic": {
+          "type": "boolean"
+        },
+        "downloadTotalMonotonic": {
+          "type": "boolean"
+        },
+        "homeTrafficCardCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "homeUploadSpeedSelectorCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "homeUploadTotalSelectorCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "homeDownloadSpeedSelectorCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "homeDownloadTotalSelectorCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "notificationTrafficUpdateCount": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "homeNotificationAgreement": {
+          "type": "boolean"
+        }
+      }
+    }
+  }
+}

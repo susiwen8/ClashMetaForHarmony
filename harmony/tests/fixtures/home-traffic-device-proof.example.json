@@ -1,0 +1,18 @@
+{
+  "schemaVersion": "1.0.0",
+  "result": "incomplete",
+  "packageSha256": "0000000000000000000000000000000000000000000000000000000000000000",
+  "traffic": {
+    "uploadRateObserved": false,
+    "downloadRateObserved": false,
+    "uploadTotalMonotonic": false,
+    "downloadTotalMonotonic": false,
+    "homeTrafficCardCount": 0,
+    "homeUploadSpeedSelectorCount": 0,
+    "homeUploadTotalSelectorCount": 0,
+    "homeDownloadSpeedSelectorCount": 0,
+    "homeDownloadTotalSelectorCount": 0,
+    "notificationTrafficUpdateCount": 0,
+    "homeNotificationAgreement": false
+  }
+}
