@@ -2,7 +2,10 @@ import { AbilityConstant, UIAbility, Want } from '@kit.AbilityKit';
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import { window } from '@kit.ArkUI';
 
-import type { ApplicationComposition } from '../bootstrap/ApplicationComposition';
+import type {
+  ApplicationComposition,
+  ApplicationCompositionState
+} from '../bootstrap/ApplicationComposition';
 import {
   applyPhase1LaunchWant,
   createApplicationCompositionStorage,
@@ -47,7 +50,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
-    // Ability has brought to foreground
+    void reloadApplicationCompositionOnForeground(this.applicationComposition);
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
@@ -136,5 +139,23 @@ export default class EntryAbility extends UIAbility {
         resolve();
       });
     });
+  }
+}
+
+export async function reloadApplicationCompositionOnForeground(
+  composition: ApplicationComposition | undefined
+): Promise<boolean> {
+  if (composition === undefined) {
+    return false;
+  }
+  const state: ApplicationCompositionState = composition.state();
+  if (state.status !== 'READY') {
+    return false;
+  }
+  try {
+    await state.application.reloadFromRepository();
+    return true;
+  } catch (_) {
+    return false;
   }
 }

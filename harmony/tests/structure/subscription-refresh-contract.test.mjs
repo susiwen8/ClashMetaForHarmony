@@ -17,6 +17,7 @@ const MODULE_JSON_PATH = path.join(ENTRY_ROOT, 'src', 'main', 'module.json5');
 const WORK_ABILITY_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshWorkAbility.ets');
 const WORK_COMPOSITION_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshComposition.ets');
 const ENTRY_TEST_LIST = path.join(ENTRY_ROOT, 'src', 'test', 'List.test.ets');
+const ENTRY_ABILITY_PATH = path.join(ENTRY_ETS_ROOT, 'entryability', 'EntryAbility.ets');
 const PROFILES_PAGE_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'ProfilesPage.ets');
 const PROFILE_DETAIL_PAGE_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'ProfileDetailPage.ets');
 const INDEX_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'Index.ets');
@@ -44,6 +45,21 @@ test('subscription refresh platform barrel exports the profile-only graph and sc
   assert.match(barrel, /WorkSchedulerSystemPort/u);
   assert.match(barrel, /RdbProfileRefreshLeaseStore/u);
   assert.match(index, /export \* from '\.\/ProfileRefresh';/u);
+});
+
+test('subscription refresh foreground reload reads repository state without restarting runtimes', async () => {
+  const [ability, entryList] = await Promise.all([
+    readUtf8(ENTRY_ABILITY_PATH),
+    readUtf8(ENTRY_TEST_LIST)
+  ]);
+
+  assert.match(ability, /onForeground\(\):\s*void\s*\{[\s\S]*reloadApplicationCompositionOnForeground/u);
+  assert.match(ability, /await state\.application\.reloadFromRepository\(\)/u);
+  const reloadStart = ability.indexOf('export async function reloadApplicationCompositionOnForeground');
+  const reloadSource = ability.slice(reloadStart);
+  assert.doesNotMatch(reloadSource, /startVpnGlobalCapture|stopVpnGlobalCapture|startLocal|stopRuntime|loadConfiguration/u);
+  assert.match(entryList, /import entryAbilityTestsuite from '\.\/EntryAbility\.test';/u);
+  assert.match(entryList, /entryAbilityTestsuite\(\);/u);
 });
 
 test('subscription refresh detail UI exposes remote-only interval presets and last-success metadata', async () => {

@@ -14,6 +14,7 @@ import vpnExtensionCompositionTestsuite from './VpnExtensionComposition.test';
 import vpnSessionRegistryTestsuite from './VpnSessionRegistry.test';
 import vpnTrafficMonitorTestsuite from './VpnTrafficMonitor.test';
 import subscriptionRefreshWorkAbilityTestsuite from './SubscriptionRefreshWorkAbility.test';
+import entryAbilityTestsuite from './EntryAbility.test';
 import vpnTrafficNotificationCoordinatorTestsuite from './VpnTrafficNotificationCoordinator.test';
 import coreRuntimeLogCollectorTestsuite from './CoreRuntimeLogCollector.test';
 import logsViewModelTestsuite from './LogsViewModel.test';
@@ -34,6 +35,7 @@ export default function testsuite() {
   vpnSessionRegistryTestsuite();
   vpnTrafficMonitorTestsuite();
   subscriptionRefreshWorkAbilityTestsuite();
+  entryAbilityTestsuite();
   vpnTrafficNotificationCoordinatorTestsuite();
   coreRuntimeLogCollectorTestsuite();
   logsViewModelTestsuite();
