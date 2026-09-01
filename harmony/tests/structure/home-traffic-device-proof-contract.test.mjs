@@ -70,6 +70,74 @@ function createHomeTrafficLayout({
   };
 }
 
+function createNotificationLayout({
+  speedText = '↑ 8.0 KB/s  ↓ 14.0 KB/s',
+  duplicate = false
+} = {}) {
+  const item = createNode('notification.com.github.kr328.clash.harmony_bgmode_1', '', [
+    {
+      attributes: {
+        id: 'notification.speed',
+        text: speedText
+      },
+      bounds: { left: 0, top: 0, right: 320, bottom: 60 },
+      children: []
+    }
+  ]);
+  item.attributes.type = 'ListItem';
+  const children = [item];
+  if (duplicate) {
+    const copy = structuredClone(item);
+    copy.attributes.id = 'notification.com.github.kr328.clash.harmony_bgmode_2';
+    children.push(copy);
+  }
+  return {
+    root: createNode('root', '', children)
+  };
+}
+
+function createProbeRecord(stepId, { outcome = 'pass', bytesSent = 128, bytesReceived = 256 } = {}) {
+  return {
+    stepId,
+    outcome,
+    sessionId: 'session-hidden',
+    flowId: 'flow-hidden',
+    ingressExpectation: 'tun',
+    bytesSent,
+    bytesReceived
+  };
+}
+
+function createPassingProbeResult() {
+  const records = [
+    createProbeRecord('https'),
+    createProbeRecord('tcp'),
+    createProbeRecord('udp-ipv4'),
+    createProbeRecord('dns-packet-ipv4')
+  ];
+  return {
+    result: 'pass',
+    raw: {
+      result: 'pass',
+      records
+    },
+    normalized: {
+      directReachability: { result: 'pass' },
+      records
+    }
+  };
+}
+
+function createDeferred() {
+  let resolve;
+  let reject;
+  const promise = new Promise((innerResolve, innerReject) => {
+    resolve = innerResolve;
+    reject = innerReject;
+  });
+  return { promise, resolve, reject };
+}
+
 function createPassProof(overrides = {}) {
   return {
     schemaVersion: '1.0.0',
@@ -205,6 +273,44 @@ test('home traffic device proof analyzer reduces synthetic upload/download layou
   assert.equal(JSON.stringify(analysis).includes('/s'), false);
 });
 
+test('home traffic device proof notification analyzer derives only count and agreement from unique nonzero app notification text', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const homeLayout = createHomeTrafficLayout({
+    uploadSpeed: '8 KB/s',
+    uploadTotal: '3 KB',
+    downloadSpeed: '14 KB/s',
+    downloadTotal: '9 KB'
+  });
+  const notificationLayout = createNotificationLayout();
+
+  assert.equal(typeof runner.analyzeHomeTrafficNotificationEvidence, 'function');
+
+  const analysis = runner.analyzeHomeTrafficNotificationEvidence(homeLayout, notificationLayout);
+  assert.deepEqual(analysis, {
+    notificationTrafficUpdateCount: 1,
+    homeNotificationAgreement: true
+  });
+  assert.equal(JSON.stringify(analysis).includes('KB'), false);
+  assert.equal(JSON.stringify(analysis).includes('↑'), false);
+
+  const zeroNotification = runner.analyzeHomeTrafficNotificationEvidence(
+    homeLayout,
+    createNotificationLayout({ speedText: '↑ 0 B/s  ↓ 0 B/s' })
+  );
+  assert.deepEqual(zeroNotification, {
+    notificationTrafficUpdateCount: 0,
+    homeNotificationAgreement: false
+  });
+
+  assert.throws(
+    () => runner.analyzeHomeTrafficNotificationEvidence(
+      homeLayout,
+      createNotificationLayout({ duplicate: true })
+    ),
+    /HOME_TRAFFIC_NOTIFICATION_(?:MISSING|AMBIGUOUS|TEXT_INVALID)/u
+  );
+});
+
 test('home traffic device proof analyzer rejects duplicate selectors, missing semantic ids, and malformed metric text', async () => {
   const runner = await import(RUNNER_MODULE_PATH);
   const beforeLayout = createHomeTrafficLayout({
@@ -267,6 +373,278 @@ test('home traffic device proof analyzer rejects duplicate selectors, missing se
   );
 });
 
+test('home traffic device proof runner emits pass only with complete probe and notification evidence, otherwise canonical incomplete, while preserving install-collect-cleanup order', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const tempRoot = await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'home-traffic-runner-'));
+  const productionHapPath = path.join(tempRoot, 'entry-default-signed.hap');
+  const probeHapPath = path.join(tempRoot, 'probe-entry-default-signed.hap');
+  const outputPath = path.join(tempRoot, 'home-traffic-device-proof.json');
+  await fs.writeFile(productionHapPath, 'prod', 'utf8');
+  await fs.writeFile(probeHapPath, 'probe', 'utf8');
+
+  const callOrder = [];
+  const execCalls = [];
+  const fullEvidence = {
+    beforeLayout: createHomeTrafficLayout({
+      uploadSpeed: '0 B/s',
+      uploadTotal: '1 KB',
+      downloadSpeed: '0 B/s',
+      downloadTotal: '2 KB'
+    }),
+    uploadLayout: createHomeTrafficLayout({
+      uploadSpeed: '8 KB/s',
+      uploadTotal: '3 KB',
+      downloadSpeed: '0 B/s',
+      downloadTotal: '2 KB'
+    }),
+    downloadLayout: createHomeTrafficLayout({
+      uploadSpeed: '8 KB/s',
+      uploadTotal: '3 KB',
+      downloadSpeed: '14 KB/s',
+      downloadTotal: '9 KB'
+    }),
+    notificationLayout: createNotificationLayout(),
+    probeResult: createPassingProbeResult()
+  };
+
+  const passProof = await runner.runHomeTrafficDeviceProof({
+    repoRoot: REPO_ROOT,
+    serial: 'SERIAL123',
+    fsApi: fs,
+    productionHapPath,
+    probeHapPath,
+    outputPath,
+    hashFileImpl: async () => FIXTURE_SHA256,
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: 'hdc-bin' } }
+    }),
+    execImpl: async (command, args) => {
+      execCalls.push([command, ...args].join(' '));
+      if (args.includes('force-stop')) {
+        callOrder.push(`cleanup:${args.at(-1)}`);
+      }
+      if (args[0] === '-t' && args[2] === 'install') {
+        callOrder.push(`install:${path.basename(args[4])}`);
+      }
+      if (args[0] === '-t' && args[2] === 'shell' && args[3] === 'aa' && args[4] === 'start') {
+        callOrder.push('launch');
+      }
+      return { exitCode: 0, stdout: '', stderr: '', timedOut: false };
+    },
+    collectEvidenceImpl: async () => {
+      callOrder.push('collect');
+      return fullEvidence;
+    }
+  });
+
+  assert.equal(passProof.result, 'pass');
+  assert.equal(passProof.packageSha256, FIXTURE_SHA256);
+  assert.deepEqual(passProof.traffic, createPassProof().traffic);
+  assert.equal(callOrder.includes('collect'), true);
+  assert.equal(callOrder.indexOf('install:entry-default-signed.hap') < callOrder.indexOf('collect'), true);
+  assert.equal(callOrder.indexOf('install:probe-entry-default-signed.hap') < callOrder.indexOf('collect'), true);
+  assert.equal(callOrder.findLastIndex((entry) => entry.startsWith('cleanup:')) > callOrder.indexOf('collect'), true);
+  assert.equal(execCalls.some((entry) => entry.includes('force-stop com.github.kr328.clash.harmony')), true);
+  assert.equal(execCalls.some((entry) => entry.includes('force-stop com.cmfa.phase4.trafficprobe')), true);
+
+  const missingNotification = await runner.runHomeTrafficDeviceProof({
+    repoRoot: REPO_ROOT,
+    serial: 'SERIAL123',
+    fsApi: fs,
+    productionHapPath,
+    probeHapPath,
+    outputPath,
+    hashFileImpl: async () => FIXTURE_SHA256,
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: 'hdc-bin' } }
+    }),
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    collectEvidenceImpl: async () => ({
+      ...fullEvidence,
+      notificationLayout: null
+    })
+  });
+  assert.deepEqual(missingNotification, createIncompleteProof());
+
+  const missingProbe = await runner.runHomeTrafficDeviceProof({
+    repoRoot: REPO_ROOT,
+    serial: 'SERIAL123',
+    fsApi: fs,
+    productionHapPath,
+    probeHapPath,
+    outputPath,
+    hashFileImpl: async () => FIXTURE_SHA256,
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: 'hdc-bin' } }
+    }),
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    collectEvidenceImpl: async () => ({
+      ...fullEvidence,
+      probeResult: {
+        result: 'fail',
+        raw: { result: 'fail', records: [] },
+        normalized: { directReachability: { result: 'fail' }, records: [] }
+      }
+    })
+  });
+  assert.deepEqual(missingProbe, createIncompleteProof());
+});
+
+test('home traffic default evidence collection uses controlled origin, real vpn probe, active layout sampling, and notification extraction; failed probe stays fail-closed', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const events = [];
+  const deferredProbe = createDeferred();
+  let layoutReads = 0;
+  const beforeLayout = createHomeTrafficLayout({
+    uploadSpeed: '0 B/s',
+    uploadTotal: '1 KB',
+    downloadSpeed: '0 B/s',
+    downloadTotal: '2 KB'
+  });
+  const uploadLayout = createHomeTrafficLayout({
+    uploadSpeed: '8 KB/s',
+    uploadTotal: '3 KB',
+    downloadSpeed: '0 B/s',
+    downloadTotal: '2 KB'
+  });
+  const downloadLayout = createHomeTrafficLayout({
+    uploadSpeed: '8 KB/s',
+    uploadTotal: '3 KB',
+    downloadSpeed: '14 KB/s',
+    downloadTotal: '9 KB'
+  });
+  const notificationLayout = createNotificationLayout();
+
+  const evidencePromise = runner.defaultCollectEvidence({
+    fsApi: fs,
+    target: 'SERIAL123',
+    hdcCommand: 'hdc-bin',
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    cwd: REPO_ROOT,
+    tempRoot: await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'home-traffic-evidence-')),
+    runId: '11111111-1111-4111-8111-111111111111',
+    launchProductionImpl: async () => {
+      events.push('launch-production');
+    },
+    readDeviceLanIpv4CandidatesImpl: async () => {
+      events.push('read-device-lan');
+      return [{ name: 'wlan0', address: '192.168.0.8', netmask: '255.255.255.0' }];
+    },
+    createExternalOriginImpl: async () => {
+      events.push('create-external-origin');
+      return {
+        hostIpv4: '52.43.121.77',
+        tcpHostIpv4: '223.5.5.5',
+        tcpPort: 80,
+        udpPort: 10001,
+        dnsPort: 10001
+      };
+    },
+    normalizeExternalOriginImpl: (value) => {
+      events.push('normalize-external-origin');
+      return value;
+    },
+    startOriginImpl: async () => {
+      events.push('start-origin');
+      return {
+        close: async () => {
+          events.push('close-origin');
+        },
+        https: { host: '192.168.0.9', port: 443, caPem: 'hidden' },
+        tcp: { port: 9090 },
+        udp: { port: 9091 }
+      };
+    },
+    runVpnProbeImpl: async () => {
+      events.push('run-vpn-probe');
+      return await deferredProbe.promise;
+    },
+    dumpLayoutImpl: async () => {
+      layoutReads += 1;
+      if (layoutReads === 1) {
+        return beforeLayout;
+      }
+      if (layoutReads === 2) {
+        return uploadLayout;
+      }
+      if (layoutReads === 3) {
+        return notificationLayout;
+      }
+      if (layoutReads === 4) {
+        events.push('active-sample');
+        deferredProbe.resolve(createPassingProbeResult());
+        return downloadLayout;
+      }
+      return notificationLayout;
+    },
+    openNotificationCenterImpl: async () => {
+      events.push('open-notification-center');
+    },
+    waitForUniqueLayoutSelectionImpl: async ({ readLayoutImpl }) => {
+      events.push('read-notification-layout');
+      return {
+        layout: await readLayoutImpl(),
+        selection: { node: notificationLayout.root.children[0] }
+      };
+    },
+    delayImpl: async () => {}
+  });
+  const evidence = await evidencePromise;
+  assert.equal(events.includes('start-origin'), true);
+  assert.equal(events.includes('run-vpn-probe'), true);
+  assert.equal(events.includes('open-notification-center'), true);
+  assert.equal(events.includes('read-notification-layout'), true);
+  assert.equal(events.includes('close-origin'), true);
+  assert.equal(layoutReads >= 3, true);
+  assert.equal(evidence.beforeLayout !== null, true);
+  assert.equal(evidence.uploadLayout !== null, true);
+  assert.equal(evidence.downloadLayout !== null, true);
+  assert.equal(evidence.notificationLayout !== null, true);
+  assert.equal(evidence.probeResult.result, 'pass');
+
+  const failedEvidence = await runner.defaultCollectEvidence({
+    fsApi: fs,
+    target: 'SERIAL123',
+    hdcCommand: 'hdc-bin',
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    cwd: REPO_ROOT,
+    tempRoot: await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'home-traffic-evidence-fail-')),
+    runId: '22222222-2222-4222-8222-222222222222',
+    launchProductionImpl: async () => {},
+    readDeviceLanIpv4CandidatesImpl: async () => [{ name: 'wlan0', address: '192.168.0.8', netmask: '255.255.255.0' }],
+    createExternalOriginImpl: async () => ({
+      hostIpv4: '52.43.121.77',
+      tcpHostIpv4: '223.5.5.5',
+      tcpPort: 80,
+      udpPort: 10001,
+      dnsPort: 10001
+    }),
+    normalizeExternalOriginImpl: (value) => value,
+    startOriginImpl: async () => ({ close: async () => {} }),
+    runVpnProbeImpl: async () => ({
+      result: 'fail',
+      raw: { result: 'fail', records: [] },
+      normalized: { directReachability: { result: 'fail' }, records: [] }
+    }),
+    dumpLayoutImpl: async () => beforeLayout,
+    openNotificationCenterImpl: async () => {
+      assert.fail('probe failure must not continue to notification extraction');
+    },
+    waitForUniqueLayoutSelectionImpl: async () => {
+      assert.fail('probe failure must not continue to notification extraction');
+    },
+    delayImpl: async () => {}
+  });
+
+  assert.equal(failedEvidence.uploadLayout, null);
+  assert.equal(failedEvidence.downloadLayout, null);
+  assert.equal(failedEvidence.notificationLayout, null);
+  assert.equal(failedEvidence.probeResult.result, 'fail');
+});
+
 test('home traffic device proof writer enforces strict pass predicates and repo-safe output paths while falling back to canonical incomplete', async () => {
   const runner = await import(RUNNER_MODULE_PATH);
   const schema = JSON.parse(await readUtf8(SCHEMA_PATH));
@@ -321,6 +699,13 @@ test('home traffic device proof runner source keeps repo-safe probe semantics, r
   assert.match(runnerSource, /force-stop/u);
   assert.match(runnerSource, /notificationTrafficUpdateCount/u);
   assert.match(runnerSource, /homeNotificationAgreement/u);
+  assert.match(runnerSource, /readDeviceLanIpv4Candidates/u);
+  assert.match(runnerSource, /defaultStartOrigin/u);
+  assert.match(runnerSource, /defaultRunVpnProbeImpl/u);
+  assert.match(runnerSource, /openNotificationCenter/u);
+  assert.match(runnerSource, /waitForUniqueLayoutSelection/u);
+  assert.match(runnerSource, /createDefaultPhase4ExternalOrigin/u);
+  assert.match(runnerSource, /normalizePhase4ExternalOrigin/u);
 
   for (const semanticId of [
     'home.traffic.card',
@@ -335,6 +720,8 @@ test('home traffic device proof runner source keeps repo-safe probe semantics, r
   }
 
   assert.doesNotMatch(runnerSource, /https?:\/\//u);
+  assert.doesNotMatch(runnerSource, /defaultRunProbeStage|buildProbeStageLaunchArgs/u);
+  assert.doesNotMatch(runnerSource, /captureMode', 'upload'|captureMode', 'download'/u);
   assert.doesNotMatch(runnerSource, /(?:sessionId|profileId|nodeId|subscriptionSecret|deviceSerial|payload|filesystemPath)/u);
 });
 

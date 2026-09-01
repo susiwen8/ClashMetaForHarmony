@@ -7,6 +7,10 @@ import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { inspectToolchain } from '../../tools/lib/toolchain.mjs';
+import {
+  createDefaultPhase4ExternalOrigin,
+  normalizePhase4ExternalOrigin
+} from './phase4-external-origin.mjs';
 import { ensureRepoScopedExistingFile, ensureRepoScopedOutputFile } from './repo-path-safety.mjs';
 import {
   analyzeTargetDiscovery,
@@ -15,12 +19,14 @@ import {
 } from './run-phase0-device-proof.mjs';
 import {
   buildProductionLaunchArgs,
+  defaultRunVpnProbeImpl,
+  defaultStartOrigin,
   dumpLayoutToHost,
-  normalizePhase4RuntimeJournal,
-  pullBundleEvidenceJson,
+  openNotificationCenter,
+  readDeviceLanIpv4Candidates,
   selectUniqueAppOngoingNotification,
-  summarizeSystemUiAnchors,
-  validateValueAgainstSchema
+  validateValueAgainstSchema,
+  waitForUniqueLayoutSelection
 } from './run-phase4-device-proof.mjs';
 
 const REPO_ROOT = path.resolve(new URL('../../..', import.meta.url).pathname);
@@ -31,8 +37,6 @@ const DEFAULT_PRODUCTION_HAP_PATH = path.join(HARMONY_ROOT, 'entry', 'build', 'd
 const DEFAULT_PROBE_HAP_PATH = path.join(HARMONY_ROOT, 'traffic-probe', 'entry', 'build', 'default', 'outputs', 'default', 'entry-default-signed.hap');
 const APP_BUNDLE = 'com.github.kr328.clash.harmony';
 const PROBE_BUNDLE = 'com.cmfa.phase4.trafficprobe';
-const PROBE_ABILITY_NAME = 'ProbeAbility';
-const RUNTIME_REMOTE_PATH = '/data/storage/el2/base/haps/entry/files/phase4-runtime-evidence.json';
 const HASH_PATTERN = /^[a-f0-9]{64}$/u;
 const ZERO_SHA256 = '0'.repeat(64);
 const UI_POLL_INTERVAL_MS = 250;
@@ -64,10 +68,6 @@ const TRAFFIC_ALLOWED_KEYS = new Set([
   'notificationTrafficUpdateCount',
   'homeNotificationAgreement'
 ]);
-const NONZERO_NOTIFICATION_DETAILS = new Set([
-  'notification-traffic-counters-nonzero',
-  'notification-traffic-rate-nonzero'
-]);
 const SAFE_ERROR_CODES = Object.freeze({
   arguments: 'ARGUMENT_INVALID',
   toolchain: 'HOME_TRAFFIC_TOOLCHAIN_UNAVAILABLE',
@@ -75,7 +75,6 @@ const SAFE_ERROR_CODES = Object.freeze({
   install: 'HOME_TRAFFIC_INSTALL_FAILED',
   launch: 'HOME_TRAFFIC_LAUNCH_FAILED',
   layout: 'HOME_TRAFFIC_LAYOUT_UNAVAILABLE',
-  probe: 'HOME_TRAFFIC_PROBE_UNAVAILABLE',
   output: 'HOME_TRAFFIC_OUTPUT_INVALID',
   cleanup: 'HOME_TRAFFIC_CLEANUP_FAILED'
 });
@@ -230,7 +229,6 @@ export function analyzeHomeTrafficLayouts(beforeLayout, uploadLayout, downloadLa
   const uploadSnapshot = readSnapshot(uploadLayout);
   const downloadSnapshot = readSnapshot(downloadLayout);
   assertStableSelectorCounts(beforeSnapshot, uploadSnapshot, downloadSnapshot);
-
   return {
     uploadRateObserved: uploadSnapshot.uploadSpeed > beforeSnapshot.uploadSpeed && uploadSnapshot.uploadSpeed > 0,
     downloadRateObserved: downloadSnapshot.downloadSpeed > beforeSnapshot.downloadSpeed && downloadSnapshot.downloadSpeed > 0,
@@ -245,6 +243,44 @@ export function analyzeHomeTrafficLayouts(beforeLayout, uploadLayout, downloadLa
     homeDownloadTotalSelectorCount: downloadSnapshot.homeDownloadTotalSelectorCount,
     notificationTrafficUpdateCount: 0,
     homeNotificationAgreement: false
+  };
+}
+
+function parseNotificationTrafficText(text) {
+  const match = `${text ?? ''}`.trim().match(/^↑\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\/s\s+↓\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\/s$/u);
+  if (!match) {
+    throw createFixedError('HOME_TRAFFIC_NOTIFICATION_TEXT_INVALID');
+  }
+  return {
+    uploadSpeed: parseTrafficDisplayValue(`${match[1]} ${match[2]}/s`, { expectSpeed: true }),
+    downloadSpeed: parseTrafficDisplayValue(`${match[3]} ${match[4]}/s`, { expectSpeed: true })
+  };
+}
+
+export function analyzeHomeTrafficNotificationEvidence(homeLayout, notificationLayout) {
+  const homeSnapshot = readSnapshot(homeLayout);
+  const selection = selectUniqueAppOngoingNotification(notificationLayout);
+  const textCandidates = [];
+  const joined = collectTextFragments(selection.node).join(' ');
+  if (joined.length > 0) {
+    textCandidates.push(joined);
+  }
+  for (const fragment of collectTextFragments(selection.node)) {
+    textCandidates.push(fragment);
+  }
+  const matching = [...new Set(textCandidates.filter((value) => /^↑\s*\d/u.test(value)))];
+  if (matching.length !== 1) {
+    throw createFixedError(matching.length === 0 ? 'HOME_TRAFFIC_NOTIFICATION_MISSING' : 'HOME_TRAFFIC_NOTIFICATION_AMBIGUOUS');
+  }
+  const notificationSnapshot = parseNotificationTrafficText(matching[0]);
+  const nonzero = notificationSnapshot.uploadSpeed > 0 || notificationSnapshot.downloadSpeed > 0;
+  return {
+    notificationTrafficUpdateCount: nonzero ? 1 : 0,
+    homeNotificationAgreement: nonzero &&
+      homeSnapshot.uploadSpeed > 0 &&
+      homeSnapshot.downloadSpeed > 0 &&
+      notificationSnapshot.uploadSpeed > 0 &&
+      notificationSnapshot.downloadSpeed > 0
   };
 }
 
@@ -271,18 +307,6 @@ function collectSensitiveKeyErrors(value, trail = 'proof', errors = []) {
   return errors;
 }
 
-export async function validateHomeTrafficProofDocument(proof, schemaOrFsApi = null) {
-  const schema = isObject(schemaOrFsApi) && '$schema' in schemaOrFsApi
-    ? schemaOrFsApi
-    : await readSchemaDocument(isObject(schemaOrFsApi) ? schemaOrFsApi : fs);
-  const validation = validateValueAgainstSchema(proof, schema, schema);
-  const sensitiveErrors = collectSensitiveKeyErrors(proof, 'proof', []);
-  return {
-    valid: validation.valid && sensitiveErrors.length === 0,
-    errors: validation.errors.concat(sensitiveErrors)
-  };
-}
-
 function proofPassesContract(proof) {
   const traffic = proof?.traffic ?? {};
   return proof?.result === 'pass'
@@ -300,6 +324,21 @@ function proofPassesContract(proof) {
     && Number.isInteger(traffic.notificationTrafficUpdateCount)
     && traffic.notificationTrafficUpdateCount > 0
     && traffic.homeNotificationAgreement === true;
+}
+
+export async function validateHomeTrafficProofDocument(proof, schemaOrFsApi = null) {
+  const schema = isObject(schemaOrFsApi) && '$schema' in schemaOrFsApi
+    ? schemaOrFsApi
+    : await readSchemaDocument(isObject(schemaOrFsApi) ? schemaOrFsApi : fs);
+  const validation = validateValueAgainstSchema(proof, schema, schema);
+  const sensitiveErrors = collectSensitiveKeyErrors(proof, 'proof', []);
+  const contractErrors = proof.result === 'pass' && !proofPassesContract(proof)
+    ? ['proof must satisfy the pass contract']
+    : [];
+  return {
+    valid: validation.valid && sensitiveErrors.length === 0 && contractErrors.length === 0,
+    errors: validation.errors.concat(sensitiveErrors, contractErrors)
+  };
 }
 
 function canonicalizeIncompleteProof() {
@@ -446,204 +485,6 @@ async function forceStopBundle({ target, hdcCommand, execImpl, cwd, bundleName }
   return !(result?.error || result?.timedOut || result?.exitCode !== 0);
 }
 
-async function launchProduction({ target, hdcCommand, execImpl, cwd }) {
-  const result = await execImpl(hdcCommand, buildProductionLaunchArgs(target, ''), { cwd });
-  if (result?.error || result?.exitCode !== 0 || result?.timedOut) {
-    throw createFixedError(SAFE_ERROR_CODES.launch);
-  }
-}
-
-async function dumpLayout({ target, hdcCommand, execImpl, cwd, localPath }) {
-  return await dumpLayoutToHost({
-    execImpl,
-    hdcCommand,
-    target,
-    localPath,
-    cwd
-  });
-}
-
-async function waitForHomeTrafficLayout({ target, hdcCommand, execImpl, cwd, localPath, attempts = UI_POLL_ATTEMPTS }) {
-  let lastError = createFixedError(SAFE_ERROR_CODES.layout);
-  for (let attempt = 0; attempt < attempts; attempt += 1) {
-    const layout = await dumpLayout({ target, hdcCommand, execImpl, cwd, localPath });
-    try {
-      readSnapshot(layout);
-      return layout;
-    } catch (error) {
-      lastError = error;
-    }
-    if (attempt + 1 < attempts) {
-      await delay(UI_POLL_INTERVAL_MS);
-    }
-  }
-  throw lastError;
-}
-
-function buildProbeStageLaunchArgs(target, mode, marker) {
-  return buildTargetedHdcArgs(target, [
-    'shell', 'aa', 'start',
-    '-a', PROBE_ABILITY_NAME,
-    '-b', PROBE_BUNDLE,
-    '--ps', 'runId', marker,
-    '--ps', 'captureMode', mode
-  ]);
-}
-
-async function defaultRunProbeStage({
-  target,
-  hdcCommand,
-  execImpl,
-  cwd,
-  stage,
-  marker
-}) {
-  const result = await execImpl(hdcCommand, buildProbeStageLaunchArgs(target, stage, marker), { cwd }).catch(() => null);
-  if (result === null || result?.error || result?.timedOut || result?.exitCode !== 0) {
-    return { ok: false };
-  }
-  return { ok: true };
-}
-
-async function readRuntimeJournal({
-  fsApi,
-  target,
-  hdcCommand,
-  execImpl,
-  cwd,
-  localPath
-}) {
-  const pulled = await pullBundleEvidenceJson({
-    fsApi,
-    execImpl,
-    hdcCommand,
-    target,
-    bundleName: APP_BUNDLE,
-    remotePath: RUNTIME_REMOTE_PATH,
-    localPath,
-    cwd
-  });
-  if (!pulled.ok) {
-    return null;
-  }
-  return normalizePhase4RuntimeJournal(pulled.proof);
-}
-
-function analyzeNotificationEvidence(runtimeJournal, notificationLayout = null) {
-  const traffic = createTraffic();
-  if (!isObject(runtimeJournal)) {
-    return traffic;
-  }
-  traffic.notificationTrafficUpdateCount = runtimeJournal.records.filter((record) =>
-    record?.kind === 'lifecycle' &&
-    typeof record?.detail === 'string' &&
-    NONZERO_NOTIFICATION_DETAILS.has(record.detail)
-  ).length;
-
-  if (!notificationLayout) {
-    return traffic;
-  }
-  try {
-    selectUniqueAppOngoingNotification(notificationLayout);
-    const summary = summarizeSystemUiAnchors(notificationLayout);
-    traffic.homeNotificationAgreement = traffic.notificationTrafficUpdateCount > 0 &&
-      summary.appBackgroundModeListItemCount === 1 &&
-      summary.appBundleListItemCount >= 1;
-  } catch {
-    traffic.homeNotificationAgreement = false;
-  }
-  return traffic;
-}
-
-async function defaultCollectEvidence({
-  fsApi,
-  target,
-  hdcCommand,
-  execImpl,
-  cwd,
-  tempRoot,
-  runProbeStageImpl = defaultRunProbeStage,
-  readNotificationLayoutImpl = null
-}) {
-  const beforeLayoutPath = path.join(tempRoot, `home-traffic-before-${process.pid}-${Date.now()}.json`);
-  const runtimePath = path.join(tempRoot, `home-traffic-runtime-${process.pid}-${Date.now()}.json`);
-  const evidence = {
-    beforeLayout: null,
-    uploadLayout: null,
-    downloadLayout: null,
-    notificationLayout: null,
-    runtimeJournal: null,
-    beforeLayoutPath,
-    uploadLayoutPath: beforeLayoutPath,
-    downloadLayoutPath: beforeLayoutPath,
-    runtimePath
-  };
-  await launchProduction({ target, hdcCommand, execImpl, cwd });
-  evidence.beforeLayout = await waitForHomeTrafficLayout({
-    target,
-    hdcCommand,
-    execImpl,
-    cwd,
-    localPath: beforeLayoutPath
-  }).catch(() => null);
-
-  if (evidence.beforeLayout !== null) {
-    const upload = await runProbeStageImpl({
-      target,
-      hdcCommand,
-      execImpl,
-      cwd,
-      stage: 'upload',
-      marker: `upload-${Date.now()}`
-    }).catch(() => ({ ok: false }));
-    if (upload?.ok) {
-      evidence.uploadLayout = await waitForHomeTrafficLayout({
-        target,
-        hdcCommand,
-        execImpl,
-        cwd,
-        localPath: beforeLayoutPath
-      }).catch(() => null);
-    }
-
-    const download = await runProbeStageImpl({
-      target,
-      hdcCommand,
-      execImpl,
-      cwd,
-      stage: 'download',
-      marker: `download-${Date.now()}`
-    }).catch(() => ({ ok: false }));
-    if (download?.ok) {
-      evidence.downloadLayout = await waitForHomeTrafficLayout({
-        target,
-        hdcCommand,
-        execImpl,
-        cwd,
-        localPath: beforeLayoutPath
-      }).catch(() => null);
-    }
-  }
-
-  evidence.runtimeJournal = await readRuntimeJournal({
-    fsApi,
-    target,
-    hdcCommand,
-    execImpl,
-    cwd,
-    localPath: runtimePath
-  }).catch(() => null);
-
-  if (typeof readNotificationLayoutImpl === 'function') {
-    evidence.notificationLayout = await readNotificationLayoutImpl().catch(() => null);
-  }
-  return evidence;
-}
-
-async function cleanupTempFiles(fsApi, localPaths) {
-  await Promise.all(localPaths.map(async (filePath) => await fsApi.rm(filePath, { force: true }).catch(() => {})));
-}
-
 async function cleanupDeviceState({
   target,
   hdcCommand,
@@ -659,12 +500,192 @@ async function cleanupDeviceState({
   }
 }
 
-function mergeTrafficEvidence(layoutEvidence, notificationEvidence) {
-  return {
-    ...layoutEvidence,
-    notificationTrafficUpdateCount: notificationEvidence.notificationTrafficUpdateCount,
-    homeNotificationAgreement: notificationEvidence.homeNotificationAgreement
+async function launchProduction({ target, hdcCommand, execImpl, cwd }) {
+  const result = await execImpl(hdcCommand, buildProductionLaunchArgs(target, ''), { cwd });
+  if (result?.error || result?.exitCode !== 0 || result?.timedOut) {
+    throw createFixedError(SAFE_ERROR_CODES.launch);
+  }
+}
+
+async function cleanupTempFiles(fsApi, localPaths) {
+  await Promise.all(localPaths.map(async (filePath) => {
+    if (typeof filePath === 'string' && filePath.length > 0) {
+      await fsApi.rm(filePath, { force: true }).catch(() => {});
+    }
+  }));
+}
+
+async function waitForHomeTrafficLayout({
+  readLayoutImpl,
+  attempts = UI_POLL_ATTEMPTS,
+  pollIntervalMs = UI_POLL_INTERVAL_MS,
+  delayImpl = async (milliseconds) => await delay(milliseconds)
+}) {
+  let lastError = createFixedError(SAFE_ERROR_CODES.layout);
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    const layout = await readLayoutImpl();
+    try {
+      readSnapshot(layout);
+      return layout;
+    } catch (error) {
+      lastError = error;
+    }
+    if (attempt + 1 < attempts) {
+      await delayImpl(pollIntervalMs);
+    }
+  }
+  throw lastError;
+}
+
+function isUploadSample(beforeLayout, currentLayout) {
+  const beforeSnapshot = readSnapshot(beforeLayout);
+  const currentSnapshot = readSnapshot(currentLayout);
+  return currentSnapshot.uploadSpeed > beforeSnapshot.uploadSpeed &&
+    currentSnapshot.uploadSpeed > 0 &&
+    currentSnapshot.uploadTotal >= beforeSnapshot.uploadTotal;
+}
+
+function isDownloadSample(beforeLayout, uploadLayout, currentLayout) {
+  const beforeSnapshot = readSnapshot(beforeLayout);
+  const uploadSnapshot = readSnapshot(uploadLayout ?? beforeLayout);
+  const currentSnapshot = readSnapshot(currentLayout);
+  return currentSnapshot.downloadSpeed > beforeSnapshot.downloadSpeed &&
+    currentSnapshot.downloadSpeed > 0 &&
+    currentSnapshot.downloadTotal >= uploadSnapshot.downloadTotal;
+}
+
+function probeResultHasPositiveTraffic(probeResult) {
+  const rawRecords = Array.isArray(probeResult?.raw?.records) ? probeResult.raw.records : [];
+  const normalizedRecords = Array.isArray(probeResult?.normalized?.records) ? probeResult.normalized.records : [];
+  return probeResult?.result === 'pass'
+    && normalizedRecords.length > 0
+    && rawRecords.some((record) =>
+      record?.outcome === 'pass' &&
+      Number.isSafeInteger(record?.bytesSent) &&
+      Number.isSafeInteger(record?.bytesReceived) &&
+      record.bytesSent > 0 &&
+      record.bytesReceived > 0
+    );
+}
+
+export async function defaultCollectEvidence({
+  fsApi = fs,
+  target,
+  hdcCommand,
+  execImpl = execCommand,
+  cwd = REPO_ROOT,
+  tempRoot = os.tmpdir(),
+  runId = crypto.randomUUID(),
+  launchProductionImpl = async (options) => await launchProduction(options),
+  dumpLayoutImpl = async ({ localPath }) => await dumpLayoutToHost({
+    execImpl,
+    hdcCommand,
+    target,
+    localPath,
+    cwd
+  }),
+  readDeviceLanIpv4CandidatesImpl = async (options) => await readDeviceLanIpv4Candidates({ execImpl, ...options }),
+  createExternalOriginImpl = async () => createDefaultPhase4ExternalOrigin(),
+  normalizeExternalOriginImpl = normalizePhase4ExternalOrigin,
+  startOriginImpl = async (options) => await defaultStartOrigin(options),
+  runVpnProbeImpl = async (options) => await defaultRunVpnProbeImpl(options),
+  openNotificationCenterImpl = openNotificationCenter,
+  waitForUniqueLayoutSelectionImpl = waitForUniqueLayoutSelection,
+  delayImpl = async (milliseconds) => await delay(milliseconds)
+} = {}) {
+  const homeLayoutPath = path.join(tempRoot, `home-traffic-home-${process.pid}-${Date.now()}.json`);
+  const notificationLayoutPath = path.join(tempRoot, `home-traffic-notification-${process.pid}-${Date.now()}.json`);
+  const evidence = {
+    beforeLayout: null,
+    uploadLayout: null,
+    downloadLayout: null,
+    notificationLayout: null,
+    probeResult: { result: 'fail', raw: null, normalized: null },
+    homeLayoutPath,
+    notificationLayoutPath
   };
+  let originHandle = null;
+  const readHomeLayout = async () => await dumpLayoutImpl({ target, hdcCommand, execImpl, cwd, localPath: homeLayoutPath });
+  const readNotificationLayout = async () => await dumpLayoutImpl({ target, hdcCommand, execImpl, cwd, localPath: notificationLayoutPath });
+  try {
+    await launchProductionImpl({ target, hdcCommand, execImpl, cwd });
+    evidence.beforeLayout = await waitForHomeTrafficLayout({
+      readLayoutImpl: readHomeLayout,
+      delayImpl
+    });
+    const deviceIpv4Candidates = await readDeviceLanIpv4CandidatesImpl({ target, hdcCommand, cwd });
+    const externalOrigin = normalizeExternalOriginImpl(await createExternalOriginImpl());
+    originHandle = await startOriginImpl({ runId, deviceIpv4Candidates });
+
+    const probeState = { done: false, result: null };
+    const probePromise = Promise.resolve(runVpnProbeImpl({
+      target,
+      hdcCommand,
+      execImpl,
+      origin: originHandle,
+      externalOrigin,
+      cwd,
+      fsApi,
+      tempRoot,
+      runId
+    })).then((result) => {
+      probeState.done = true;
+      probeState.result = result;
+      return result;
+    }).catch((error) => {
+      probeState.done = true;
+      probeState.result = { result: 'fail', raw: null, normalized: null, error };
+      return probeState.result;
+    });
+
+    let notificationAttempted = false;
+    for (let attempt = 0; attempt < UI_POLL_ATTEMPTS; attempt += 1) {
+      if (probeState.done && !probeResultHasPositiveTraffic(probeState.result)) {
+        break;
+      }
+      const currentLayout = await readHomeLayout().catch(() => null);
+      if (currentLayout !== null && !probeState.done) {
+        if (evidence.uploadLayout === null && isUploadSample(evidence.beforeLayout, currentLayout)) {
+          evidence.uploadLayout = currentLayout;
+        }
+        if (evidence.uploadLayout !== null &&
+          evidence.downloadLayout === null &&
+          isDownloadSample(evidence.beforeLayout, evidence.uploadLayout, currentLayout)) {
+          evidence.downloadLayout = currentLayout;
+        }
+        if (!notificationAttempted && (evidence.uploadLayout !== null || evidence.downloadLayout !== null)) {
+          notificationAttempted = true;
+          try {
+            await openNotificationCenterImpl(currentLayout, { target, hdcCommand, execImpl, cwd });
+            const notificationEvidence = await waitForUniqueLayoutSelectionImpl({
+              readLayoutImpl: readNotificationLayout,
+              selectImpl: selectUniqueAppOngoingNotification,
+              maxAttempts: UI_POLL_ATTEMPTS,
+              delayImpl
+            });
+            evidence.notificationLayout = notificationEvidence.layout;
+          } catch {
+            evidence.notificationLayout = null;
+          }
+        }
+      }
+      if (probeState.done) {
+        break;
+      }
+      await delayImpl(UI_POLL_INTERVAL_MS);
+    }
+
+    evidence.probeResult = await probePromise;
+    if (!probeResultHasPositiveTraffic(evidence.probeResult)) {
+      evidence.uploadLayout = null;
+      evidence.downloadLayout = null;
+      evidence.notificationLayout = null;
+    }
+    return evidence;
+  } finally {
+    await originHandle?.close?.().catch(() => {});
+    await cleanupTempFiles(fsApi, [homeLayoutPath, notificationLayoutPath]);
+  }
 }
 
 export async function runHomeTrafficDeviceProof({
@@ -682,7 +703,7 @@ export async function runHomeTrafficDeviceProof({
   tempRoot = os.tmpdir()
 } = {}) {
   const proof = createBaseProof();
-  const localTempPaths = [];
+  const runId = crypto.randomUUID();
   let target = null;
   let hdcCommand = null;
   try {
@@ -712,31 +733,37 @@ export async function runHomeTrafficDeviceProof({
       hdcCommand,
       execImpl,
       cwd: repoRoot,
-      tempRoot
+      tempRoot,
+      runId
     });
-    for (const candidate of [evidence?.beforeLayoutPath, evidence?.uploadLayoutPath, evidence?.downloadLayoutPath, evidence?.runtimePath]) {
-      if (typeof candidate === 'string') {
-        localTempPaths.push(candidate);
+    if (probeResultHasPositiveTraffic(evidence?.probeResult) &&
+      evidence?.beforeLayout &&
+      evidence?.uploadLayout &&
+      evidence?.downloadLayout &&
+      evidence?.notificationLayout) {
+      try {
+        const traffic = {
+          ...analyzeHomeTrafficLayouts(
+            evidence.beforeLayout,
+            evidence.uploadLayout,
+            evidence.downloadLayout
+          ),
+          ...analyzeHomeTrafficNotificationEvidence(
+            evidence.downloadLayout,
+            evidence.notificationLayout
+          )
+        };
+        proof.traffic = traffic;
+        proof.result = proofPassesContract({
+          ...proof,
+          result: 'pass',
+          traffic
+        })
+          ? 'pass'
+          : 'incomplete';
+      } catch {
+        proof.result = 'incomplete';
       }
-    }
-
-    if (evidence?.beforeLayout && evidence?.uploadLayout && evidence?.downloadLayout) {
-      const layoutTraffic = analyzeHomeTrafficLayouts(
-        evidence.beforeLayout,
-        evidence.uploadLayout,
-        evidence.downloadLayout
-      );
-      const notificationTraffic = analyzeNotificationEvidence(
-        evidence.runtimeJournal,
-        evidence.notificationLayout
-      );
-      proof.traffic = mergeTrafficEvidence(layoutTraffic, notificationTraffic);
-      proof.result = proofPassesContract({
-        ...proof,
-        result: 'pass'
-      })
-        ? 'pass'
-        : 'incomplete';
     }
   } catch (error) {
     if (!String(error?.code ?? '').startsWith(SAFE_ERROR_CODES.arguments)) {
@@ -746,7 +773,6 @@ export async function runHomeTrafficDeviceProof({
     if (target && hdcCommand) {
       await cleanupDeviceState({ target, hdcCommand, execImpl, cwd: repoRoot }).catch(() => {});
     }
-    await cleanupTempFiles(fsApi, localTempPaths);
   }
   return await writeValidatedProofImpl(proof, { outputPath, fsApi, repoRoot });
 }
@@ -768,10 +794,6 @@ async function main() {
   }
 }
 
-if (import.meta.url === pathToFileUrl(process.argv[1]).href) {
+if (import.meta.url === pathToFileURL(process.argv[1]).href) {
   void main();
-}
-
-function pathToFileUrl(filePath) {
-  return pathToFileURL(path.resolve(filePath));
 }
