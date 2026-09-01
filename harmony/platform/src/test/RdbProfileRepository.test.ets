@@ -336,6 +336,11 @@ export default function rdbProfileRepositoryTestsuite() {
       const driver = new RecordingRdbDriver();
       driver.seedActiveId('delete-me');
       driver.seedRow(encodeProfileRow(buildProfile('delete-me', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/delete-me/current.yaml')));
+      driver.seedProfileRefreshLeaseRow({
+        profileId: 'delete-me',
+        ownerToken: 'owner-a',
+        expiresAtMs: 500
+      });
       driver.seedSelectionRow(encodeProxySelectionRow(
         createProxySelectionRecord('delete-me', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
       ));
@@ -344,17 +349,23 @@ export default function rdbProfileRepositoryTestsuite() {
       await repository.deleteAndClearActive('delete-me');
 
       expect(driver.log.join('>')).assertContain(
-        'begin>clearActiveIfMatching:delete-me>deleteProfileSelections:delete-me>deleteProfile:delete-me>commit'
+        'begin>clearActiveIfMatching:delete-me>deleteProfileSelections:delete-me>deleteProfileRefreshLeases:delete-me>deleteProfile:delete-me>deleteProfileRefreshLeases:delete-me>commit'
       );
       expect(await repository.get('delete-me')).assertUndefined();
       expect(await repository.getActiveId()).assertUndefined();
       expect((await driver.listProxySelectionRows('delete-me')).length).assertEqual(0);
+      expect(driver.readProfileRefreshLeaseRow('delete-me')).assertUndefined();
     });
 
     it('rollsBackOnTransactionStatementOrCommitFailureAndRemainsReusable', 0, async () => {
       const clearDriver = new RecordingRdbDriver();
       clearDriver.seedActiveId('delete-clear');
       clearDriver.seedRow(encodeProfileRow(buildProfile('delete-clear', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/delete-clear/current.yaml')));
+      clearDriver.seedProfileRefreshLeaseRow({
+        profileId: 'delete-clear',
+        ownerToken: 'owner-a',
+        expiresAtMs: 500
+      });
       clearDriver.seedSelectionRow(encodeProxySelectionRow(
         createProxySelectionRecord('delete-clear', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
       ));
@@ -371,6 +382,7 @@ export default function rdbProfileRepositoryTestsuite() {
       expect((await clearRepository.get('delete-clear'))?.id).assertEqual('delete-clear');
       expect(await clearRepository.getActiveId()).assertEqual('delete-clear');
       expect((await clearDriver.listProxySelectionRows('delete-clear')).length).assertEqual(1);
+      expect(clearDriver.readProfileRefreshLeaseRow('delete-clear')?.ownerToken).assertEqual('owner-a');
 
       clearDriver.log.length = 0;
       await clearRepository.setActiveId(undefined);
@@ -379,6 +391,11 @@ export default function rdbProfileRepositoryTestsuite() {
       const commitDriver = new RecordingRdbDriver();
       commitDriver.seedActiveId('tx-commit');
       commitDriver.seedRow(encodeProfileRow(buildProfile('tx-commit', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/tx-commit/current.yaml')));
+      commitDriver.seedProfileRefreshLeaseRow({
+        profileId: 'tx-commit',
+        ownerToken: 'owner-b',
+        expiresAtMs: 700
+      });
       commitDriver.seedSelectionRow(encodeProxySelectionRow(
         createProxySelectionRecord('tx-commit', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
       ));
@@ -395,6 +412,33 @@ export default function rdbProfileRepositoryTestsuite() {
       expect((await commitRepository.get('tx-commit'))?.id).assertEqual('tx-commit');
       expect(await commitRepository.getActiveId()).assertEqual('tx-commit');
       expect((await commitDriver.listProxySelectionRows('tx-commit')).length).assertEqual(1);
+      expect(commitDriver.readProfileRefreshLeaseRow('tx-commit')?.ownerToken).assertEqual('owner-b');
+
+      const leaseDeleteDriver = new RecordingRdbDriver();
+      leaseDeleteDriver.seedActiveId('lease-delete');
+      leaseDeleteDriver.seedRow(encodeProfileRow(buildProfile('lease-delete', 'VALID', '2026-08-07T00:02:00.000Z', 'profiles/lease-delete/current.yaml')));
+      leaseDeleteDriver.seedProfileRefreshLeaseRow({
+        profileId: 'lease-delete',
+        ownerToken: 'owner-c',
+        expiresAtMs: 900
+      });
+      leaseDeleteDriver.seedSelectionRow(encodeProxySelectionRow(
+        createProxySelectionRecord('lease-delete', 'Group Alpha', 'Node Alpha', '2026-08-07T00:00:00.000Z', '2026-08-07T00:03:00.000Z')
+      ));
+      leaseDeleteDriver.injectFailure('deleteProfileRefreshLeases:lease-delete', new Error(buildUnsafePayload('driver lease delete failed')));
+      const leaseDeleteRepository = new RdbProfileRepository(leaseDeleteDriver);
+
+      await expectSafeFallbackFailure(
+        async () => {
+          await leaseDeleteRepository.deleteAndClearActive('lease-delete');
+        },
+        'Profile delete failed.',
+        ['https://', 'profile.yaml', 'abc123', 'row={', 'proxy-providers', buildUnsafeHomePrefix()]
+      );
+      expect((await leaseDeleteRepository.get('lease-delete'))?.id).assertEqual('lease-delete');
+      expect(await leaseDeleteRepository.getActiveId()).assertEqual('lease-delete');
+      expect((await leaseDeleteDriver.listProxySelectionRows('lease-delete')).length).assertEqual(1);
+      expect(leaseDeleteDriver.readProfileRefreshLeaseRow('lease-delete')?.ownerToken).assertEqual('owner-c');
     });
 
     it('wrapsDriverAndCorruptionFailuresAsStablePersistenceErrorsWithoutLeakingSqlOrSecrets', 0, async () => {

@@ -58,7 +58,7 @@ export class RdbProfileRefreshLeaseStore implements ProfileRefreshLeasePort {
     try {
       return await this.driver.transaction(async (transaction) => {
         const existing = await transaction.getProfileRefreshLeaseRow(profileId);
-        if (existing === undefined || existing.ownerToken !== ownerToken) {
+        if (existing === undefined || existing.ownerToken !== ownerToken || existing.expiresAtMs <= nowMs) {
           return false;
         }
         await transaction.upsertProfileRefreshLeaseRow(createLeaseRow(profileId, ownerToken, expiresAtMs));

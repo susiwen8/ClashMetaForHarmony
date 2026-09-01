@@ -147,15 +147,21 @@ export default function rdbProfileRefreshLeaseStoreTestsuite() {
       const store = new RdbProfileRefreshLeaseStore(driver);
 
       expect(await store.tryAcquire('profile-boundary', 'owner-b', 300, 450)).assertTrue();
+      driver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-renew-boundary', 'owner-a', 300));
+      expect(await store.renew('profile-renew-boundary', 'owner-a', 300, 450)).assertFalse();
+      expect(driver.readProfileRefreshLeaseRow('profile-renew-boundary')?.expiresAtMs).assertEqual(300);
     });
 
     it('renewsOnlyForTheCurrentOwnerAndReleasesByCompareAndDelete', 0, async () => {
       const driver = new RecordingRdbDriver();
       driver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-a', 'owner-a', 200));
+      driver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-expired', 'owner-a', 200));
       const store = new RdbProfileRefreshLeaseStore(driver);
 
       expect(await store.renew('profile-a', 'owner-a', 150, 300)).assertTrue();
       expect(await store.renew('profile-a', 'owner-b', 150, 310)).assertFalse();
+      expect(await store.renew('profile-expired', 'owner-a', 200, 310)).assertFalse();
+      expect(driver.readProfileRefreshLeaseRow('profile-expired')?.expiresAtMs).assertEqual(200);
       expect(await store.renew('missing-profile', 'owner-a', 150, 310)).assertFalse();
       expect(await store.release('profile-a', 'owner-b')).assertFalse();
       expect(driver.readProfileRefreshLeaseRow('profile-a')?.ownerToken).assertEqual('owner-a');

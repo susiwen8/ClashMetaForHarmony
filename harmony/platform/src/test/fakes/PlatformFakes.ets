@@ -442,9 +442,11 @@ export class RecordingRdbDriver implements RdbDriver {
 
   txDeleteProfile(id: string): void {
     this.txDeleteProfileSelections(id);
+    this.txDeleteProfileRefreshLeases(id);
     this.log.push(`deleteProfile:${id}`);
     this.failIfScripted(`deleteProfile:${id}`);
     this.committedRows.delete(id);
+    this.txDeleteProfileRefreshLeases(id);
   }
 
   txListProxySelectionRows(profileId: string): DurableProxySelectionRow[] {
@@ -504,6 +506,13 @@ export class RecordingRdbDriver implements RdbDriver {
     for (let index = 0; index < staleKeys.length; index += 1) {
       this.committedSelectionRows.delete(staleKeys[index]);
     }
+  }
+
+  txDeleteProfileRefreshLeases(profileId: string): void {
+    const operation: string = `deleteProfileRefreshLeases:${profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    this.committedProfileRefreshLeaseRows.delete(profileId);
   }
 }
 

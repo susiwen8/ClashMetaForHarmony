@@ -282,6 +282,19 @@ function profileRefreshLeaseDeleteAffectedRowsFromBucket(bucket: RelationalValue
   );
 }
 
+async function deleteProfileRefreshLeasesWithSafeFallback(
+  store: relationalStore.RdbStore,
+  profileId: string,
+  fallback: string
+): Promise<void> {
+  await executeSqlWithSafeFallback(
+    store,
+    `DELETE FROM ${PROFILE_REFRESH_LEASES_TABLE} WHERE profile_id = ?`,
+    toBindValues([profileId]),
+    fallback
+  );
+}
+
 function upsertActiveIdBindArgs(activeId: string | undefined): Array<RelationalValueType> {
   const values: Array<RelationalValueType> = [1];
   appendBindValue(values, activeId);
@@ -1016,11 +1029,21 @@ class HarmonyRdbTransaction implements RdbTransaction {
 
   async deleteProfile(id: string): Promise<void> {
     await this.deleteProfileSelections(id);
+    await deleteProfileRefreshLeasesWithSafeFallback(
+      this.store,
+      id,
+      'Transaction profile refresh lease delete failed.'
+    );
     await executeSqlWithSafeFallback(
       this.store,
       'DELETE FROM profiles WHERE id = ?',
       toBindValues([id]),
       'Transaction profile delete failed.'
+    );
+    await deleteProfileRefreshLeasesWithSafeFallback(
+      this.store,
+      id,
+      'Transaction profile refresh lease delete failed.'
     );
   }
 }
