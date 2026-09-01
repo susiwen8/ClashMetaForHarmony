@@ -7,6 +7,7 @@ import {
   type Profile,
   type ProfileRefreshExecutorPort,
   type ProfileRepository,
+  type RefreshProfilesTimestampParser,
   type RefreshProfileResult
 } from '../../Index';
 
@@ -216,7 +217,8 @@ function buildUseCase(
   profiles: Profile[],
   nowMs: number,
   executor?: FakeRefreshExecutor,
-  clock?: Clock
+  clock?: Clock,
+  parser?: RefreshProfilesTimestampParser
 ): {
   useCase: RefreshProfilesUseCase;
   fakeExecutor: FakeRefreshExecutor;
@@ -228,7 +230,8 @@ function buildUseCase(
     useCase: new RefreshProfilesUseCase({
       repository: new FakeProfileRepository(profiles),
       executor: fakeExecutor,
-      clock: clock ?? fakeClock
+      clock: clock ?? fakeClock,
+      parser
     }),
     fakeExecutor,
     fakeClock
@@ -302,7 +305,12 @@ export default function refreshProfilesUseCaseTestsuite() {
       const nullDue = buildRemoteProfile('profile-null', 'https://null.example.com', null, 1000);
       const olderDue = buildRemoteProfile('profile-older', 'https://older.example.com', 43190, 1000);
       const boundaryDue = buildRemoteProfile('profile-boundary', 'https://boundary.example.com', 43199, 1000);
-      const future = buildRemoteProfile('profile-future', 'https://future.example.com', 43200, 2000);
+      const future = buildRemoteProfile(
+        'profile-future',
+        'https://future.example.com',
+        Math.floor((nowMs - 3600000) / 1000),
+        7200000
+      );
       const disabled = buildRemoteProfile('profile-disabled', 'https://disabled.example.com', 30000, 0);
       const executor = new FakeRefreshExecutor();
       executor.setResult('profile-null', buildUpdatedResult(nullDue, 'VALID', null, true));
@@ -316,6 +324,8 @@ export default function refreshProfilesUseCaseTestsuite() {
       expect(executor.calls[0]).assertEqual('profile-null');
       expect(executor.calls[1]).assertEqual('profile-older');
       expect(executor.calls[2]).assertEqual('profile-boundary');
+      expect(executor.calls.includes('profile-future')).assertFalse();
+      expect(executor.calls.includes('profile-disabled')).assertFalse();
       expect(result.items.length).assertEqual(5);
       expect(result.items[0].profileId).assertEqual('profile-null');
       expect(result.items[0].status).assertEqual('SUCCESS');
@@ -498,6 +508,30 @@ export default function refreshProfilesUseCaseTestsuite() {
         }).execute({ mode: 'ALL' }),
         'REFRESH_PROFILES_INVALID_INPUT',
         ['profile-a', 'a.example.com', 'not-a-date']
+      );
+    });
+
+    it('rejectsOverflowFromInjectedTimestampParserWithFixedSafeError', 0, async () => {
+      const profile = buildRemoteProfile('profile-overflow', 'https://overflow.example.com', 1, 2);
+      const parser: RefreshProfilesTimestampParser = {
+        parseUtcMillis(_timestamp: string, label: string): number {
+          if (label === 'Clock timestamp') {
+            return Date.parse('2026-09-01T12:00:00.000Z');
+          }
+          return Number.MAX_SAFE_INTEGER;
+        }
+      };
+
+      await expectSafeUseCaseError(
+        buildUseCase(
+          [profile],
+          Date.parse('2026-09-01T12:00:00.000Z'),
+          new FakeRefreshExecutor(),
+          undefined,
+          parser
+        ).useCase.execute({ mode: 'DUE' }),
+        'REFRESH_PROFILES_INVALID_INPUT',
+        ['profile-overflow', 'overflow.example.com']
       );
     });
   });

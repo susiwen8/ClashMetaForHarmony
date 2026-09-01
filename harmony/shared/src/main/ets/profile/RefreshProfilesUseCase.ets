@@ -57,6 +57,7 @@ const REFRESH_PROFILES_LIST_FAILED_CODE: string = 'REFRESH_PROFILES_LIST_FAILED'
 const REFRESH_PROFILES_INVALID_INPUT_MESSAGE: string = 'Refresh profiles input is invalid.';
 const REFRESH_PROFILES_LIST_FAILED_MESSAGE: string = 'Refresh profiles list failed.';
 const PROFILE_REFRESH_BUSY_CODE: string = 'PROFILE_REFRESH_BUSY';
+const MAX_SAFE_MILLIS: number = Number.MAX_SAFE_INTEGER;
 
 class DefaultRefreshProfilesTimestampParser implements RefreshProfilesTimestampParser {
   parseUtcMillis(timestamp: string, label: string): number {
@@ -169,7 +170,8 @@ export class RefreshProfilesUseCase {
   }
 
   private toDueCandidate(profile: Profile, nowMs: number): RefreshCandidate {
-    if (profile.autoUpdateIntervalMs <= 0) {
+    const intervalMs: number = normalizeSafeNonNegativeInteger(profile.autoUpdateIntervalMs);
+    if (intervalMs <= 0) {
       return {
         profile,
         dueSortGroup: 2,
@@ -188,13 +190,13 @@ export class RefreshProfilesUseCase {
     }
 
     const lastSuccessfulUpdateMs: number = this.parseTimestamp(profile.lastSuccessfulUpdateAt, 'Profile timestamp');
-    const nextDueMs: number = lastSuccessfulUpdateMs + profile.autoUpdateIntervalMs;
-    if (!Number.isFinite(nextDueMs)) {
+    if (lastSuccessfulUpdateMs > MAX_SAFE_MILLIS - intervalMs) {
       throw new RefreshProfilesUseCaseError(
         REFRESH_PROFILES_INVALID_INPUT_CODE,
         REFRESH_PROFILES_INVALID_INPUT_MESSAGE
       );
     }
+    const nextDueMs: number = lastSuccessfulUpdateMs + intervalMs;
 
     return {
       profile,
@@ -236,7 +238,7 @@ export class RefreshProfilesUseCase {
 
   private parseTimestamp(timestamp: string, label: string): number {
     try {
-      return this.parser.parseUtcMillis(timestamp, label);
+      return normalizeSafeNonNegativeInteger(this.parser.parseUtcMillis(timestamp, label));
     } catch (_) {
       throw new RefreshProfilesUseCaseError(
         REFRESH_PROFILES_INVALID_INPUT_CODE,
@@ -311,4 +313,11 @@ function classifyRefreshResult(result: RefreshProfileResult): RefreshProfilesIte
 function hasUsableCurrent(profile: Profile): boolean {
   return profile.currentRevision !== null &&
     (profile.availability === 'VALID' || profile.availability === 'UPDATE_FAILED_USING_VALID');
+}
+
+function normalizeSafeNonNegativeInteger(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    throw new Error('Value must be a safe non-negative integer.');
+  }
+  return value;
 }
