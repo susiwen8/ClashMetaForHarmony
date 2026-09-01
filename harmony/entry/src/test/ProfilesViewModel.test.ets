@@ -65,12 +65,7 @@ export default function profilesViewModelTestsuite() {
       expect(current.profiles[1].active).assertTrue();
       expect(current.profiles[1].availability).assertEqual('INVALID');
       expect(current.profiles[2].sourceKind).assertEqual('REMOTE_URL');
-      expect(current.summary?.totalCount).assertEqual(3);
-      expect(current.summary?.remoteCount).assertEqual(2);
-      expect(current.summary?.localCount).assertEqual(1);
-      expect(current.summary?.validCount).assertEqual(1);
-      expect(current.summary?.invalidCount).assertEqual(1);
-      expect(current.summary?.updateFailedUsingValidCount).assertEqual(1);
+      expect(current.refreshAllSummary).assertUndefined();
       expect(current.refreshAllPending).assertFalse();
       expect(current.completedRefreshCount).assertEqual(0);
       expect(current.remainingRefreshCount).assertEqual(0);
@@ -140,7 +135,7 @@ export default function profilesViewModelTestsuite() {
 
       const current = viewModel.current();
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(0);
-      expect(current.summary?.remoteCount).assertEqual(0);
+      expect(current.refreshAllSummary).assertUndefined();
       expect(current.refreshAllPending).assertFalse();
       expect(current.remainingRefreshCount).assertEqual(0);
       expect(current.totalRefreshCount).assertEqual(0);
@@ -188,9 +183,10 @@ export default function profilesViewModelTestsuite() {
           [
             createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true),
             createProfileSnapshot('beta', 'Beta', 'https://beta.example.com/config.yaml', 'UPDATE_FAILED_USING_VALID', '2026-08-11T12:32:00.000Z', true),
-            createProfileSnapshot('gamma', 'Gamma', '/tmp/cmfa/profiles/gamma.yaml', 'INVALID', '2026-08-11T12:33:00.000Z', false, {
-              sourceKind: 'LOCAL_FILE'
-            })
+            createProfileSnapshot('gamma', 'Gamma', 'https://gamma.example.com/config.yaml', 'INVALID', '2026-08-11T12:33:00.000Z', false),
+            createProfileSnapshot('delta', 'Delta', 'https://delta.example.com/config.yaml', 'VALID', '2026-08-11T12:34:00.000Z', true),
+            createProfileSnapshot('epsilon', 'Epsilon', 'https://epsilon.example.com/config.yaml', 'VALID', '2026-08-11T12:35:00.000Z', true),
+            createProfileSnapshot('zeta', 'Zeta', 'https://zeta.example.com/config.yaml', 'VALID', '2026-08-11T12:36:00.000Z', true)
           ],
           'alpha',
           'STOPPED'
@@ -199,7 +195,11 @@ export default function profilesViewModelTestsuite() {
       application.queueRefreshAllSubscriptionsResult(
         createRefreshAllSubscriptionsCompletedResult([
           { profileId: 'alpha', status: 'SUCCESS' },
-          { profileId: 'beta', status: 'FAILED_USING_CURRENT' }
+          { profileId: 'beta', status: 'FAILED_USING_CURRENT' },
+          { profileId: 'gamma', status: 'FAILED' },
+          { profileId: 'delta', status: 'SKIPPED_HTTP' },
+          { profileId: 'epsilon', status: 'SKIPPED_NOT_DUE' },
+          { profileId: 'zeta', status: 'BUSY' }
         ])
       );
       const viewModel = new ProfilesViewModel(application);
@@ -209,17 +209,35 @@ export default function profilesViewModelTestsuite() {
       const current = viewModel.current();
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(1);
       expect(current.refreshAllPending).assertFalse();
-      expect(current.completedRefreshCount).assertEqual(2);
+      expect(current.completedRefreshCount).assertEqual(6);
       expect(current.remainingRefreshCount).assertEqual(0);
-      expect(current.totalRefreshCount).assertEqual(2);
+      expect(current.totalRefreshCount).assertEqual(6);
       expect(current.refreshAllInterrupted).assertFalse();
-      expect(current.summary?.totalCount).assertEqual(2);
-      expect(current.summary?.remoteCount).assertEqual(2);
-      expect(current.summary?.localCount).assertEqual(0);
-      expect(current.summary?.validCount).assertEqual(1);
-      expect(current.summary?.invalidCount).assertEqual(0);
-      expect(current.summary?.updateFailedUsingValidCount).assertEqual(1);
+      expect(current.refreshAllSummary?.success).assertEqual(1);
+      expect(current.refreshAllSummary?.failedUsingCurrent).assertEqual(1);
+      expect(current.refreshAllSummary?.failed).assertEqual(1);
+      expect(current.refreshAllSummary?.skippedHttp).assertEqual(1);
+      expect(current.refreshAllSummary?.skippedNotDue).assertEqual(1);
+      expect(current.refreshAllSummary?.busy).assertEqual(1);
+      expect(serialize(current.refreshAllSummary as Object).includes('profileId')).assertFalse();
+      expect(serialize(current.refreshAllSummary as Object).includes('https://')).assertFalse();
+      expect(serialize(current.refreshAllSummary as Object).includes('.example.com')).assertFalse();
       expect(current.refreshAllError).assertUndefined();
+
+      application.emitSnapshot(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('alpha', 'Alpha 2', 'https://alpha.example.com/config.yaml?secret=1', 'VALID', '2026-08-11T12:37:00.000Z', true)
+          ],
+          'alpha',
+          'RUNNING'
+        )
+      );
+
+      expect(viewModel.current().refreshAllSummary?.success).assertEqual(1);
+      expect(viewModel.current().refreshAllSummary?.failedUsingCurrent).assertEqual(1);
+      expect(viewModel.current().refreshAllSummary?.failed).assertEqual(1);
     });
 
     it('requestRefreshAllPublishesDeadlineInterruptedBatchCounts', 0, async () => {
@@ -258,9 +276,14 @@ export default function profilesViewModelTestsuite() {
       expect(current.remainingRefreshCount).assertEqual(3);
       expect(current.totalRefreshCount).assertEqual(5);
       expect(current.refreshAllInterrupted).assertTrue();
-      expect(current.summary?.totalCount).assertEqual(2);
-      expect(current.summary?.remoteCount).assertEqual(2);
-      expect(current.summary?.localCount).assertEqual(0);
+      expect(current.refreshAllSummary?.success).assertEqual(1);
+      expect(current.refreshAllSummary?.failedUsingCurrent).assertEqual(0);
+      expect(current.refreshAllSummary?.failed).assertEqual(0);
+      expect(current.refreshAllSummary?.skippedHttp).assertEqual(1);
+      expect(current.refreshAllSummary?.skippedNotDue).assertEqual(0);
+      expect(current.refreshAllSummary?.busy).assertEqual(0);
+      expect(serialize(current.refreshAllSummary as Object).includes('profileId')).assertFalse();
+      expect(serialize(current.refreshAllSummary as Object).includes('https://')).assertFalse();
     });
 
     it('requestRefreshAllPublishesCancelledBatchAsInterrupted', 0, async () => {
@@ -293,8 +316,12 @@ export default function profilesViewModelTestsuite() {
       expect(current.remainingRefreshCount).assertEqual(1);
       expect(current.totalRefreshCount).assertEqual(2);
       expect(current.refreshAllInterrupted).assertTrue();
-      expect(current.summary?.totalCount).assertEqual(1);
-      expect(current.summary?.remoteCount).assertEqual(1);
+      expect(current.refreshAllSummary?.success).assertEqual(1);
+      expect(current.refreshAllSummary?.failedUsingCurrent).assertEqual(0);
+      expect(current.refreshAllSummary?.failed).assertEqual(0);
+      expect(current.refreshAllSummary?.skippedHttp).assertEqual(0);
+      expect(current.refreshAllSummary?.skippedNotDue).assertEqual(0);
+      expect(current.refreshAllSummary?.busy).assertEqual(0);
     });
 
     it('requestRefreshAllPublishesSafeFailureErrorAndRetainsRemainingRemoteCount', 0, async () => {
@@ -326,10 +353,43 @@ export default function profilesViewModelTestsuite() {
       expect(current.remainingRefreshCount).assertEqual(2);
       expect(current.totalRefreshCount).assertEqual(2);
       expect(current.refreshAllInterrupted).assertTrue();
+      expect(current.refreshAllSummary).assertUndefined();
       expect(current.refreshAllError?.code).assertEqual('SUBSCRIPTION_REFRESH_ALL_FAILED');
       expect(serialize(current.refreshAllError as Object).includes('secret=1')).assertFalse();
       expect(serialize(current).includes('secret=1')).assertFalse();
       expect(serialize(current).includes('secret=2')).assertFalse();
+    });
+
+    it('requestRefreshAllPublishesFixedSafeErrorWhenPromiseRejects', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml?secret=1', 'VALID', '2026-08-11T12:31:00.000Z', true),
+            createProfileSnapshot('beta', 'Beta', 'https://beta.example.com/config.yaml?secret=2', 'VALID', '2026-08-11T12:32:00.000Z', true)
+          ],
+          'alpha',
+          'STOPPED'
+        )
+      );
+      application.queueRefreshAllSubscriptionsRejection();
+      const viewModel = new ProfilesViewModel(application);
+
+      await viewModel.requestRefreshAll();
+
+      const current = viewModel.current();
+      expect(current.refreshAllPending).assertFalse();
+      expect(current.completedRefreshCount).assertEqual(0);
+      expect(current.remainingRefreshCount).assertEqual(2);
+      expect(current.totalRefreshCount).assertEqual(2);
+      expect(current.refreshAllInterrupted).assertTrue();
+      expect(current.refreshAllSummary).assertUndefined();
+      expect(current.refreshAllError?.code).assertEqual('SUBSCRIPTION_REFRESH_ALL_FAILED');
+      expect(current.refreshAllError?.retryable).assertTrue();
+      expect(current.refreshAllError?.technicalDetail).assertEqual('Subscription refresh failed before completion.');
+      expect(serialize(current.refreshAllError as Object).includes('refresh-all rejected')).assertFalse();
+      expect(serialize(current.refreshAllError as Object).includes('secret=1')).assertFalse();
+      expect(serialize(current.refreshAllError as Object).includes('secret=2')).assertFalse();
     });
 
     it('keepsRefreshAllPendingStateAcrossApplicationSnapshots', 0, async () => {
@@ -374,6 +434,7 @@ export default function profilesViewModelTestsuite() {
       expect(viewModel.current().refreshAllPending).assertFalse();
       expect(viewModel.current().completedRefreshCount).assertEqual(1);
       expect(viewModel.current().remainingRefreshCount).assertEqual(0);
+      expect(viewModel.current().refreshAllSummary?.success).assertEqual(1);
     });
 
     it('ignoresDeferredRefreshAllCompletionAfterDispose', 0, async () => {

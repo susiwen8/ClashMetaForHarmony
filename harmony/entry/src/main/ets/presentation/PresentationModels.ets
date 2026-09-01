@@ -77,13 +77,13 @@ export interface ProfileRowState {
   updatedAt: string;
 }
 
-export interface ProfilesSummaryState {
-  totalCount: number;
-  remoteCount: number;
-  localCount: number;
-  validCount: number;
-  invalidCount: number;
-  updateFailedUsingValidCount: number;
+export interface ProfilesRefreshSummaryState {
+  success: number;
+  failedUsingCurrent: number;
+  failed: number;
+  skippedHttp: number;
+  skippedNotDue: number;
+  busy: number;
 }
 
 export interface ProfilesViewState {
@@ -94,7 +94,7 @@ export interface ProfilesViewState {
   remainingRefreshCount: number;
   totalRefreshCount: number;
   refreshAllInterrupted: boolean;
-  summary?: ProfilesSummaryState;
+  refreshAllSummary?: ProfilesRefreshSummaryState;
   refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
 }
@@ -199,13 +199,13 @@ class ProfileRowStateValue implements ProfileRowState {
   updatedAt: string = '';
 }
 
-class ProfilesSummaryStateValue implements ProfilesSummaryState {
-  totalCount: number = 0;
-  remoteCount: number = 0;
-  localCount: number = 0;
-  validCount: number = 0;
-  invalidCount: number = 0;
-  updateFailedUsingValidCount: number = 0;
+class ProfilesRefreshSummaryStateValue implements ProfilesRefreshSummaryState {
+  success: number = 0;
+  failedUsingCurrent: number = 0;
+  failed: number = 0;
+  skippedHttp: number = 0;
+  skippedNotDue: number = 0;
+  busy: number = 0;
 }
 
 class ProfilesViewStateValue implements ProfilesViewState {
@@ -216,7 +216,7 @@ class ProfilesViewStateValue implements ProfilesViewState {
   remainingRefreshCount: number = 0;
   totalRefreshCount: number = 0;
   refreshAllInterrupted: boolean = false;
-  summary?: ProfilesSummaryState;
+  refreshAllSummary?: ProfilesRefreshSummaryState;
   refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
 }
@@ -331,35 +331,37 @@ export function cloneProfileRowStates(rows: ProfileRowState[]): ProfileRowState[
   return cloned;
 }
 
-export function createProfilesSummaryState(
-  totalCount: number,
-  remoteCount: number,
-  localCount: number,
-  validCount: number,
-  invalidCount: number,
-  updateFailedUsingValidCount: number
-): ProfilesSummaryState {
-  const state: ProfilesSummaryStateValue = new ProfilesSummaryStateValue();
-  state.totalCount = normalizeCount(totalCount);
-  state.remoteCount = normalizeCount(remoteCount);
-  state.localCount = normalizeCount(localCount);
-  state.validCount = normalizeCount(validCount);
-  state.invalidCount = normalizeCount(invalidCount);
-  state.updateFailedUsingValidCount = normalizeCount(updateFailedUsingValidCount);
+export function createProfilesRefreshSummaryState(
+  success: number,
+  failedUsingCurrent: number,
+  failed: number,
+  skippedHttp: number,
+  skippedNotDue: number,
+  busy: number
+): ProfilesRefreshSummaryState {
+  const state: ProfilesRefreshSummaryStateValue = new ProfilesRefreshSummaryStateValue();
+  state.success = normalizeCount(success);
+  state.failedUsingCurrent = normalizeCount(failedUsingCurrent);
+  state.failed = normalizeCount(failed);
+  state.skippedHttp = normalizeCount(skippedHttp);
+  state.skippedNotDue = normalizeCount(skippedNotDue);
+  state.busy = normalizeCount(busy);
   return state;
 }
 
-export function cloneProfilesSummaryState(state: ProfilesSummaryState | undefined): ProfilesSummaryState | undefined {
+export function cloneProfilesRefreshSummaryState(
+  state: ProfilesRefreshSummaryState | undefined
+): ProfilesRefreshSummaryState | undefined {
   if (state === undefined) {
     return undefined;
   }
-  return createProfilesSummaryState(
-    state.totalCount,
-    state.remoteCount,
-    state.localCount,
-    state.validCount,
-    state.invalidCount,
-    state.updateFailedUsingValidCount
+  return createProfilesRefreshSummaryState(
+    state.success,
+    state.failedUsingCurrent,
+    state.failed,
+    state.skippedHttp,
+    state.skippedNotDue,
+    state.busy
   );
 }
 
@@ -517,7 +519,7 @@ export function createProfilesViewState(
   remainingRefreshCount: number = 0,
   totalRefreshCount: number = 0,
   refreshAllInterrupted: boolean = false,
-  summary: ProfilesSummaryState | undefined = undefined,
+  refreshAllSummary: ProfilesRefreshSummaryState | undefined = undefined,
   refreshAllError: SafeErrorState | undefined = undefined
 ): ProfilesViewState {
   const state: ProfilesViewStateValue = new ProfilesViewStateValue();
@@ -528,7 +530,7 @@ export function createProfilesViewState(
   state.remainingRefreshCount = normalizeCount(remainingRefreshCount);
   state.totalRefreshCount = normalizeCount(totalRefreshCount);
   state.refreshAllInterrupted = refreshAllInterrupted;
-  state.summary = cloneProfilesSummaryState(summary);
+  state.refreshAllSummary = cloneProfilesRefreshSummaryState(refreshAllSummary);
   state.refreshAllError = cloneSafeErrorState(refreshAllError);
   state.error = cloneSafeErrorState(error);
   return state;
@@ -544,7 +546,7 @@ export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewSt
     state.remainingRefreshCount,
     state.totalRefreshCount,
     state.refreshAllInterrupted,
-    state.summary,
+    state.refreshAllSummary,
     state.refreshAllError
   );
 }

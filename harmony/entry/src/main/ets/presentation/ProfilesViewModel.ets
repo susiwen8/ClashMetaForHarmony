@@ -7,10 +7,11 @@ import {
 } from '@cmfa/shared';
 import {
   cloneProfilesViewState,
-  createProfilesSummaryState,
+  createProfilesRefreshSummaryState,
   createProfileRowState,
   createProfilesViewState,
   createSafeErrorState,
+  type ProfilesRefreshSummaryState,
   type ProfileRowState,
   type SafeErrorState,
   type ProfilesViewState
@@ -45,7 +46,7 @@ export class ProfilesViewModel {
   private refreshAllTotalCount: number = 0;
   private refreshAllInterrupted: boolean = false;
   private refreshAllError?: SafeErrorState;
-  private refreshAllSummaryProfileIds?: string[];
+  private refreshAllSummary?: ProfilesRefreshSummaryState;
   private disposed: boolean = false;
 
   constructor(application: ProfileApplication) {
@@ -57,7 +58,7 @@ export class ProfilesViewModel {
       this.refreshAllRemainingCount,
       this.refreshAllTotalCount,
       this.refreshAllInterrupted,
-      this.refreshAllSummaryProfileIds,
+      this.refreshAllSummary,
       this.refreshAllError
     );
     this.applicationListener = (snapshot: ProfileApplicationSnapshot): void => {
@@ -109,29 +110,42 @@ export class ProfilesViewModel {
     }
 
     const token: number = this.beginRefreshAll(remoteCount, snapshot);
-    const result: RefreshAllSubscriptionsResult = await this.application.refreshAllSubscriptions();
-    if (!this.canPublishRefreshAll(token)) {
-      return;
-    }
+    try {
+      const result: RefreshAllSubscriptionsResult = await this.application.refreshAllSubscriptions();
+      if (!this.canPublishRefreshAll(token)) {
+        return;
+      }
 
-    this.refreshAllPending = false;
-    if (result.kind === 'COMPLETED') {
-      this.refreshAllCompletedCount = result.result.items.length;
-      this.refreshAllRemainingCount = result.result.remainingCount;
-      this.refreshAllTotalCount = result.result.items.length + result.result.remainingCount;
-      this.refreshAllInterrupted = result.result.deadlineReached ||
-        result.result.cancelled ||
-        result.result.remainingCount > 0;
-      this.refreshAllSummaryProfileIds = collectRefreshProfileIds(result.result.items);
-      this.refreshAllError = undefined;
-    } else {
+      this.refreshAllPending = false;
+      if (result.kind === 'COMPLETED') {
+        this.refreshAllCompletedCount = result.result.items.length;
+        this.refreshAllRemainingCount = result.result.remainingCount;
+        this.refreshAllTotalCount = result.result.items.length + result.result.remainingCount;
+        this.refreshAllInterrupted = result.result.deadlineReached ||
+          result.result.cancelled ||
+          result.result.remainingCount > 0;
+        this.refreshAllSummary = summarizeRefreshItems(result.result.items);
+        this.refreshAllError = undefined;
+      } else {
+        this.refreshAllCompletedCount = 0;
+        this.refreshAllRemainingCount = this.refreshAllTotalCount;
+        this.refreshAllInterrupted = true;
+        this.refreshAllSummary = undefined;
+        this.refreshAllError = createSafeErrorState(result.error);
+      }
+      this.publish(this.buildState(this.application.current()));
+    } catch (_) {
+      if (!this.canPublishRefreshAll(token)) {
+        return;
+      }
+      this.refreshAllPending = false;
       this.refreshAllCompletedCount = 0;
       this.refreshAllRemainingCount = this.refreshAllTotalCount;
       this.refreshAllInterrupted = true;
-      this.refreshAllSummaryProfileIds = undefined;
-      this.refreshAllError = createSafeErrorState(result.error);
+      this.refreshAllSummary = undefined;
+      this.refreshAllError = createRefreshAllRejectedError();
+      this.publish(this.buildState(this.application.current()));
     }
-    this.publish(this.buildState(this.application.current()));
   }
 
   dispose(): void {
@@ -153,7 +167,7 @@ export class ProfilesViewModel {
     this.refreshAllTotalCount = remoteCount;
     this.refreshAllInterrupted = false;
     this.refreshAllError = undefined;
-    this.refreshAllSummaryProfileIds = undefined;
+    this.refreshAllSummary = undefined;
     this.publish(this.buildState(snapshot));
     return this.refreshAllToken;
   }
@@ -170,7 +184,7 @@ export class ProfilesViewModel {
       this.refreshAllRemainingCount,
       this.refreshAllTotalCount,
       this.refreshAllInterrupted,
-      this.refreshAllSummaryProfileIds,
+      this.refreshAllSummary,
       this.refreshAllError
     );
   }
@@ -210,12 +224,10 @@ function createState(
   refreshAllRemainingCount: number,
   refreshAllTotalCount: number,
   refreshAllInterrupted: boolean,
-  refreshAllSummaryProfileIds: string[] | undefined,
+  refreshAllSummary: ProfilesRefreshSummaryState | undefined,
   refreshAllError: SafeErrorState | undefined
 ): ProfilesViewState {
   const rows: ProfileRowState[] = [];
-  const summaryProfiles: ProfileApplicationSnapshot['profiles'] = selectSummaryProfiles(snapshot, refreshAllSummaryProfileIds);
-  const remoteCount: number = countRemoteProfiles(summaryProfiles);
   for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
     rows.push(createProfileRowState(snapshot.profiles[index], snapshot.activeProfileId));
   }
@@ -228,14 +240,7 @@ function createState(
     refreshAllRemainingCount,
     refreshAllTotalCount,
     refreshAllInterrupted,
-    createProfilesSummaryState(
-      summaryProfiles.length,
-      remoteCount,
-      summaryProfiles.length - remoteCount,
-      countProfilesByAvailability(summaryProfiles, 'VALID'),
-      countProfilesByAvailability(summaryProfiles, 'INVALID'),
-      countProfilesByAvailability(summaryProfiles, 'UPDATE_FAILED_USING_VALID')
-    ),
+    refreshAllSummary,
     refreshAllError
   );
 }
@@ -250,50 +255,56 @@ function countRemoteProfiles(profiles: { sourceKind: string }[]): number {
   return count;
 }
 
-function countProfilesByAvailability(
-  profiles: { availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID' }[],
-  availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID'
-): number {
-  let count: number = 0;
-  for (let index: number = 0; index < profiles.length; index += 1) {
-    if (profiles[index].availability === availability) {
-      count += 1;
-    }
-  }
-  return count;
-}
-
-function collectRefreshProfileIds(items: RefreshProfilesItemResult[]): string[] {
-  const profileIds: string[] = [];
+function summarizeRefreshItems(items: RefreshProfilesItemResult[]): ProfilesRefreshSummaryState {
+  let success: number = 0;
+  let failedUsingCurrent: number = 0;
+  let failed: number = 0;
+  let skippedHttp: number = 0;
+  let skippedNotDue: number = 0;
+  let busy: number = 0;
   for (let index: number = 0; index < items.length; index += 1) {
-    profileIds.push(items[index].profileId);
-  }
-  return profileIds;
-}
-
-function selectSummaryProfiles(
-  snapshot: ProfileApplicationSnapshot,
-  refreshAllSummaryProfileIds: string[] | undefined
-): ProfileApplicationSnapshot['profiles'] {
-  if (refreshAllSummaryProfileIds === undefined) {
-    return snapshot.profiles;
-  }
-  const selected: ProfileApplicationSnapshot['profiles'] = [];
-  for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
-    if (containsProfileId(refreshAllSummaryProfileIds, snapshot.profiles[index].id)) {
-      selected.push(snapshot.profiles[index]);
+    switch (items[index].status) {
+      case 'SUCCESS':
+        success += 1;
+        break;
+      case 'FAILED_USING_CURRENT':
+        failedUsingCurrent += 1;
+        break;
+      case 'FAILED':
+        failed += 1;
+        break;
+      case 'SKIPPED_HTTP':
+        skippedHttp += 1;
+        break;
+      case 'SKIPPED_NOT_DUE':
+        skippedNotDue += 1;
+        break;
+      case 'BUSY':
+        busy += 1;
+        break;
+      default:
+        break;
     }
   }
-  return selected;
+  return createProfilesRefreshSummaryState(
+    success,
+    failedUsingCurrent,
+    failed,
+    skippedHttp,
+    skippedNotDue,
+    busy
+  );
 }
 
-function containsProfileId(profileIds: string[], profileId: string): boolean {
-  for (let index: number = 0; index < profileIds.length; index += 1) {
-    if (profileIds[index] === profileId) {
-      return true;
-    }
-  }
-  return false;
+function createRefreshAllRejectedError(): SafeErrorState {
+  return createSafeErrorState({
+    code: 'SUBSCRIPTION_REFRESH_ALL_FAILED',
+    stage: 'DOWNLOAD',
+    userMessageResource: 'error.download',
+    technicalDetail: 'Subscription refresh failed before completion.',
+    timestamp: '2026-09-02T00:00:00.000Z',
+    retryable: true
+  })!;
 }
 
 function createProfileDetailIntent(profileId: string): ProfilesNavigationIntent {

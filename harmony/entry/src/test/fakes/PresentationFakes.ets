@@ -534,6 +534,10 @@ export class PresentationTestApplication extends ProfileApplication {
     this.refreshAllSubscriptionsResults.push(Promise.resolve(result));
   }
 
+  queueRefreshAllSubscriptionsRejection(): void {
+    this.refreshAllSubscriptionsResults.push(Promise.reject(new Error('refresh-all rejected')));
+  }
+
   queueEnableResult(result: ManageEnableResult | Promise<ManageEnableResult>): void {
     this.enableResults.push(Promise.resolve(result));
   }
