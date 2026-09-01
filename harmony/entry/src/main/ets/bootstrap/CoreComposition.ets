@@ -6,6 +6,7 @@ import { CORE_BRIDGE_VERSION, createCoreService } from '@cmfa/core';
 import {
   HarmonyVpnRpcPlatformFactory,
   PlatformFactory,
+  WorkSchedulerDriver,
   createHarmonyRuntimeLogExporter,
   createHarmonyRuntimeLogStore,
   type HarmonyVpnRpcPlatformBundle,
@@ -24,6 +25,7 @@ import {
   ProfileCommitService,
   ProxyService,
   RefreshProfileUseCase,
+  RefreshProfilesUseCase,
   SerialCommandQueue,
   SubscriptionOneClickVpnConfirmation,
   VpnProxyCommandBus,
@@ -810,6 +812,12 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       commitService,
       leasedRemoteRefresher
     });
+    const refreshProfilesUseCase = new RefreshProfilesUseCase({
+      repository: graph.repository,
+      executor: refreshUseCase,
+      clock: graph.clock
+    });
+    const profileRefreshSchedule = new WorkSchedulerDriver();
     const manageProfileUseCases = new ManageProfileUseCases({
       repository: graph.repository,
       contentStore: graph.contentStore,
@@ -830,6 +838,8 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     return new ProfileApplication({
       importUseCase,
       refreshUseCase,
+      refreshProfilesUseCase,
+      profileRefreshSchedule,
       manageProfileUseCases,
       runtimeCoordinator,
       commitService,

@@ -1,7 +1,7 @@
 import common from '@ohos.app.ability.common';
 import { describe, expect, it } from '@ohos/hypium';
 import type { Want } from '@kit.AbilityKit';
-import type { PlatformGraph } from '@cmfa/platform';
+import { WorkSchedulerDriver, type PlatformGraph } from '@cmfa/platform';
 import {
   ActiveProfileProxyResolver,
   buildVpnRpcCatalogFromCore,
@@ -29,6 +29,7 @@ import {
   ProfileCommitService,
   ProxyService,
   RefreshProfileUseCase,
+  RefreshProfilesUseCase,
   SerialCommandQueue,
   VpnProxyCommandBus,
   type AppError,
@@ -1373,6 +1374,11 @@ function createProfileApplicationDependencies(
       graph.idGenerator
     )
   });
+  const refreshProfilesUseCase = new RefreshProfilesUseCase({
+    repository: graph.repository,
+    executor: refreshUseCase,
+    clock: graph.clock
+  });
   const manageProfileUseCases = new ManageProfileUseCases({
     repository: graph.repository,
     contentStore: graph.contentStore,
@@ -1389,6 +1395,8 @@ function createProfileApplicationDependencies(
   return {
     importUseCase,
     refreshUseCase,
+    refreshProfilesUseCase,
+    profileRefreshSchedule: new WorkSchedulerDriver(),
     manageProfileUseCases,
     runtimeCoordinator,
     commitService,
@@ -1747,6 +1755,18 @@ export default function applicationCompositionTestsuite() {
       expect(cancelled.kind).assertEqual('REJECTED');
       expect(drained).assertUndefined();
       application.dispose();
+    });
+
+    it('entryCompositionProfileApplicationDependenciesWireBatchRefreshUseCaseAndScheduler', 0, async () => {
+      const dependencies = createProfileApplicationDependencies(
+        new RuntimeAwareCoreService(),
+        new RecordingPlatformGraph()
+      );
+      const batchUseCaseRecord = dependencies.refreshProfilesUseCase as Record<string, Object> | undefined;
+
+      expect(dependencies.refreshProfilesUseCase instanceof RefreshProfilesUseCase).assertTrue();
+      expect(dependencies.profileRefreshSchedule instanceof WorkSchedulerDriver).assertTrue();
+      expect(batchUseCaseRecord?.executor === dependencies.refreshUseCase).assertTrue();
     });
 
     it('explicitExtensionFactoryTestSeamCanStillUseTheExactInjectedRegistryAndCommandBus', 0, async () => {

@@ -14,13 +14,19 @@ import {
   type ManageUpdateResult
 } from './ManageProfileUseCases';
 import type { ProfileCommitService } from './ProfileCommitService';
-import type { IdGenerator, LocalAcquireCommand, ProfileRepository } from './ProfilePorts';
-import type { Profile, ProfileAvailability, ProfileSourceKind } from './ProfileModels';
+import type {
+  IdGenerator,
+  LocalAcquireCommand,
+  ProfileRefreshSchedulePort,
+  ProfileRepository
+} from './ProfilePorts';
+import { createProfile, type Profile, type ProfileAvailability, type ProfileSourceKind } from './ProfileModels';
 import type {
   RefreshProfileFailedResult,
   RefreshProfileResult,
   RefreshProfileUseCase
 } from './RefreshProfileUseCase';
+import type { RefreshProfilesResult, RefreshProfilesUseCase } from './RefreshProfilesUseCase';
 import { redactSensitiveText } from './SecretRedactor';
 import {
   createVpnFailure,
@@ -69,6 +75,8 @@ import type {
 export interface ProfileApplicationDependencies {
   importUseCase: ImportProfileUseCase;
   refreshUseCase: RefreshProfileUseCase;
+  refreshProfilesUseCase?: RefreshProfilesUseCase;
+  profileRefreshSchedule?: ProfileRefreshSchedulePort;
   manageProfileUseCases: ManageProfileUseCases;
   runtimeCoordinator: LocalRuntimeCoordinator;
   commitService: ProfileCommitService;
@@ -152,6 +160,29 @@ export type UpdateProfileResult =
   | UpdateProfileRefreshFailedResult
   | UpdateProfileFailedResult;
 
+export interface RefreshAllSubscriptionsCompletedResult {
+  kind: 'COMPLETED';
+  result: RefreshProfilesResult;
+}
+
+export interface RefreshAllSubscriptionsFailedResult {
+  kind: 'FAILED';
+  error: AppError;
+}
+
+export type RefreshAllSubscriptionsResult =
+  | RefreshAllSubscriptionsCompletedResult
+  | RefreshAllSubscriptionsFailedResult;
+
+export const PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS: readonly number[] = [
+  0,
+  2 * 60 * 60 * 1000,
+  6 * 60 * 60 * 1000,
+  12 * 60 * 60 * 1000,
+  24 * 60 * 60 * 1000,
+  7 * 24 * 60 * 60 * 1000
+];
+
 export type ProfileApplicationListener = (snapshot: ProfileApplicationSnapshot) => void;
 type AppRuntimeMutationOwner = 'NONE' | 'ONE_CLICK' | 'VPN' | 'PROFILE_EDIT';
 
@@ -193,9 +224,29 @@ class UpdateProfileFailedResultValue implements UpdateProfileFailedResult {
   }
 }
 
+class RefreshAllSubscriptionsCompletedResultValue implements RefreshAllSubscriptionsCompletedResult {
+  kind: 'COMPLETED' = 'COMPLETED';
+  result: RefreshProfilesResult;
+
+  constructor(result: RefreshProfilesResult) {
+    this.result = cloneRefreshProfilesResult(result);
+  }
+}
+
+class RefreshAllSubscriptionsFailedResultValue implements RefreshAllSubscriptionsFailedResult {
+  kind: 'FAILED' = 'FAILED';
+  error: AppError;
+
+  constructor(error: AppError) {
+    this.error = error;
+  }
+}
+
 export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
   private readonly importUseCase: ImportProfileUseCase;
   private readonly refreshUseCase: RefreshProfileUseCase;
+  private readonly refreshProfilesUseCase?: RefreshProfilesUseCase;
+  private readonly profileRefreshSchedule?: ProfileRefreshSchedulePort;
   private readonly manageProfileUseCases: ManageProfileUseCases;
   private readonly runtimeCoordinator: LocalRuntimeCoordinator;
   private readonly commitService: ProfileCommitService;
@@ -228,6 +279,8 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
   constructor(dependencies: ProfileApplicationDependencies) {
     this.importUseCase = dependencies.importUseCase;
     this.refreshUseCase = dependencies.refreshUseCase;
+    this.refreshProfilesUseCase = dependencies.refreshProfilesUseCase;
+    this.profileRefreshSchedule = dependencies.profileRefreshSchedule;
     this.manageProfileUseCases = dependencies.manageProfileUseCases;
     this.runtimeCoordinator = dependencies.runtimeCoordinator;
     this.commitService = dependencies.commitService;
@@ -341,6 +394,92 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
     }
   }
 
+  async refreshAllSubscriptions(): Promise<RefreshAllSubscriptionsResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    const batchUseCase: RefreshProfilesUseCase | undefined = this.refreshProfilesUseCase;
+    if (batchUseCase === undefined) {
+      return new RefreshAllSubscriptionsFailedResultValue(
+        createSubscriptionRefreshAllUnavailableError(this.commitService.now())
+      );
+    }
+    const drainError: AppError | undefined = await this.requireDelayDrainAppError('RUNTIME_START');
+    if (drainError !== undefined) {
+      return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
+    }
+    const admission = this.runtimeCoordinator.acquireMutationLease('REFRESH');
+    if (admission.error !== undefined) {
+      return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
+    }
+    try {
+      const result: RefreshProfilesResult = await batchUseCase.execute({
+        mode: 'ALL'
+      });
+      await this.refreshSnapshotFromRepository(undefined);
+      return new RefreshAllSubscriptionsCompletedResultValue(result);
+    } catch (_) {
+      const appError: AppError = createSubscriptionRefreshAllFailedError(this.commitService.now());
+      await this.refreshSnapshotFromRepository(appError);
+      return new RefreshAllSubscriptionsFailedResultValue(appError);
+    } finally {
+      admission.lease?.release();
+    }
+  }
+
+  async updateAutoUpdateInterval(profileId: string, intervalMs: number): Promise<UpdateProfileResult> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+    }
+    if (!isAllowedProfileAutoUpdateInterval(intervalMs)) {
+      return new UpdateProfileFailedResultValue(createSubscriptionIntervalInvalidError(this.commitService.now()));
+    }
+    if (!this.tryAcquireRuntimeMutationOwner('PROFILE_EDIT')) {
+      return new UpdateProfileFailedResultValue(createProfileEditBusyError(this.commitService.now()));
+    }
+    try {
+      const currentProfile: Profile | undefined = await this.repository.get(profileId);
+      if (currentProfile === undefined || currentProfile.sourceKind !== 'REMOTE_URL') {
+        return new UpdateProfileFailedResultValue(createSubscriptionIntervalUnavailableError(this.commitService.now()));
+      }
+      const updatedProfile: Profile = createProfile({
+        id: currentProfile.id,
+        name: currentProfile.name,
+        sourceKind: currentProfile.sourceKind,
+        sourceDisplay: currentProfile.sourceDisplay,
+        sourceSecretRef: currentProfile.sourceSecretRef,
+        currentRevision: currentProfile.currentRevision,
+        failedCandidate: currentProfile.failedCandidate,
+        availability: currentProfile.availability,
+        lastError: currentProfile.lastError,
+        createdAt: currentProfile.createdAt,
+        updatedAt: this.commitService.now(),
+        lastSuccessfulUpdateAt: currentProfile.lastSuccessfulUpdateAt,
+        autoUpdateIntervalMs: intervalMs
+      });
+      await this.repository.save(updatedProfile);
+      await this.refreshSnapshotFromRepository(undefined);
+      const scheduleError: AppError | undefined = await this.reconcileProfileRefreshSchedule();
+      if (scheduleError !== undefined) {
+        return new UpdateProfileRefreshFailedResultValue(updatedProfile, scheduleError);
+      }
+      return new UpdateProfileUpdatedResultValue(updatedProfile);
+    } catch (_) {
+      return new UpdateProfileFailedResultValue(createSubscriptionIntervalSaveFailedError(this.commitService.now()));
+    } finally {
+      this.releaseRuntimeMutationOwner('PROFILE_EDIT');
+    }
+  }
+
+  async reloadFromRepository(): Promise<void> {
+    if (this.snapshot.status !== 'READY') {
+      await this.initialize();
+      return;
+    }
+    await this.refreshSnapshotFromRepository(undefined);
+    await this.reconcileProfileRefreshSchedule();
+  }
+
   async enable(profileId: string): Promise<ManageEnableResult> {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
@@ -367,6 +506,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
     }
     const result: ManageDeleteResult = await this.manageProfileUseCases.delete(profileId);
     await this.refreshSnapshotFromRepository(undefined);
+    await this.reconcileProfileRefreshSchedule();
     return result;
   }
 
@@ -647,6 +787,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
       await this.commitService.reconcileStoredContent();
       await this.runtimeCoordinator.initialize();
       await this.refreshSnapshotFromRepository(undefined);
+      await this.reconcileProfileRefreshSchedule();
     } catch (error) {
       const appError: AppError = createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile application initialization failed.'), {
         retryable: false
@@ -695,6 +836,29 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
         snapshotError
       )
     );
+  }
+
+  private async reconcileProfileRefreshSchedule(): Promise<AppError | undefined> {
+    const schedule: ProfileRefreshSchedulePort | undefined = this.profileRefreshSchedule;
+    if (schedule === undefined) {
+      return undefined;
+    }
+    try {
+      await schedule.reconcile(this.hasScheduledRemoteProfiles());
+      return undefined;
+    } catch (_) {
+      return createSubscriptionScheduleFailedError(this.commitService.now());
+    }
+  }
+
+  private hasScheduledRemoteProfiles(): boolean {
+    for (let index = 0; index < this.snapshot.profiles.length; index += 1) {
+      const profile: ProfileApplicationProfileSnapshot = this.snapshot.profiles[index];
+      if (profile.sourceKind === 'REMOTE_URL' && profile.autoUpdateIntervalMs > 0) {
+        return true;
+      }
+    }
+    return false;
   }
 
   private async maybeReconcileForActiveProfile(profileId: string): Promise<void> {
@@ -1470,6 +1634,69 @@ function createProfileEditBusyError(timestamp: string): AppError {
   });
 }
 
+function createSubscriptionRefreshAllBusyError(timestamp: string): AppError {
+  return createAppError('RUNTIME_START', 'Subscription refresh is unavailable while runtime work is in progress.', {
+    code: 'SUBSCRIPTION_REFRESH_ALL_BUSY',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.runtime.start'
+  });
+}
+
+function createSubscriptionRefreshAllUnavailableError(timestamp: string): AppError {
+  return createAppError('RUNTIME_START', 'Subscription refresh is unavailable in this environment.', {
+    code: 'SUBSCRIPTION_REFRESH_ALL_UNAVAILABLE',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.runtime.start'
+  });
+}
+
+function createSubscriptionRefreshAllFailedError(timestamp: string): AppError {
+  return createAppError('DOWNLOAD', 'Subscription refresh failed before completion.', {
+    code: 'SUBSCRIPTION_REFRESH_ALL_FAILED',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.download'
+  });
+}
+
+function createSubscriptionIntervalInvalidError(timestamp: string): AppError {
+  return createAppError('PERSISTENCE', 'Subscription auto-update interval is invalid.', {
+    code: 'SUBSCRIPTION_INTERVAL_INVALID',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.persistence'
+  });
+}
+
+function createSubscriptionIntervalUnavailableError(timestamp: string): AppError {
+  return createAppError('PERSISTENCE', 'Subscription auto-update interval is unavailable for this profile.', {
+    code: 'SUBSCRIPTION_INTERVAL_UNAVAILABLE',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.persistence'
+  });
+}
+
+function createSubscriptionIntervalSaveFailedError(timestamp: string): AppError {
+  return createAppError('PERSISTENCE', 'Subscription auto-update interval could not be saved.', {
+    code: 'SUBSCRIPTION_INTERVAL_SAVE_FAILED',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.persistence'
+  });
+}
+
+function createSubscriptionScheduleFailedError(timestamp: string): AppError {
+  return createAppError('PERSISTENCE', 'Subscription schedule reconciliation failed after saving profile metadata.', {
+    code: 'SUBSCRIPTION_SCHEDULE_FAILED',
+    retryable: false,
+    timestamp,
+    userMessageResource: 'error.persistence'
+  });
+}
+
 function createUpdateRefreshCancelledError(timestamp: string): AppError {
   return createAppError('DOWNLOAD', 'Profile metadata was saved, but the source refresh did not complete.', {
     code: 'CMFA_PROFILE_REFRESH_INCOMPLETE',
@@ -1487,6 +1714,15 @@ function normalizeOptionalSourceUrl(sourceUrl: string | undefined): string | und
   return normalized.length === 0 ? undefined : normalized;
 }
 
+function isAllowedProfileAutoUpdateInterval(intervalMs: number): boolean {
+  for (let index = 0; index < PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS.length; index += 1) {
+    if (PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS[index] === intervalMs) {
+      return true;
+    }
+  }
+  return false;
+}
+
 function isPlainHttpUrl(sourceUrl: string): boolean {
   return sourceUrl.trim().startsWith('http://');
 }
@@ -1498,6 +1734,18 @@ function cloneAppError(error: AppError): AppError {
     timestamp: error.timestamp,
     userMessageResource: error.userMessageResource
   });
+}
+
+function cloneRefreshProfilesResult(result: RefreshProfilesResult): RefreshProfilesResult {
+  return {
+    items: result.items.map((item) => ({
+      profileId: item.profileId,
+      status: item.status
+    })),
+    deadlineReached: result.deadlineReached,
+    cancelled: result.cancelled,
+    remainingCount: result.remainingCount
+  };
 }
 
 const ONE_CLICK_VPN_CONFIRMATION_TIMEOUT_MS: number = 15_000;

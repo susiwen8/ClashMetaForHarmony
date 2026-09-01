@@ -120,6 +120,10 @@ export interface ProfileRefreshLeasePort {
   release(profileId: string, ownerToken: string): Promise<boolean>;
 }
 
+export interface ProfileRefreshSchedulePort {
+  reconcile(enabled: boolean): Promise<void>;
+}
+
 export interface ProfilePorts {
   repository: ProfileRepository;
   contentStore: ProfileContentStore;

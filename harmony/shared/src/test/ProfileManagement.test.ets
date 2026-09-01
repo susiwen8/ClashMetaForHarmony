@@ -28,6 +28,9 @@ import {
   type ProfileApplicationSnapshot,
   ProfileCommitService,
   RefreshProfileUseCase,
+  RefreshProfilesUseCase,
+  type RefreshProfilesCommand,
+  type RefreshProfilesResult,
   SerialCommandQueue,
   createVpnFailure,
   createVpnRuntimeSnapshot,
@@ -50,6 +53,7 @@ import {
   type Profile,
   type ProfileContentStore,
   type ProfileRefreshLeasePort,
+  type ProfileRefreshSchedulePort,
   type ProfileRepository,
   type ProfileRevision,
   type ProxyApplicationPort,
@@ -150,6 +154,26 @@ type UpdateProfileResultContract =
   | UpdateProfileRefreshFailedResultContract
   | UpdateProfileFailedResultContract;
 
+interface RefreshAllSubscriptionsCompletedResultContract {
+  kind: 'COMPLETED';
+  result: RefreshProfilesResult;
+}
+
+interface RefreshAllSubscriptionsFailedResultContract {
+  kind: 'FAILED';
+  error: AppError;
+}
+
+type RefreshAllSubscriptionsResultContract =
+  | RefreshAllSubscriptionsCompletedResultContract
+  | RefreshAllSubscriptionsFailedResultContract;
+
+interface ProfileApplicationSubscriptionTask5AContract {
+  refreshAllSubscriptions(): Promise<RefreshAllSubscriptionsResultContract>;
+  updateAutoUpdateInterval(profileId: string, intervalMs: number): Promise<UpdateProfileResultContract>;
+  reloadFromRepository(): Promise<void>;
+}
+
 class RuntimeCoordinatorDependencyBag implements LocalRuntimeCoordinatorDependencies {
   readonly repository: FakeProfileRepository;
   readonly contentStore: FakeProfileContentStore;
@@ -197,6 +221,8 @@ class ManageProfileUseCasesDependencyBag implements ManageProfileUseCasesDepende
 class ProfileApplicationDependencyBag implements ProfileApplicationDependencies {
   readonly importUseCase: ImportProfileUseCase;
   readonly refreshUseCase: RefreshProfileUseCase;
+  readonly refreshProfilesUseCase?: FakeRefreshProfilesUseCase;
+  readonly profileRefreshSchedule?: ProfileRefreshSchedulePort;
   readonly manageProfileUseCases: ManageProfileUseCases;
   readonly runtimeCoordinator: LocalRuntimeCoordinator;
   readonly commitService: ProfileCommitService;
@@ -209,6 +235,8 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
   constructor(
     importUseCase: ImportProfileUseCase,
     refreshUseCase: RefreshProfileUseCase,
+    refreshProfilesUseCase: FakeRefreshProfilesUseCase | undefined,
+    profileRefreshSchedule: ProfileRefreshSchedulePort | undefined,
     manageProfileUseCases: ManageProfileUseCases,
     runtimeCoordinator: LocalRuntimeCoordinator,
     commitService: ProfileCommitService,
@@ -220,6 +248,8 @@ class ProfileApplicationDependencyBag implements ProfileApplicationDependencies 
   ) {
     this.importUseCase = importUseCase;
     this.refreshUseCase = refreshUseCase;
+    this.refreshProfilesUseCase = refreshProfilesUseCase;
+    this.profileRefreshSchedule = profileRefreshSchedule;
     this.manageProfileUseCases = manageProfileUseCases;
     this.runtimeCoordinator = runtimeCoordinator;
     this.commitService = commitService;
@@ -332,6 +362,57 @@ class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
   async release(profileId: string, _ownerToken: string): Promise<boolean> {
     this.sharedLog?.push(`lease.release:${profileId}`);
     return true;
+  }
+}
+
+class FakeRefreshProfilesUseCase extends RefreshProfilesUseCase {
+  readonly commands: RefreshProfilesCommand[] = [];
+  sharedLog?: string[];
+  error?: Error;
+  result: RefreshProfilesResult = {
+    items: [],
+    deadlineReached: false,
+    cancelled: false,
+    remainingCount: 0
+  };
+
+  constructor() {
+    super({
+      repository: new FakeProfileRepository([]),
+      executor: {
+        async execute() {
+          throw new Error('fake batch executor should stay unused');
+        }
+      },
+      clock: new FakeClock([buildTimestamp(0)])
+    });
+  }
+
+  async execute(command: RefreshProfilesCommand): Promise<RefreshProfilesResult> {
+    this.sharedLog?.push(`batch.execute:${command.mode}`);
+    this.commands.push({
+      mode: command.mode,
+      deadlineMs: command.deadlineMs,
+      isCancelled: command.isCancelled
+    });
+    if (this.error !== undefined) {
+      throw this.error;
+    }
+    return cloneRefreshProfilesResult(this.result);
+  }
+}
+
+class FakeProfileRefreshSchedulePort implements ProfileRefreshSchedulePort {
+  readonly reconcileCalls: boolean[] = [];
+  sharedLog?: string[];
+  error?: Error;
+
+  async reconcile(enabled: boolean): Promise<void> {
+    this.sharedLog?.push(`schedule.reconcile:${enabled}`);
+    this.reconcileCalls.push(enabled);
+    if (this.error !== undefined) {
+      throw this.error;
+    }
   }
 }
 
@@ -1517,6 +1598,18 @@ function cloneProfile(profile: Profile): Profile {
   });
 }
 
+function cloneRefreshProfilesResult(result: RefreshProfilesResult): RefreshProfilesResult {
+  return {
+    items: result.items.map((item) => ({
+      profileId: item.profileId,
+      status: item.status
+    })),
+    deadlineReached: result.deadlineReached,
+    cancelled: result.cancelled,
+    remainingCount: result.remainingCount
+  };
+}
+
 function createManagement(
   repository: FakeProfileRepository,
   contentStore: FakeProfileContentStore,
@@ -1577,7 +1670,9 @@ function createApplication(
   vpnController?: VpnControllerPort,
   idGenerator?: IdGenerator,
   proxyService?: ProxyApplicationPort,
-  oneClickVpnConfirmation?: OneClickVpnConfirmationPort
+  oneClickVpnConfirmation?: OneClickVpnConfirmationPort,
+  batchUseCase?: FakeRefreshProfilesUseCase,
+  schedulePort?: FakeProfileRefreshSchedulePort
 ): ProfileApplication {
   const runtimeCoordinator = createRuntimeCoordinator(
     repository,
@@ -1595,7 +1690,10 @@ function createApplication(
     vpnController,
     idGenerator,
     proxyService,
-    oneClickVpnConfirmation
+    oneClickVpnConfirmation,
+    new FakeProfileRefreshLeasePort(),
+    batchUseCase,
+    schedulePort
   );
 }
 
@@ -1610,7 +1708,9 @@ function createApplicationWithCoordinator(
   idGenerator?: IdGenerator,
   proxyService?: ProxyApplicationPort,
   oneClickVpnConfirmation?: OneClickVpnConfirmationPort,
-  leasePort: ProfileRefreshLeasePort = new FakeProfileRefreshLeasePort()
+  leasePort: ProfileRefreshLeasePort = new FakeProfileRefreshLeasePort(),
+  batchUseCase?: FakeRefreshProfilesUseCase,
+  schedulePort?: FakeProfileRefreshSchedulePort
 ): ProfileApplication {
   const gateway: FakeSourceGateway = sourceGateway ?? new FakeSourceGateway();
   const queue = new SerialCommandQueue();
@@ -1656,6 +1756,8 @@ function createApplicationWithCoordinator(
     new ProfileApplicationDependencyBag(
       importUseCase,
       refreshUseCase,
+      batchUseCase,
+      schedulePort,
       manageProfileUseCases,
       runtimeCoordinator,
       commitService,
@@ -2376,6 +2478,364 @@ export default function profileManagementTestsuite() {
       expect(gateway.remoteCommands.length).assertEqual(1);
       expect(gateway.remoteCommands[0].allowPlainHttp).assertTrue();
       expect(gateway.remoteCommands[0].sourceDisplay).assertEqual('http://legacy.example.com');
+    });
+
+    it('applicationInitializeReconcilesSubscriptionScheduleFromRepositorySnapshot', 0, async () => {
+      const scheduledProfile = buildProfileRecord('scheduled', 'VALID', 'REMOTE_URL', buildRevision('scheduled'), 'secret-scheduled', null, 2 * 60 * 60 * 1000);
+      const idleProfile = buildProfileRecord('idle', 'VALID', 'REMOTE_URL', buildRevision('idle'), 'secret-idle', null, 0);
+      const scheduledSchedule = new FakeProfileRefreshSchedulePort();
+      const idleSchedule = new FakeProfileRefreshSchedulePort();
+
+      const scheduledApplication = createApplication(
+        new FakeProfileRepository([scheduledProfile], 'scheduled'),
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        scheduledSchedule
+      ) as ProfileApplicationSubscriptionTask5AContract;
+      const idleApplication = createApplication(
+        new FakeProfileRepository([idleProfile], 'idle'),
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        idleSchedule
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await scheduledApplication.reloadFromRepository();
+      await idleApplication.reloadFromRepository();
+
+      expect(scheduledSchedule.reconcileCalls.join(',')).assertEqual('true');
+      expect(idleSchedule.reconcileCalls.join(',')).assertEqual('false');
+    });
+
+    it('applicationUpdateAutoUpdateIntervalSavesRemoteMetadataAndReconcilesSchedule', 0, async () => {
+      const revision = buildRevision('remote-interval');
+      const original = buildProfileRecord('remote-interval', 'VALID', 'REMOTE_URL', revision, 'secret-remote');
+      const repository = new FakeProfileRepository([original], 'remote-interval');
+      const schedulePort = new FakeProfileRefreshSchedulePort();
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        schedulePort
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const result = await application.updateAutoUpdateInterval('remote-interval', 2 * 60 * 60 * 1000);
+
+      expect(result.kind).assertEqual('UPDATED');
+      if (result.kind !== 'UPDATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.profile.id).assertEqual(original.id);
+      expect(result.profile.name).assertEqual(original.name);
+      expect(result.profile.sourceDisplay).assertEqual(original.sourceDisplay);
+      expect(result.profile.sourceSecretRef).assertEqual(original.sourceSecretRef);
+      expect(result.profile.currentRevision?.relativePath ?? '').assertEqual(original.currentRevision?.relativePath ?? '');
+      expect(result.profile.createdAt).assertEqual(original.createdAt);
+      expect(result.profile.updatedAt).assertEqual(buildTimestamp(12));
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(2 * 60 * 60 * 1000);
+      expect(repository.readProfile('remote-interval')?.autoUpdateIntervalMs).assertEqual(2 * 60 * 60 * 1000);
+      expect(schedulePort.reconcileCalls.join(',')).assertEqual('false,true');
+    });
+
+    it('applicationUpdateAutoUpdateIntervalDisablesScheduleWhenLastRemoteIntervalBecomesZero', 0, async () => {
+      const revision = buildRevision('remote-last-zero');
+      const profile = buildProfileRecord('remote-last-zero', 'VALID', 'REMOTE_URL', revision, 'secret-remote', null, 2 * 60 * 60 * 1000);
+      const repository = new FakeProfileRepository([profile], 'remote-last-zero');
+      const schedulePort = new FakeProfileRefreshSchedulePort();
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        schedulePort
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const result = await application.updateAutoUpdateInterval('remote-last-zero', 0);
+
+      expect(result.kind).assertEqual('UPDATED');
+      expect(repository.readProfile('remote-last-zero')?.autoUpdateIntervalMs).assertEqual(0);
+      expect(schedulePort.reconcileCalls.join(',')).assertEqual('true,false');
+    });
+
+    it('applicationUpdateAutoUpdateIntervalRejectsInvalidIntervalsAndLocalProfilesBeforeSaving', 0, async () => {
+      const remoteRevision = buildRevision('remote-invalid-interval');
+      const localRevision = buildRevision('local-interval');
+      const remoteRepository = new FakeProfileRepository([
+        buildProfileRecord('remote-invalid-interval', 'VALID', 'REMOTE_URL', remoteRevision, 'secret-remote')
+      ], 'remote-invalid-interval');
+      const localRepository = new FakeProfileRepository([
+        buildProfileRecord('local-interval', 'VALID', 'LOCAL_FILE', localRevision)
+      ], 'local-interval');
+      const invalidSchedule = new FakeProfileRefreshSchedulePort();
+      const localSchedule = new FakeProfileRefreshSchedulePort();
+      const invalidApplication = createApplication(
+        remoteRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        invalidSchedule
+      ) as ProfileApplicationSubscriptionTask5AContract;
+      const localApplication = createApplication(
+        localRepository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        localSchedule
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await invalidApplication.reloadFromRepository();
+      await localApplication.reloadFromRepository();
+      const invalidResult = await invalidApplication.updateAutoUpdateInterval('remote-invalid-interval', 123);
+      const localResult = await localApplication.updateAutoUpdateInterval('local-interval', 2 * 60 * 60 * 1000);
+
+      expect(invalidResult.kind).assertEqual('FAILED');
+      expect(localResult.kind).assertEqual('FAILED');
+      expect(remoteRepository.savedProfiles.length).assertEqual(0);
+      expect(localRepository.savedProfiles.length).assertEqual(0);
+      expect(invalidSchedule.reconcileCalls.join(',')).assertEqual('false');
+      expect(localSchedule.reconcileCalls.join(',')).assertEqual('false');
+    });
+
+    it('applicationUpdateAutoUpdateIntervalReturnsPartialFailureWhenScheduleReconcileFailsAfterSave', 0, async () => {
+      const revision = buildRevision('schedule-failure');
+      const repository = new FakeProfileRepository([
+        buildProfileRecord('schedule-failure', 'VALID', 'REMOTE_URL', revision, 'secret-schedule')
+      ], 'schedule-failure');
+      const schedulePort = new FakeProfileRefreshSchedulePort();
+      schedulePort.error = new Error('schedule boom');
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        schedulePort
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const result = await application.updateAutoUpdateInterval('schedule-failure', 2 * 60 * 60 * 1000);
+
+      expect(result.kind).assertEqual('UPDATED_REFRESH_FAILED');
+      if (result.kind !== 'UPDATED_REFRESH_FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.code).assertEqual('SUBSCRIPTION_SCHEDULE_FAILED');
+      expect(repository.readProfile('schedule-failure')?.autoUpdateIntervalMs).assertEqual(2 * 60 * 60 * 1000);
+      expect(schedulePort.reconcileCalls.join(',')).assertEqual('false,true');
+    });
+
+    it('applicationRefreshAllSubscriptionsRunsBatchWithoutRuntimeOrVpnMutation', 0, async () => {
+      const revision = buildRevision('batch-refresh');
+      const repository = new FakeProfileRepository([
+        buildProfileRecord('batch-refresh', 'VALID', 'REMOTE_URL', revision, 'secret-batch')
+      ], 'batch-refresh');
+      const coreService = new FakeCoreService();
+      const vpnController = new FakeVpnController();
+      const proxyService = new FakeProxyApplication();
+      const batchUseCase = new FakeRefreshProfilesUseCase();
+      batchUseCase.result = {
+        items: [{ profileId: 'batch-refresh', status: 'SUCCESS' }],
+        deadlineReached: false,
+        cancelled: false,
+        remainingCount: 0
+      };
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        coreService,
+        undefined,
+        vpnController,
+        undefined,
+        proxyService,
+        undefined,
+        batchUseCase
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const result = await application.refreshAllSubscriptions();
+
+      expect(result.kind).assertEqual('COMPLETED');
+      if (result.kind !== 'COMPLETED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.result.items.length).assertEqual(1);
+      expect(batchUseCase.commands.length).assertEqual(1);
+      expect(batchUseCase.commands[0].mode).assertEqual('ALL');
+      expect(coreService.loadCalls.length).assertEqual(0);
+      expect(coreService.startCalls.length).assertEqual(0);
+      expect(coreService.stopCalls.length).assertEqual(0);
+      expect(vpnController.startCalls.length).assertEqual(0);
+      expect(vpnController.stopCalls.length).assertEqual(0);
+      expect(proxyService.reconcileCalls).assertEqual(0);
+    });
+
+    it('applicationRefreshAllSubscriptionsFailsClosedWhenRuntimeIsBusy', 0, async () => {
+      const revision = buildRevision('busy-batch');
+      const profile = buildProfileRecord('busy-batch', 'VALID', 'REMOTE_URL', revision, 'secret-busy');
+      const repository = new FakeProfileRepository([profile], 'busy-batch');
+      const contentStore = new FakeProfileContentStore();
+      const coreService = new FakeCoreService();
+      coreService.startDeferred = new DeferredRuntimeSnapshot();
+      const runtimeCoordinator = createRuntimeCoordinator(
+        repository,
+        contentStore,
+        coreService,
+        [buildTimestamp(20), buildTimestamp(21), buildTimestamp(22), buildTimestamp(23), buildTimestamp(24)]
+      );
+      const batchUseCase = new FakeRefreshProfilesUseCase();
+      const application = createApplicationWithCoordinator(
+        repository,
+        contentStore,
+        new FakeSubscriptionSecretStore(),
+        coreService,
+        runtimeCoordinator,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        new FakeProfileRefreshLeasePort(),
+        batchUseCase
+      ) as ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const startPromise = runtimeCoordinator.start();
+      await waitForCondition(() => coreService.startCalls.length === 1);
+      const result = await application.refreshAllSubscriptions();
+      coreService.startDeferred.resolve(buildRuntimeSnapshot('RUNNING'));
+      await startPromise;
+
+      expect(result.kind).assertEqual('FAILED');
+      expect(batchUseCase.commands.length).assertEqual(0);
+    });
+
+    it('applicationReloadFromRepositoryReflectsExternalRepositoryChangesWithoutRuntimeMutation', 0, async () => {
+      const revision = buildRevision('reloadable');
+      const initial = buildProfileRecord('reloadable', 'VALID', 'REMOTE_URL', revision, 'secret-reload');
+      const repository = new FakeProfileRepository([initial], 'reloadable');
+      const coreService = new FakeCoreService();
+      const vpnController = new FakeVpnController();
+      const proxyService = new FakeProxyApplication();
+      const schedulePort = new FakeProfileRefreshSchedulePort();
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        coreService,
+        undefined,
+        vpnController,
+        undefined,
+        proxyService,
+        undefined,
+        undefined,
+        schedulePort
+      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      repository.overwriteProfile(createProfile({
+        id: initial.id,
+        name: 'Reloaded Name',
+        sourceKind: initial.sourceKind,
+        sourceDisplay: initial.sourceDisplay,
+        sourceSecretRef: initial.sourceSecretRef,
+        currentRevision: initial.currentRevision,
+        failedCandidate: initial.failedCandidate,
+        availability: initial.availability,
+        lastError: initial.lastError,
+        createdAt: initial.createdAt,
+        updatedAt: buildTimestamp(44),
+        lastSuccessfulUpdateAt: initial.lastSuccessfulUpdateAt,
+        autoUpdateIntervalMs: 12 * 60 * 60 * 1000
+      }));
+
+      await application.reloadFromRepository();
+      const snapshot = application.current();
+
+      expect(snapshot.profiles[0].name).assertEqual('Reloaded Name');
+      expect(snapshot.profiles[0].autoUpdateIntervalMs).assertEqual(12 * 60 * 60 * 1000);
+      expect(coreService.loadCalls.length).assertEqual(0);
+      expect(coreService.startCalls.length).assertEqual(0);
+      expect(coreService.stopCalls.length).assertEqual(0);
+      expect(vpnController.startCalls.length).assertEqual(0);
+      expect(vpnController.stopCalls.length).assertEqual(0);
+      expect(proxyService.reconcileCalls).assertEqual(0);
+      expect(schedulePort.reconcileCalls.join(',')).assertEqual('false,true');
+    });
+
+    it('applicationDeleteDisablesSubscriptionScheduleAfterRemovingLastScheduledProfile', 0, async () => {
+      const revision = buildRevision('scheduled-delete');
+      const repository = new FakeProfileRepository([
+        buildProfileRecord('scheduled-delete', 'VALID', 'REMOTE_URL', revision, 'secret-delete', null, 2 * 60 * 60 * 1000)
+      ], 'scheduled-delete');
+      const schedulePort = new FakeProfileRefreshSchedulePort();
+      const application = createApplication(
+        repository,
+        new FakeProfileContentStore(),
+        new FakeSubscriptionSecretStore(),
+        new FakeCoreService(),
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        undefined,
+        schedulePort
+      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+
+      await application.reloadFromRepository();
+      const result = await application.delete('scheduled-delete');
+
+      expect(result.kind).assertEqual('DELETED');
+      expect(schedulePort.reconcileCalls.join(',')).assertEqual('true,false');
     });
 
     it('applicationUpdateProfileRejectsPlainHttpBeforePersistingMetadata', 0, async () => {
