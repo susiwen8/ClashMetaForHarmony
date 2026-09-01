@@ -653,6 +653,46 @@
       "value": "最近更新"
     },
     {
+      "name": "detail_last_successful_update",
+      "value": "上次成功更新"
+    },
+    {
+      "name": "detail_last_successful_update_never",
+      "value": "尚未成功更新"
+    },
+    {
+      "name": "detail_auto_update_title",
+      "value": "自动更新订阅"
+    },
+    {
+      "name": "detail_auto_update_note",
+      "value": "系统会在条件允许时更新，不保证精确时间。"
+    },
+    {
+      "name": "detail_auto_update_off",
+      "value": "关闭"
+    },
+    {
+      "name": "detail_auto_update_2h",
+      "value": "2 小时"
+    },
+    {
+      "name": "detail_auto_update_6h",
+      "value": "6 小时"
+    },
+    {
+      "name": "detail_auto_update_12h",
+      "value": "12 小时"
+    },
+    {
+      "name": "detail_auto_update_24h",
+      "value": "24 小时"
+    },
+    {
+      "name": "detail_auto_update_7d",
+      "value": "7 天"
+    },
+    {
       "name": "detail_edit",
       "value": "编辑配置"
     },

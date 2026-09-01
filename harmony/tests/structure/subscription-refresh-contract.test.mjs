@@ -18,6 +18,7 @@ const WORK_ABILITY_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionR
 const WORK_COMPOSITION_PATH = path.join(ENTRY_ETS_ROOT, 'background', 'SubscriptionRefreshComposition.ets');
 const ENTRY_TEST_LIST = path.join(ENTRY_ROOT, 'src', 'test', 'List.test.ets');
 const PROFILES_PAGE_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'ProfilesPage.ets');
+const PROFILE_DETAIL_PAGE_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'ProfileDetailPage.ets');
 const INDEX_PATH = path.join(ENTRY_ETS_ROOT, 'pages', 'Index.ets');
 const STRINGS_PATH = path.join(ENTRY_ROOT, 'src', 'main', 'resources', 'base', 'element', 'string.json');
 const PROFILE_ONLY_HELPER_PATHS = [
@@ -43,6 +44,37 @@ test('subscription refresh platform barrel exports the profile-only graph and sc
   assert.match(barrel, /WorkSchedulerSystemPort/u);
   assert.match(barrel, /RdbProfileRefreshLeaseStore/u);
   assert.match(index, /export \* from '\.\/ProfileRefresh';/u);
+});
+
+test('subscription refresh detail UI exposes remote-only interval presets and last-success metadata', async () => {
+  const [page, stringsSource] = await Promise.all([
+    readUtf8(PROFILE_DETAIL_PAGE_PATH),
+    readUtf8(STRINGS_PATH)
+  ]);
+  const strings = JSON.parse(stringsSource);
+  const names = new Set((strings.string ?? []).map((entry) => entry.name));
+
+  assert.match(page, /PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS/u);
+  assert.match(page, /profile\?\.sourceKind === 'REMOTE_URL'/u);
+  assert.match(page, /\.id\('detail\.auto-update'\)/u);
+  assert.match(page, /\.id\(`detail\.auto-update\.\$\{intervalMs\}`\)/u);
+  assert.match(page, /requestAutoUpdateInterval\(intervalMs\)/u);
+  assert.match(page, /\.id\('detail\.last-successful-update'\)/u);
+
+  for (const name of [
+    'detail_last_successful_update',
+    'detail_last_successful_update_never',
+    'detail_auto_update_title',
+    'detail_auto_update_note',
+    'detail_auto_update_off',
+    'detail_auto_update_2h',
+    'detail_auto_update_6h',
+    'detail_auto_update_12h',
+    'detail_auto_update_24h',
+    'detail_auto_update_7d'
+  ]) {
+    assert.equal(names.has(name), true, `missing string resource ${name}`);
+  }
 });
 
 test('subscription refresh platform graph stays isolated from vpn notification and entry dependencies', async () => {

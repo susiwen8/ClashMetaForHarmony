@@ -3,6 +3,7 @@ import type { ProfileDetailViewState } from '../presentation/PresentationModels'
 import type { ProxyViewState } from '../presentation/ProxyPresentationModels';
 import { SafeErrorCard, createEmptySafeErrorState } from '../components/SafeErrorCard';
 import { ProxiesPage } from './ProxiesPage';
+import { PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS } from '@cmfa/shared';
 
 @Component
 export struct ProfileDetailPage {
@@ -74,6 +75,17 @@ export struct ProfileDetailPage {
             Text(this.state.profile.updatedAt)
               .fontSize($r('app.float.type_caption'))
               .fontColor($r('app.color.color_text_primary'))
+
+            if (this.state.profile.sourceKind === 'REMOTE_URL') {
+              Text($r('app.string.detail_last_successful_update'))
+                .fontSize($r('app.float.type_caption'))
+                .fontColor($r('app.color.color_text_secondary'))
+
+              Text(this.state.profile.lastSuccessfulUpdateAt ?? $r('app.string.detail_last_successful_update_never'))
+                .id('detail.last-successful-update')
+                .fontSize($r('app.float.type_caption'))
+                .fontColor($r('app.color.color_text_primary'))
+            }
           }
           .width('100%')
           .padding($r('app.float.space_lg'))
@@ -86,6 +98,10 @@ export struct ProfileDetailPage {
         }
 
         this.buildEditSurface()
+
+        if (this.state.profile?.sourceKind === 'REMOTE_URL') {
+          this.buildAutoUpdateSurface()
+        }
 
         if (this.state.sourceRepairRequired) {
           Text(this.state.sourceRetryAvailable
@@ -150,6 +166,49 @@ export struct ProfileDetailPage {
     }
     .width('100%')
     .height('100%')
+  }
+
+  @Builder
+  private buildAutoUpdateSurface(): void {
+    Column({ space: $r('app.float.space_sm') }) {
+      Text($r('app.string.detail_auto_update_title'))
+        .fontSize($r('app.float.type_title'))
+        .fontWeight(FontWeight.Medium)
+        .fontColor($r('app.color.color_text_primary'))
+        .width('100%')
+
+      Text($r('app.string.detail_auto_update_note'))
+        .fontSize($r('app.float.type_caption'))
+        .fontColor($r('app.color.color_text_secondary'))
+        .width('100%')
+
+      Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Center }) {
+        ForEach(PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS, (intervalMs: number) => {
+          Button(autoUpdateIntervalLabel(intervalMs))
+            .id(`detail.auto-update.${intervalMs}`)
+            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+            .enabled(!this.commandPending && !this.state.editing)
+            .backgroundColor(this.state.profile?.autoUpdateIntervalMs === intervalMs
+              ? $r('app.color.color_action_primary')
+              : $r('app.color.color_surface_subtle'))
+            .fontColor(this.state.profile?.autoUpdateIntervalMs === intervalMs
+              ? $r('app.color.color_text_inverse')
+              : $r('app.color.color_text_primary'))
+            .margin({ right: $r('app.float.space_sm'), bottom: $r('app.float.space_sm') })
+            .onClick(() => {
+              void this.viewModel?.requestAutoUpdateInterval(intervalMs);
+            })
+        }, (intervalMs: number) => `${intervalMs}`)
+      }
+      .id('detail.auto-update')
+      .width('100%')
+    }
+    .width('100%')
+    .padding($r('app.float.space_lg'))
+    .borderRadius($r('app.float.radius_card'))
+    .backgroundColor($r('app.color.color_surface_card'))
+    .border({ width: 1, color: $r('app.color.color_border_subtle') })
+    .alignItems(HorizontalAlign.Start)
   }
 
   @Builder
@@ -346,6 +405,24 @@ function sourceKindLabel(sourceKind: 'LOCAL_FILE' | 'REMOTE_URL') {
   return sourceKind === 'LOCAL_FILE'
     ? $r('app.string.detail_source_kind_file')
     : $r('app.string.detail_source_kind_url');
+}
+
+function autoUpdateIntervalLabel(intervalMs: number): Resource {
+  switch (intervalMs) {
+    case 2 * 60 * 60 * 1000:
+      return $r('app.string.detail_auto_update_2h');
+    case 6 * 60 * 60 * 1000:
+      return $r('app.string.detail_auto_update_6h');
+    case 12 * 60 * 60 * 1000:
+      return $r('app.string.detail_auto_update_12h');
+    case 24 * 60 * 60 * 1000:
+      return $r('app.string.detail_auto_update_24h');
+    case 7 * 24 * 60 * 60 * 1000:
+      return $r('app.string.detail_auto_update_7d');
+    case 0:
+    default:
+      return $r('app.string.detail_auto_update_off');
+  }
 }
 
 function refreshLabel(state: ProfileDetailViewState) {
