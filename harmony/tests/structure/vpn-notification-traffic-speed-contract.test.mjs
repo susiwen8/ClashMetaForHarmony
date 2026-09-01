@@ -108,16 +108,47 @@ test('vpn notification traffic speed contract wires fixed diagnostic stage repor
     readUtf8(CORE_COMPOSITION_PATH)
   ]);
 
+  assert.match(controllerSource, /trafficMonitor\?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;/u,
+    'controller dependencies must accept one real shared traffic monitor'
+  );
   assert.match(controllerSource, /trafficReportStage\?: \(stage: string\) => void;/u,
     'controller dependencies must expose the optional fixed diagnostic callback'
   );
   assert.match(
     controllerSource,
-    /new VpnTrafficNotificationCoordinator\([\s\S]*dependencies\.trafficClock,[\s\S]*dependencies\.trafficScheduler,[\s\S]*dependencies\.trafficReportStage[\s\S]*\)/u,
-    'controller must pass the optional diagnostic callback into the traffic coordinator'
+    /new VpnTrafficNotificationCoordinator\([\s\S]*dependencies\.trafficMonitor,[\s\S]*new VpnTrafficNotificationSinkRecord\(this\.vpnExtension\),[\s\S]*dependencies\.trafficReportStage[\s\S]*\)/u,
+    'controller must subscribe the traffic coordinator to the injected shared monitor'
+  );
+  assert.doesNotMatch(
+    controllerSource,
+    /new VpnTrafficNotificationCoordinator\([\s\S]*trafficClock|new VpnTrafficNotificationCoordinator\([\s\S]*trafficScheduler/u,
+    'controller must not construct the coordinator with source-owned polling dependencies'
+  );
+  assert.doesNotMatch(controllerSource, /new VpnTrafficMonitor\(/u,
+    'controller must not own construction of the shared traffic monitor'
+  );
+  assert.match(
+    controllerSource,
+    /private startTrafficLoop\(sessionId: string\): void \{[\s\S]*this\.trafficMonitor\?\.start\(sessionId\);[\s\S]*this\.trafficNotificationCoordinator\?\.start\(sessionId\);/u,
+    'controller must start the shared monitor before subscribing notification presentation to the shared monitor'
+  );
+  assert.match(controllerSource, /this\.trafficMonitor\?\.markRecovering\(sessionId\);/u,
+    'controller must mark the shared monitor recovering without tearing down subscribers'
+  );
+  assert.match(controllerSource, /this\.trafficMonitor\?\.stop\(activeSessionId\);/u,
+    'controller must stop the shared monitor for the active session'
+  );
+  assert.match(controllerSource, /this\.trafficMonitor\?\.dispose\(\);/u,
+    'controller dispose must tear down the shared monitor'
+  );
+  assert.match(coreCompositionSource, /const trafficMonitor = new VpnTrafficMonitor\(/u,
+    'production CoreComposition must create one composition-owned traffic monitor'
+  );
+  assert.match(coreCompositionSource, /controllerDependencies\.trafficMonitor = trafficMonitor;/u,
+    'production CoreComposition must inject the shared traffic monitor into the controller'
   );
   assert.match(coreCompositionSource, /controllerDependencies\.trafficReportStage = reportVpnUiStage;/u,
-    'production CoreComposition must wire the existing fixed UI stage reporter into the traffic coordinator'
+    'production CoreComposition must wire the existing fixed UI stage reporter into the subscriber coordinator'
   );
   for (const stage of [
     'notification.traffic.source-ok',
@@ -129,6 +160,12 @@ test('vpn notification traffic speed contract wires fixed diagnostic stage repor
   ]) {
     assert.match(coordinatorSource, new RegExp(`['"]${stage.replaceAll('.', '\\\.')}['"]`, 'u'));
   }
+  assert.doesNotMatch(coordinatorSource, /NullTrafficMonitor/u,
+    'subscriber coordinator must not silently downgrade to a null monitor'
+  );
+  assert.doesNotMatch(coordinatorSource, /refreshTrafficCounters\(/u,
+    'subscriber coordinator must not poll counters directly'
+  );
   assert.doesNotMatch(coordinatorSource, /reportStage\(\s*`/u,
     'traffic diagnostics must use fixed stage literals rather than interpolated payloads'
   );

@@ -30,6 +30,10 @@ import {
   type HarmonyVpnControllerDependencies,
   type VpnExtensionAbilityApi
 } from '../main/ets/vpn/HarmonyVpnController';
+import {
+  VpnTrafficMonitor,
+  type VpnTrafficCounterSourcePort
+} from '../main/ets/vpn/VpnTrafficMonitor';
 import { VpnSessionRegistry } from '../main/ets/vpn/VpnSessionRegistry';
 
 const PROFILE_HASH: string = '1111111111111111111111111111111111111111111111111111111111111111';
@@ -358,6 +362,18 @@ class FakeVpnRpcClient implements VpnRpcClientPort {
   }
 }
 
+class RpcClientTrafficCounterSource implements VpnTrafficCounterSourcePort {
+  private readonly rpcClient: FakeVpnRpcClient;
+
+  constructor(rpcClient: FakeVpnRpcClient) {
+    this.rpcClient = rpcClient;
+  }
+
+  async refreshTrafficCounters(): Promise<VpnRpcTrafficCounters> {
+    return await this.rpcClient.refreshTrafficCounters();
+  }
+}
+
 class FakeRuntimeMirrorPort {
   readonly bindSessions: string[] = [];
   readonly deactivateSessions: string[] = [];
@@ -399,6 +415,7 @@ interface ControllerHarness {
   scheduler: ManualScheduler;
   trafficScheduler: ManualScheduler;
   trafficClock: ManualClock;
+  trafficMonitor: VpnTrafficMonitor;
   controller: HarmonyVpnController;
   registryLog: string[];
   eventLog: string[];
@@ -414,8 +431,7 @@ class TestControllerDependencies implements HarmonyVpnControllerDependencies {
   rpcClient?: FakeVpnRpcClient;
   runtimeMirror?: FakeRuntimeMirrorPort;
   scheduler?: ManualScheduler;
-  trafficScheduler?: ManualScheduler;
-  trafficClock?: ManualClock;
+  trafficMonitor?: VpnTrafficMonitor;
   trafficReportStage?: (stage: string) => void;
 }
 
@@ -429,12 +445,16 @@ function createHarness(): ControllerHarness {
   const trafficScheduler = new ManualScheduler();
   const trafficClock = new ManualClock();
   const reportStages: string[] = [];
+  const trafficMonitor = new VpnTrafficMonitor(
+    new RpcClientTrafficCounterSource(rpcClient),
+    trafficClock,
+    trafficScheduler
+  );
   const dependencies = new TestControllerDependencies();
   dependencies.rpcClient = rpcClient;
   dependencies.runtimeMirror = runtimeMirror;
   dependencies.scheduler = scheduler;
-  dependencies.trafficScheduler = trafficScheduler;
-  dependencies.trafficClock = trafficClock;
+  dependencies.trafficMonitor = trafficMonitor;
   dependencies.trafficReportStage = (stage: string): void => {
     reportStages.push(stage);
   };
@@ -452,6 +472,7 @@ function createHarness(): ControllerHarness {
     scheduler,
     trafficScheduler,
     trafficClock,
+    trafficMonitor,
     controller,
     registryLog,
     eventLog,
@@ -834,9 +855,11 @@ export default function harmonyVpnControllerTestsuite() {
       await harness.trafficScheduler.runNext();
 
       expect(harness.reportStages).assertDeepEquals([
+        'notification.traffic.source-failed',
+        'notification.traffic.counters-zero',
+        'notification.traffic.rate-zero',
         'notification.traffic.source-ok',
         'notification.traffic.counters-nonzero',
-        'notification.traffic.rate-zero',
         'notification.traffic.rate-nonzero'
       ]);
     });

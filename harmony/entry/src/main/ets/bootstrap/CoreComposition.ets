@@ -50,6 +50,7 @@ import {
   type VpnRpcClientContext,
   type VpnRpcClientPort,
   type VpnRpcClockPort,
+  type VpnRpcTrafficCounters,
   type VpnRpcSchedulerPort
 } from '@cmfa/shared';
 import type { ApplicationComposition, ApplicationCompositionState } from './ApplicationComposition';
@@ -58,6 +59,12 @@ import {
   type HarmonyVpnControllerDependencies,
   type VpnExtensionAbilityApi
 } from '../vpn/HarmonyVpnController';
+import {
+  VpnTrafficMonitor,
+  type VpnTrafficCounterSourcePort,
+  type VpnTrafficMonitorLifecyclePort,
+  type VpnTrafficMonitorReadPort
+} from '../vpn/VpnTrafficMonitor';
 import { UiOwnedVpnExtensionAbilityApi } from '../vpn/UiOwnedVpnExtensionAbilityApi';
 import { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
@@ -249,10 +256,21 @@ class VpnRpcCatalogInputsValue implements VpnRpcCatalogInputs {
 class HarmonyVpnControllerDependenciesRecord implements HarmonyVpnControllerDependencies {
   runtimeMirror?: VpnProxyRuntimeMirrorPort;
   scheduler?: BoundedDelaySchedulerPort;
-  trafficClock?: ClockPort;
-  trafficScheduler?: BoundedDelaySchedulerPort;
+  trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
   trafficReportStage?: (stage: string) => void;
   rpcClient?: VpnRpcClientPort;
+}
+
+class VpnRpcTrafficCounterSourceRecord implements VpnTrafficCounterSourcePort {
+  private readonly rpcClient: VpnRpcClientPort;
+
+  constructor(rpcClient: VpnRpcClientPort) {
+    this.rpcClient = rpcClient;
+  }
+
+  async refreshTrafficCounters(): Promise<VpnRpcTrafficCounters> {
+    return await this.rpcClient.refreshTrafficCounters();
+  }
 }
 
 class VpnRpcCancelableTaskAdapter implements VpnRpcCancelableTaskPort {
@@ -1025,8 +1043,12 @@ function createBoundHarmonyVpnController(
   const controllerDependencies = new HarmonyVpnControllerDependenciesRecord();
   controllerDependencies.runtimeMirror = mirror;
   controllerDependencies.scheduler = new TimeoutDelayScheduler();
-  controllerDependencies.trafficClock = new SystemVpnRpcClock();
-  controllerDependencies.trafficScheduler = new TimeoutDelayScheduler();
+  const trafficMonitor = new VpnTrafficMonitor(
+    new VpnRpcTrafficCounterSourceRecord(client),
+    new SystemVpnRpcClock(),
+    new TimeoutDelayScheduler()
+  );
+  controllerDependencies.trafficMonitor = trafficMonitor;
   controllerDependencies.trafficReportStage = reportVpnUiStage;
   controllerDependencies.rpcClient = client;
   const controller = new HarmonyVpnController(registry, api, controllerDependencies);

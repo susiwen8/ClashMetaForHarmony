@@ -1,17 +1,7 @@
 import type {
-  BoundedDelaySchedulerPort,
-  ClockPort,
-  VpnRpcTrafficCounters
-} from '@cmfa/shared';
-import type {
-  VpnTrafficMonitorListener,
   VpnTrafficMonitorReadPort,
   VpnTrafficMonitorSnapshot
 } from './VpnTrafficMonitor';
-
-export interface VpnTrafficCounterSourcePort {
-  refreshTrafficCounters(): Promise<VpnRpcTrafficCounters>;
-}
 
 export interface VpnTrafficNotificationSinkPort {
   updateTraffic(
@@ -35,19 +25,6 @@ class VpnTrafficMonitorSnapshotValue implements VpnTrafficMonitorSnapshot {
   rxBytes: number = 0;
   uploadBytesPerSecond: number = 0;
   downloadBytesPerSecond: number = 0;
-}
-
-class NullTrafficMonitor implements VpnTrafficMonitorReadPort {
-  snapshot(): VpnTrafficMonitorSnapshot {
-    return createSnapshot(false, 0, 0, 0, 0);
-  }
-
-  subscribe(_listener: VpnTrafficMonitorListener): number {
-    return 0;
-  }
-
-  unsubscribe(_id: number): void {
-  }
 }
 
 function createSnapshot(
@@ -88,18 +65,6 @@ function isNonZeroRate(snapshot: VpnTrafficMonitorSnapshot): boolean {
   return snapshot.uploadBytesPerSecond > 0 || snapshot.downloadBytesPerSecond > 0;
 }
 
-function asTrafficMonitorReadPort(
-  candidate: VpnTrafficMonitorReadPort | VpnTrafficCounterSourcePort
-): VpnTrafficMonitorReadPort | undefined {
-  const monitor = candidate as VpnTrafficMonitorReadPort;
-  if (typeof monitor.snapshot === 'function' &&
-    typeof monitor.subscribe === 'function' &&
-    typeof monitor.unsubscribe === 'function') {
-    return monitor;
-  }
-  return undefined;
-}
-
 export class VpnTrafficNotificationCoordinator {
   private readonly monitor: VpnTrafficMonitorReadPort;
   private readonly sink: VpnTrafficNotificationSinkPort;
@@ -110,31 +75,17 @@ export class VpnTrafficNotificationCoordinator {
   private sourceHealthy?: boolean;
   private countersNonZero?: boolean;
   private rateNonZero?: boolean;
+  private lastPublishedUploadBytesPerSecond?: number;
+  private lastPublishedDownloadBytesPerSecond?: number;
 
   constructor(
     monitor: VpnTrafficMonitorReadPort,
     sink: VpnTrafficNotificationSinkPort,
     reportStage?: (stage: string) => void
-  );
-  constructor(
-    source: VpnTrafficCounterSourcePort,
-    sink: VpnTrafficNotificationSinkPort,
-    clock: ClockPort,
-    scheduler: BoundedDelaySchedulerPort,
-    reportStage?: (stage: string) => void
-  );
-  constructor(
-    monitorOrSource: VpnTrafficMonitorReadPort | VpnTrafficCounterSourcePort,
-    sink: VpnTrafficNotificationSinkPort,
-    reportStageOrClock?: ((stage: string) => void) | ClockPort,
-    _scheduler?: BoundedDelaySchedulerPort,
-    maybeReportStage?: (stage: string) => void
   ) {
-    this.monitor = asTrafficMonitorReadPort(monitorOrSource) ?? new NullTrafficMonitor();
+    this.monitor = monitor;
     this.sink = sink;
-    this.reportStage = typeof reportStageOrClock === 'function'
-      ? reportStageOrClock
-      : maybeReportStage;
+    this.reportStage = reportStage;
   }
 
   start(sessionId: string): void {
@@ -191,6 +142,9 @@ export class VpnTrafficNotificationCoordinator {
     this.reportSourceState(snapshotValue.available);
     this.reportCountersState(isNonZeroCounters(snapshotValue));
     this.reportRateState(isNonZeroRate(snapshotValue));
+    if (this.isSamePublishedTrafficRate(snapshotValue)) {
+      return;
+    }
 
     try {
       await this.sink.updateTraffic(
@@ -198,6 +152,8 @@ export class VpnTrafficNotificationCoordinator {
         snapshotValue.uploadBytesPerSecond,
         snapshotValue.downloadBytesPerSecond
       );
+      this.lastPublishedUploadBytesPerSecond = snapshotValue.uploadBytesPerSecond;
+      this.lastPublishedDownloadBytesPerSecond = snapshotValue.downloadBytesPerSecond;
     } catch (_) {
     }
   }
@@ -221,6 +177,13 @@ export class VpnTrafficNotificationCoordinator {
     this.sourceHealthy = undefined;
     this.countersNonZero = undefined;
     this.rateNonZero = undefined;
+    this.lastPublishedUploadBytesPerSecond = undefined;
+    this.lastPublishedDownloadBytesPerSecond = undefined;
+  }
+
+  private isSamePublishedTrafficRate(snapshot: VpnTrafficMonitorSnapshot): boolean {
+    return this.lastPublishedUploadBytesPerSecond === snapshot.uploadBytesPerSecond &&
+      this.lastPublishedDownloadBytesPerSecond === snapshot.downloadBytesPerSecond;
   }
 
   private reportSourceState(sourceHealthy: boolean): void {

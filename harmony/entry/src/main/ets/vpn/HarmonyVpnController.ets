@@ -6,7 +6,6 @@ import {
   createVpnStartRequest,
   type BoundedDelaySchedulerPort,
   type CancelableDelayTask,
-  type ClockPort,
   type VpnControllerFailedResult,
   type VpnControllerPort,
   type VpnControllerRejectedResult,
@@ -24,9 +23,12 @@ import {
 import { VpnSessionRegistry, VpnSessionRegistryError } from './VpnSessionRegistry';
 import {
   VpnTrafficNotificationCoordinator,
-  type VpnTrafficCounterSourcePort,
   type VpnTrafficNotificationSinkPort
 } from './VpnTrafficNotificationCoordinator';
+import type {
+  VpnTrafficMonitorLifecyclePort,
+  VpnTrafficMonitorReadPort
+} from './VpnTrafficMonitor';
 
 const BUNDLE_NAME: string = 'com.github.kr328.clash.harmony';
 const ABILITY_NAME: string = 'CmfaVpnExtensionAbility';
@@ -47,8 +49,7 @@ export interface VpnExtensionAbilityApi {
 export interface HarmonyVpnControllerDependencies {
   runtimeMirror?: VpnProxyRuntimeMirrorPort;
   scheduler?: BoundedDelaySchedulerPort;
-  trafficClock?: ClockPort;
-  trafficScheduler?: BoundedDelaySchedulerPort;
+  trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
   trafficReportStage?: (stage: string) => void;
   rpcClient?: VpnRpcClientPort;
 }
@@ -165,18 +166,6 @@ class UnavailableVpnRpcClient implements VpnRpcClientPort {
   unsubscribe(_id: number): void {}
 
   async close(): Promise<void> {}
-}
-
-class VpnRpcTrafficCounterSourceRecord implements VpnTrafficCounterSourcePort {
-  private readonly rpcClient: VpnRpcClientPort;
-
-  constructor(rpcClient: VpnRpcClientPort) {
-    this.rpcClient = rpcClient;
-  }
-
-  async refreshTrafficCounters(): Promise<VpnRpcTrafficCounters> {
-    return await this.rpcClient.refreshTrafficCounters();
-  }
 }
 
 class VpnTrafficNotificationSinkRecord implements VpnTrafficNotificationSinkPort {
@@ -320,6 +309,7 @@ export class HarmonyVpnController implements VpnControllerPort {
   private readonly rpcClient: VpnRpcClientPort;
   private readonly runtimeMirror?: VpnProxyRuntimeMirrorPort;
   private readonly scheduler?: BoundedDelaySchedulerPort;
+  private readonly trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
   private readonly trafficNotificationCoordinator?: VpnTrafficNotificationCoordinator;
   private rpcSubscriptionId: number = 0;
   private stopRequestInFlight?: Promise<void>;
@@ -352,12 +342,11 @@ export class HarmonyVpnController implements VpnControllerPort {
     this.rpcClient = dependencies?.rpcClient ?? new UnavailableVpnRpcClient();
     this.runtimeMirror = dependencies?.runtimeMirror;
     this.scheduler = dependencies?.scheduler;
-    if (dependencies?.trafficClock !== undefined && dependencies?.trafficScheduler !== undefined) {
+    this.trafficMonitor = dependencies?.trafficMonitor;
+    if (dependencies?.trafficMonitor !== undefined) {
       this.trafficNotificationCoordinator = new VpnTrafficNotificationCoordinator(
-        new VpnRpcTrafficCounterSourceRecord(this.rpcClient),
+        dependencies.trafficMonitor,
         new VpnTrafficNotificationSinkRecord(this.vpnExtension),
-        dependencies.trafficClock,
-        dependencies.trafficScheduler,
         dependencies.trafficReportStage
       );
     }
@@ -1189,8 +1178,28 @@ export class HarmonyVpnController implements VpnControllerPort {
     if (sessionId.length === 0) {
       return;
     }
+    const activeSessionId: string | undefined = this.trafficSessionId;
+    if (activeSessionId !== undefined && activeSessionId !== sessionId) {
+      this.trafficNotificationCoordinator?.stop(activeSessionId);
+    }
+    this.trafficMonitor?.start(sessionId);
     this.trafficNotificationCoordinator?.start(sessionId);
     this.trafficSessionId = sessionId;
+  }
+
+  private markTrafficRecovering(sessionId?: string): void {
+    const activeSessionId: string | undefined = this.trafficSessionId;
+    if (activeSessionId === undefined) {
+      return;
+    }
+    if (sessionId !== undefined) {
+      if (sessionId !== activeSessionId) {
+        return;
+      }
+      this.trafficMonitor?.markRecovering(sessionId);
+      return;
+    }
+    this.trafficMonitor?.markRecovering(activeSessionId);
   }
 
   private stopTrafficLoop(sessionId?: string): void {
@@ -1200,17 +1209,20 @@ export class HarmonyVpnController implements VpnControllerPort {
         return;
       }
       this.trafficNotificationCoordinator?.stop(sessionId);
+      this.trafficMonitor?.stop(sessionId);
       return;
     }
     if (sessionId !== undefined && sessionId !== activeSessionId) {
       return;
     }
     this.trafficNotificationCoordinator?.stop(activeSessionId);
+    this.trafficMonitor?.stop(activeSessionId);
     this.trafficSessionId = undefined;
   }
 
   private disposeTrafficLoop(): void {
     this.trafficNotificationCoordinator?.dispose();
+    this.trafficMonitor?.dispose();
     this.trafficSessionId = undefined;
   }
 
@@ -1225,6 +1237,7 @@ export class HarmonyVpnController implements VpnControllerPort {
       return;
     }
     if (snapshot.state === 'RECOVERING') {
+      this.markTrafficRecovering(sessionId);
       return;
     }
     this.stopTrafficLoop(sessionId);
