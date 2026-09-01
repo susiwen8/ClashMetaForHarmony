@@ -12,6 +12,7 @@ import proxyViewModelTestsuite from './ProxyViewModel.test';
 import vpnEvidenceJournalTestsuite from './VpnEvidenceJournal.test';
 import vpnExtensionCompositionTestsuite from './VpnExtensionComposition.test';
 import vpnSessionRegistryTestsuite from './VpnSessionRegistry.test';
+import vpnTrafficMonitorTestsuite from './VpnTrafficMonitor.test';
 import vpnTrafficNotificationCoordinatorTestsuite from './VpnTrafficNotificationCoordinator.test';
 import coreRuntimeLogCollectorTestsuite from './CoreRuntimeLogCollector.test';
 import logsViewModelTestsuite from './LogsViewModel.test';
@@ -30,6 +31,7 @@ export default function testsuite() {
   vpnEvidenceJournalTestsuite();
   vpnExtensionCompositionTestsuite();
   vpnSessionRegistryTestsuite();
+  vpnTrafficMonitorTestsuite();
   vpnTrafficNotificationCoordinatorTestsuite();
   coreRuntimeLogCollectorTestsuite();
   logsViewModelTestsuite();
