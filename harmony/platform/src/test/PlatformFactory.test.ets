@@ -616,7 +616,7 @@ export default function platformFactoryTestsuite() {
         'fileDriver.create',
         'geodata.install',
         'huks.prepare',
-        'rdb.initialize:2',
+        'rdb.initialize:3',
         'repository.list',
         'content.reconcile:3',
         'secret.reconcile:2'
