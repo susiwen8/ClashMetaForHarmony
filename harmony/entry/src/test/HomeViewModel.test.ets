@@ -13,9 +13,16 @@ import {
   type VpnRuntimeEvent,
   type VpnRuntimeSnapshot
 } from '@cmfa/shared';
-import type { HomeViewState } from '../main/ets/presentation/PresentationModels';
+import {
+  formatTrafficBytes,
+  type HomeViewState
+} from '../main/ets/presentation/PresentationModels';
 import { HomeViewModel } from '../main/ets/presentation/HomeViewModel';
 import { VpnSessionRegistry } from '../main/ets/vpn/VpnSessionRegistry';
+import type {
+  VpnTrafficMonitorReadPort,
+  VpnTrafficMonitorSnapshot
+} from '../main/ets/vpn/VpnTrafficMonitor';
 import {
   createApplicationSnapshot,
   createProfileSnapshot,
@@ -173,6 +180,55 @@ class RecordingVpnSessionRegistry extends VpnSessionRegistry {
   }
 }
 
+class VpnTrafficMonitorSnapshotValue implements VpnTrafficMonitorSnapshot {
+  available: boolean = false;
+  txBytes: number = 0;
+  rxBytes: number = 0;
+  uploadBytesPerSecond: number = 0;
+  downloadBytesPerSecond: number = 0;
+}
+
+class FakeTrafficMonitor implements VpnTrafficMonitorReadPort {
+  private readonly listeners: Map<number, (snapshot: VpnTrafficMonitorSnapshot) => void | Promise<void>> = new Map();
+  private nextListenerId: number = 0;
+  private currentSnapshot: VpnTrafficMonitorSnapshot = createTrafficSnapshot(false, 0, 0, 0, 0);
+  readonly unsubscribeCalls: number[] = [];
+  subscribeCalls: number = 0;
+  snapshotCalls: number = 0;
+
+  snapshot(): VpnTrafficMonitorSnapshot {
+    this.snapshotCalls += 1;
+    return cloneTrafficSnapshot(this.currentSnapshot);
+  }
+
+  subscribe(listener: (snapshot: VpnTrafficMonitorSnapshot) => void | Promise<void>): number {
+    this.subscribeCalls += 1;
+    this.nextListenerId += 1;
+    this.listeners.set(this.nextListenerId, listener);
+    return this.nextListenerId;
+  }
+
+  unsubscribe(id: number): void {
+    this.unsubscribeCalls.push(id);
+    this.listeners.delete(id);
+  }
+
+  listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  setSnapshot(snapshot: VpnTrafficMonitorSnapshot): void {
+    this.currentSnapshot = cloneTrafficSnapshot(snapshot);
+  }
+
+  emit(snapshot: VpnTrafficMonitorSnapshot): void {
+    this.currentSnapshot = cloneTrafficSnapshot(snapshot);
+    this.listeners.forEach((listener) => {
+      void listener(cloneTrafficSnapshot(this.currentSnapshot));
+    });
+  }
+}
+
 class ImmediateVpnStartErrorCase {
   result: RejectedVpnStartResultValue | FailedVpnStartResultValue;
   expectedResource: string;
@@ -185,6 +241,156 @@ class ImmediateVpnStartErrorCase {
 
 export default function homeViewModelTestsuite() {
   describe('HomeViewModelTest', () => {
+    it('formatsTrafficBytesWithBinaryUnitsAndSafeNormalization', 0, () => {
+      expect(formatTrafficBytes(0)).assertEqual('0 B');
+      expect(formatTrafficBytes(1023)).assertEqual('1023 B');
+      expect(formatTrafficBytes(1024)).assertEqual('1 KiB');
+      expect(formatTrafficBytes(1536)).assertEqual('1.5 KiB');
+      expect(formatTrafficBytes(1024 * 1024)).assertEqual('1 MiB');
+      expect(formatTrafficBytes(1024 * 1024 * 1024)).assertEqual('1 GiB');
+      expect(formatTrafficBytes(-1)).assertEqual('0 B');
+      expect(formatTrafficBytes(Number.NaN)).assertEqual('0 B');
+      expect(formatTrafficBytes(Number.MAX_SAFE_INTEGER)).assertEqual('8388608 GiB');
+    });
+
+    it('subscribesToTrafficMonitorExactlyOnceSeedsFromSnapshotAndUnsubscribesOnDispose', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const trafficMonitor = new FakeTrafficMonitor();
+      trafficMonitor.setSnapshot(createTrafficSnapshot(true, 1024, 2048, 32, 64));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'traffic-session-seed'));
+
+      const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
+
+      expect(trafficMonitor.subscribeCalls).assertEqual(1);
+      expect(trafficMonitor.snapshotCalls).assertEqual(1);
+      expect(trafficMonitor.listenerCount()).assertEqual(1);
+      expect(viewModel.current().traffic.visible).assertTrue();
+      expect(viewModel.current().traffic.available).assertTrue();
+      expect(viewModel.current().traffic.txBytes).assertEqual(1024);
+      expect(viewModel.current().traffic.rxBytes).assertEqual(2048);
+      expect(viewModel.current().traffic.uploadBytesPerSecond).assertEqual(32);
+      expect(viewModel.current().traffic.downloadBytesPerSecond).assertEqual(64);
+
+      viewModel.dispose();
+      viewModel.dispose();
+
+      expect(trafficMonitor.unsubscribeCalls.length).assertEqual(1);
+      expect(trafficMonitor.listenerCount()).assertEqual(0);
+    });
+
+    it('mapsRunningUnavailableRecoveringAndStoppedTrafficStatesWithoutChangingVpnLifecycle', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const trafficMonitor = new FakeTrafficMonitor();
+      trafficMonitor.setSnapshot(createTrafficSnapshot(true, 4096, 8192, 512, 1024));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'traffic-session-a'));
+      const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
+
+      let traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertTrue();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(4096);
+      expect(traffic.rxBytes).assertEqual(8192);
+      expect(traffic.uploadBytesPerSecond).assertEqual(512);
+      expect(traffic.downloadBytesPerSecond).assertEqual(1024);
+
+      trafficMonitor.emit(createTrafficSnapshot(false, 999999, 777777, 3000, 2000));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(4096);
+      expect(traffic.rxBytes).assertEqual(8192);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+      expect(viewModel.current().vpnGlobalCapture.status).assertEqual('RUNNING');
+      expect(viewModel.current().vpnGlobalCapture.action).assertEqual('STOP');
+
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RECOVERING', null, 'traffic-session-a'));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertTrue();
+      expect(traffic.txBytes).assertEqual(4096);
+      expect(traffic.rxBytes).assertEqual(8192);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('STOPPED', null, 'traffic-session-a'));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertFalse();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(0);
+      expect(traffic.rxBytes).assertEqual(0);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
+      trafficMonitor.setSnapshot(createTrafficSnapshot(false, 123456, 654321, 999, 999));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'traffic-session-b'));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(0);
+      expect(traffic.rxBytes).assertEqual(0);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
+      const hiddenStates: Array<'AWAITING_CONSENT' | 'STARTING' | 'STOPPING' | 'ERROR'> = [
+        'AWAITING_CONSENT',
+        'STARTING',
+        'STOPPING',
+        'ERROR'
+      ];
+      for (let index: number = 0; index < hiddenStates.length; index += 1) {
+        emitVpnSnapshot(vpnRegistry, buildVpnSnapshot(hiddenStates[index], null, 'traffic-session-b'));
+        traffic = viewModel.current().traffic;
+        expect(traffic.visible).assertFalse();
+        expect(traffic.available).assertFalse();
+        expect(traffic.recovering).assertFalse();
+        expect(traffic.txBytes).assertEqual(0);
+        expect(traffic.rxBytes).assertEqual(0);
+      }
+
+      viewModel.dispose();
+    });
+
+    it('ignoresTrafficCallbacksAfterDisposeAndKeepsTrafficStatePrivate', 0, () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
+      );
+      const vpnRegistry = createTestVpnRegistry();
+      const trafficMonitor = new FakeTrafficMonitor();
+      trafficMonitor.setSnapshot(createTrafficSnapshot(true, 2048, 4096, 128, 256));
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'traffic-session-private'));
+      const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
+
+      const published: HomeViewState[] = [];
+      viewModel.subscribe((state: HomeViewState): void => {
+        published.push(state);
+      });
+
+      const serializedTraffic: string = JSON.stringify(viewModel.current().traffic);
+      expect(serializedTraffic.includes('traffic-session-private')).assertFalse();
+      expect(serializedTraffic.includes('sessionId')).assertFalse();
+      expect(serializedTraffic.includes('profileId')).assertFalse();
+      expect(serializedTraffic.includes('versionId')).assertFalse();
+
+      viewModel.dispose();
+      trafficMonitor.emit(createTrafficSnapshot(true, 8192, 16384, 512, 1024));
+
+      expect(published.length).assertEqual(0);
+      expect(viewModel.current().traffic.txBytes).assertEqual(2048);
+      expect(viewModel.current().traffic.rxBytes).assertEqual(4096);
+    });
+
     it('loadsAndSwitchesTheCurrentSessionModeOnlyWhileVpnIsRunning', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
@@ -888,6 +1094,32 @@ export default function homeViewModelTestsuite() {
 
 function createTestVpnRegistry(): RecordingVpnSessionRegistry {
   return new RecordingVpnSessionRegistry();
+}
+
+function createTrafficSnapshot(
+  available: boolean,
+  txBytes: number,
+  rxBytes: number,
+  uploadBytesPerSecond: number,
+  downloadBytesPerSecond: number
+): VpnTrafficMonitorSnapshot {
+  const snapshot = new VpnTrafficMonitorSnapshotValue();
+  snapshot.available = available;
+  snapshot.txBytes = txBytes;
+  snapshot.rxBytes = rxBytes;
+  snapshot.uploadBytesPerSecond = uploadBytesPerSecond;
+  snapshot.downloadBytesPerSecond = downloadBytesPerSecond;
+  return snapshot;
+}
+
+function cloneTrafficSnapshot(snapshot: VpnTrafficMonitorSnapshot): VpnTrafficMonitorSnapshot {
+  return createTrafficSnapshot(
+    snapshot.available,
+    snapshot.txBytes,
+    snapshot.rxBytes,
+    snapshot.uploadBytesPerSecond,
+    snapshot.downloadBytesPerSecond
+  );
 }
 
 function emitVpnSnapshot(

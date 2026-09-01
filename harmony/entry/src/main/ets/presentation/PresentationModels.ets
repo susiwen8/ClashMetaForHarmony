@@ -46,7 +46,18 @@ export interface HomeViewState {
   selectedProxyNodeName: string;
   vpnGlobalCapture: VpnGlobalCaptureState;
   runtimeMode: RuntimeModeState;
+  traffic: HomeTrafficState;
   error?: SafeErrorState;
+}
+
+export interface HomeTrafficState {
+  visible: boolean;
+  available: boolean;
+  txBytes: number;
+  rxBytes: number;
+  uploadBytesPerSecond: number;
+  downloadBytesPerSecond: number;
+  recovering: boolean;
 }
 
 export interface RuntimeModeState {
@@ -127,7 +138,18 @@ class HomeViewStateValue implements HomeViewState {
   selectedProxyNodeName: string = '';
   vpnGlobalCapture: VpnGlobalCaptureState = new VpnGlobalCaptureStateValue();
   runtimeMode: RuntimeModeState = new RuntimeModeStateValue();
+  traffic: HomeTrafficState = new HomeTrafficStateValue();
   error?: SafeErrorState;
+}
+
+class HomeTrafficStateValue implements HomeTrafficState {
+  visible: boolean = false;
+  available: boolean = false;
+  txBytes: number = 0;
+  rxBytes: number = 0;
+  uploadBytesPerSecond: number = 0;
+  downloadBytesPerSecond: number = 0;
+  recovering: boolean = false;
 }
 
 class RuntimeModeStateValue implements RuntimeModeState {
@@ -280,6 +302,7 @@ export function createHomeViewState(
   selectedProxyGroupName: string,
   selectedProxyNodeName: string,
   vpnGlobalCapture: VpnGlobalCaptureState,
+  traffic: HomeTrafficState,
   error: SafeErrorState | undefined,
   runtimeMode?: RuntimeModeState
 ): HomeViewState {
@@ -293,6 +316,7 @@ export function createHomeViewState(
   state.runtimeMode = runtimeMode === undefined
     ? createRuntimeModeState(undefined, false, false, undefined)
     : cloneRuntimeModeState(runtimeMode);
+  state.traffic = cloneHomeTrafficState(traffic);
   state.error = cloneSafeErrorState(error);
   return state;
 }
@@ -305,9 +329,56 @@ export function cloneHomeViewState(state: HomeViewState): HomeViewState {
     state.selectedProxyGroupName,
     state.selectedProxyNodeName,
     state.vpnGlobalCapture,
+    state.traffic,
     state.error,
     state.runtimeMode
   );
+}
+
+export function createHomeTrafficState(
+  visible: boolean,
+  available: boolean,
+  txBytes: number,
+  rxBytes: number,
+  uploadBytesPerSecond: number,
+  downloadBytesPerSecond: number,
+  recovering: boolean
+): HomeTrafficState {
+  const state: HomeTrafficStateValue = new HomeTrafficStateValue();
+  state.visible = visible;
+  state.available = available;
+  state.txBytes = normalizeTrafficBytes(txBytes);
+  state.rxBytes = normalizeTrafficBytes(rxBytes);
+  state.uploadBytesPerSecond = normalizeTrafficBytes(uploadBytesPerSecond);
+  state.downloadBytesPerSecond = normalizeTrafficBytes(downloadBytesPerSecond);
+  state.recovering = recovering;
+  return state;
+}
+
+export function cloneHomeTrafficState(state: HomeTrafficState): HomeTrafficState {
+  return createHomeTrafficState(
+    state.visible,
+    state.available,
+    state.txBytes,
+    state.rxBytes,
+    state.uploadBytesPerSecond,
+    state.downloadBytesPerSecond,
+    state.recovering
+  );
+}
+
+export function formatTrafficBytes(bytes: number): string {
+  const normalized: number = normalizeTrafficBytes(bytes);
+  if (normalized < 1024) {
+    return `${normalized} B`;
+  }
+  if (normalized < 1024 * 1024) {
+    return formatTrafficUnit(normalized / 1024, 'KiB');
+  }
+  if (normalized < 1024 * 1024 * 1024) {
+    return formatTrafficUnit(normalized / (1024 * 1024), 'MiB');
+  }
+  return formatTrafficUnit(normalized / (1024 * 1024 * 1024), 'GiB');
 }
 
 export function createRuntimeModeState(
@@ -489,6 +560,21 @@ export function cloneProfileDetailViewState(state: ProfileDetailViewState): Prof
     state.editNameIssue,
     state.editUrlIssue
   );
+}
+
+function normalizeTrafficBytes(value: number): number {
+  if (!Number.isSafeInteger(value) || value < 0) {
+    return 0;
+  }
+  return value;
+}
+
+function formatTrafficUnit(value: number, unit: string): string {
+  const roundedValue: number = Math.round(value * 10) / 10;
+  const formattedValue: string = Number.isInteger(roundedValue)
+    ? `${roundedValue}`
+    : `${roundedValue.toFixed(1)}`;
+  return `${formattedValue} ${unit}`;
 }
 
 export function sanitizePresentationSourceDisplay(sourceDisplay: string): string {

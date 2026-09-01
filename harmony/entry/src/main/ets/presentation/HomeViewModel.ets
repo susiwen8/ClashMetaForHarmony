@@ -14,17 +14,22 @@ import {
 import { hilog } from '@kit.PerformanceAnalysisKit';
 import {
   cloneHomeViewState,
+  createHomeTrafficState,
   createHomeViewState,
   createProfileSummaryState,
   createRuntimeModeState,
   createSafeErrorState,
   createVpnGlobalCaptureState,
   isProfileStartEligible,
+  type HomeTrafficState,
   type HomeViewState,
   type SafeErrorState,
   type RuntimeModeState
 } from './PresentationModels';
-import type { VpnTrafficMonitorReadPort } from '../vpn/VpnTrafficMonitor';
+import type {
+  VpnTrafficMonitorReadPort,
+  VpnTrafficMonitorSnapshot
+} from '../vpn/VpnTrafficMonitor';
 import { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 const VPN_COMMAND_LOG_DOMAIN: number = 0x0000;
@@ -63,6 +68,7 @@ export class HomeViewModel {
   private readonly application: ProfileApplication;
   private readonly vpnRegistry: VpnSessionRegistry;
   private readonly runtimeModeClient?: VpnRpcRuntimeModeClientPort;
+  private readonly trafficMonitor?: VpnTrafficMonitorReadPort;
   private readonly applicationListener: ProfileApplicationListener;
   private readonly listeners: Map<number, HomeViewListener> = new Map();
   private readonly snapshotById: Map<string, ProfileApplicationProfileSnapshot> = new Map();
@@ -85,16 +91,20 @@ export class HomeViewModel {
   private runtimeModeEpoch: number = 0;
   private resolvedRuntimeModeSessionId?: string;
   private runtimeModePendingSessionId?: string;
+  private trafficState: HomeTrafficState = createHomeTrafficState(false, false, 0, 0, 0, 0, false);
+  private trafficSubscriptionId: number = 0;
+  private activeTrafficSessionId?: string;
 
   constructor(
     application: ProfileApplication,
     vpnRegistry: VpnSessionRegistry,
     runtimeModeClient?: VpnRpcRuntimeModeClientPort,
-    _trafficMonitor?: VpnTrafficMonitorReadPort
+    trafficMonitor?: VpnTrafficMonitorReadPort
   ) {
     this.application = application;
     this.vpnRegistry = vpnRegistry;
     this.runtimeModeClient = runtimeModeClient;
+    this.trafficMonitor = trafficMonitor;
     this.applicationSnapshot = application.current();
     this.vpnSnapshot = vpnRegistry.snapshot();
     this.state = createState(
@@ -105,7 +115,8 @@ export class HomeViewModel {
       '',
       this.snapshotById,
       undefined,
-      this.runtimeModeState
+      this.runtimeModeState,
+      this.trafficState
     );
     this.applicationListener = (snapshot: ProfileApplicationSnapshot): void => {
       this.applicationSnapshot = snapshot;
@@ -114,13 +125,21 @@ export class HomeViewModel {
     this.applicationSubscriptionId = this.application.subscribe(this.applicationListener);
     this.vpnSubscriptionId = this.vpnRegistry.subscribe((event) => {
       this.vpnSnapshot = event.snapshot;
+      this.refreshTrafficState();
       this.refreshSelectedProxySummary(false);
       this.refreshRuntimeMode(false);
     });
     this.oneClickSubscriptionId = this.application.subscribeOneClickVpnOperation((snapshot: OneClickVpnOperationSnapshot): void => {
       this.handleOneClickVpnOperation(snapshot);
     });
+    if (trafficMonitor !== undefined) {
+      this.trafficSubscriptionId = trafficMonitor.subscribe((snapshot: VpnTrafficMonitorSnapshot): void => {
+        this.handleTrafficSnapshot(snapshot);
+      });
+      this.handleTrafficSnapshot(trafficMonitor.snapshot());
+    }
     this.handleOneClickVpnOperation(this.application.currentOneClickVpnOperation());
+    this.refreshTrafficState();
     this.refreshSelectedProxySummary(false);
     this.refreshRuntimeMode(false);
   }
@@ -226,6 +245,11 @@ export class HomeViewModel {
     this.application.unsubscribe(this.applicationSubscriptionId);
     this.vpnRegistry.unsubscribe(this.vpnSubscriptionId);
     this.application.unsubscribeOneClickVpnOperation(this.oneClickSubscriptionId);
+    const trafficMonitor = this.trafficMonitor;
+    if (trafficMonitor !== undefined && this.trafficSubscriptionId !== 0) {
+      trafficMonitor.unsubscribe(this.trafficSubscriptionId);
+      this.trafficSubscriptionId = 0;
+    }
     this.listeners.clear();
     this.snapshotById.clear();
   }
@@ -240,7 +264,8 @@ export class HomeViewModel {
       this.selectedProxyNodeName,
       this.snapshotById,
       this.vpnCommandError,
-      this.runtimeModeState
+      this.runtimeModeState,
+      this.trafficState
     ));
   }
 
@@ -306,6 +331,96 @@ export class HomeViewModel {
     return !this.disposed &&
       this.runtimeModeEpoch === epoch &&
       this.activeRunningSessionId() === sessionId;
+  }
+
+  private refreshTrafficState(): void {
+    if (this.disposed) {
+      return;
+    }
+    if (this.vpnSnapshot.state !== 'RUNNING' && this.vpnSnapshot.state !== 'RECOVERING') {
+      this.activeTrafficSessionId = undefined;
+      this.trafficState = createHomeTrafficState(false, false, 0, 0, 0, 0, false);
+      this.publishCurrent(undefined);
+      return;
+    }
+
+    if (this.vpnSnapshot.state === 'RECOVERING') {
+      const sessionId = this.vpnSnapshot.activeRequest?.sessionId;
+      if (sessionId !== undefined) {
+        this.activeTrafficSessionId = sessionId;
+      }
+      this.trafficState = createHomeTrafficState(
+        true,
+        false,
+        this.trafficState.txBytes,
+        this.trafficState.rxBytes,
+        0,
+        0,
+        true
+      );
+      this.publishCurrent(undefined);
+      return;
+    }
+
+    const sessionId = this.vpnSnapshot.activeRequest?.sessionId;
+    const sessionChanged: boolean = sessionId !== undefined &&
+      this.activeTrafficSessionId !== undefined &&
+      this.activeTrafficSessionId !== sessionId;
+    const shouldReseed: boolean = !this.trafficState.visible || this.trafficState.recovering || sessionChanged;
+    if (sessionId !== undefined) {
+      this.activeTrafficSessionId = sessionId;
+    }
+    if (shouldReseed) {
+      const preservedTxBytes: number = this.trafficState.recovering && !sessionChanged ? this.trafficState.txBytes : 0;
+      const preservedRxBytes: number = this.trafficState.recovering && !sessionChanged ? this.trafficState.rxBytes : 0;
+      this.trafficState = createHomeTrafficState(true, false, preservedTxBytes, preservedRxBytes, 0, 0, false);
+      const trafficMonitor = this.trafficMonitor;
+      if (trafficMonitor !== undefined) {
+        this.handleTrafficSnapshot(trafficMonitor.snapshot());
+        return;
+      }
+      this.publishCurrent(undefined);
+      return;
+    }
+
+    this.trafficState = createHomeTrafficState(
+      true,
+      this.trafficState.available,
+      this.trafficState.txBytes,
+      this.trafficState.rxBytes,
+      this.trafficState.available ? this.trafficState.uploadBytesPerSecond : 0,
+      this.trafficState.available ? this.trafficState.downloadBytesPerSecond : 0,
+      false
+    );
+    this.publishCurrent(undefined);
+  }
+
+  private handleTrafficSnapshot(snapshot: VpnTrafficMonitorSnapshot): void {
+    if (this.disposed || this.vpnSnapshot.state !== 'RUNNING') {
+      return;
+    }
+    if (snapshot.available) {
+      this.trafficState = createHomeTrafficState(
+        true,
+        true,
+        snapshot.txBytes,
+        snapshot.rxBytes,
+        snapshot.uploadBytesPerSecond,
+        snapshot.downloadBytesPerSecond,
+        false
+      );
+    } else {
+      this.trafficState = createHomeTrafficState(
+        true,
+        false,
+        this.trafficState.txBytes,
+        this.trafficState.rxBytes,
+        0,
+        0,
+        false
+      );
+    }
+    this.publishCurrent(undefined);
   }
 
   private refreshSelectedProxySummary(forceReload: boolean): void {
@@ -421,7 +536,8 @@ function createState(
   selectedProxyNodeName: string,
   cache: Map<string, ProfileApplicationProfileSnapshot>,
   vpnCommandError: SafeErrorState | undefined,
-  runtimeMode: RuntimeModeState
+  runtimeMode: RuntimeModeState,
+  trafficState: HomeTrafficState
 ): HomeViewState {
   updateProfileCache(cache, snapshot.profiles);
   const activeProfile: ProfileApplicationProfileSnapshot | undefined = snapshot.activeProfileId === undefined
@@ -449,6 +565,7 @@ function createState(
       vpnSnapshot.scheduledRetryDelayMs === null ? undefined : vpnSnapshot.scheduledRetryDelayMs,
       vpnCommandError
     ),
+    trafficState,
     snapshot.error !== null ? createSafeErrorState(snapshot.error) : undefined,
     runtimeMode
   );

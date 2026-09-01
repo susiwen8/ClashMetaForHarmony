@@ -1,5 +1,6 @@
 import type { HomeViewState } from '../presentation/PresentationModels';
 import { RuntimeStatusCard } from '../components/RuntimeStatusCard';
+import { HomeTrafficCard } from '../components/HomeTrafficCard';
 import { RuntimeModeCard } from '../components/RuntimeModeCard';
 import type { CoreRuntimeMode } from '@cmfa/shared';
 import { SafeErrorCard, createEmptySafeErrorState } from '../components/SafeErrorCard';
@@ -46,6 +47,12 @@ export struct HomePage {
             selectedProxyGroupName: $selectedProxyGroupName,
             selectedProxyNodeName: $selectedProxyNodeName
           })
+
+          if (this.state.traffic.visible) {
+            HomeTrafficCard({
+              state: this.state.traffic
+            })
+          }
 
           RuntimeModeCard({
             state: this.state.runtimeMode,

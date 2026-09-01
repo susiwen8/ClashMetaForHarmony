@@ -157,6 +157,34 @@
       "value": "TUN capture is limited to traffic handled by this app session."
     },
     {
+      "name": "home_traffic_title",
+      "value": "流量统计"
+    },
+    {
+      "name": "home_traffic_upload",
+      "value": "上传"
+    },
+    {
+      "name": "home_traffic_download",
+      "value": "下载"
+    },
+    {
+      "name": "home_traffic_total",
+      "value": "累计"
+    },
+    {
+      "name": "home_traffic_status_recovering",
+      "value": "恢复中"
+    },
+    {
+      "name": "home_traffic_status_unavailable",
+      "value": "统计暂时不可用"
+    },
+    {
+      "name": "home_traffic_status_available",
+      "value": "实时统计中"
+    },
+    {
       "name": "home_mode_title",
       "value": "运行模式"
     },

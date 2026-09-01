@@ -38,6 +38,7 @@ import {
   type LogsViewState
 } from '../presentation/LogsViewModel';
 import {
+  createHomeTrafficState,
   createHomeViewState,
   createImportProfileViewState,
   createProfileDetailViewState,
@@ -106,6 +107,7 @@ struct Index {
     '',
     '',
     createVpnGlobalCaptureState('STOPPED', 'DISABLED', false, false, [], undefined, false, 0, undefined, undefined),
+    createHomeTrafficState(false, false, 0, 0, 0, 0, false),
     undefined
   );
   @State private profilesState: ProfilesViewState = createProfilesViewState('LOADING', [], undefined);
@@ -727,6 +729,7 @@ struct Index {
       '',
       '',
       createVpnGlobalCaptureState('STOPPED', 'DISABLED', false, false, [], undefined, false, 0, undefined, undefined),
+      createHomeTrafficState(false, false, 0, 0, 0, 0, false),
       undefined
     );
     this.detailCanManageProxies = false;
