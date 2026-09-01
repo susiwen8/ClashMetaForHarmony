@@ -137,6 +137,7 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       });
 
       const result = await refresher.execute('profile-remote-1', async () => 'ok');
+      const expectedNowMs: number = Date.parse('2026-09-01T10:00:00.000Z');
 
       expect(result.kind).assertEqual('COMPLETED');
       if (result.kind !== 'COMPLETED') {
@@ -147,9 +148,9 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       expect(leasePort.acquireCalls.length).assertEqual(1);
       expect(leasePort.acquireCalls[0].profileId).assertEqual('profile-remote-1');
       expect(leasePort.acquireCalls[0].ownerToken).assertEqual('lease-owner-1');
-      expect(leasePort.acquireCalls[0].nowMs).assertEqual(Date.parse('2026-09-01T10:00:00.000Z'));
+      expect(leasePort.acquireCalls[0].nowMs).assertEqual(expectedNowMs);
       expect(leasePort.acquireCalls[0].expiresAtMs).assertEqual(
-        Date.parse('2026-09-01T10:00:00.000Z') + REMOTE_PROFILE_REFRESH_LEASE_TTL_MS
+        expectedNowMs + REMOTE_PROFILE_REFRESH_LEASE_TTL_MS
       );
       expect(leasePort.releaseCalls.length).assertEqual(1);
       expect(leasePort.releaseCalls[0].profileId).assertEqual('profile-remote-1');
@@ -283,20 +284,15 @@ export default function leasedRemoteProfileRefresherTestsuite() {
       const overflowRefresher = new LeasedRemoteProfileRefresher({
         leasePort: overflowLeasePort,
         clock: new FixedClock('2026-09-01T10:05:30.000Z'),
-        idGenerator: new FixedIdGenerator('lease-owner-8')
+        idGenerator: new FixedIdGenerator('lease-owner-8'),
+        parseTimestampMs: (_timestamp: string): number => Number.MAX_SAFE_INTEGER - REMOTE_PROFILE_REFRESH_LEASE_TTL_MS + 1
       });
 
       let overflowError: Object | undefined = undefined;
-      const originalParse: (value: string) => number = Date.parse;
-      Date.parse = (_value: string): number => Number.MAX_SAFE_INTEGER - REMOTE_PROFILE_REFRESH_LEASE_TTL_MS + 1;
       try {
-        try {
-          await overflowRefresher.execute('profile-remote-8', async () => 'nope');
-        } catch (error) {
-          overflowError = error as Object;
-        }
-      } finally {
-        Date.parse = originalParse;
+        await overflowRefresher.execute('profile-remote-8', async () => 'nope');
+      } catch (error) {
+        overflowError = error as Object;
       }
       if (overflowError === undefined) {
         throw new Error('Expected unsafe expiry rejection.');

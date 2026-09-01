@@ -8,6 +8,7 @@ export interface LeasedRemoteProfileRefresherDependencies {
   leasePort: ProfileRefreshLeasePort;
   clock: Clock;
   idGenerator: IdGenerator;
+  parseTimestampMs?: (timestamp: string) => number;
 }
 
 export interface LeasedRemoteProfileRefreshCompleted<T> {
@@ -54,11 +55,13 @@ export class LeasedRemoteProfileRefresher {
   private readonly leasePort: ProfileRefreshLeasePort;
   private readonly clock: Clock;
   private readonly idGenerator: IdGenerator;
+  private readonly parseTimestampMs: (timestamp: string) => number;
 
   constructor(dependencies: LeasedRemoteProfileRefresherDependencies) {
     this.leasePort = dependencies.leasePort;
     this.clock = dependencies.clock;
     this.idGenerator = dependencies.idGenerator;
+    this.parseTimestampMs = dependencies.parseTimestampMs ?? ((value: string): number => Date.parse(value));
   }
 
   async execute<T>(profileId: string, operation: () => Promise<T> | T): Promise<LeasedRemoteProfileRefreshResult<T>> {
@@ -100,7 +103,7 @@ export class LeasedRemoteProfileRefresher {
   private resolveNowMs(): number {
     let nowMs: number;
     try {
-      nowMs = Date.parse(this.clock.now());
+      nowMs = this.parseTimestampMs(this.clock.now());
     } catch (_) {
       throw this.createLeaseError();
     }
