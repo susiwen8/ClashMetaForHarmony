@@ -34,6 +34,8 @@ export interface RefreshProfileUseCaseDependencies {
 
 const PROFILE_REFRESH_BUSY_CODE: string = 'PROFILE_REFRESH_BUSY';
 const PROFILE_REFRESH_BUSY_DETAIL: string = 'Profile refresh is already in progress.';
+const PROFILE_REFRESH_CHANGED_CODE: string = 'PROFILE_REFRESH_CHANGED';
+const PROFILE_REFRESH_CHANGED_DETAIL: string = 'Profile changed before refresh could start.';
 const PROFILE_REFRESH_LEASE_FAILED_CODE: string = 'PROFILE_REFRESH_LEASE_FAILED';
 const PROFILE_REFRESH_LEASE_FAILED_DETAIL: string = 'Profile refresh lease failed.';
 
@@ -48,16 +50,19 @@ export interface RefreshProfileCommand {
 
 export interface RefreshProfileCancelledResult {
   kind: 'CANCELLED';
+  leaseReleased?: boolean;
 }
 
 export interface RefreshProfileUpdatedResult {
   kind: 'UPDATED';
   profile: Profile;
+  leaseReleased?: boolean;
 }
 
 export interface RefreshProfileFailedResult {
   kind: 'FAILED';
   error: AppError;
+  leaseReleased?: boolean;
 }
 
 export type RefreshProfileResult =
@@ -67,23 +72,30 @@ export type RefreshProfileResult =
 
 class RefreshProfileCancelledResultValue implements RefreshProfileCancelledResult {
   kind: 'CANCELLED' = 'CANCELLED';
+
+  constructor(readonly leaseReleased?: boolean) {
+  }
 }
 
 class RefreshProfileUpdatedResultValue implements RefreshProfileUpdatedResult {
   kind: 'UPDATED' = 'UPDATED';
   profile: Profile;
+  leaseReleased?: boolean;
 
-  constructor(profile: Profile) {
+  constructor(profile: Profile, leaseReleased?: boolean) {
     this.profile = profile;
+    this.leaseReleased = leaseReleased;
   }
 }
 
 class RefreshProfileFailedResultValue implements RefreshProfileFailedResult {
   kind: 'FAILED' = 'FAILED';
   error: AppError;
+  leaseReleased?: boolean;
 
-  constructor(error: AppError) {
+  constructor(error: AppError, leaseReleased?: boolean) {
     this.error = error;
+    this.leaseReleased = leaseReleased;
   }
 }
 
@@ -125,17 +137,21 @@ export class RefreshProfileUseCase {
       if (existing.sourceKind === 'LOCAL_FILE') {
         return await this.refreshLocal(existing);
       }
-      return await this.refreshRemoteWithLease(existing, command.allowPlainHttp === true);
+      return await this.refreshRemoteWithLease(existing.id, command.allowPlainHttp === true);
     });
   }
 
-  private async refreshRemoteWithLease(existing: Profile, allowPlainHttp: boolean): Promise<RefreshProfileResult> {
+  private async refreshRemoteWithLease(profileId: string, allowPlainHttp: boolean): Promise<RefreshProfileResult> {
     try {
       const leasedResult = await this.leasedRemoteRefresher.execute(
-        existing.id,
+        profileId,
         async (): Promise<RefreshProfileResult> => {
+          const refreshedExisting: Profile | undefined = await this.repository.get(profileId);
+          if (refreshedExisting === undefined || refreshedExisting.sourceKind !== 'REMOTE_URL') {
+            return new RefreshProfileFailedResultValue(createProfileRefreshChangedError(this.clock));
+          }
           try {
-            return await this.refreshRemote(existing, allowPlainHttp);
+            return await this.refreshRemote(refreshedExisting, allowPlainHttp);
           } catch (error) {
             return new RefreshProfileFailedResultValue(this.toUnexpectedStageError('DOWNLOAD', error));
           }
@@ -144,7 +160,7 @@ export class RefreshProfileUseCase {
       if (leasedResult.kind === 'BUSY') {
         return new RefreshProfileFailedResultValue(createProfileRefreshBusyError(this.clock));
       }
-      return leasedResult.value;
+      return attachLeaseReleased(leasedResult.value, leasedResult.leaseReleased);
     } catch (error) {
       if (isLeasedRemoteProfileRefreshError(error)) {
         return new RefreshProfileFailedResultValue(createProfileRefreshLeaseFailedError(this.clock));
@@ -370,6 +386,14 @@ function createProfileRefreshBusyError(clock: Clock): AppError {
   });
 }
 
+function createProfileRefreshChangedError(clock: Clock): AppError {
+  return createAppError('PERSISTENCE', PROFILE_REFRESH_CHANGED_DETAIL, {
+    code: PROFILE_REFRESH_CHANGED_CODE,
+    retryable: true,
+    timestamp: clock.now()
+  });
+}
+
 function createProfileRefreshLeaseFailedError(clock: Clock): AppError {
   return createAppError('PERSISTENCE', PROFILE_REFRESH_LEASE_FAILED_DETAIL, {
     code: PROFILE_REFRESH_LEASE_FAILED_CODE,
@@ -385,6 +409,19 @@ function isLeasedRemoteProfileRefreshError(value: Object | undefined): boolean {
   const record: Record<string, Object> = value as Record<string, Object>;
   return record.name === 'LeasedRemoteProfileRefreshError' &&
     record.code === PROFILE_REFRESH_LEASE_FAILED_CODE;
+}
+
+function attachLeaseReleased(result: RefreshProfileResult, leaseReleased: boolean): RefreshProfileResult {
+  switch (result.kind) {
+    case 'CANCELLED':
+      return new RefreshProfileCancelledResultValue(leaseReleased);
+    case 'UPDATED':
+      return new RefreshProfileUpdatedResultValue(result.profile, leaseReleased);
+    case 'FAILED':
+      return new RefreshProfileFailedResultValue(result.error, leaseReleased);
+    default:
+      return result;
+  }
 }
 
 function collectSuperseded(

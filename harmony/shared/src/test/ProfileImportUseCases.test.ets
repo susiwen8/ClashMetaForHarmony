@@ -304,6 +304,7 @@ function buildProfileWithInterval(options: ProfileFixtureOptions, autoUpdateInte
 
 class IntervalPreservingProfileRepository implements ProfileRepository {
   readonly savedProfiles: Profile[] = [];
+  readonly scriptedGetResults: (Profile | undefined)[] = [];
   private readonly profiles: Map<string, Profile> = new Map<string, Profile>();
   private activeIdValue: string | undefined;
   private readonly timeline?: FakeOperationTimeline;
@@ -327,6 +328,10 @@ class IntervalPreservingProfileRepository implements ProfileRepository {
 
   async get(id: string): Promise<Profile | undefined> {
     this.timeline?.record('getProfile');
+    if (this.scriptedGetResults.length > 0) {
+      const scripted: Profile | undefined = this.scriptedGetResults.shift();
+      return scripted === undefined ? undefined : cloneProfileWithInterval(scripted);
+    }
     const profile: Profile | undefined = this.profiles.get(id);
     return profile === undefined ? undefined : cloneProfileWithInterval(profile);
   }
@@ -1016,6 +1021,8 @@ export default function profileImportUseCasesTestsuite() {
         'profile-remote-refresh-leased',
         timeline
       );
+      repository.scriptedGetResults.push(buildProfileWithInterval(existingOptions, 120000));
+      repository.scriptedGetResults.push(buildProfileWithInterval(existingOptions, 120000));
       const contentStore = new FakeProfileContentStore(timeline);
       const gateway = new FakeProfileSourceGateway(timeline);
       const secretStore = new FakeSubscriptionSecretStore(timeline);
@@ -1043,13 +1050,14 @@ export default function profileImportUseCasesTestsuite() {
       const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-leased', false));
 
       expect(result.kind).assertEqual('UPDATED');
+      expect(result.leaseReleased).assertTrue();
       expect(leasePort.tryAcquireCalls.length).assertEqual(1);
       expect(leasePort.releaseCalls.length).assertEqual(1);
       expect(leasePort.tryAcquireCalls[0].profileId).assertEqual('profile-remote-refresh-leased');
       expect(leasePort.tryAcquireCalls[0].ownerToken).assertEqual('lease-owner-remote-success');
       expect(leasePort.releaseCalls[0].ownerToken).assertEqual('lease-owner-remote-success');
       expect(collapseTimeline(timeline.entries)).assertEqual(
-        'getProfile>leaseTryAcquire>decryptSource>acquire>validate>retainRevision>saveProfile>removeSuperseded>leaseRelease'
+        'getProfile>leaseTryAcquire>getProfile>decryptSource>acquire>validate>retainRevision>saveProfile>removeSuperseded>leaseRelease'
       );
     });
 
@@ -1094,6 +1102,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.error.code).assertEqual('PROFILE_REFRESH_BUSY');
       expect(result.error.retryable).assertTrue();
       expect(result.error.technicalDetail).assertEqual('Profile refresh is already in progress.');
+      expect(result.leaseReleased).assertUndefined();
       expect(secretStore.decryptCalls.length).assertEqual(0);
       expect(gateway.remoteCommands.length).assertEqual(0);
       expect(repository.savedProfiles.length).assertEqual(0);
@@ -1140,6 +1149,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.error.code).assertEqual('PROFILE_REFRESH_LEASE_FAILED');
       expect(result.error.retryable).assertTrue();
       expect(result.error.technicalDetail).assertEqual('Profile refresh lease failed.');
+      expect(result.leaseReleased).assertUndefined();
       assertNoPlaintextLeak(result.error.technicalDetail, ['profile-remote-refresh-lease-throw', 'user:secret', 'abc123', '/path', 'token=']);
       expect(secretStore.decryptCalls.length).assertEqual(0);
       expect(gateway.remoteCommands.length).assertEqual(0);
@@ -1180,6 +1190,7 @@ export default function profileImportUseCasesTestsuite() {
       const failureResult = await failureUseCase.execute(new RefreshCommand('profile-remote-refresh-release-failure', false));
 
       expect(failureResult.kind).assertEqual('UPDATED');
+      expect(failureResult.leaseReleased).assertTrue();
       expect(failureLeasePort.releaseCalls.length).assertEqual(1);
 
       const cancelOptions = new ProfileFixtureOptions();
@@ -1208,8 +1219,163 @@ export default function profileImportUseCasesTestsuite() {
       const cancelResult = await cancelUseCase.execute(new RefreshCommand('profile-remote-refresh-release-cancel', false));
 
       expect(cancelResult.kind).assertEqual('CANCELLED');
+      expect(cancelResult.leaseReleased).assertTrue();
       expect(cancelLeasePort.releaseCalls.length).assertEqual(1);
       expect(cancelGateway.remoteCommands.length).assertEqual(0);
+    });
+
+    it('rechecksProfileAfterLeaseAndUsesNewerRemoteSecretAndBaseState', 0, async () => {
+      const oldCurrent = buildRevision('profiles/remote/old-current.yaml', '2026-08-07T00:00:00.000Z');
+      const newerCurrent = buildRevision('profiles/remote/newer-current.yaml', '2026-08-07T00:10:00.000Z');
+      const firstOptions = new ProfileFixtureOptions();
+      firstOptions.id = 'profile-remote-refresh-reread';
+      firstOptions.name = 'Remote Old';
+      firstOptions.sourceKind = 'REMOTE_URL';
+      firstOptions.sourceDisplay = 'https://old.example.com';
+      firstOptions.sourceSecretRef = 'secret-old';
+      firstOptions.currentRevision = oldCurrent;
+      firstOptions.availability = 'VALID';
+      const secondOptions = new ProfileFixtureOptions();
+      secondOptions.id = 'profile-remote-refresh-reread';
+      secondOptions.name = 'Remote New';
+      secondOptions.sourceKind = 'REMOTE_URL';
+      secondOptions.sourceDisplay = 'https://new.example.com';
+      secondOptions.sourceSecretRef = 'secret-new';
+      secondOptions.currentRevision = newerCurrent;
+      secondOptions.availability = 'VALID';
+      const timeline = new FakeOperationTimeline();
+      const repository = new IntervalPreservingProfileRepository(
+        [buildProfileWithInterval(secondOptions, 180000)],
+        'profile-remote-refresh-reread',
+        timeline
+      );
+      repository.scriptedGetResults.push(buildProfileWithInterval(firstOptions, 180000));
+      repository.scriptedGetResults.push(buildProfileWithInterval(secondOptions, 180000));
+      const gateway = new FakeProfileSourceGateway(timeline);
+      gateway.remoteResults.push(new FailedRemoteSource(
+        buildAppError('DOWNLOAD', 'Retry later.', true, 'APP_PLATFORM_TIMEOUT'),
+        'Remote New',
+        'https://new.example.com',
+        false
+      ));
+      const secretStore = new FakeSubscriptionSecretStore(timeline);
+      secretStore.scriptedDecryptResults.push(new ScriptedStringFailure(false, 'HTTPS_SUBSCRIPTION_CREDENTIALS_NEXT'));
+      const useCase = createRefreshUseCase(
+        repository,
+        new FakeProfileContentStore(timeline),
+        gateway,
+        secretStore,
+        new FakeCoreService(timeline),
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z', '2026-08-07T01:02:00.000Z']),
+        new FakeProfileRefreshLeasePort(timeline),
+        new FakeIdGenerator(['lease-owner-reread'])
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-reread', false));
+
+      expect(result.kind).assertEqual('UPDATED');
+      if (result.kind !== 'UPDATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.leaseReleased).assertTrue();
+      expect(secretStore.decryptCalls[0]).assertEqual('secret-new');
+      expect(result.profile.currentRevision?.relativePath).assertEqual(newerCurrent.relativePath);
+      expect(result.profile.sourceDisplay).assertEqual('https://new.example.com');
+      expect(collapseTimeline(timeline.entries).startsWith('getProfile>leaseTryAcquire>getProfile>decryptSource')).assertTrue();
+    });
+
+    it('returnsChangedFailureWithoutDecryptOrSaveWhenRemoteProfileDisappearsAfterLease', 0, async () => {
+      const firstOptions = new ProfileFixtureOptions();
+      firstOptions.id = 'profile-remote-refresh-missing-after-lease';
+      firstOptions.name = 'Remote Missing';
+      firstOptions.sourceKind = 'REMOTE_URL';
+      firstOptions.sourceDisplay = 'https://remote.example.com';
+      firstOptions.sourceSecretRef = 'secret-missing-after-lease';
+      firstOptions.currentRevision = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      firstOptions.availability = 'VALID';
+      const timeline = new FakeOperationTimeline();
+      const repository = new IntervalPreservingProfileRepository([], undefined, timeline);
+      repository.scriptedGetResults.push(buildProfileWithInterval(firstOptions, 60000));
+      repository.scriptedGetResults.push(undefined);
+      const gateway = new FakeProfileSourceGateway(timeline);
+      const secretStore = new FakeSubscriptionSecretStore(timeline);
+      const useCase = createRefreshUseCase(
+        repository,
+        new FakeProfileContentStore(timeline),
+        gateway,
+        secretStore,
+        new FakeCoreService(timeline),
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z']),
+        new FakeProfileRefreshLeasePort(timeline),
+        new FakeIdGenerator(['lease-owner-missing-after-lease'])
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-missing-after-lease', false));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.code).assertEqual('PROFILE_REFRESH_CHANGED');
+      expect(result.error.retryable).assertTrue();
+      expect(result.leaseReleased).assertTrue();
+      expect(secretStore.decryptCalls.length).assertEqual(0);
+      expect(gateway.remoteCommands.length).assertEqual(0);
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(collapseTimeline(timeline.entries)).assertEqual('getProfile>leaseTryAcquire>getProfile>leaseRelease');
+    });
+
+    it('returnsChangedFailureWithoutAnyAcquireWhenRemoteBecomesLocalAfterLease', 0, async () => {
+      const firstOptions = new ProfileFixtureOptions();
+      firstOptions.id = 'profile-remote-refresh-became-local';
+      firstOptions.name = 'Remote Then Local';
+      firstOptions.sourceKind = 'REMOTE_URL';
+      firstOptions.sourceDisplay = 'https://remote.example.com';
+      firstOptions.sourceSecretRef = 'secret-became-local';
+      firstOptions.currentRevision = buildRevision('profiles/remote/current.yaml', '2026-08-07T00:00:00.000Z');
+      firstOptions.availability = 'VALID';
+      const secondOptions = new ProfileFixtureOptions();
+      secondOptions.id = 'profile-remote-refresh-became-local';
+      secondOptions.name = 'Now Local';
+      secondOptions.sourceKind = 'LOCAL_FILE';
+      secondOptions.sourceDisplay = 'local.yaml';
+      secondOptions.currentRevision = buildRevision('profiles/local/current.yaml', '2026-08-07T00:01:00.000Z');
+      secondOptions.availability = 'VALID';
+      const timeline = new FakeOperationTimeline();
+      const repository = new IntervalPreservingProfileRepository(
+        [buildProfileWithInterval(secondOptions, 60000)],
+        'profile-remote-refresh-became-local',
+        timeline
+      );
+      repository.scriptedGetResults.push(buildProfileWithInterval(firstOptions, 60000));
+      repository.scriptedGetResults.push(buildProfileWithInterval(secondOptions, 60000));
+      const gateway = new FakeProfileSourceGateway(timeline);
+      const useCase = createRefreshUseCase(
+        repository,
+        new FakeProfileContentStore(timeline),
+        gateway,
+        new FakeSubscriptionSecretStore(timeline),
+        new FakeCoreService(timeline),
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z']),
+        new FakeProfileRefreshLeasePort(timeline),
+        new FakeIdGenerator(['lease-owner-became-local'])
+      );
+
+      const result = await useCase.execute(new RefreshCommand('profile-remote-refresh-became-local', false));
+
+      expect(result.kind).assertEqual('FAILED');
+      if (result.kind !== 'FAILED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.error.code).assertEqual('PROFILE_REFRESH_CHANGED');
+      expect(result.leaseReleased).assertTrue();
+      expect(gateway.remoteCommands.length).assertEqual(0);
+      expect(gateway.localCommands.length).assertEqual(0);
+      expect(repository.savedProfiles.length).assertEqual(0);
+      expect(collapseTimeline(timeline.entries)).assertEqual('getProfile>leaseTryAcquire>getProfile>leaseRelease');
     });
 
     it('keepsLocalRefreshFreeOfLeaseCalls', 0, async () => {
@@ -1241,6 +1407,7 @@ export default function profileImportUseCasesTestsuite() {
       const result = await useCase.execute(new RefreshCommand('profile-local-refresh-no-lease'));
 
       expect(result.kind).assertEqual('UPDATED');
+      expect(result.leaseReleased).assertUndefined();
       expect(leasePort.tryAcquireCalls.length).assertEqual(0);
       expect(leasePort.releaseCalls.length).assertEqual(0);
     });
@@ -1275,6 +1442,7 @@ export default function profileImportUseCasesTestsuite() {
         new FakeIdGenerator(['lease-owner-release-false'])
       ).execute(new RefreshCommand('profile-remote-refresh-release-false', false));
       expect(falseResult.kind).assertEqual('UPDATED');
+      expect(falseResult.leaseReleased).assertFalse();
 
       const throwOptions = new ProfileFixtureOptions();
       throwOptions.id = 'profile-remote-refresh-release-throw';
@@ -1306,6 +1474,7 @@ export default function profileImportUseCasesTestsuite() {
         new FakeIdGenerator(['lease-owner-release-throw'])
       ).execute(new RefreshCommand('profile-remote-refresh-release-throw', false));
       expect(throwResult.kind).assertEqual('UPDATED');
+      expect(throwResult.leaseReleased).assertFalse();
     });
 
     it('preservesAutoUpdateIntervalWhenRefreshingInvalidProfileFailure', 0, async () => {
