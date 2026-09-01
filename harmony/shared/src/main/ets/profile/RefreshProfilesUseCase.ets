@@ -251,7 +251,7 @@ export class RefreshProfilesUseCase {
     if (deadlineMs === undefined) {
       return undefined;
     }
-    if (!Number.isFinite(deadlineMs)) {
+    if (!Number.isSafeInteger(deadlineMs) || deadlineMs < 0) {
       throw new RefreshProfilesUseCaseError(
         REFRESH_PROFILES_INVALID_INPUT_CODE,
         REFRESH_PROFILES_INVALID_INPUT_MESSAGE

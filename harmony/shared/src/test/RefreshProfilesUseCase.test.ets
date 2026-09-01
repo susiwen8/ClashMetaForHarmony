@@ -29,6 +29,7 @@ class FakeClock implements Clock {
 
 class FakeProfileRepository implements ProfileRepository {
   private readonly profiles: Profile[];
+  listCalls: number = 0;
   listError?: Error;
 
   constructor(profiles: Profile[]) {
@@ -36,6 +37,7 @@ class FakeProfileRepository implements ProfileRepository {
   }
 
   async list(): Promise<Profile[]> {
+    this.listCalls += 1;
     if (this.listError !== undefined) {
       throw this.listError;
     }
@@ -448,6 +450,54 @@ export default function refreshProfilesUseCaseTestsuite() {
       expect(cancellationResult.deadlineReached).assertFalse();
       expect(cancellationResult.cancelled).assertTrue();
       expect(cancellationResult.remainingCount).assertEqual(2);
+    });
+
+    it('rejectsInvalidDeadlineValuesBeforeRepositoryOrExecutorAndAllowsZeroAsImmediateDeadline', 0, async () => {
+      const profile = buildRemoteProfile('profile-deadline', 'https://deadline.example.com', 1, 1);
+      const repository = new FakeProfileRepository([profile]);
+      const executor = new FakeRefreshExecutor();
+      const useCase = new RefreshProfilesUseCase({
+        repository,
+        executor,
+        clock: new FakeClock(Date.parse(isoAt(500)))
+      });
+
+      await expectSafeUseCaseError(
+        useCase.execute({ mode: 'ALL', deadlineMs: -1 }),
+        'REFRESH_PROFILES_INVALID_INPUT',
+        ['profile-deadline', 'deadline.example.com']
+      );
+      await expectSafeUseCaseError(
+        useCase.execute({ mode: 'ALL', deadlineMs: 0.5 }),
+        'REFRESH_PROFILES_INVALID_INPUT',
+        ['profile-deadline', 'deadline.example.com']
+      );
+      await expectSafeUseCaseError(
+        useCase.execute({ mode: 'ALL', deadlineMs: Number.MAX_SAFE_INTEGER + 1 }),
+        'REFRESH_PROFILES_INVALID_INPUT',
+        ['profile-deadline', 'deadline.example.com']
+      );
+
+      expect(repository.listCalls).assertEqual(0);
+      expect(executor.calls.length).assertEqual(0);
+
+      const zeroRepository = new FakeProfileRepository([profile]);
+      const zeroExecutor = new FakeRefreshExecutor();
+      zeroExecutor.setResult('profile-deadline', buildUpdatedResult(profile, 'VALID', null, true));
+      const zeroUseCase = new RefreshProfilesUseCase({
+        repository: zeroRepository,
+        executor: zeroExecutor,
+        clock: new FakeClock(0)
+      });
+
+      const result = await zeroUseCase.execute({ mode: 'ALL', deadlineMs: 0 });
+
+      expect(zeroRepository.listCalls).assertEqual(1);
+      expect(zeroExecutor.calls.length).assertEqual(0);
+      expect(result.items.length).assertEqual(0);
+      expect(result.deadlineReached).assertTrue();
+      expect(result.cancelled).assertFalse();
+      expect(result.remainingCount).assertEqual(1);
     });
 
     it('isolatesThrownItemFailuresAndRejectsInvalidClockWithSafePrivacy', 0, async () => {
