@@ -231,6 +231,13 @@ function profileRefreshLeaseRowFromBucket(bucket: RelationalValuesBucket): Durab
   };
 }
 
+export function resolveProfileRefreshLeaseDeleteAffectedRows(affectedRows: number): boolean {
+  if (!Number.isSafeInteger(affectedRows) || affectedRows < 0 || affectedRows > 1) {
+    throw new Error('Transaction profile refresh lease delete failed.');
+  }
+  return affectedRows === 1;
+}
+
 function bindRow(row: DurableProfileRow): Array<RelationalValueType> {
   const values: Array<RelationalValueType> = [
     row.schemaVersion,
@@ -267,6 +274,12 @@ function bindProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): Array<R
     row.ownerToken,
     row.expiresAtMs
   ];
+}
+
+function profileRefreshLeaseDeleteAffectedRowsFromBucket(bucket: RelationalValuesBucket): boolean {
+  return resolveProfileRefreshLeaseDeleteAffectedRows(
+    requireNumberValue(bucket.affected_rows, 'profile_refresh_leases_delete.affected_rows')
+  );
 }
 
 function upsertActiveIdBindArgs(activeId: string | undefined): Array<RelationalValueType> {
@@ -955,17 +968,32 @@ class HarmonyRdbTransaction implements RdbTransaction {
   }
 
   async deleteProfileRefreshLeaseRowIfOwned(profileId: string, ownerToken: string): Promise<boolean> {
-    const existing = await this.getProfileRefreshLeaseRow(profileId);
-    if (existing === undefined || existing.ownerToken !== ownerToken) {
-      return false;
-    }
     await executeSqlWithSafeFallback(
       this.store,
       `DELETE FROM ${PROFILE_REFRESH_LEASES_TABLE} WHERE profile_id = ? AND owner_token = ?`,
       toBindValues([profileId, ownerToken]),
       'Transaction profile refresh lease delete failed.'
     );
-    return true;
+    const resultSet = await querySqlWithSafeFallback(
+      this.store,
+      'SELECT changes() AS affected_rows',
+      undefined,
+      'Transaction profile refresh lease delete failed.'
+    );
+    let primaryError: Error | undefined = undefined;
+    try {
+      if (!advanceResultSetWithSafeFallback(resultSet, 'Transaction profile refresh lease delete failed.')) {
+        throw new Error('Transaction profile refresh lease delete failed.');
+      }
+      return profileRefreshLeaseDeleteAffectedRowsFromBucket(
+        readResultSetRowWithSafeFallback(resultSet, 'Transaction profile refresh lease delete failed.')
+      );
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
+    } finally {
+      closeResultSetWithSafeFallback(resultSet, primaryError, 'Transaction result set close failed.');
+    }
   }
 
   async setActiveId(activeId: string | undefined): Promise<void> {

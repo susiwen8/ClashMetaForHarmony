@@ -25,6 +25,14 @@ class ScriptedFailure {
   }
 }
 
+class ReplaceLeaseRowHook {
+  readonly row: DurableProfileRefreshLeaseRow;
+
+  constructor(row: DurableProfileRefreshLeaseRow) {
+    this.row = row;
+  }
+}
+
 class DeferredValue<T> {
   readonly promise: Promise<T>;
   private readonly resolveFn: (value: T) => void;
@@ -144,6 +152,8 @@ export class RecordingRdbDriver implements RdbDriver {
   private activeIdValue: string | undefined = undefined;
   private appStatePresent: boolean = true;
   private readonly scriptedFailures: Map<string, ScriptedFailure[]> = new Map<string, ScriptedFailure[]>();
+  private readonly deleteAffectedRowsOverrides: number[] = [];
+  private readonly replaceLeaseRowBeforeDeleteHooks: ReplaceLeaseRowHook[] = [];
   private readonly listedRows: DurableProfileRow[] = [];
   private readonly blockedInitializeStarted: DeferredValue<void>[] = [];
   private readonly blockedInitializeReleased: DeferredValue<void>[] = [];
@@ -206,6 +216,14 @@ export class RecordingRdbDriver implements RdbDriver {
       this.scriptedFailures.set(operation, queue);
     }
     queue.push(new ScriptedFailure(error));
+  }
+
+  overrideNextDeleteAffectedRows(affectedRows: number): void {
+    this.deleteAffectedRowsOverrides.push(affectedRows);
+  }
+
+  replaceProfileRefreshLeaseRowBeforeNextDelete(row: DurableProfileRefreshLeaseRow): void {
+    this.replaceLeaseRowBeforeDeleteHooks.push(new ReplaceLeaseRowHook(cloneDurableProfileRefreshLeaseRow(row)));
   }
 
   async initialize(version: number): Promise<void> {
@@ -383,7 +401,20 @@ export class RecordingRdbDriver implements RdbDriver {
     const operation = `tx.deleteProfileRefreshLeaseRowIfOwned:${profileId}`;
     this.log.push(operation);
     this.failIfScripted(operation);
+    const replacement: ReplaceLeaseRowHook | undefined = this.replaceLeaseRowBeforeDeleteHooks.shift();
+    if (replacement !== undefined) {
+      this.committedProfileRefreshLeaseRows.set(profileId, cloneDurableProfileRefreshLeaseRow(replacement.row));
+    }
     const existing = this.committedProfileRefreshLeaseRows.get(profileId);
+    const override: number | undefined = this.deleteAffectedRowsOverrides.shift();
+    if (override !== undefined) {
+      if (!Number.isSafeInteger(override) || override < 0 || override > 1) {
+        throw new Error('Transaction profile refresh lease delete failed.');
+      }
+      if (override === 0) {
+        return false;
+      }
+    }
     if (existing === undefined || existing.ownerToken !== ownerToken) {
       return false;
     }

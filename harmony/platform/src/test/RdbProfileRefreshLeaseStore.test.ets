@@ -158,8 +158,21 @@ export default function rdbProfileRefreshLeaseStoreTestsuite() {
       expect(await store.renew('profile-a', 'owner-b', 150, 310)).assertFalse();
       expect(await store.renew('missing-profile', 'owner-a', 150, 310)).assertFalse();
       expect(await store.release('profile-a', 'owner-b')).assertFalse();
+      expect(driver.readProfileRefreshLeaseRow('profile-a')?.ownerToken).assertEqual('owner-a');
       expect(await store.release('profile-a', 'owner-a')).assertTrue();
+      expect(driver.readProfileRefreshLeaseRow('profile-a')).assertUndefined();
       expect(await store.release('profile-a', 'owner-a')).assertFalse();
+    });
+
+    it('keepsTheReplacementLeaseWhenTheOldOwnerReleasesAfterOwnershipChanged', 0, async () => {
+      const driver = new RecordingRdbDriver();
+      driver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-a', 'owner-a', 200));
+      driver.replaceProfileRefreshLeaseRowBeforeNextDelete(buildLeaseRow('profile-a', 'owner-b', 400));
+      const store = new RdbProfileRefreshLeaseStore(driver);
+
+      expect(await store.release('profile-a', 'owner-a')).assertFalse();
+      expect(driver.readProfileRefreshLeaseRow('profile-a')?.ownerToken).assertEqual('owner-b');
+      expect(driver.readProfileRefreshLeaseRow('profile-a')?.expiresAtMs).assertEqual(400);
     });
 
     it('rollsBackAcquireAndReleaseMutationsWhenTheTransactionWriteFails', 0, async () => {
@@ -230,6 +243,30 @@ export default function rdbProfileRefreshLeaseStoreTestsuite() {
         async (): Promise<boolean> => await store.tryAcquire('profile-a', 'owner-a', 10, 10),
         ['profile-a', 'owner-a']
       );
+    });
+
+    it('surfacesInvalidDeleteAffectedRowsWithSafeErrorsAndNoTokenLeak', 0, async () => {
+      const invalidDriver = new RecordingRdbDriver();
+      invalidDriver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-a', 'owner-a', 200));
+      invalidDriver.overrideNextDeleteAffectedRows(Number.NaN);
+      const invalidStore = new RdbProfileRefreshLeaseStore(invalidDriver);
+
+      await expectSafeValidationFailure(
+        async (): Promise<boolean> => await invalidStore.release('profile-a', 'owner-a'),
+        ['profile-a', 'owner-a']
+      );
+      expect(invalidDriver.readProfileRefreshLeaseRow('profile-a')?.ownerToken).assertEqual('owner-a');
+
+      const corruptDriver = new RecordingRdbDriver();
+      corruptDriver.seedProfileRefreshLeaseRow(buildLeaseRow('profile-b', 'owner-b', 300));
+      corruptDriver.overrideNextDeleteAffectedRows(2);
+      const corruptStore = new RdbProfileRefreshLeaseStore(corruptDriver);
+
+      await expectSafeValidationFailure(
+        async (): Promise<boolean> => await corruptStore.release('profile-b', 'owner-b'),
+        ['profile-b', 'owner-b']
+      );
+      expect(corruptDriver.readProfileRefreshLeaseRow('profile-b')?.ownerToken).assertEqual('owner-b');
     });
 
     it('exposesInjectedAndDefaultLeasePortsWithoutAddingExtraDriverCloseCalls', 0, async () => {

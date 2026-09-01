@@ -8,7 +8,13 @@ import {
   type ProxySelectionPair,
   type ProxySelectionRecord
 } from '@cmfa/shared';
-import { runRdbInitialization, type HarmonyRdbInitializationOperations } from '../main/ets/rdb/HarmonyRdbDriver';
+import {
+  PROFILE_REFRESH_LEASE_TABLE_SPECS,
+  PROFILE_TABLE_SPECS,
+  resolveProfileRefreshLeaseDeleteAffectedRows,
+  runRdbInitialization,
+  type HarmonyRdbInitializationOperations
+} from '../main/ets/rdb/HarmonyRdbDriver';
 import { encodeProfileRow } from '../main/ets/rdb/ProfileRowCodec';
 import { encodeProxySelectionRow } from '../main/ets/rdb/ProxySelectionRowCodec';
 import { RdbProxySelectionRepository } from '../main/ets/rdb/RdbProxySelectionRepository';
@@ -20,11 +26,6 @@ import {
   cloneDurableProxySelectionRow,
   RecordingRdbDriver
 } from './fakes/PlatformFakes';
-import {
-  PROFILE_REFRESH_LEASE_TABLE_SPECS,
-  PROFILE_TABLE_SPECS
-} from '../main/ets/rdb/HarmonyRdbDriver';
-
 const PROFILE_ID = 'proxy-profile';
 const OTHER_PROFILE_ID = 'other-profile';
 const GROUP_ALPHA = 'Group Alpha';
@@ -255,6 +256,29 @@ async function expectSelectionFailure(
 }
 
 export default function rdbProxySelectionRepositoryTestsuite() {
+  describe('HarmonyRdbDriverProfileRefreshLeaseDeleteCountTest', () => {
+    it('acceptsZeroAndOneAffectedRowsAndRejectsInvalidOrCorruptCounts', 0, () => {
+      expect(resolveProfileRefreshLeaseDeleteAffectedRows(0)).assertFalse();
+      expect(resolveProfileRefreshLeaseDeleteAffectedRows(1)).assertTrue();
+
+      try {
+        resolveProfileRefreshLeaseDeleteAffectedRows(Number.NaN);
+        expect(false).assertTrue();
+      } catch (error) {
+        expect(`${error}`).assertContain('Transaction profile refresh lease delete failed.');
+        assertNoLeak(`${error}`, ['profile-a', 'owner-a']);
+      }
+
+      try {
+        resolveProfileRefreshLeaseDeleteAffectedRows(2);
+        expect(false).assertTrue();
+      } catch (error) {
+        expect(`${error}`).assertContain('Transaction profile refresh lease delete failed.');
+        assertNoLeak(`${error}`, ['profile-b', 'owner-b']);
+      }
+    });
+  });
+
   describe('HarmonyRdbDriverInitializationTest', () => {
     it('migratesVersionsZeroOneAndTwoToThreeAndAcceptsVersionThreeWithoutRewritingIt', 0, async () => {
       const fresh = new RecordingInitializationOperations(0);
