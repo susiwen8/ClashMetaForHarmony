@@ -5,6 +5,7 @@ import oneClickVpnConfirmationTestsuite from './OneClickVpnConfirmation.test';
 import profileDomainTestsuite from './ProfileDomain.test';
 import profileImportUseCasesTestsuite from './ProfileImportUseCases.test';
 import profileManagementTestsuite from './ProfileManagement.test';
+import refreshProfilesUseCaseTestsuite from './RefreshProfilesUseCase.test';
 import proxyDelayModelsTestsuite from './ProxyDelayModels.test';
 import proxyOneClickVpnModelsTestsuite from './ProxyOneClickVpnModels.test';
 import proxyModelsTestsuite from './ProxyModels.test';
@@ -31,6 +32,7 @@ export default function testsuite() {
   profileDomainTestsuite();
   profileImportUseCasesTestsuite();
   profileManagementTestsuite();
+  refreshProfilesUseCaseTestsuite();
   localRuntimeCoordinatorTestsuite();
   oneClickVpnConfirmationTestsuite();
   proxyDelayModelsTestsuite();

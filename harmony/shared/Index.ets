@@ -22,6 +22,7 @@ export * from './src/main/ets/profile/ProfileCommitService';
 export * from './src/main/ets/profile/ImportProfileUseCase';
 export * from './src/main/ets/profile/LeasedRemoteProfileRefresher';
 export * from './src/main/ets/profile/RefreshProfileUseCase';
+export * from './src/main/ets/profile/RefreshProfilesUseCase';
 export * from './src/main/ets/profile/LocalRuntimeCoordinator';
 export * from './src/main/ets/profile/ManageProfileUseCases';
 export * from './src/main/ets/profile/OneClickVpnConfirmation';
