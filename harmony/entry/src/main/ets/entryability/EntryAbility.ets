@@ -50,7 +50,7 @@ export default class EntryAbility extends UIAbility {
   }
 
   onForeground(): void {
-    void reloadApplicationCompositionOnForeground(this.applicationComposition);
+    this.scheduleForegroundReload();
     hilog.info(DOMAIN, 'testTag', '%{public}s', 'Ability onForeground');
   }
 
@@ -64,6 +64,17 @@ export default class EntryAbility extends UIAbility {
     this.navigationPromise = this.navigationPromise.catch(() => {
     }).then(async () => {
       await this.loadTargetPage(generation);
+    });
+  }
+
+  private scheduleForegroundReload(): void {
+    const generation: number = this.navigationGeneration;
+    this.navigationPromise = this.navigationPromise.catch(() => {
+    }).then(async () => {
+      if (generation !== this.navigationGeneration) {
+        return;
+      }
+      await reloadApplicationCompositionOnForeground(this.applicationComposition);
     });
   }
 
