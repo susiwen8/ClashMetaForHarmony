@@ -3,6 +3,8 @@ import {
   decodeVpnRpcUtf8,
   encodeVpnRpcUtf8,
   OwnershipStoreCorruptError,
+  type VpnPlatformOwnershipPhase,
+  type VpnPlatformOwnershipRecord,
   type VpnPlatformOwnershipStorePort
 } from '@cmfa/shared';
 import type { FileDriver, FileStat, FileToken } from '../files/FileDriver';
@@ -18,16 +20,18 @@ const STORE_VERSION: number = 1;
 const MAX_DOCUMENT_BYTES: number = 256;
 const VPN_DIRECTORY: string = 'vpn';
 const ACTIVE_VPN_FILE_NAME: string = 'active-platform-vpn-v1.json';
-const ACTIVE_VPN_TEMP_FILE_NAME: string = 'active-platform-vpn-v1.json.tmp';
+const ACTIVE_VPN_TEMP_FILE_SUFFIX: string = '.tmp';
 const ACTIVE_VPN_CLAIM_FILE_NAME: string = 'active-platform-vpn-v1.claim.json';
 
 interface OwnershipStoreDocument {
   version: number;
+  phase: VpnPlatformOwnershipPhase;
   vpnId: string;
 }
 
 interface OwnershipStoreJsonShape {
   version?: Object;
+  phase?: Object;
   vpnId?: Object;
 }
 
@@ -35,14 +39,17 @@ export interface HarmonyVpnOwnershipStoreDependencies {
   fileDriver: FileDriver;
   filesDir: string;
   fsync?: (fd: number) => void;
+  createOperationId?: () => string;
 }
 
-class OwnershipStoreDocumentRecord implements OwnershipStoreDocument {
+class OwnershipStoreDocumentRecord implements OwnershipStoreDocument, VpnPlatformOwnershipRecord {
   readonly version: number;
+  readonly phase: VpnPlatformOwnershipPhase;
   readonly vpnId: string;
 
-  constructor(version: number, vpnId: string) {
+  constructor(version: number, phase: VpnPlatformOwnershipPhase, vpnId: string) {
     this.version = version;
+    this.phase = phase;
     this.vpnId = vpnId;
   }
 }
@@ -52,31 +59,36 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
   private readonly filesDir: string;
   private readonly directoryPath: string;
   private readonly targetPath: string;
-  private readonly temporaryPath: string;
   private readonly claimPath: string;
   private readonly fsync: (fd: number) => void;
+  private readonly createOperationId: () => string;
 
   constructor(dependencies: HarmonyVpnOwnershipStoreDependencies) {
     this.fileDriver = dependencies.fileDriver;
     this.filesDir = normalizeAbsoluteSandboxPath(dependencies.filesDir, 'VPN ownership filesDir');
     this.directoryPath = activePlatformVpnOwnershipDirectory(this.filesDir);
     this.targetPath = activePlatformVpnOwnershipPath(this.filesDir);
-    this.temporaryPath = activePlatformVpnOwnershipTemporaryPath(this.filesDir);
     this.claimPath = activePlatformVpnOwnershipClaimPath(this.filesDir);
     this.fsync = dependencies.fsync ?? ((fd: number): void => {
       fileIo.fsyncSync(fd);
     });
+    this.createOperationId = dependencies.createOperationId ?? (() => {
+      return `${Date.now()}-${Math.floor(Math.random() * 1000000000)}`;
+    });
   }
 
-  async read(): Promise<string | null> {
+  async read(): Promise<VpnPlatformOwnershipRecord | null> {
     await this.reconcileClaimPath();
-    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent(this.targetPath);
-    return document?.vpnId ?? null;
+    return await this.readDocumentIfPresent(this.targetPath);
   }
 
-  async write(vpnId: string): Promise<void> {
-    const safeVpnId: string = normalizePersistentVpnId(vpnId, false);
-    const contents: Uint8Array = serializeDocument(safeVpnId);
+  async write(ownership: VpnPlatformOwnershipRecord): Promise<void> {
+    const safeOwnership: OwnershipStoreDocumentRecord = normalizeOwnershipRecord(ownership, false);
+    const contents: Uint8Array = serializeDocument(safeOwnership);
+    const temporaryPath: string = activePlatformVpnOwnershipTemporaryPath(
+      this.filesDir,
+      normalizeOperationId(this.createOperationId())
+    );
     await this.reconcileClaimPath();
     await this.fileDriver.mkdir(this.directoryPath, true);
 
@@ -84,7 +96,7 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
     let pendingFailure: Error | undefined = undefined;
     try {
       token = await this.fileDriver.open(
-        this.temporaryPath,
+        temporaryPath,
         FILE_OPEN_MODE_CREATE | FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_TRUNC
       );
       await writeAll(this.fileDriver, token.fd, contents);
@@ -100,42 +112,37 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
       }
     }
     if (pendingFailure !== undefined) {
-      await this.cleanupTemporary();
+      await this.cleanupTemporary(temporaryPath);
       throw pendingFailure;
     }
     try {
-      await this.fileDriver.renameReplace(this.temporaryPath, this.targetPath);
+      await this.fileDriver.renameReplace(temporaryPath, this.targetPath);
     } catch (error) {
-      await this.cleanupTemporary();
+      await this.cleanupTemporary(temporaryPath);
       throw coerceStoreWriteFailure(error);
     }
   }
 
-  async clearExpected(vpnId: string): Promise<void> {
-    const expectedVpnId: string = normalizePersistentVpnId(vpnId, false);
+  async clearExpected(ownership: VpnPlatformOwnershipRecord): Promise<void> {
+    const expectedOwnership: OwnershipStoreDocumentRecord = normalizeOwnershipRecord(ownership, false);
     await this.reconcileClaimPath();
     const claimed: boolean = await this.claimCurrentTarget();
     if (!claimed) {
       return;
     }
-    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent(this.claimPath);
-    if (document === null) {
+    const claimedOwnership: OwnershipStoreDocumentRecord | null = await this.readDocumentIfPresent(this.claimPath);
+    if (claimedOwnership === null) {
       return;
     }
-    if (document.vpnId === expectedVpnId) {
+    if (sameOwnership(claimedOwnership, expectedOwnership)) {
       await this.fileDriver.unlink(this.claimPath);
       return;
     }
     await this.restoreOrDiscardClaim();
   }
 
-  private async readDocumentIfPresent(path: string): Promise<OwnershipStoreDocument | null> {
-    let stat: FileStat | undefined = undefined;
-    try {
-      stat = await this.fileDriver.statIfPresent(path);
-    } catch (_) {
-      throw new Error('VPN ownership store read failed.');
-    }
+  private async readDocumentIfPresent(path: string): Promise<OwnershipStoreDocumentRecord | null> {
+    const stat: FileStat | undefined = await this.safeStatIfPresent(path);
     if (stat === undefined) {
       return null;
     }
@@ -243,21 +250,25 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
     }
   }
 
-  private async cleanupTemporary(): Promise<void> {
+  private async cleanupTemporary(path: string): Promise<void> {
     try {
-      const stat: FileStat | undefined = await this.fileDriver.statIfPresent(this.temporaryPath);
+      const stat: FileStat | undefined = await this.fileDriver.statIfPresent(path);
       if (stat !== undefined && stat.isFile) {
-        await this.fileDriver.unlink(this.temporaryPath);
+        await this.fileDriver.unlink(path);
       }
     } catch (_) {
     }
   }
 }
 
-export function createHarmonyVpnOwnershipStore(filesDir: string): HarmonyVpnOwnershipStore {
+export function createHarmonyVpnOwnershipStore(
+  filesDir: string,
+  createOperationId?: () => string
+): HarmonyVpnOwnershipStore {
   return new HarmonyVpnOwnershipStore({
     fileDriver: new HarmonyFileDriver(),
-    filesDir
+    filesDir,
+    createOperationId
   });
 }
 
@@ -269,20 +280,30 @@ export function activePlatformVpnOwnershipPath(filesDir: string): string {
   return joinAbsoluteSandboxPath(activePlatformVpnOwnershipDirectory(filesDir), ACTIVE_VPN_FILE_NAME);
 }
 
-function activePlatformVpnOwnershipTemporaryPath(filesDir: string): string {
-  return joinAbsoluteSandboxPath(activePlatformVpnOwnershipDirectory(filesDir), ACTIVE_VPN_TEMP_FILE_NAME);
+function activePlatformVpnOwnershipTemporaryPath(filesDir: string, operationId: string): string {
+  return joinAbsoluteSandboxPath(
+    activePlatformVpnOwnershipDirectory(filesDir),
+    `active-platform-vpn-v1.${operationId}${ACTIVE_VPN_TEMP_FILE_SUFFIX}`
+  );
 }
 
 function activePlatformVpnOwnershipClaimPath(filesDir: string): string {
   return joinAbsoluteSandboxPath(activePlatformVpnOwnershipDirectory(filesDir), ACTIVE_VPN_CLAIM_FILE_NAME);
 }
 
-function serializeDocument(vpnId: string): Uint8Array {
-  return encodeVpnRpcUtf8(JSON.stringify(new OwnershipStoreDocumentRecord(STORE_VERSION, vpnId)), MAX_DOCUMENT_BYTES);
+function serializeDocument(ownership: OwnershipStoreDocumentRecord): Uint8Array {
+  return encodeVpnRpcUtf8(
+    JSON.stringify(new OwnershipStoreDocumentRecord(STORE_VERSION, ownership.phase, ownership.vpnId)),
+    MAX_DOCUMENT_BYTES
+  );
 }
 
-function parseDocument(rawText: string): OwnershipStoreDocument {
-  if (countFieldOccurrences(rawText, 'version') !== 1 || countFieldOccurrences(rawText, 'vpnId') !== 1) {
+function parseDocument(rawText: string): OwnershipStoreDocumentRecord {
+  if (
+    countFieldOccurrences(rawText, 'version') !== 1 ||
+    countFieldOccurrences(rawText, 'phase') !== 1 ||
+    countFieldOccurrences(rawText, 'vpnId') !== 1
+  ) {
     throw new OwnershipStoreCorruptError();
   }
   let parsed: Object;
@@ -296,19 +317,43 @@ function parseDocument(rawText: string): OwnershipStoreDocument {
   }
   const record: OwnershipStoreJsonShape = parsed as OwnershipStoreJsonShape;
   const keys: string[] = Object.keys(parsed as Record<string, Object>);
-  if (keys.length !== 2 || !keys.includes('version') || !keys.includes('vpnId')) {
+  if (keys.length !== 3 || !keys.includes('version') || !keys.includes('phase') || !keys.includes('vpnId')) {
     throw new OwnershipStoreCorruptError();
   }
   if (record.version !== STORE_VERSION) {
     throw new OwnershipStoreCorruptError();
   }
+  const phase: VpnPlatformOwnershipPhase = normalizeOwnershipPhase(record.phase, true);
   const vpnId: string = normalizePersistentVpnId(record.vpnId, true);
-  return new OwnershipStoreDocumentRecord(STORE_VERSION, vpnId);
+  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId);
+}
+
+function normalizeOwnershipRecord(
+  ownership: VpnPlatformOwnershipRecord,
+  failClosed: boolean
+): OwnershipStoreDocumentRecord {
+  const phase: VpnPlatformOwnershipPhase = normalizeOwnershipPhase(ownership.phase, failClosed);
+  const vpnId: string = normalizePersistentVpnId(ownership.vpnId, failClosed);
+  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId);
+}
+
+function sameOwnership(left: OwnershipStoreDocumentRecord, right: OwnershipStoreDocumentRecord): boolean {
+  return left.phase === right.phase && left.vpnId === right.vpnId;
 }
 
 function countFieldOccurrences(rawText: string, fieldName: string): number {
   const pattern: RegExp = new RegExp(`"${fieldName}"\\s*:`, 'gu');
   return rawText.match(pattern)?.length ?? 0;
+}
+
+function normalizeOwnershipPhase(value: Object | undefined, failClosed: boolean): VpnPlatformOwnershipPhase {
+  if (value === 'PREPARED' || value === 'ACTIVE' || value === 'RELEASED') {
+    return value;
+  }
+  if (failClosed) {
+    throw new OwnershipStoreCorruptError();
+  }
+  throw new Error('VPN ownership phase is invalid.');
 }
 
 function normalizePersistentVpnId(value: Object | undefined, failClosed: boolean): string {
@@ -325,6 +370,13 @@ function normalizePersistentVpnId(value: Object | undefined, failClosed: boolean
     throw new Error('VPN ownership id is invalid.');
   }
   return value;
+}
+
+function normalizeOperationId(rawValue: string): string {
+  if (!/^[A-Za-z0-9_-]+$/u.test(rawValue)) {
+    throw new Error('VPN ownership operation id is invalid.');
+  }
+  return rawValue;
 }
 
 async function readAll(fileDriver: FileDriver, fd: number, expectedSize: number): Promise<Uint8Array> {

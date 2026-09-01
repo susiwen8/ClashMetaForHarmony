@@ -68,12 +68,19 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   assertContains(driverSource, 'PROTECT_SOCKET_FAILED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'CONSENT_DENIED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'private readonly store: VpnPlatformOwnershipStorePort;', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'platformDestroyed: boolean;', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "persistedPhase: VpnPlatformOwnershipPhase;", 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'const platformConfig: PlatformVpnConfig = createPlatformVpnConfig(owner.vpnId);', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'return createTunHandle(fd, owner.vpnId, this.sessionId);', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'await this.store.clearExpected(vpnId);', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'await this.store.write(owner.vpnId);', 'HarmonyVpnConnectionDriver');
-  assertContains(driverSource, 'const persistedVpnId: string | null = await this.store.read();', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "await this.store.clearExpected(createOwnershipRecord('RELEASED', vpnId));", 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "await this.store.write(createOwnershipRecord('PREPARED', owner.vpnId));", 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "await this.store.write(createOwnershipRecord('ACTIVE', owner.vpnId));", 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'const persistedOwnership: VpnPlatformOwnershipRecord | null = await this.store.read();', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'DESTROY_ALREADY_RELEASED_ERROR_CODE', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'if (!owner.storeWasEmpty)', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "if (persistedOwnership.phase === 'RELEASED')", 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "if (!liveHandle.platformDestroyed)", 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, "if (liveHandle.persistedPhase !== 'RELEASED')", 'HarmonyVpnConnectionDriver');
   for (const stage of [
     'platform.config.begin',
     'platform.config.ok',
@@ -128,14 +135,15 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   assertContains(driverSource, 'blockedApplications: [SELF_PACKAGE_NAME]', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'vpnId,', 'HarmonyVpnConnectionDriver');
   assertOrdered(driverSource, [
-    ['read persisted owner', 'const persistedVpnId: string | null = await this.store.read();'],
-    ['recover previous owner', 'await this.recoverPersistedOwner(owner, persistedVpnId);'],
+    ['read persisted owner', 'const persistedOwnership: VpnPlatformOwnershipRecord | null = await this.store.read();'],
+    ['recover previous owner', 'await this.recoverPersistedOwner(owner, persistedOwnership);'],
     ['generate vpn id', 'owner.vpnId = await this.generateVpnId(owner.connection);'],
-    ['persist vpn id', 'await this.store.write(owner.vpnId);']
+    ['persist prepared vpn id', "await this.store.write(createOwnershipRecord('PREPARED', owner.vpnId));"]
   ]);
   assertOrdered(driverSource, [
-    ['destroy live owner by id', 'await liveHandle.connection.destroyWithVpnId(vpnId);'],
-    ['clear durable owner', 'await this.store.clearExpected(vpnId);'],
+    ['destroy live owner by id', 'await this.destroyStoredPlatformOwner(liveHandle.connection, liveHandle.vpnId);'],
+    ['persist released owner', "await this.store.write(createOwnershipRecord('RELEASED', vpnId));"],
+    ['clear durable owner', "await this.store.clearExpected(createOwnershipRecord('RELEASED', vpnId));"],
     ['release live handle', 'this.liveHandle = undefined;']
   ]);
   assertNotContains(driverSource, 'MANAGE_VPN', 'HarmonyVpnConnectionDriver');

@@ -53,14 +53,19 @@ test('vpn ownership recovery contracts keep the durable owner private and exact'
   ]);
 
   assert.match(portsSource, /export class OwnershipStoreCorruptError extends Error/u);
-  assert.match(portsSource, /export interface VpnPlatformOwnershipStorePort \{\s*read\(\): Promise<string \| null>;\s*write\(vpnId: string\): Promise<void>;\s*clearExpected\(vpnId: string\): Promise<void>;\s*\}/u);
+  assert.match(portsSource, /export type VpnPlatformOwnershipPhase = 'PREPARED' \| 'ACTIVE' \| 'RELEASED';/u);
+  assert.match(portsSource, /export interface VpnPlatformOwnershipRecord \{\s*phase: VpnPlatformOwnershipPhase;\s*vpnId: string;\s*\}/u);
+  assert.match(portsSource, /export interface VpnPlatformOwnershipStorePort \{\s*read\(\): Promise<VpnPlatformOwnershipRecord \| null>;\s*write\(ownership: VpnPlatformOwnershipRecord\): Promise<void>;\s*clearExpected\(ownership: VpnPlatformOwnershipRecord\): Promise<void>;\s*\}/u);
 
   assert.match(storeSource, /const MAX_DOCUMENT_BYTES: number = 256;/u);
   assert.match(storeSource, /const ACTIVE_VPN_FILE_NAME: string = 'active-platform-vpn-v1\.json';/u);
-  assert.match(storeSource, /const ACTIVE_VPN_TEMP_FILE_NAME: string = 'active-platform-vpn-v1\.json\.tmp';/u);
+  assert.match(storeSource, /const ACTIVE_VPN_TEMP_FILE_SUFFIX: string = '\.tmp';/u);
   assert.match(storeSource, /const ACTIVE_VPN_CLAIM_FILE_NAME: string = 'active-platform-vpn-v1\.claim\.json';/u);
   assert.match(storeSource, /fileIo\.fsyncSync\(fd\);/u);
-  assert.match(storeSource, /await this\.fileDriver\.renameReplace\(this\.temporaryPath,\s*this\.targetPath\);/u);
+  assert.match(storeSource, /createOperationId\?: \(\) => string;/u);
+  assert.match(storeSource, /normalizeOperationId\(this\.createOperationId\(\)\)/u);
+  assert.match(storeSource, /phase: VpnPlatformOwnershipPhase;/u);
+  assert.match(storeSource, /await this\.fileDriver\.renameReplace\(temporaryPath,\s*this\.targetPath\);/u);
   assert.match(storeSource, /await this\.fileDriver\.renameNoOverwrite\(this\.targetPath,\s*this\.claimPath\);/u);
   assert.match(storeSource, /await this\.fileDriver\.renameNoOverwrite\(this\.claimPath,\s*this\.targetPath\);/u);
   assert.match(storeSource, /throw new OwnershipStoreCorruptError\(\);/u);
@@ -70,13 +75,16 @@ test('vpn ownership recovery contracts keep the durable owner private and exact'
     ['write temp contents', 'await writeAll(this.fileDriver, token.fd, contents);'],
     ['fsync temp file', 'this.fsync(token.fd);'],
     ['close temp file', 'await this.fileDriver.close(token);'],
-    ['rename into place', 'await this.fileDriver.renameReplace(this.temporaryPath, this.targetPath);']
+    ['rename into place', 'await this.fileDriver.renameReplace(temporaryPath, this.targetPath);']
   ]);
-  const clearMethod = extractMethodBody(storeSource, 'async clearExpected(vpnId: string): Promise<void>');
+  const clearMethod = extractMethodBody(
+    storeSource,
+    'async clearExpected(ownership: VpnPlatformOwnershipRecord): Promise<void>'
+  );
   assertOrdered(clearMethod, [
     ['reconcile stale claim first', 'await this.reconcileClaimPath();'],
     ['claim current target', 'const claimed: boolean = await this.claimCurrentTarget();'],
-    ['read claimed document', 'const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent(this.claimPath);'],
+    ['read claimed document', 'const claimedOwnership: OwnershipStoreDocumentRecord | null = await this.readDocumentIfPresent(this.claimPath);'],
     ['delete matched claim only', 'await this.fileDriver.unlink(this.claimPath);']
   ]);
   const reconcileMethod = extractMethodBody(storeSource, 'private async reconcileClaimPath(): Promise<void>');
@@ -93,17 +101,24 @@ test('vpn ownership recovery contracts keep the durable owner private and exact'
     ['cleanup old claim', 'await this.fileDriver.unlink(this.claimPath);']
   ]);
 
-  assert.match(compositionSource, /createHarmonyVpnOwnershipStore\(this\.context\.filesDir\)/u);
+  assert.match(compositionSource, /createHarmonyVpnOwnershipStore\(this\.context\.filesDir,\s*createOperationId\)/u);
+  assert.match(compositionSource, /createPlatformPort\(request\.sessionId,\s*\(\): string => platformGraph\.idGenerator\.nextId\(\)\)/u);
   assert.doesNotMatch(compositionSource, /reportStageLifecycle:[\s\S]{0,200}(vpnId|sessionId)/u);
 
   assertOrdered(driverSource, [
-    ['read durable owner', 'const persistedVpnId: string | null = await this.store.read();'],
-    ['destroy stale owner by real vpn id', 'await this.recoverPersistedOwner(owner, persistedVpnId);'],
+    ['read durable owner', 'const persistedOwnership: VpnPlatformOwnershipRecord | null = await this.store.read();'],
+    ['destroy stale owner by real vpn id', 'await this.recoverPersistedOwner(owner, persistedOwnership);'],
     ['generate new vpn id', 'owner.vpnId = await this.generateVpnId(owner.connection);'],
-    ['persist before create', 'await this.store.write(owner.vpnId);'],
+    ['persist prepared before create', "await this.store.write(createOwnershipRecord('PREPARED', owner.vpnId));"],
     ['create with persisted vpn id', 'const fd: number = await connection.create(platformConfig);']
   ]);
+  assert.match(driverSource, /await this\.store\.write\(createOwnershipRecord\('ACTIVE', owner\.vpnId\)\);/u);
+  assert.match(driverSource, /if \(persistedOwnership\.phase === 'RELEASED'\)/u);
+  assert.match(driverSource, /if \(!liveHandle\.platformDestroyed\)/u);
+  assert.match(driverSource, /if \(liveHandle\.persistedPhase !== 'RELEASED'\)/u);
+  assert.match(driverSource, /DESTROY_ALREADY_RELEASED_ERROR_CODE: number = 19900001;/u);
+  assert.match(driverSource, /await this\.store\.write\(createOwnershipRecord\('RELEASED', vpnId\)\);/u);
   assert.match(driverSource, /return createTunHandle\(fd,\s*owner\.vpnId,\s*this\.sessionId\);/u);
-  assert.match(driverSource, /await liveHandle\.connection\.destroyWithVpnId\(vpnId\);/u);
-  assert.match(driverSource, /await this\.store\.clearExpected\(vpnId\);/u);
+  assert.match(driverSource, /await this\.destroyStoredPlatformOwner\(liveHandle\.connection,\s*liveHandle\.vpnId\);/u);
+  assert.match(driverSource, /await this\.store\.clearExpected\(createOwnershipRecord\('RELEASED', vpnId\)\);/u);
 });

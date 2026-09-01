@@ -154,7 +154,7 @@ export interface VpnExtensionCompositionDependencies {
   registry?: VpnSessionRegistry;
   commandBus?: VpnProxyCommandBus;
   createPlatformFactory?: (context: common.VpnExtensionContext | undefined) => PlatformFactoryLike;
-  createPlatformPort?: (sessionId: string) => VpnPlatformSessionPort;
+  createPlatformPort?: (sessionId: string, createOperationId: () => string) => VpnPlatformSessionPort;
   createTunRuntime?: (configPath: string) => TunRuntimePort;
   createCoreService?: () => CoreService;
   createProxyLifecycle?: (
@@ -1111,7 +1111,7 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
       this.proxyLifecycle = proxyLifecycle;
       const coordinator: VpnControllerPort = this.createCoordinator({
         resolver,
-        platform: this.createPlatformPort(request.sessionId),
+        platform: this.createPlatformPort(request.sessionId, (): string => platformGraph.idGenerator.nextId()),
         tunRuntime,
         networkRecovery,
         notification,
@@ -1204,9 +1204,9 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
     return new PlatformFactory(this.context);
   }
 
-  private createPlatformPort(sessionId: string): VpnPlatformSessionPort {
+  private createPlatformPort(sessionId: string, createOperationId: () => string): VpnPlatformSessionPort {
     if (this.dependencies.createPlatformPort !== undefined) {
-      return this.dependencies.createPlatformPort(sessionId);
+      return this.dependencies.createPlatformPort(sessionId, createOperationId);
     }
     if (this.context === undefined) {
       throw new CompositionResolveError('VPN_CREATE_FAILED', 'VPN extension context was unavailable.');
@@ -1214,7 +1214,7 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
     return new HarmonyVpnConnectionDriver(
       new HarmonyVpnConnectionApi(this.context, defaultSdkApiVersionResolver),
       sessionId,
-      createHarmonyVpnOwnershipStore(this.context.filesDir),
+      createHarmonyVpnOwnershipStore(this.context.filesDir, createOperationId),
       (stage: string) => {
         this.recordVpnStartStage(stage);
       }

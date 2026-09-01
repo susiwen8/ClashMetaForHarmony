@@ -83,10 +83,17 @@ export interface VpnPlatformSessionPort {
   destroy(vpnId: string): Promise<void>;
 }
 
+export type VpnPlatformOwnershipPhase = 'PREPARED' | 'ACTIVE' | 'RELEASED';
+
+export interface VpnPlatformOwnershipRecord {
+  phase: VpnPlatformOwnershipPhase;
+  vpnId: string;
+}
+
 export interface VpnPlatformOwnershipStorePort {
-  read(): Promise<string | null>;
-  write(vpnId: string): Promise<void>;
-  clearExpected(vpnId: string): Promise<void>;
+  read(): Promise<VpnPlatformOwnershipRecord | null>;
+  write(ownership: VpnPlatformOwnershipRecord): Promise<void>;
+  clearExpected(ownership: VpnPlatformOwnershipRecord): Promise<void>;
 }
 
 export interface TunRuntimeEvent {

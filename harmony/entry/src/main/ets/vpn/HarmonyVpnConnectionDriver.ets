@@ -5,6 +5,8 @@ import {
   VpnPlatformPortError,
   type TunHandle,
   type VpnCaptureConfig,
+  type VpnPlatformOwnershipPhase,
+  type VpnPlatformOwnershipRecord,
   type VpnPlatformOwnershipStorePort,
   type VpnPlatformSessionPort
 } from '@cmfa/shared';
@@ -32,6 +34,7 @@ const IPV6_DEFAULT_ROUTE: string = '::/0';
 const IPV4_DNS: string = '10.111.222.2';
 const IPV6_DNS: string = 'fd00:111:222::2';
 const SELF_PACKAGE_NAME: string = 'com.github.kr328.clash.harmony';
+const DESTROY_ALREADY_RELEASED_ERROR_CODE: number = 19900001;
 
 interface ParsedCidr {
   address: string;
@@ -43,6 +46,8 @@ interface LiveHandle {
   sessionId: string;
   vpnId: string;
   connection: PlatformVpnConnection;
+  platformDestroyed: boolean;
+  persistedPhase: VpnPlatformOwnershipPhase;
 }
 
 interface PreparedOwner {
@@ -50,8 +55,10 @@ interface PreparedOwner {
   vpnId: string;
   connection: PlatformVpnConnection;
   storeWasEmpty: boolean;
+  persistedPhase: VpnPlatformOwnershipPhase;
   processProtected: boolean;
   createInFlight: boolean;
+  platformDestroyed: boolean;
 }
 
 class ParsedCidrRecord implements ParsedCidr {
@@ -70,11 +77,21 @@ class LiveHandleRecord implements LiveHandle {
   readonly sessionId: string;
   readonly vpnId: string;
   readonly connection: PlatformVpnConnection;
+  platformDestroyed: boolean;
+  persistedPhase: VpnPlatformOwnershipPhase;
 
-  constructor(sessionId: string, vpnId: string, connection: PlatformVpnConnection) {
+  constructor(
+    sessionId: string,
+    vpnId: string,
+    connection: PlatformVpnConnection,
+    platformDestroyed: boolean,
+    persistedPhase: VpnPlatformOwnershipPhase
+  ) {
     this.sessionId = sessionId;
     this.vpnId = vpnId;
     this.connection = connection;
+    this.platformDestroyed = platformDestroyed;
+    this.persistedPhase = persistedPhase;
   }
 }
 
@@ -83,8 +100,10 @@ class PreparedOwnerRecord implements PreparedOwner {
   vpnId: string = '';
   connection: PlatformVpnConnection;
   storeWasEmpty: boolean = true;
+  persistedPhase: VpnPlatformOwnershipPhase = 'PREPARED';
   processProtected: boolean = false;
   createInFlight: boolean = false;
+  platformDestroyed: boolean = false;
 
   constructor(sessionId: string, connection: PlatformVpnConnection) {
     this.sessionId = sessionId;
@@ -96,6 +115,16 @@ function vpnFailureDetail(code: string, detail: string): string {
   return createVpnFailure(code, detail).detail;
 }
 
+class OwnershipRecord implements VpnPlatformOwnershipRecord {
+  readonly phase: VpnPlatformOwnershipPhase;
+  readonly vpnId: string;
+
+  constructor(phase: VpnPlatformOwnershipPhase, vpnId: string) {
+    this.phase = phase;
+    this.vpnId = vpnId;
+  }
+}
+
 function isPositiveSafeInteger(value: number): boolean {
   return Number.isSafeInteger(value) && value > 0;
 }
@@ -105,6 +134,10 @@ function normalizeSessionId(sessionId: string): string {
     throw new Error('Vpn connection driver requires a non-empty session id.');
   }
   return sessionId;
+}
+
+function createOwnershipRecord(phase: VpnPlatformOwnershipPhase, vpnId: string): VpnPlatformOwnershipRecord {
+  return new OwnershipRecord(phase, vpnId);
 }
 
 function splitCidr(value: string): ParsedCidr {
@@ -239,7 +272,15 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
       }
       this.reportStage('platform.fd.ok');
 
-      this.liveHandle = new LiveHandleRecord(this.sessionId, owner.vpnId, owner.connection);
+      await this.store.write(createOwnershipRecord('ACTIVE', owner.vpnId));
+      owner.persistedPhase = 'ACTIVE';
+      this.liveHandle = new LiveHandleRecord(
+        this.sessionId,
+        owner.vpnId,
+        owner.connection,
+        false,
+        owner.persistedPhase
+      );
       this.pendingOwner = undefined;
       owner.createInFlight = false;
       return createTunHandle(fd, owner.vpnId, this.sessionId);
@@ -290,8 +331,15 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
 
     try {
-      await liveHandle.connection.destroyWithVpnId(vpnId);
-      await this.store.clearExpected(vpnId);
+      if (!liveHandle.platformDestroyed) {
+        await this.destroyStoredPlatformOwner(liveHandle.connection, liveHandle.vpnId);
+        liveHandle.platformDestroyed = true;
+      }
+      if (liveHandle.persistedPhase !== 'RELEASED') {
+        await this.store.write(createOwnershipRecord('RELEASED', vpnId));
+        liveHandle.persistedPhase = 'RELEASED';
+      }
+      await this.store.clearExpected(createOwnershipRecord('RELEASED', vpnId));
       this.liveHandle = undefined;
     } catch (_) {
       throw new Error(vpnFailureDetail('VPN_STOP_FAILED', 'HarmonyOS VPN destroy failed.'));
@@ -402,10 +450,10 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
 
   private async finishPreparingOwner(owner: PreparedOwner): Promise<PreparedOwner> {
     try {
-      const persistedVpnId: string | null = await this.store.read();
-      owner.storeWasEmpty = persistedVpnId === null;
-      if (persistedVpnId !== null) {
-        await this.recoverPersistedOwner(owner, persistedVpnId);
+      const persistedOwnership: VpnPlatformOwnershipRecord | null = await this.store.read();
+      owner.storeWasEmpty = persistedOwnership === null;
+      if (persistedOwnership !== null) {
+        await this.recoverPersistedOwner(owner, persistedOwnership);
       }
       owner.vpnId = await this.generateVpnId(owner.connection);
       if (this.api.sdkApiVersion() >= API22) {
@@ -414,7 +462,8 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
           owner.processProtected = true;
         }
       }
-      await this.store.write(owner.vpnId);
+      await this.store.write(createOwnershipRecord('PREPARED', owner.vpnId));
+      owner.persistedPhase = 'PREPARED';
       return owner;
     } catch (error) {
       this.pendingOwner = undefined;
@@ -425,10 +474,18 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
   }
 
-  private async recoverPersistedOwner(owner: PreparedOwner, persistedVpnId: string): Promise<void> {
+  private async recoverPersistedOwner(
+    owner: PreparedOwner,
+    persistedOwnership: VpnPlatformOwnershipRecord
+  ): Promise<void> {
+    if (persistedOwnership.phase === 'RELEASED') {
+      await this.store.clearExpected(createOwnershipRecord('RELEASED', persistedOwnership.vpnId));
+      return;
+    }
     try {
-      await owner.connection.destroyWithVpnId(persistedVpnId);
-      await this.store.clearExpected(persistedVpnId);
+      await this.destroyStoredPlatformOwner(owner.connection, persistedOwnership.vpnId);
+      await this.store.write(createOwnershipRecord('RELEASED', persistedOwnership.vpnId));
+      await this.store.clearExpected(createOwnershipRecord('RELEASED', persistedOwnership.vpnId));
     } catch (_) {
       throw new VpnPlatformPortError(
         'ALREADY_ACTIVE',
@@ -569,21 +626,44 @@ export class HarmonyVpnConnectionDriver implements VpnPlatformSessionPort {
     }
   }
 
+  private async destroyStoredPlatformOwner(connection: PlatformVpnConnection, vpnId: string): Promise<void> {
+    try {
+      await connection.destroyWithVpnId(vpnId);
+    } catch (error) {
+      if (isBusinessErrorWithCode(error, DESTROY_ALREADY_RELEASED_ERROR_CODE)) {
+        return;
+      }
+      throw error as Error;
+    }
+  }
+
   private async cleanupPreparedOwner(owner: PreparedOwner): Promise<void> {
     if (owner.vpnId.length === 0) {
       return;
     }
     try {
-      await owner.connection.destroyWithVpnId(owner.vpnId);
-      await this.store.clearExpected(owner.vpnId);
+      if (!owner.platformDestroyed) {
+        await this.destroyStoredPlatformOwner(owner.connection, owner.vpnId);
+        owner.platformDestroyed = true;
+      }
+      await this.store.write(createOwnershipRecord('RELEASED', owner.vpnId));
+      owner.persistedPhase = 'RELEASED';
+      await this.store.clearExpected(createOwnershipRecord('RELEASED', owner.vpnId));
     } catch (_) {
     }
   }
 
   private async cleanupCreateFailure(owner: PreparedOwner): Promise<void> {
     try {
-      await owner.connection.destroyWithVpnId(owner.vpnId);
-      await this.store.clearExpected(owner.vpnId);
+      if (!owner.platformDestroyed) {
+        await this.destroyStoredPlatformOwner(owner.connection, owner.vpnId);
+        owner.platformDestroyed = true;
+      }
+      if (owner.persistedPhase !== 'RELEASED') {
+        await this.store.write(createOwnershipRecord('RELEASED', owner.vpnId));
+        owner.persistedPhase = 'RELEASED';
+      }
+      await this.store.clearExpected(createOwnershipRecord('RELEASED', owner.vpnId));
     } catch (_) {
     }
   }

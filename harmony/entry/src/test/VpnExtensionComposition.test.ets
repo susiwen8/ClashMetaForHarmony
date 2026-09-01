@@ -1451,7 +1451,7 @@ class RpcEnabledCompositionDependenciesRecord implements RpcEnabledCompositionDe
   registry?: VpnSessionRegistry;
   commandBus?: VpnProxyCommandBus;
   createPlatformFactory?: (context: common.VpnExtensionContext | undefined) => TestPlatformFactoryLike;
-  createPlatformPort?: (sessionId: string) => VpnPlatformSessionPort;
+  createPlatformPort?: (sessionId: string, createOperationId: () => string) => VpnPlatformSessionPort;
   createTunRuntime?: (configPath: string) => TunRuntimePort;
   createCoreService?: () => CoreService;
   createProxyLifecycle?: (graph: PlatformGraph, commandBus: VpnProxyCommandBus) => VpnProxyRuntimeLifecyclePort;
@@ -1780,7 +1780,7 @@ function createDependencies(
     createPlatformFactory: (_context: common.VpnExtensionContext | undefined) => {
       return platformFactory;
     },
-    createPlatformPort: (_sessionId: string) => {
+    createPlatformPort: (_sessionId: string, _createOperationId: () => string) => {
       return platformPort;
     },
     createTunRuntime: (_configPath: string) => {
@@ -1928,7 +1928,7 @@ export default function vpnExtensionCompositionTestsuite() {
         createPlatformFactory: (_context: common.VpnExtensionContext | undefined) => {
           return platformFactory;
         },
-        createPlatformPort: (_sessionId: string) => {
+        createPlatformPort: (_sessionId: string, _createOperationId: () => string) => {
           return platformPort;
         },
         createTunRuntime: (_configPath: string) => {

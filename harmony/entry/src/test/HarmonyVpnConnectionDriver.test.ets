@@ -4,6 +4,8 @@ import {
   OwnershipStoreCorruptError,
   VpnPlatformPortError,
   type VpnCaptureConfig,
+  type VpnPlatformOwnershipPhase,
+  type VpnPlatformOwnershipRecord,
   type VpnPlatformOwnershipStorePort
 } from '@cmfa/shared';
 import { HarmonyVpnConnectionDriver } from '../main/ets/vpn/HarmonyVpnConnectionDriver';
@@ -113,12 +115,12 @@ class FakeVpnConnectionApi implements VpnConnectionApi {
 
 class FakeOwnershipStore implements VpnPlatformOwnershipStorePort {
   readonly log: string[] = [];
-  readValue: string | null = null;
+  readValue: VpnPlatformOwnershipRecord | null = null;
   readError?: Object;
   writeError?: Object;
   clearError?: Object;
 
-  async read(): Promise<string | null> {
+  async read(): Promise<VpnPlatformOwnershipRecord | null> {
     this.log.push('read');
     if (this.readError !== undefined) {
       throw this.readError as Error;
@@ -126,23 +128,37 @@ class FakeOwnershipStore implements VpnPlatformOwnershipStorePort {
     return this.readValue;
   }
 
-  async write(vpnId: string): Promise<void> {
-    this.log.push(`write:${vpnId}`);
+  async write(ownership: VpnPlatformOwnershipRecord): Promise<void> {
+    this.log.push(`write:${ownership.phase}:${ownership.vpnId}`);
     if (this.writeError !== undefined) {
       throw this.writeError as Error;
     }
-    this.readValue = vpnId;
+    this.readValue = createOwnership(ownership.phase, ownership.vpnId);
   }
 
-  async clearExpected(vpnId: string): Promise<void> {
-    this.log.push(`clearExpected:${vpnId}`);
+  async clearExpected(ownership: VpnPlatformOwnershipRecord): Promise<void> {
+    this.log.push(`clearExpected:${ownership.phase}:${ownership.vpnId}`);
     if (this.clearError !== undefined) {
       throw this.clearError as Error;
     }
-    if (this.readValue === vpnId) {
+    if (this.readValue?.phase === ownership.phase && this.readValue.vpnId === ownership.vpnId) {
       this.readValue = null;
     }
   }
+}
+
+class OwnershipRecord implements VpnPlatformOwnershipRecord {
+  readonly phase: VpnPlatformOwnershipPhase;
+  readonly vpnId: string;
+
+  constructor(phase: VpnPlatformOwnershipPhase, vpnId: string) {
+    this.phase = phase;
+    this.vpnId = vpnId;
+  }
+}
+
+function createOwnership(phase: VpnPlatformOwnershipPhase, vpnId: string): VpnPlatformOwnershipRecord {
+  return new OwnershipRecord(phase, vpnId);
 }
 
 function buildExactCaptureConfig(): VpnCaptureConfig {
@@ -219,7 +235,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
     it('recoversOldOwnerThenGeneratesPersistsAndCreatesWithASeparateVpnId', 0, async () => {
       const api = new FakeVpnConnectionApi(21);
       const store = new FakeOwnershipStore();
-      store.readValue = 'vpn-stale-1';
+      store.readValue = createOwnership('ACTIVE', 'vpn-stale-1');
       const driver = createDriver(api, 'session-config', store);
 
       const handle = await driver.create(buildExactCaptureConfig());
@@ -228,8 +244,11 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       expect(handle.vpnId).assertEqual('vpn-generated-1');
       expect(handle.sessionId).assertEqual('session-config');
       expect(handle.vpnId === handle.sessionId).assertFalse();
-      expect(store.readValue).assertEqual('vpn-generated-1');
-      expect(store.log.join(',')).assertEqual('read,clearExpected:vpn-stale-1,write:vpn-generated-1');
+      expect(store.readValue?.phase ?? '').assertEqual('ACTIVE');
+      expect(store.readValue?.vpnId ?? '').assertEqual('vpn-generated-1');
+      expect(store.log.join(',')).assertEqual(
+        'read,clearExpected:RELEASED:vpn-stale-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
+      );
       expect(api.connection.log.join(',')).assertEqual('destroyWithVpnId:vpn-stale-1,generateVpnId,create');
       assertExactConfig(api.connection.createConfigs[0], 'vpn-generated-1');
     });
@@ -245,7 +264,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
 
       expect(handle.vpnId).assertEqual('vpn-generated-1');
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,protectProcessNet,create');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1');
     });
 
     it('usesPerSocketProtectionOnApi21AfterCreate', 0, async () => {
@@ -257,7 +276,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       await driver.protectSocket(61);
 
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,protect:61');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1');
     });
 
     it('rejectsNonPositiveAndNonIntegerTunFileDescriptorsAndCleansUpThePersistedOwner', 0, async () => {
@@ -271,7 +290,9 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       });
       expect(zeroError.message.includes('Tun')).assertTrue();
       expect(zeroApi.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
-      expect(zeroStore.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(zeroStore.log.join(',')).assertEqual(
+        'read,write:PREPARED:vpn-generated-1,write:RELEASED:vpn-generated-1,clearExpected:RELEASED:vpn-generated-1'
+      );
       expect(zeroStore.readValue).assertNull();
 
       const fractionalApi = new FakeVpnConnectionApi(21);
@@ -296,7 +317,9 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       await driver.destroy(handle.vpnId);
 
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual(
+        'read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1,write:RELEASED:vpn-generated-1,clearExpected:RELEASED:vpn-generated-1'
+      );
       expect(store.readValue).assertNull();
     });
 
@@ -312,8 +335,9 @@ export default function harmonyVpnConnectionDriverTestsuite() {
         await driver.destroy(handle.vpnId);
       });
       expect(destroyError.message.includes('destroy')).assertTrue();
-      expect(store.readValue).assertEqual('vpn-generated-1');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(store.readValue?.phase ?? '').assertEqual('ACTIVE');
+      expect(store.readValue?.vpnId ?? '').assertEqual('vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1');
 
       api.connection.destroyWithVpnIdError = undefined;
       await driver.destroy(handle.vpnId);
@@ -321,7 +345,9 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       expect(api.connection.log.join(',')).assertEqual(
         'generateVpnId,create,destroyWithVpnId:vpn-generated-1,destroyWithVpnId:vpn-generated-1'
       );
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual(
+        'read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1,write:RELEASED:vpn-generated-1,clearExpected:RELEASED:vpn-generated-1'
+      );
       expect(store.readValue).assertNull();
     });
 
@@ -338,8 +364,9 @@ export default function harmonyVpnConnectionDriverTestsuite() {
 
       expect(createError.message.includes('create')).assertTrue();
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
-      expect(store.readValue).assertEqual('vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1');
+      expect(store.readValue?.phase ?? '').assertEqual('PREPARED');
+      expect(store.readValue?.vpnId ?? '').assertEqual('vpn-generated-1');
     });
 
     it('failsClosedWhenTheOwnershipStoreIsCorrupt', 0, async () => {
@@ -375,7 +402,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       expect(api.createConnectionCalls).assertEqual(2);
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroy');
       expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
-      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1');
       expect(stages.join(',')).assertEqual(
         'platform.config.begin,platform.config.ok,platform.connection.begin,' +
         'platform.connection.active,platform.connection.legacy-reclaim.begin,platform.connection.legacy-reclaim.ok,' +
