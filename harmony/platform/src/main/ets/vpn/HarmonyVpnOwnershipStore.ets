@@ -19,6 +19,7 @@ const MAX_DOCUMENT_BYTES: number = 256;
 const VPN_DIRECTORY: string = 'vpn';
 const ACTIVE_VPN_FILE_NAME: string = 'active-platform-vpn-v1.json';
 const ACTIVE_VPN_TEMP_FILE_NAME: string = 'active-platform-vpn-v1.json.tmp';
+const ACTIVE_VPN_CLAIM_FILE_NAME: string = 'active-platform-vpn-v1.claim.json';
 
 interface OwnershipStoreDocument {
   version: number;
@@ -52,6 +53,7 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
   private readonly directoryPath: string;
   private readonly targetPath: string;
   private readonly temporaryPath: string;
+  private readonly claimPath: string;
   private readonly fsync: (fd: number) => void;
 
   constructor(dependencies: HarmonyVpnOwnershipStoreDependencies) {
@@ -60,19 +62,22 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
     this.directoryPath = activePlatformVpnOwnershipDirectory(this.filesDir);
     this.targetPath = activePlatformVpnOwnershipPath(this.filesDir);
     this.temporaryPath = activePlatformVpnOwnershipTemporaryPath(this.filesDir);
+    this.claimPath = activePlatformVpnOwnershipClaimPath(this.filesDir);
     this.fsync = dependencies.fsync ?? ((fd: number): void => {
       fileIo.fsyncSync(fd);
     });
   }
 
   async read(): Promise<string | null> {
-    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent();
+    await this.reconcileClaimPath();
+    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent(this.targetPath);
     return document?.vpnId ?? null;
   }
 
   async write(vpnId: string): Promise<void> {
     const safeVpnId: string = normalizePersistentVpnId(vpnId, false);
     const contents: Uint8Array = serializeDocument(safeVpnId);
+    await this.reconcileClaimPath();
     await this.fileDriver.mkdir(this.directoryPath, true);
 
     let token: FileToken | undefined = undefined;
@@ -108,17 +113,26 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
 
   async clearExpected(vpnId: string): Promise<void> {
     const expectedVpnId: string = normalizePersistentVpnId(vpnId, false);
-    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent();
-    if (document === null || document.vpnId !== expectedVpnId) {
+    await this.reconcileClaimPath();
+    const claimed: boolean = await this.claimCurrentTarget();
+    if (!claimed) {
       return;
     }
-    await this.fileDriver.unlink(this.targetPath);
+    const document: OwnershipStoreDocument | null = await this.readDocumentIfPresent(this.claimPath);
+    if (document === null) {
+      return;
+    }
+    if (document.vpnId === expectedVpnId) {
+      await this.fileDriver.unlink(this.claimPath);
+      return;
+    }
+    await this.restoreOrDiscardClaim();
   }
 
-  private async readDocumentIfPresent(): Promise<OwnershipStoreDocument | null> {
+  private async readDocumentIfPresent(path: string): Promise<OwnershipStoreDocument | null> {
     let stat: FileStat | undefined = undefined;
     try {
-      stat = await this.fileDriver.statIfPresent(this.targetPath);
+      stat = await this.fileDriver.statIfPresent(path);
     } catch (_) {
       throw new Error('VPN ownership store read failed.');
     }
@@ -128,16 +142,16 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
     if (!stat.isFile || stat.size <= 0 || stat.size > MAX_DOCUMENT_BYTES) {
       throw new OwnershipStoreCorruptError();
     }
-    const text: string = await this.readText(stat.size);
+    const text: string = await this.readText(path, stat.size);
     return parseDocument(text);
   }
 
-  private async readText(size: number): Promise<string> {
+  private async readText(path: string, size: number): Promise<string> {
     let token: FileToken | undefined = undefined;
     let pendingFailure: Error | undefined = undefined;
     let decoded: string | undefined = undefined;
     try {
-      token = await this.fileDriver.open(this.targetPath, FILE_OPEN_MODE_READ_ONLY);
+      token = await this.fileDriver.open(path, FILE_OPEN_MODE_READ_ONLY);
       const bytes: Uint8Array = await readAll(this.fileDriver, token.fd, size);
       if (bytes.length !== size) {
         throw new OwnershipStoreCorruptError();
@@ -159,6 +173,74 @@ export class HarmonyVpnOwnershipStore implements VpnPlatformOwnershipStorePort {
       throw pendingFailure;
     }
     return decoded ?? '';
+  }
+
+  private async reconcileClaimPath(): Promise<void> {
+    const claimStat: FileStat | undefined = await this.safeStatIfPresent(this.claimPath);
+    if (claimStat === undefined) {
+      return;
+    }
+    await this.readDocumentIfPresent(this.claimPath);
+    const targetStat: FileStat | undefined = await this.safeStatIfPresent(this.targetPath);
+    if (targetStat === undefined) {
+      try {
+        await this.fileDriver.renameNoOverwrite(this.claimPath, this.targetPath);
+        return;
+      } catch (_) {
+        const targetAfterRace: FileStat | undefined = await this.safeStatIfPresent(this.targetPath);
+        if (targetAfterRace === undefined) {
+          throw new Error('VPN ownership store claim recovery failed.');
+        }
+      }
+    }
+    await this.readDocumentIfPresent(this.targetPath);
+    await this.fileDriver.unlink(this.claimPath);
+  }
+
+  private async claimCurrentTarget(): Promise<boolean> {
+    for (let attempt: number = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.fileDriver.renameNoOverwrite(this.targetPath, this.claimPath);
+        return true;
+      } catch (_) {
+        const targetStat: FileStat | undefined = await this.safeStatIfPresent(this.targetPath);
+        const claimStat: FileStat | undefined = await this.safeStatIfPresent(this.claimPath);
+        if (targetStat === undefined && claimStat === undefined) {
+          return false;
+        }
+        if (claimStat !== undefined) {
+          await this.reconcileClaimPath();
+          continue;
+        }
+        throw new Error('VPN ownership store clear failed.');
+      }
+    }
+    throw new Error('VPN ownership store clear failed.');
+  }
+
+  private async restoreOrDiscardClaim(): Promise<void> {
+    const targetStat: FileStat | undefined = await this.safeStatIfPresent(this.targetPath);
+    if (targetStat === undefined) {
+      try {
+        await this.fileDriver.renameNoOverwrite(this.claimPath, this.targetPath);
+        return;
+      } catch (_) {
+        const targetAfterRace: FileStat | undefined = await this.safeStatIfPresent(this.targetPath);
+        if (targetAfterRace === undefined) {
+          throw new Error('VPN ownership store clear failed.');
+        }
+      }
+    }
+    await this.readDocumentIfPresent(this.targetPath);
+    await this.fileDriver.unlink(this.claimPath);
+  }
+
+  private async safeStatIfPresent(path: string): Promise<FileStat | undefined> {
+    try {
+      return await this.fileDriver.statIfPresent(path);
+    } catch (_) {
+      throw new Error('VPN ownership store read failed.');
+    }
   }
 
   private async cleanupTemporary(): Promise<void> {
@@ -189,6 +271,10 @@ export function activePlatformVpnOwnershipPath(filesDir: string): string {
 
 function activePlatformVpnOwnershipTemporaryPath(filesDir: string): string {
   return joinAbsoluteSandboxPath(activePlatformVpnOwnershipDirectory(filesDir), ACTIVE_VPN_TEMP_FILE_NAME);
+}
+
+function activePlatformVpnOwnershipClaimPath(filesDir: string): string {
+  return joinAbsoluteSandboxPath(activePlatformVpnOwnershipDirectory(filesDir), ACTIVE_VPN_CLAIM_FILE_NAME);
 }
 
 function serializeDocument(vpnId: string): Uint8Array {

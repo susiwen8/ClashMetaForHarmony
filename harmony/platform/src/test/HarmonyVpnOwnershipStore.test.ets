@@ -7,6 +7,7 @@ const FILES_DIR: string = '/sandbox/app/files';
 const VPN_DIRECTORY: string = `${FILES_DIR}/vpn`;
 const TARGET_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.json`;
 const TEMP_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.json.tmp`;
+const CLAIM_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.claim.json`;
 
 async function expectRejects(action: () => Promise<void>): Promise<Error> {
   try {
@@ -38,6 +39,25 @@ function createStore(
 
 function buildOversizeDocument(): string {
   return `{"version":1,"vpnId":"${'v'.repeat(240)}"}`;
+}
+
+class WriteDuringClaimFileDriver extends FakeFileDriver {
+  private readonly replacementVpnId: string;
+  private claimTriggered: boolean = false;
+
+  constructor(replacementVpnId: string) {
+    super();
+    this.replacementVpnId = replacementVpnId;
+  }
+
+  override async renameNoOverwrite(source: string, destination: string): Promise<void> {
+    await super.renameNoOverwrite(source, destination);
+    if (!this.claimTriggered && source === TARGET_PATH && destination === CLAIM_PATH) {
+      this.claimTriggered = true;
+      const writerStore: HarmonyVpnOwnershipStore = createStore(this);
+      await writerStore.write(this.replacementVpnId);
+    }
+  }
 }
 
 export default function harmonyVpnOwnershipStoreTestsuite() {
@@ -74,6 +94,7 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
 
       await store.clearExpected('vpn-live-1');
       expect(files.fileExists(TARGET_PATH)).assertFalse();
+      expect(files.fileExists(CLAIM_PATH)).assertFalse();
     });
 
     it('rejectsOversizeMalformedWrongVersionDuplicateKeyAndInvalidIdDocumentsAsCorrupt', 0, async () => {
@@ -150,6 +171,46 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
 
       await expectCorrupt(async (): Promise<void> => store.clearExpected('vpn-live-1'));
       expect(files.fileExists(TARGET_PATH)).assertTrue();
+    });
+
+    it('recoversAValidClaimFileWhenTheTargetIsMissingAndFailsClosedOnCorruptClaim', 0, async () => {
+      const validFiles = new FakeFileDriver();
+      const validStore = createStore(validFiles);
+      validFiles.seedTextFile(CLAIM_PATH, '{"version":1,"vpnId":"vpn-claimed-1"}');
+
+      expect(await validStore.read()).assertEqual('vpn-claimed-1');
+      expect(validFiles.fileExists(TARGET_PATH)).assertTrue();
+      expect(validFiles.fileExists(CLAIM_PATH)).assertFalse();
+
+      const corruptFiles = new FakeFileDriver();
+      const corruptStore = createStore(corruptFiles);
+      corruptFiles.seedTextFile(CLAIM_PATH, '{"version":1,"vpnId":"vpn-claimed-1","vpnId":"vpn-claimed-2"}');
+
+      await expectCorrupt(async (): Promise<string | null> => corruptStore.read());
+      expect(corruptFiles.fileExists(CLAIM_PATH)).assertTrue();
+      expect(corruptFiles.fileExists(TARGET_PATH)).assertFalse();
+    });
+
+    it('neverDeletesANewOwnerWrittenConcurrentlyDuringClearExpected', 0, async () => {
+      const matchingFiles = new WriteDuringClaimFileDriver('vpn-new-1');
+      const matchingStore = createStore(matchingFiles);
+      matchingFiles.seedTextFile(TARGET_PATH, '{"version":1,"vpnId":"vpn-old-1"}');
+
+      await matchingStore.clearExpected('vpn-old-1');
+
+      expect(matchingFiles.fileExists(TARGET_PATH)).assertTrue();
+      expect(matchingFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"vpnId":"vpn-new-1"}');
+      expect(matchingFiles.fileExists(CLAIM_PATH)).assertFalse();
+
+      const mismatchFiles = new WriteDuringClaimFileDriver('vpn-new-2');
+      const mismatchStore = createStore(mismatchFiles);
+      mismatchFiles.seedTextFile(TARGET_PATH, '{"version":1,"vpnId":"vpn-old-2"}');
+
+      await mismatchStore.clearExpected('vpn-other');
+
+      expect(mismatchFiles.fileExists(TARGET_PATH)).assertTrue();
+      expect(mismatchFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"vpnId":"vpn-new-2"}');
+      expect(mismatchFiles.fileExists(CLAIM_PATH)).assertFalse();
     });
   });
 }
