@@ -114,6 +114,12 @@ export interface SubscriptionSecretError extends Error {
   detail: string;
 }
 
+export interface ProfileRefreshLeasePort {
+  tryAcquire(profileId: string, ownerToken: string, nowMs: number, expiresAtMs: number): Promise<boolean>;
+  renew(profileId: string, ownerToken: string, nowMs: number, expiresAtMs: number): Promise<boolean>;
+  release(profileId: string, ownerToken: string): Promise<boolean>;
+}
+
 export interface ProfilePorts {
   repository: ProfileRepository;
   contentStore: ProfileContentStore;

@@ -9,6 +9,7 @@ import {
   type IdGenerator,
   type LocalAcquireCommand,
   type Profile,
+  type ProfileRefreshLeasePort,
   type ProfileContentStore,
   type ProfileRepository,
   type ProfileRevision,
@@ -36,6 +37,7 @@ import { SandboxProfileContentStore } from './files/SandboxProfileContentStore';
 import { HarmonyNetworkMonitor } from './network/HarmonyNetworkMonitor';
 import { HarmonyNetworkConnectionDriver } from './network/HarmonyNetworkConnectionDriver';
 import { HarmonyRdbDriver } from './rdb/HarmonyRdbDriver';
+import { RdbProfileRefreshLeaseStore } from './rdb/RdbProfileRefreshLeaseStore';
 import { RdbProfileRepository } from './rdb/RdbProfileRepository';
 import { RdbProxySelectionRepository } from './rdb/RdbProxySelectionRepository';
 import type { RdbDriver } from './rdb/RdbDriver';
@@ -111,6 +113,7 @@ export interface PlatformFactoryDependencies {
   createRdbDriver?: (context: common.Context, paths: PlatformPaths) => CloseableRdbDriver;
   createHuksDriver?: () => PrepareableHuksDriver;
   createRepository?: (driver: CloseableRdbDriver) => ProfileRepository;
+  createProfileRefreshLeasePort?: (driver: CloseableRdbDriver) => ProfileRefreshLeasePort;
   createProxySelectionRepository?: (driver: CloseableRdbDriver) => ProxySelectionRepository;
   createProxyIdentityHasher?: () => ProxyIdentityHasher;
   createContentStore?: (fileDriver: FileDriver, paths: PlatformPaths) => ProfileContentStore;
@@ -134,6 +137,7 @@ export interface PlatformFactoryDependencies {
 
 export interface PlatformGraph {
   readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: ProfileRefreshLeasePort;
   readonly proxySelectionRepository: ProxySelectionRepository;
   readonly proxyIdentityHasher: ProxyIdentityHasher;
   readonly contentStore: ProfileContentStore;
@@ -213,6 +217,7 @@ const GRAPH_CLOSED_FLAGS: WeakMap<PlatformGraphRecord, boolean> = new WeakMap();
 
 class PlatformGraphRecord implements PlatformGraph {
   readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: ProfileRefreshLeasePort;
   readonly proxySelectionRepository: ProxySelectionRepository;
   readonly proxyIdentityHasher: ProxyIdentityHasher;
   readonly contentStore: ProfileContentStore;
@@ -223,6 +228,7 @@ class PlatformGraphRecord implements PlatformGraph {
 
   constructor(
     repository: ProfileRepository,
+    profileRefreshLeasePort: ProfileRefreshLeasePort,
     proxySelectionRepository: ProxySelectionRepository,
     proxyIdentityHasher: ProxyIdentityHasher,
     contentStore: ProfileContentStore,
@@ -233,6 +239,7 @@ class PlatformGraphRecord implements PlatformGraph {
     closeRdb: () => Promise<void>
   ) {
     this.repository = repository;
+    this.profileRefreshLeasePort = profileRefreshLeasePort;
     this.proxySelectionRepository = proxySelectionRepository;
     this.proxyIdentityHasher = proxyIdentityHasher;
     this.contentStore = contentStore;
@@ -357,6 +364,8 @@ export class PlatformFactory {
       const sdkApiVersion: number = resolveSdkApiVersion(this.context, this.dependencies.resolveSdkApiVersion);
       const repository: ProfileRepository = this.dependencies.createRepository?.(rdbDriver) ??
         new RdbProfileRepository(rdbDriver);
+      const profileRefreshLeasePort: ProfileRefreshLeasePort =
+        this.dependencies.createProfileRefreshLeasePort?.(rdbDriver) ?? new RdbProfileRefreshLeaseStore(rdbDriver);
       const proxySelectionRepository: ProxySelectionRepository =
         this.dependencies.createProxySelectionRepository?.(rdbDriver) ?? new RdbProxySelectionRepository(rdbDriver);
       const proxyIdentityHasher: ProxyIdentityHasher =
@@ -431,6 +440,7 @@ export class PlatformFactory {
       const readyRdbDriver: CloseableRdbDriver = rdbDriver;
       graph = new PlatformGraphRecord(
         repository,
+        profileRefreshLeasePort,
         proxySelectionRepository,
         proxyIdentityHasher,
         contentStore,

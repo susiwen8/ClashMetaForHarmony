@@ -23,8 +23,17 @@ export interface DurableProxySelectionRow {
   updatedAt: string;
 }
 
+export interface DurableProfileRefreshLeaseRow {
+  profileId: string;
+  ownerToken: string;
+  expiresAtMs: number;
+}
+
 export interface RdbTransaction {
   getProfileRow(id: string): Promise<DurableProfileRow | undefined>;
+  getProfileRefreshLeaseRow(profileId: string): Promise<DurableProfileRefreshLeaseRow | undefined>;
+  upsertProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): Promise<void>;
+  deleteProfileRefreshLeaseRowIfOwned(profileId: string, ownerToken: string): Promise<boolean>;
   listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]>;
   getProxySelectionRow(profileId: string, groupName: string): Promise<DurableProxySelectionRow | undefined>;
   upsertProxySelectionRow(row: DurableProxySelectionRow): Promise<void>;

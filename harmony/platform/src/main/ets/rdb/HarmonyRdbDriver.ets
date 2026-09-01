@@ -1,6 +1,12 @@
 import { relationalStore } from '@kit.ArkData';
 import common from '@ohos.app.ability.common';
-import type { DurableProfileRow, DurableProxySelectionRow, RdbDriver, RdbTransaction } from './RdbDriver';
+import type {
+  DurableProfileRefreshLeaseRow,
+  DurableProfileRow,
+  DurableProxySelectionRow,
+  RdbDriver,
+  RdbTransaction
+} from './RdbDriver';
 
 type RelationalValueType = relationalStore.ValueType;
 type RelationalValuesBucket = relationalStore.ValuesBucket;
@@ -209,6 +215,22 @@ function proxySelectionRowFromBucket(bucket: RelationalValuesBucket): DurablePro
   };
 }
 
+function requireLeaseExpiryValue(value: RelationalValueType | undefined, label: string): number {
+  const resolved = requireNumberValue(value, label);
+  if (!Number.isSafeInteger(resolved) || resolved < 0) {
+    throw new Error(`${label} must be a safe non-negative integer.`);
+  }
+  return resolved;
+}
+
+function profileRefreshLeaseRowFromBucket(bucket: RelationalValuesBucket): DurableProfileRefreshLeaseRow {
+  return {
+    profileId: requireStringValue(bucket.profile_id, 'profile_refresh_leases.profile_id'),
+    ownerToken: requireStringValue(bucket.owner_token, 'profile_refresh_leases.owner_token'),
+    expiresAtMs: requireLeaseExpiryValue(bucket.expires_at, 'profile_refresh_leases.expires_at')
+  };
+}
+
 function bindRow(row: DurableProfileRow): Array<RelationalValueType> {
   const values: Array<RelationalValueType> = [
     row.schemaVersion,
@@ -236,6 +258,14 @@ function bindProxySelectionRow(row: DurableProxySelectionRow): Array<RelationalV
     row.selectedNodeName,
     row.revisionId,
     row.updatedAt
+  ];
+}
+
+function bindProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): Array<RelationalValueType> {
+  return [
+    row.profileId,
+    row.ownerToken,
+    row.expiresAtMs
   ];
 }
 
@@ -814,6 +844,29 @@ class HarmonyRdbTransaction implements RdbTransaction {
     }
   }
 
+  async getProfileRefreshLeaseRow(profileId: string): Promise<DurableProfileRefreshLeaseRow | undefined> {
+    const resultSet = await querySqlWithSafeFallback(
+      this.store,
+      `SELECT profile_id, owner_token, expires_at FROM ${PROFILE_REFRESH_LEASES_TABLE} WHERE profile_id = ?`,
+      toBindValues([profileId]),
+      'Transaction profile refresh lease lookup failed.'
+    );
+    let primaryError: Error | undefined = undefined;
+    try {
+      if (!advanceResultSetWithSafeFallback(resultSet, 'Transaction profile refresh lease lookup failed.')) {
+        return undefined;
+      }
+      return profileRefreshLeaseRowFromBucket(
+        readResultSetRowWithSafeFallback(resultSet, 'Transaction profile refresh lease lookup failed.')
+      );
+    } catch (error) {
+      primaryError = error instanceof Error ? error : new Error(`${error}`);
+      throw primaryError;
+    } finally {
+      closeResultSetWithSafeFallback(resultSet, primaryError, 'Transaction result set close failed.');
+    }
+  }
+
   async listProxySelectionRows(profileId: string): Promise<DurableProxySelectionRow[]> {
     const resultSet = await querySqlWithSafeFallback(
       this.store,
@@ -872,6 +925,17 @@ class HarmonyRdbTransaction implements RdbTransaction {
     );
   }
 
+  async upsertProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): Promise<void> {
+    await executeSqlWithSafeFallback(
+      this.store,
+      'INSERT OR REPLACE INTO ' + PROFILE_REFRESH_LEASES_TABLE + ' (' +
+      'profile_id, owner_token, expires_at' +
+      ') VALUES (?, ?, ?)',
+      bindProfileRefreshLeaseRow(row),
+      'Transaction profile refresh lease write failed.'
+    );
+  }
+
   async deleteProxySelection(profileId: string, groupName: string): Promise<void> {
     await executeSqlWithSafeFallback(
       this.store,
@@ -888,6 +952,20 @@ class HarmonyRdbTransaction implements RdbTransaction {
       toBindValues([profileId]),
       'Transaction profile selection delete failed.'
     );
+  }
+
+  async deleteProfileRefreshLeaseRowIfOwned(profileId: string, ownerToken: string): Promise<boolean> {
+    const existing = await this.getProfileRefreshLeaseRow(profileId);
+    if (existing === undefined || existing.ownerToken !== ownerToken) {
+      return false;
+    }
+    await executeSqlWithSafeFallback(
+      this.store,
+      `DELETE FROM ${PROFILE_REFRESH_LEASES_TABLE} WHERE profile_id = ? AND owner_token = ?`,
+      toBindValues([profileId, ownerToken]),
+      'Transaction profile refresh lease delete failed.'
+    );
+    return true;
   }
 
   async setActiveId(activeId: string | undefined): Promise<void> {

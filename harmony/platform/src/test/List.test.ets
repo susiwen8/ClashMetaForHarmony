@@ -1,6 +1,7 @@
 import { describe, expect, it } from '@ohos/hypium';
 import profileRowCodecTestsuite from './ProfileRowCodec.test';
 import rdbProfileRepositoryTestsuite from './RdbProfileRepository.test';
+import rdbProfileRefreshLeaseStoreTestsuite from './RdbProfileRefreshLeaseStore.test';
 import rdbProxySelectionRepositoryTestsuite from './RdbProxySelectionRepository.test';
 import harmonyProxyIdentityHasherTestsuite from './HarmonyProxyIdentityHasher.test';
 import harmonyVpnRpcKeyProviderTestsuite from './HarmonyVpnRpcKeyProvider.test';
@@ -24,6 +25,7 @@ import harmonyVpnOwnershipStoreTestsuite from './HarmonyVpnOwnershipStore.test';
 export default function testsuite() {
   profileRowCodecTestsuite();
   rdbProfileRepositoryTestsuite();
+  rdbProfileRefreshLeaseStoreTestsuite();
   rdbProxySelectionRepositoryTestsuite();
   harmonyProxyIdentityHasherTestsuite();
   harmonyVpnRpcKeyProviderTestsuite();

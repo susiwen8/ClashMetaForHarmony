@@ -1,5 +1,11 @@
 import { createAppError, createProfile, createProfileRevision, type AppError, type Profile, type ProfileAvailability } from '@cmfa/shared';
-import type { DurableProfileRow, DurableProxySelectionRow, RdbDriver, RdbTransaction } from '../../main/ets/rdb/RdbDriver';
+import type {
+  DurableProfileRefreshLeaseRow,
+  DurableProfileRow,
+  DurableProxySelectionRow,
+  RdbDriver,
+  RdbTransaction
+} from '../../main/ets/rdb/RdbDriver';
 import type { Clock, IdGenerator } from '@cmfa/shared';
 import type { FileDriver } from '../../main/ets/files/FileDriver';
 import {
@@ -132,6 +138,8 @@ export class RecordingRdbDriver implements RdbDriver {
   readonly log: string[] = [];
   readonly committedRows: Map<string, DurableProfileRow> = new Map<string, DurableProfileRow>();
   readonly committedSelectionRows: Map<string, DurableProxySelectionRow> = new Map<string, DurableProxySelectionRow>();
+  readonly committedProfileRefreshLeaseRows: Map<string, DurableProfileRefreshLeaseRow> =
+    new Map<string, DurableProfileRefreshLeaseRow>();
   initializeCallCount: number = 0;
   private activeIdValue: string | undefined = undefined;
   private appStatePresent: boolean = true;
@@ -147,6 +155,10 @@ export class RecordingRdbDriver implements RdbDriver {
 
   seedSelectionRow(row: DurableProxySelectionRow): void {
     this.committedSelectionRows.set(selectionKey(row.profileId, row.groupName), cloneDurableProxySelectionRow(row));
+  }
+
+  seedProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): void {
+    this.committedProfileRefreshLeaseRows.set(row.profileId, cloneDurableProfileRefreshLeaseRow(row));
   }
 
   seedListRows(rows: DurableProfileRow[]): void {
@@ -284,6 +296,8 @@ export class RecordingRdbDriver implements RdbDriver {
     this.failIfScripted('begin');
     const rowsSnapshot: Map<string, DurableProfileRow> = cloneRowMap(this.committedRows);
     const selectionsSnapshot: Map<string, DurableProxySelectionRow> = cloneSelectionRowMap(this.committedSelectionRows);
+    const leasesSnapshot: Map<string, DurableProfileRefreshLeaseRow> =
+      cloneProfileRefreshLeaseRowMap(this.committedProfileRefreshLeaseRows);
     const activeSnapshot: string | undefined = this.activeIdValue;
     const transaction = new RecordingTransaction(this);
     try {
@@ -300,6 +314,10 @@ export class RecordingRdbDriver implements RdbDriver {
       for (const entry of selectionsSnapshot.entries()) {
         this.committedSelectionRows.set(entry[0], cloneDurableProxySelectionRow(entry[1]));
       }
+      this.committedProfileRefreshLeaseRows.clear();
+      for (const entry of leasesSnapshot.entries()) {
+        this.committedProfileRefreshLeaseRows.set(entry[0], cloneDurableProfileRefreshLeaseRow(entry[1]));
+      }
       this.activeIdValue = activeSnapshot;
       this.log.push('rollback');
       if (error instanceof Error) {
@@ -311,6 +329,11 @@ export class RecordingRdbDriver implements RdbDriver {
 
   currentActiveId(): string | undefined {
     return this.activeIdValue;
+  }
+
+  readProfileRefreshLeaseRow(profileId: string): DurableProfileRefreshLeaseRow | undefined {
+    const row = this.committedProfileRefreshLeaseRows.get(profileId);
+    return row === undefined ? undefined : cloneDurableProfileRefreshLeaseRow(row);
   }
 
   private failIfScripted(operation: string): void {
@@ -339,6 +362,33 @@ export class RecordingRdbDriver implements RdbDriver {
     this.failIfScripted(`tx.setActiveId:${activeId ?? '<cleared>'}`);
     this.appStatePresent = true;
     this.activeIdValue = activeId;
+  }
+
+  txGetProfileRefreshLeaseRow(profileId: string): DurableProfileRefreshLeaseRow | undefined {
+    const operation = `tx.getProfileRefreshLeaseRow:${profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const row = this.committedProfileRefreshLeaseRows.get(profileId);
+    return row === undefined ? undefined : cloneDurableProfileRefreshLeaseRow(row);
+  }
+
+  txUpsertProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): void {
+    const operation = `tx.upsertProfileRefreshLeaseRow:${row.profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    this.committedProfileRefreshLeaseRows.set(row.profileId, cloneDurableProfileRefreshLeaseRow(row));
+  }
+
+  txDeleteProfileRefreshLeaseRowIfOwned(profileId: string, ownerToken: string): boolean {
+    const operation = `tx.deleteProfileRefreshLeaseRowIfOwned:${profileId}`;
+    this.log.push(operation);
+    this.failIfScripted(operation);
+    const existing = this.committedProfileRefreshLeaseRows.get(profileId);
+    if (existing === undefined || existing.ownerToken !== ownerToken) {
+      return false;
+    }
+    this.committedProfileRefreshLeaseRows.delete(profileId);
+    return true;
   }
 
   txClearActiveIfMatching(id: string): void {
@@ -437,6 +487,18 @@ class RecordingTransaction implements RdbTransaction {
     return this.driver.txGetProfileRow(id);
   }
 
+  async getProfileRefreshLeaseRow(profileId: string): Promise<DurableProfileRefreshLeaseRow | undefined> {
+    return this.driver.txGetProfileRefreshLeaseRow(profileId);
+  }
+
+  async upsertProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): Promise<void> {
+    this.driver.txUpsertProfileRefreshLeaseRow(row);
+  }
+
+  async deleteProfileRefreshLeaseRowIfOwned(profileId: string, ownerToken: string): Promise<boolean> {
+    return this.driver.txDeleteProfileRefreshLeaseRowIfOwned(profileId, ownerToken);
+  }
+
   async setActiveId(activeId: string | undefined): Promise<void> {
     this.driver.txSetActiveId(activeId);
   }
@@ -499,6 +561,14 @@ export function cloneDurableProxySelectionRow(row: DurableProxySelectionRow): Du
   };
 }
 
+export function cloneDurableProfileRefreshLeaseRow(row: DurableProfileRefreshLeaseRow): DurableProfileRefreshLeaseRow {
+  return {
+    profileId: row.profileId,
+    ownerToken: row.ownerToken,
+    expiresAtMs: row.expiresAtMs
+  };
+}
+
 function cloneRowMap(rows: Map<string, DurableProfileRow>): Map<string, DurableProfileRow> {
   const copy: Map<string, DurableProfileRow> = new Map<string, DurableProfileRow>();
   for (const entry of rows.entries()) {
@@ -511,6 +581,16 @@ function cloneSelectionRowMap(rows: Map<string, DurableProxySelectionRow>): Map<
   const copy: Map<string, DurableProxySelectionRow> = new Map<string, DurableProxySelectionRow>();
   for (const entry of rows.entries()) {
     copy.set(entry[0], cloneDurableProxySelectionRow(entry[1]));
+  }
+  return copy;
+}
+
+function cloneProfileRefreshLeaseRowMap(
+  rows: Map<string, DurableProfileRefreshLeaseRow>
+): Map<string, DurableProfileRefreshLeaseRow> {
+  const copy: Map<string, DurableProfileRefreshLeaseRow> = new Map<string, DurableProfileRefreshLeaseRow>();
+  for (const entry of rows.entries()) {
+    copy.set(entry[0], cloneDurableProfileRefreshLeaseRow(entry[1]));
   }
   return copy;
 }

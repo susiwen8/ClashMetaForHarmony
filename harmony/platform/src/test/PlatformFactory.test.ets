@@ -8,6 +8,7 @@ import {
   type LocalProfileAcquisition,
   type LocalProfileAcquisitionSuccess,
   type Profile,
+  type ProfileRefreshLeasePort,
   type ProfileContentStore,
   type ProfileRepository,
   type ProfileRevision,
@@ -277,6 +278,26 @@ class FakeProxyIdentityHasher implements ProxyIdentityHasher {
 
   async sha256(value: string): Promise<string> {
     return `${this.label}:${value}`;
+  }
+}
+
+class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
+  readonly label: string;
+
+  constructor(label: string) {
+    this.label = label;
+  }
+
+  async tryAcquire(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async renew(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async release(_profileId: string, _ownerToken: string): Promise<boolean> {
+    return true;
   }
 }
 
@@ -608,7 +629,7 @@ export default function platformFactoryTestsuite() {
       expect(firstGraph.proxySelectionRepository instanceof RdbProxySelectionRepository).assertTrue();
       expect(firstGraph.proxyIdentityHasher instanceof HarmonyProxyIdentityHasher).assertTrue();
       expect(Object.keys(firstGraph).sort().join(',')).assertEqual(
-        'clock,contentStore,idGenerator,proxyIdentityHasher,proxySelectionRepository,repository,secretStore,sourceGateway'
+        'clock,contentStore,idGenerator,profileRefreshLeasePort,proxyIdentityHasher,proxySelectionRepository,repository,secretStore,sourceGateway'
       );
       expect(typeof firstGraph.close === 'function').assertTrue();
       assertOrderedEvents(events, [
@@ -900,6 +921,29 @@ export default function platformFactoryTestsuite() {
       expect(hasherCreateCallCount).assertEqual(1);
       expect(graph.proxySelectionRepository === injectedRepository).assertTrue();
       expect(graph.proxyIdentityHasher === injectedHasher).assertTrue();
+
+      await graph.close();
+      expect(rdbDriver.closeCallCount).assertEqual(1);
+    });
+
+    it('injectsAndExposesProfileRefreshLeasePortUsingTheSharedDriver', 0, async () => {
+      const context: common.UIAbilityContext = createContext();
+      const fileDriver: FakeFileDriver = new FakeFileDriver();
+      const rdbDriver: CloseableRecordingRdbDriver = new CloseableRecordingRdbDriver([]);
+      const huksDriver: RecordingPrepareHuksDriver = new RecordingPrepareHuksDriver([]);
+      const dependencies: PlatformFactoryDependencies = createDefaultDependencies(context, fileDriver, rdbDriver, huksDriver);
+      const injectedLeasePort = new FakeProfileRefreshLeasePort('lease-port');
+      let observedLeaseDriver: CloseableRdbDriver | undefined = undefined;
+
+      dependencies.createProfileRefreshLeasePort = (driver: CloseableRdbDriver): ProfileRefreshLeasePort => {
+        observedLeaseDriver = driver;
+        return injectedLeasePort;
+      };
+
+      const graph: PlatformGraph = await new PlatformFactory(context, dependencies).create();
+
+      expect(observedLeaseDriver === rdbDriver).assertTrue();
+      expect(graph.profileRefreshLeasePort === injectedLeasePort).assertTrue();
 
       await graph.close();
       expect(rdbDriver.closeCallCount).assertEqual(1);
