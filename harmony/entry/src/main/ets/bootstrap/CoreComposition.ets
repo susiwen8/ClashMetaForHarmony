@@ -684,6 +684,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     });
     const cleanupError: ApplicationCompositionPersistenceError | null = await this.closeResources();
     this.initializePromise = undefined;
+    this.resetReadyStateAfterClose();
     if (cleanupError !== null) {
       throw cleanupError;
     }
@@ -706,10 +707,11 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     if (ownedVpnController !== undefined) {
       try {
         await ownedVpnController.dispose();
-        this.ownedVpnController = undefined;
-        this.ownedVpnTrafficMonitor = undefined;
       } catch (_) {
         cleanupError = cleanupError ?? createCleanupError();
+      } finally {
+        this.ownedVpnController = undefined;
+        this.ownedVpnTrafficMonitor = undefined;
       }
     }
     if (ownedVpnRpcClient !== undefined) {
@@ -730,6 +732,13 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       }
     }
     return cleanupError;
+  }
+
+  private resetReadyStateAfterClose(): void {
+    if (this.application !== undefined || this.currentState.status !== 'READY') {
+      return;
+    }
+    this.currentState = createLoadingState();
   }
 
   private createPlatformGraph(context: common.UIAbilityContext): Promise<PlatformGraph> {

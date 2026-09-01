@@ -984,6 +984,18 @@ class InertVpnExtensionAbilityApi implements VpnExtensionAbilityApi {
   }
 }
 
+class DisposeFailingVpnExtensionAbilityApi extends InertVpnExtensionAbilityApi {
+  disposeCallCount: number = 0;
+  throwOnDispose: boolean = true;
+
+  dispose(): void {
+    this.disposeCallCount += 1;
+    if (this.throwOnDispose) {
+      throw new Error('extension dispose failed after traffic shutdown');
+    }
+  }
+}
+
 class EmptyResourceManagerRecord {
 }
 
@@ -2387,6 +2399,80 @@ export default function applicationCompositionTestsuite() {
 
       expect(application.closeCallCount).assertEqual(2);
       expect(graph.closeCallCount).assertEqual(1);
+    });
+
+    it('ownedControllerDisposeFailureClearsReadyStateAndRetryInitializeCreatesAFreshTrafficMonitor', 0, async () => {
+      const firstGraph = new RecordingPlatformGraph();
+      const secondGraph = new RecordingPlatformGraph();
+      const firstApplication = new RecordingApplication();
+      const secondApplication = new RecordingApplication();
+      const extensionApis: DisposeFailingVpnExtensionAbilityApi[] = [];
+      const rpcClients: CompositionRpcClient[] = [];
+      let reuseSecondAttempt: boolean = false;
+      const composition = createComposition({
+        coreService: new ProxyCapableRuntimeCoreService(),
+        createPlatformGraph: async (): Promise<PlatformGraph> => {
+          return reuseSecondAttempt ? secondGraph : firstGraph;
+        },
+        createProfileApplication: (): ProfileApplication => {
+          return reuseSecondAttempt ? secondApplication : firstApplication;
+        },
+        createVpnExtensionAbilityApi: (): DisposeFailingVpnExtensionAbilityApi => {
+          const api = new DisposeFailingVpnExtensionAbilityApi();
+          api.throwOnDispose = !reuseSecondAttempt;
+          extensionApis.push(api);
+          return api;
+        },
+        createVpnRpcPlatformBundle: (): HarmonyVpnRpcPlatformBundle => new StaticHarmonyVpnRpcPlatformBundle(),
+        createVpnRpcClient: (): VpnRpcClientPort => {
+          const client = new CompositionRpcClient();
+          rpcClients.push(client);
+          return client;
+        }
+      });
+
+      await composition.initialize();
+
+      const firstReadyState = composition.state();
+      expect(firstReadyState.status).assertEqual('READY');
+      if (firstReadyState.status !== 'READY') {
+        return;
+      }
+      const firstTrafficMonitor = firstReadyState.trafficMonitor;
+      expect(firstTrafficMonitor === undefined).assertFalse();
+
+      let firstCloseError: AppError | undefined = undefined;
+      try {
+        await composition.close();
+      } catch (error) {
+        firstCloseError = error as AppError;
+      }
+
+      expect(firstCloseError !== undefined).assertTrue();
+      expect(extensionApis.length).assertEqual(1);
+      expect(extensionApis[0].disposeCallCount).assertEqual(1);
+      expect(rpcClients[0].closeCalls).assertEqual(1);
+      expect(firstGraph.closeCallCount).assertEqual(1);
+      expect(composition.state().status).assertEqual('LOADING');
+
+      reuseSecondAttempt = true;
+      await composition.initialize();
+
+      const secondReadyState = composition.state();
+      expect(secondReadyState.status).assertEqual('READY');
+      if (secondReadyState.status !== 'READY') {
+        return;
+      }
+      expect(extensionApis.length).assertEqual(2);
+      expect(rpcClients.length).assertEqual(2);
+      expect(secondReadyState.trafficMonitor === undefined).assertFalse();
+      expect(secondReadyState.trafficMonitor === firstTrafficMonitor).assertFalse();
+
+      await composition.close();
+
+      expect(extensionApis[1].disposeCallCount).assertEqual(1);
+      expect(rpcClients[1].closeCalls).assertEqual(1);
+      expect(secondGraph.closeCallCount).assertEqual(1);
     });
 
   });
