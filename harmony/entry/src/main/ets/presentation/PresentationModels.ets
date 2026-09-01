@@ -113,6 +113,8 @@ export interface ImportProfileViewState {
 export interface ProfileDetailProfileState extends ProfileSummaryState {
   sourceKind: ProfileSourceKind;
   sourceRepairRequired: boolean;
+  autoUpdateIntervalMs: number;
+  lastSuccessfulUpdateAt?: string;
 }
 
 export interface ProfileDetailViewState {
@@ -234,6 +236,8 @@ class ImportProfileViewStateValue implements ImportProfileViewState {
 class ProfileDetailProfileStateValue extends ProfileSummaryStateValue implements ProfileDetailProfileState {
   sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   sourceRepairRequired: boolean = false;
+  autoUpdateIntervalMs: number = 0;
+  lastSuccessfulUpdateAt?: string;
 }
 
 class ProfileDetailViewStateValue implements ProfileDetailViewState {
@@ -591,6 +595,8 @@ export function createProfileDetailProfileState(profile: ProfileApplicationProfi
   state.updatedAt = profile.updatedAt;
   state.sourceKind = profile.sourceKind;
   state.sourceRepairRequired = profile.sourceRepairRequired;
+  state.autoUpdateIntervalMs = profile.autoUpdateIntervalMs;
+  state.lastSuccessfulUpdateAt = profile.lastSuccessfulUpdateAt;
   return state;
 }
 
@@ -606,6 +612,8 @@ export function cloneProfileDetailProfileState(profile: ProfileDetailProfileStat
   state.updatedAt = profile.updatedAt;
   state.sourceKind = profile.sourceKind;
   state.sourceRepairRequired = profile.sourceRepairRequired;
+  state.autoUpdateIntervalMs = profile.autoUpdateIntervalMs;
+  state.lastSuccessfulUpdateAt = profile.lastSuccessfulUpdateAt;
   return state;
 }
 

@@ -232,6 +232,11 @@ export interface SafeUpdateProfileRecord {
   allowPlainHttp: boolean;
 }
 
+export interface AutoUpdateIntervalCommandRecord {
+  profileId: string;
+  intervalMs: number;
+}
+
 class SafeRemoteImportRecordValue implements SafeRemoteImportRecord {
   sourceDisplay: string = '';
   allowPlainHttp: boolean = false;
@@ -254,6 +259,11 @@ class SafeUpdateProfileRecordValue implements SafeUpdateProfileRecord {
   sourceChanged: boolean = false;
   sourceDisplay?: string;
   allowPlainHttp: boolean = false;
+}
+
+class AutoUpdateIntervalCommandRecordValue implements AutoUpdateIntervalCommandRecord {
+  profileId: string = '';
+  intervalMs: number = 0;
 }
 
 class FixedClock implements Clock {
@@ -467,6 +477,7 @@ export class PresentationTestApplication extends ProfileApplication {
   readonly refreshCommands: SafeRefreshRecord[] = [];
   readonly replaceCommands: SafeReplaceRecord[] = [];
   readonly updateProfileCommands: SafeUpdateProfileRecord[] = [];
+  readonly updateAutoUpdateIntervalCommands: AutoUpdateIntervalCommandRecord[] = [];
   private readonly presentationListeners: Map<number, ProfileApplicationListener> = new Map();
   private nextPresentationListenerId: number = 0;
   private currentSnapshot: ProfileApplicationSnapshot;
@@ -480,6 +491,7 @@ export class PresentationTestApplication extends ProfileApplication {
   private readonly deleteResults: Promise<ManageDeleteResult>[] = [];
   private readonly replaceResults: Promise<ManageReplaceResult>[] = [];
   private readonly updateProfileResults: Promise<UpdateProfileResult>[] = [];
+  private readonly updateAutoUpdateIntervalResults: Promise<UpdateProfileResult>[] = [];
   private readonly vpnStartResults: Promise<VpnControllerStartResult>[] = [];
   private readonly vpnStopResults: Promise<VpnControllerStopResult>[] = [];
   private readonly homeProxySelectionResults: Promise<HomeProxySelectionSummary | undefined>[] = [];
@@ -552,6 +564,10 @@ export class PresentationTestApplication extends ProfileApplication {
 
   queueUpdateProfileResult(result: UpdateProfileResult | Promise<UpdateProfileResult>): void {
     this.updateProfileResults.push(Promise.resolve(result));
+  }
+
+  queueUpdateAutoUpdateIntervalResult(result: UpdateProfileResult | Promise<UpdateProfileResult>): void {
+    this.updateAutoUpdateIntervalResults.push(Promise.resolve(result));
   }
 
   queueVpnStartResult(result: VpnControllerStartResult | Promise<VpnControllerStartResult>): void {
@@ -743,6 +759,15 @@ export class PresentationTestApplication extends ProfileApplication {
       )
     );
     return await shiftOrDefault<UpdateProfileResult>(this.updateProfileResults, createUpdatedProfileResult(profileId));
+  }
+
+  async updateAutoUpdateInterval(profileId: string, intervalMs: number): Promise<UpdateProfileResult> {
+    this.commandLog.push(`updateAutoUpdateInterval:${profileId}:${intervalMs}`);
+    this.updateAutoUpdateIntervalCommands.push(createAutoUpdateIntervalCommandRecord(profileId, intervalMs));
+    return await shiftOrDefault<UpdateProfileResult>(
+      this.updateAutoUpdateIntervalResults,
+      createUpdatedProfileResult(profileId)
+    );
   }
 
   dispose(): void {
@@ -1153,6 +1178,16 @@ function createSafeUpdateProfileRecord(
   record.sourceChanged = sourceChanged;
   record.sourceDisplay = sourceDisplay;
   record.allowPlainHttp = allowPlainHttp;
+  return record;
+}
+
+function createAutoUpdateIntervalCommandRecord(
+  profileId: string,
+  intervalMs: number
+): AutoUpdateIntervalCommandRecord {
+  const record: AutoUpdateIntervalCommandRecordValue = new AutoUpdateIntervalCommandRecordValue();
+  record.profileId = profileId;
+  record.intervalMs = intervalMs;
   return record;
 }
 

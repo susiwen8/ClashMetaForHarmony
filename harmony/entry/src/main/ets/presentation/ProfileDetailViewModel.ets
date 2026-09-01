@@ -298,6 +298,26 @@ export class ProfileDetailViewModel {
     );
   }
 
+  async requestAutoUpdateInterval(intervalMs: number): Promise<void> {
+    if (this.disposed || this.status === 'SUBMITTING') {
+      return;
+    }
+    const profile: ProfileApplicationProfileSnapshot | undefined = this.findProfile(this.application.current());
+    if (profile === undefined || profile.sourceKind !== 'REMOTE_URL') {
+      return;
+    }
+    const token: number = this.beginCommand();
+    const result: UpdateProfileResult = await this.application.updateAutoUpdateInterval(this.profileId, intervalMs);
+    if (this.disposed || token !== this.commandToken) {
+      return;
+    }
+    if (result.kind === 'UPDATED') {
+      this.completeCommand(token, 'COMPLETED', undefined);
+      return;
+    }
+    this.completeCommand(token, 'ERROR', createSafeErrorState(result.error));
+  }
+
   cancelPlainHttpConfirmation(): void {
     if (!this.pendingPlainHttpRefresh && this.pendingPlainHttpEdit === undefined) {
       return;

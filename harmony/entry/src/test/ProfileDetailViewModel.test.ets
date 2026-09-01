@@ -73,6 +73,261 @@ export default function profileDetailViewModelTestsuite() {
       expect(viewModel.current().canReplaceSubscriptionUrl).assertFalse();
     });
 
+    it('mapsIntervalMetadataForRemoteAndLocalProfilesWithoutLeakingAnythingElse', 0, () => {
+      const remoteApplication = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('remote', 'Remote', 'https://remote.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 2 * 60 * 60 * 1000,
+              lastSuccessfulUpdateAt: '2026-08-11T13:45:00.000Z'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const localApplication = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('local', 'Local', '/storage/local.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'LOCAL_FILE',
+              autoUpdateIntervalMs: 0
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+
+      const remoteViewModel = new ProfileDetailViewModel(remoteApplication, 'remote');
+      const localViewModel = new ProfileDetailViewModel(localApplication, 'local');
+
+      expect(remoteViewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(2 * 60 * 60 * 1000);
+      expect(remoteViewModel.current().profile?.lastSuccessfulUpdateAt).assertEqual('2026-08-11T13:45:00.000Z');
+      expect(localViewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(0);
+      expect(localViewModel.current().profile?.lastSuccessfulUpdateAt).assertUndefined();
+      assertNoUnsafeDetailLeak(serialize(remoteViewModel.current()));
+      assertNoUnsafeDetailLeak(serialize(localViewModel.current()));
+    });
+
+    it('submitsRemoteAutoUpdateIntervalAndCompletesFromLatestApplicationSnapshot', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('remote-interval', 'Remote Interval', 'https://remote.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 0
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const deferred = new DeferredResult<UpdateProfileResult>();
+      application.queueUpdateAutoUpdateIntervalResult(deferred.promise);
+      const viewModel = new ProfileDetailViewModel(application, 'remote-interval');
+
+      const command = viewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      expect(application.updateAutoUpdateIntervalCommands.length).assertEqual(1);
+      expect(application.updateAutoUpdateIntervalCommands[0].profileId).assertEqual('remote-interval');
+      expect(application.updateAutoUpdateIntervalCommands[0].intervalMs).assertEqual(2 * 60 * 60 * 1000);
+
+      application.emitSnapshot(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('remote-interval', 'Remote Interval', 'https://remote.example.com/subscription.yaml', 'VALID', '2026-08-11T12:32:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 2 * 60 * 60 * 1000,
+              lastSuccessfulUpdateAt: '2026-08-11T13:45:00.000Z'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      deferred.resolve(createUpdatedProfileResult('remote-interval'));
+      await command;
+
+      expect(viewModel.current().status).assertEqual('COMPLETED');
+      expect(viewModel.current().error).assertUndefined();
+      expect(viewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(2 * 60 * 60 * 1000);
+      expect(viewModel.current().profile?.lastSuccessfulUpdateAt).assertEqual('2026-08-11T13:45:00.000Z');
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
+    });
+
+    it('showsSavedIntervalFromSnapshotWhenScheduleRefreshFailsAfterAutoUpdateSave', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('partial-interval', 'Partial Interval', 'https://partial.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 0
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const deferred = new DeferredResult<UpdateProfileResult>();
+      application.queueUpdateAutoUpdateIntervalResult(deferred.promise);
+      const viewModel = new ProfileDetailViewModel(application, 'partial-interval');
+
+      const command = viewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+      application.emitSnapshot(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('partial-interval', 'Partial Interval', 'https://partial.example.com/subscription.yaml', 'VALID', '2026-08-11T12:32:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 2 * 60 * 60 * 1000
+            })
+          ],
+          undefined,
+          'STOPPED',
+          {
+            error: createSafeError('SUBSCRIPTION_SCHEDULE_FAILED', 'PERSISTENCE', 'schedule reconcile failed for partial.example.com')
+          }
+        )
+      );
+      deferred.resolve(
+        createUpdatedProfileRefreshFailedResult(
+          'partial-interval',
+          'SUBSCRIPTION_SCHEDULE_FAILED',
+          'PERSISTENCE',
+          'schedule reconcile failed for partial.example.com'
+        )
+      );
+      await command;
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(2 * 60 * 60 * 1000);
+      expect(viewModel.current().error?.code).assertEqual('SUBSCRIPTION_SCHEDULE_FAILED');
+      expect(viewModel.current().error?.technicalDetail).assertEqual('schedule reconcile failed for partial.example.com');
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
+    });
+
+    it('keepsPreviousIntervalWhenAutoUpdateSaveFails', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('failed-interval', 'Failed Interval', 'https://failed.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 30 * 60 * 1000
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      application.queueUpdateAutoUpdateIntervalResult(
+        createFailedUpdateResult('SUBSCRIPTION_INTERVAL_SAVE_FAILED', 'PERSISTENCE', 'interval save failed for failed.example.com')
+      );
+      const viewModel = new ProfileDetailViewModel(application, 'failed-interval');
+
+      await viewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(30 * 60 * 1000);
+      expect(viewModel.current().error?.technicalDetail).assertEqual('interval save failed for failed.example.com');
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
+    });
+
+    it('ignoresLocalOrConcurrentAutoUpdateIntervalRequests', 0, async () => {
+      const localApplication = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('local-interval', 'Local Interval', '/storage/local.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'LOCAL_FILE'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const localViewModel = new ProfileDetailViewModel(localApplication, 'local-interval');
+
+      await localViewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+      expect(localApplication.updateAutoUpdateIntervalCommands.length).assertEqual(0);
+
+      const remoteApplication = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('busy-interval', 'Busy Interval', 'https://busy.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const deferred = new DeferredResult<UpdateProfileResult>();
+      remoteApplication.queueUpdateAutoUpdateIntervalResult(deferred.promise);
+      const remoteViewModel = new ProfileDetailViewModel(remoteApplication, 'busy-interval');
+
+      const first = remoteViewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+      const second = remoteViewModel.requestAutoUpdateInterval(0);
+      deferred.resolve(createUpdatedProfileResult('busy-interval'));
+      await first;
+      await second;
+
+      expect(remoteApplication.updateAutoUpdateIntervalCommands.length).assertEqual(1);
+      expect(remoteApplication.updateAutoUpdateIntervalCommands[0].intervalMs).assertEqual(2 * 60 * 60 * 1000);
+      assertNoUnsafeDetailLeak(serialize(remoteViewModel.current()));
+    });
+
+    it('ignoresLateAutoUpdateIntervalCompletionAfterDispose', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('dispose-interval', 'Dispose Interval', 'https://dispose.example.com/subscription.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 0
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      const deferred = new DeferredResult<UpdateProfileResult>();
+      application.queueUpdateAutoUpdateIntervalResult(deferred.promise);
+      const viewModel = new ProfileDetailViewModel(application, 'dispose-interval');
+
+      const command = viewModel.requestAutoUpdateInterval(2 * 60 * 60 * 1000);
+      viewModel.dispose();
+      application.emitSnapshot(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('dispose-interval', 'Dispose Interval', 'https://dispose.example.com/subscription.yaml', 'VALID', '2026-08-11T12:32:00.000Z', true, {
+              sourceKind: 'REMOTE_URL',
+              autoUpdateIntervalMs: 2 * 60 * 60 * 1000
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+      deferred.resolve(createUpdatedProfileResult('dispose-interval'));
+      await command;
+
+      expect(viewModel.current().status).assertEqual('SUBMITTING');
+      expect(viewModel.current().profile?.autoUpdateIntervalMs ?? -1).assertEqual(0);
+      expect(application.updateAutoUpdateIntervalCommands.length).assertEqual(1);
+      assertNoUnsafeDetailLeak(serialize(viewModel.current()));
+    });
+
     it('delegatesEnableToFacadeAndUsesApplicationErrorInsteadOfRepeatingDomainMutationRules', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot(
