@@ -41,8 +41,11 @@ export class ProfilesViewModel {
   private refreshAllToken: number = 0;
   private refreshAllPending: boolean = false;
   private refreshAllCompletedCount: number = 0;
+  private refreshAllRemainingCount: number = 0;
   private refreshAllTotalCount: number = 0;
+  private refreshAllInterrupted: boolean = false;
   private refreshAllError?: SafeErrorState;
+  private refreshAllSummaryProfileIds?: string[];
   private disposed: boolean = false;
 
   constructor(application: ProfileApplication) {
@@ -51,7 +54,10 @@ export class ProfilesViewModel {
       application.current(),
       this.refreshAllPending,
       this.refreshAllCompletedCount,
+      this.refreshAllRemainingCount,
       this.refreshAllTotalCount,
+      this.refreshAllInterrupted,
+      this.refreshAllSummaryProfileIds,
       this.refreshAllError
     );
     this.applicationListener = (snapshot: ProfileApplicationSnapshot): void => {
@@ -97,7 +103,7 @@ export class ProfilesViewModel {
       return;
     }
     const snapshot: ProfileApplicationSnapshot = this.application.current();
-    const remoteCount: number = countRemoteProfiles(snapshot);
+    const remoteCount: number = countRemoteProfiles(snapshot.profiles);
     if (remoteCount === 0) {
       return;
     }
@@ -110,11 +116,19 @@ export class ProfilesViewModel {
 
     this.refreshAllPending = false;
     if (result.kind === 'COMPLETED') {
-      this.refreshAllCompletedCount = countCompletedRefreshItems(result.result.items);
-      this.refreshAllTotalCount = result.result.items.length;
+      this.refreshAllCompletedCount = result.result.items.length;
+      this.refreshAllRemainingCount = result.result.remainingCount;
+      this.refreshAllTotalCount = result.result.items.length + result.result.remainingCount;
+      this.refreshAllInterrupted = result.result.deadlineReached ||
+        result.result.cancelled ||
+        result.result.remainingCount > 0;
+      this.refreshAllSummaryProfileIds = collectRefreshProfileIds(result.result.items);
       this.refreshAllError = undefined;
     } else {
       this.refreshAllCompletedCount = 0;
+      this.refreshAllRemainingCount = this.refreshAllTotalCount;
+      this.refreshAllInterrupted = true;
+      this.refreshAllSummaryProfileIds = undefined;
       this.refreshAllError = createSafeErrorState(result.error);
     }
     this.publish(this.buildState(this.application.current()));
@@ -135,8 +149,11 @@ export class ProfilesViewModel {
     this.refreshAllToken += 1;
     this.refreshAllPending = true;
     this.refreshAllCompletedCount = 0;
+    this.refreshAllRemainingCount = remoteCount;
     this.refreshAllTotalCount = remoteCount;
+    this.refreshAllInterrupted = false;
     this.refreshAllError = undefined;
+    this.refreshAllSummaryProfileIds = undefined;
     this.publish(this.buildState(snapshot));
     return this.refreshAllToken;
   }
@@ -150,7 +167,10 @@ export class ProfilesViewModel {
       snapshot,
       this.refreshAllPending,
       this.refreshAllCompletedCount,
+      this.refreshAllRemainingCount,
       this.refreshAllTotalCount,
+      this.refreshAllInterrupted,
+      this.refreshAllSummaryProfileIds,
       this.refreshAllError
     );
   }
@@ -187,11 +207,15 @@ function createState(
   snapshot: ProfileApplicationSnapshot,
   refreshAllPending: boolean,
   refreshAllCompletedCount: number,
+  refreshAllRemainingCount: number,
   refreshAllTotalCount: number,
+  refreshAllInterrupted: boolean,
+  refreshAllSummaryProfileIds: string[] | undefined,
   refreshAllError: SafeErrorState | undefined
 ): ProfilesViewState {
   const rows: ProfileRowState[] = [];
-  const remoteCount: number = countRemoteProfiles(snapshot);
+  const summaryProfiles: ProfileApplicationSnapshot['profiles'] = selectSummaryProfiles(snapshot, refreshAllSummaryProfileIds);
+  const remoteCount: number = countRemoteProfiles(summaryProfiles);
   for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
     rows.push(createProfileRowState(snapshot.profiles[index], snapshot.activeProfileId));
   }
@@ -199,25 +223,27 @@ function createState(
     snapshot.status,
     rows,
     snapshot.error === null ? undefined : createSafeErrorState(snapshot.error),
-    refreshAllPending ? 1 : 0,
+    refreshAllPending,
     refreshAllCompletedCount,
+    refreshAllRemainingCount,
     refreshAllTotalCount,
+    refreshAllInterrupted,
     createProfilesSummaryState(
-      snapshot.profiles.length,
+      summaryProfiles.length,
       remoteCount,
-      snapshot.profiles.length - remoteCount,
-      countProfilesByAvailability(snapshot, 'VALID'),
-      countProfilesByAvailability(snapshot, 'INVALID'),
-      countProfilesByAvailability(snapshot, 'UPDATE_FAILED_USING_VALID')
+      summaryProfiles.length - remoteCount,
+      countProfilesByAvailability(summaryProfiles, 'VALID'),
+      countProfilesByAvailability(summaryProfiles, 'INVALID'),
+      countProfilesByAvailability(summaryProfiles, 'UPDATE_FAILED_USING_VALID')
     ),
     refreshAllError
   );
 }
 
-function countRemoteProfiles(snapshot: ProfileApplicationSnapshot): number {
+function countRemoteProfiles(profiles: { sourceKind: string }[]): number {
   let count: number = 0;
-  for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
-    if (snapshot.profiles[index].sourceKind === 'REMOTE_URL') {
+  for (let index: number = 0; index < profiles.length; index += 1) {
+    if (profiles[index].sourceKind === 'REMOTE_URL') {
       count += 1;
     }
   }
@@ -225,20 +251,49 @@ function countRemoteProfiles(snapshot: ProfileApplicationSnapshot): number {
 }
 
 function countProfilesByAvailability(
-  snapshot: ProfileApplicationSnapshot,
+  profiles: { availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID' }[],
   availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID'
 ): number {
   let count: number = 0;
-  for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
-    if (snapshot.profiles[index].availability === availability) {
+  for (let index: number = 0; index < profiles.length; index += 1) {
+    if (profiles[index].availability === availability) {
       count += 1;
     }
   }
   return count;
 }
 
-function countCompletedRefreshItems(items: RefreshProfilesItemResult[]): number {
-  return items.length;
+function collectRefreshProfileIds(items: RefreshProfilesItemResult[]): string[] {
+  const profileIds: string[] = [];
+  for (let index: number = 0; index < items.length; index += 1) {
+    profileIds.push(items[index].profileId);
+  }
+  return profileIds;
+}
+
+function selectSummaryProfiles(
+  snapshot: ProfileApplicationSnapshot,
+  refreshAllSummaryProfileIds: string[] | undefined
+): ProfileApplicationSnapshot['profiles'] {
+  if (refreshAllSummaryProfileIds === undefined) {
+    return snapshot.profiles;
+  }
+  const selected: ProfileApplicationSnapshot['profiles'] = [];
+  for (let index: number = 0; index < snapshot.profiles.length; index += 1) {
+    if (containsProfileId(refreshAllSummaryProfileIds, snapshot.profiles[index].id)) {
+      selected.push(snapshot.profiles[index]);
+    }
+  }
+  return selected;
+}
+
+function containsProfileId(profileIds: string[], profileId: string): boolean {
+  for (let index: number = 0; index < profileIds.length; index += 1) {
+    if (profileIds[index] === profileId) {
+      return true;
+    }
+  }
+  return false;
 }
 
 function createProfileDetailIntent(profileId: string): ProfilesNavigationIntent {

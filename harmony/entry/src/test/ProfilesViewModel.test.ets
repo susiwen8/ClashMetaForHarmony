@@ -71,9 +71,11 @@ export default function profilesViewModelTestsuite() {
       expect(current.summary?.validCount).assertEqual(1);
       expect(current.summary?.invalidCount).assertEqual(1);
       expect(current.summary?.updateFailedUsingValidCount).assertEqual(1);
-      expect(current.pendingRefreshCount).assertEqual(0);
+      expect(current.refreshAllPending).assertFalse();
       expect(current.completedRefreshCount).assertEqual(0);
+      expect(current.remainingRefreshCount).assertEqual(0);
       expect(current.totalRefreshCount).assertEqual(0);
+      expect(current.refreshAllInterrupted).assertFalse();
 
       application.emitSnapshot(
         createApplicationSnapshot(
@@ -139,12 +141,14 @@ export default function profilesViewModelTestsuite() {
       const current = viewModel.current();
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(0);
       expect(current.summary?.remoteCount).assertEqual(0);
-      expect(current.pendingRefreshCount).assertEqual(0);
+      expect(current.refreshAllPending).assertFalse();
+      expect(current.remainingRefreshCount).assertEqual(0);
       expect(current.totalRefreshCount).assertEqual(0);
+      expect(current.refreshAllInterrupted).assertFalse();
       expect(current.refreshAllError).assertUndefined();
     });
 
-    it('requestRefreshAllIgnoresReentryWhilePending', 0, async () => {
+    it('requestRefreshAllIgnoresReentryWhileRefreshAllPending', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot(
           'READY',
@@ -161,8 +165,11 @@ export default function profilesViewModelTestsuite() {
       const second = viewModel.requestRefreshAll();
 
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(1);
-      expect(pending.pendingRefreshCount).assertEqual(1);
+      expect(pending.refreshAllPending).assertTrue();
+      expect(pending.completedRefreshCount).assertEqual(0);
+      expect(pending.remainingRefreshCount).assertEqual(1);
       expect(pending.totalRefreshCount).assertEqual(1);
+      expect(pending.refreshAllInterrupted).assertFalse();
 
       deferred.resolve(createRefreshAllSubscriptionsCompletedResult([
         { profileId: 'alpha', status: 'SUCCESS' }
@@ -171,10 +178,10 @@ export default function profilesViewModelTestsuite() {
       await second;
 
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(1);
-      expect(viewModel.current().pendingRefreshCount).assertEqual(0);
+      expect(viewModel.current().refreshAllPending).assertFalse();
     });
 
-    it('requestRefreshAllPublishesCompletedCountsFromBatchResult', 0, async () => {
+    it('requestRefreshAllPublishesFullBatchCompletionWithoutInterruption', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot(
           'READY',
@@ -201,17 +208,103 @@ export default function profilesViewModelTestsuite() {
 
       const current = viewModel.current();
       expect(application.refreshAllSubscriptionsCallCount()).assertEqual(1);
-      expect(current.pendingRefreshCount).assertEqual(0);
+      expect(current.refreshAllPending).assertFalse();
       expect(current.completedRefreshCount).assertEqual(2);
+      expect(current.remainingRefreshCount).assertEqual(0);
       expect(current.totalRefreshCount).assertEqual(2);
+      expect(current.refreshAllInterrupted).assertFalse();
+      expect(current.summary?.totalCount).assertEqual(2);
+      expect(current.summary?.remoteCount).assertEqual(2);
+      expect(current.summary?.localCount).assertEqual(0);
+      expect(current.summary?.validCount).assertEqual(1);
+      expect(current.summary?.invalidCount).assertEqual(0);
+      expect(current.summary?.updateFailedUsingValidCount).assertEqual(1);
       expect(current.refreshAllError).assertUndefined();
     });
 
-    it('requestRefreshAllPublishesSafeFailureError', 0, async () => {
+    it('requestRefreshAllPublishesDeadlineInterruptedBatchCounts', 0, async () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot(
           'READY',
-          [createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml?secret=1', 'VALID', '2026-08-11T12:31:00.000Z', true)],
+          [
+            createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true),
+            createProfileSnapshot('beta', 'Beta', 'https://beta.example.com/config.yaml', 'UPDATE_FAILED_USING_VALID', '2026-08-11T12:32:00.000Z', true),
+            createProfileSnapshot('gamma', 'Gamma', 'https://gamma.example.com/config.yaml', 'INVALID', '2026-08-11T12:33:00.000Z', false),
+            createProfileSnapshot('delta', 'Delta', 'https://delta.example.com/config.yaml', 'VALID', '2026-08-11T12:34:00.000Z', true),
+            createProfileSnapshot('epsilon', 'Epsilon', 'https://epsilon.example.com/config.yaml', 'VALID', '2026-08-11T12:35:00.000Z', true)
+          ],
+          'alpha',
+          'STOPPED'
+        )
+      );
+      application.queueRefreshAllSubscriptionsResult(
+        createRefreshAllSubscriptionsCompletedResult(
+          [
+            { profileId: 'alpha', status: 'SUCCESS' },
+            { profileId: 'beta', status: 'SKIPPED_HTTP' }
+          ],
+          true,
+          false,
+          3
+        )
+      );
+      const viewModel = new ProfilesViewModel(application);
+
+      await viewModel.requestRefreshAll();
+
+      const current = viewModel.current();
+      expect(current.refreshAllPending).assertFalse();
+      expect(current.completedRefreshCount).assertEqual(2);
+      expect(current.remainingRefreshCount).assertEqual(3);
+      expect(current.totalRefreshCount).assertEqual(5);
+      expect(current.refreshAllInterrupted).assertTrue();
+      expect(current.summary?.totalCount).assertEqual(2);
+      expect(current.summary?.remoteCount).assertEqual(2);
+      expect(current.summary?.localCount).assertEqual(0);
+    });
+
+    it('requestRefreshAllPublishesCancelledBatchAsInterrupted', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml', 'VALID', '2026-08-11T12:31:00.000Z', true),
+            createProfileSnapshot('beta', 'Beta', 'https://beta.example.com/config.yaml', 'UPDATE_FAILED_USING_VALID', '2026-08-11T12:32:00.000Z', true)
+          ],
+          'alpha',
+          'STOPPED'
+        )
+      );
+      application.queueRefreshAllSubscriptionsResult(
+        createRefreshAllSubscriptionsCompletedResult(
+          [{ profileId: 'alpha', status: 'SUCCESS' }],
+          false,
+          true,
+          1
+        )
+      );
+      const viewModel = new ProfilesViewModel(application);
+
+      await viewModel.requestRefreshAll();
+
+      const current = viewModel.current();
+      expect(current.refreshAllPending).assertFalse();
+      expect(current.completedRefreshCount).assertEqual(1);
+      expect(current.remainingRefreshCount).assertEqual(1);
+      expect(current.totalRefreshCount).assertEqual(2);
+      expect(current.refreshAllInterrupted).assertTrue();
+      expect(current.summary?.totalCount).assertEqual(1);
+      expect(current.summary?.remoteCount).assertEqual(1);
+    });
+
+    it('requestRefreshAllPublishesSafeFailureErrorAndRetainsRemainingRemoteCount', 0, async () => {
+      const application = new PresentationTestApplication(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/config.yaml?secret=1', 'VALID', '2026-08-11T12:31:00.000Z', true),
+            createProfileSnapshot('beta', 'Beta', 'https://beta.example.com/config.yaml?secret=2', 'UPDATE_FAILED_USING_VALID', '2026-08-11T12:32:00.000Z', true)
+          ],
           'alpha',
           'STOPPED'
         )
@@ -228,12 +321,15 @@ export default function profilesViewModelTestsuite() {
       await viewModel.requestRefreshAll();
 
       const current = viewModel.current();
-      expect(current.pendingRefreshCount).assertEqual(0);
+      expect(current.refreshAllPending).assertFalse();
       expect(current.completedRefreshCount).assertEqual(0);
-      expect(current.totalRefreshCount).assertEqual(1);
+      expect(current.remainingRefreshCount).assertEqual(2);
+      expect(current.totalRefreshCount).assertEqual(2);
+      expect(current.refreshAllInterrupted).assertTrue();
       expect(current.refreshAllError?.code).assertEqual('SUBSCRIPTION_REFRESH_ALL_FAILED');
       expect(serialize(current.refreshAllError as Object).includes('secret=1')).assertFalse();
-      expect(serialize(current).includes('alpha.example.com/config.yaml?secret=1')).assertFalse();
+      expect(serialize(current).includes('secret=1')).assertFalse();
+      expect(serialize(current).includes('secret=2')).assertFalse();
     });
 
     it('keepsRefreshAllPendingStateAcrossApplicationSnapshots', 0, async () => {
@@ -261,9 +357,11 @@ export default function profilesViewModelTestsuite() {
       );
 
       const pending = viewModel.current();
-      expect(pending.pendingRefreshCount).assertEqual(1);
+      expect(pending.refreshAllPending).assertTrue();
       expect(pending.totalRefreshCount).assertEqual(1);
       expect(pending.completedRefreshCount).assertEqual(0);
+      expect(pending.remainingRefreshCount).assertEqual(1);
+      expect(pending.refreshAllInterrupted).assertFalse();
       expect(pending.profiles[0].name).assertEqual('Alpha 2');
       expect(pending.profiles[0].sourceDisplay).assertEqual('alpha.example.com');
       expect(serialize(pending).includes('secret=2')).assertFalse();
@@ -273,8 +371,9 @@ export default function profilesViewModelTestsuite() {
       ]));
       await refreshPromise;
 
-      expect(viewModel.current().pendingRefreshCount).assertEqual(0);
+      expect(viewModel.current().refreshAllPending).assertFalse();
       expect(viewModel.current().completedRefreshCount).assertEqual(1);
+      expect(viewModel.current().remainingRefreshCount).assertEqual(0);
     });
 
     it('ignoresDeferredRefreshAllCompletionAfterDispose', 0, async () => {
@@ -297,8 +396,10 @@ export default function profilesViewModelTestsuite() {
       await refreshPromise;
 
       expect(application.listenerCount()).assertEqual(0);
-      expect(viewModel.current().pendingRefreshCount).assertEqual(1);
+      expect(viewModel.current().refreshAllPending).assertTrue();
       expect(viewModel.current().completedRefreshCount).assertEqual(0);
+      expect(viewModel.current().remainingRefreshCount).assertEqual(1);
+      expect(viewModel.current().refreshAllInterrupted).assertFalse();
     });
 
     it('emitsNavigationIntentsLimitedToProfileIdOrAddSheetAndDisposesSubscriptions', 0, () => {

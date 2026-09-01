@@ -89,9 +89,11 @@ export interface ProfilesSummaryState {
 export interface ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR';
   profiles: ProfileRowState[];
-  pendingRefreshCount: number;
+  refreshAllPending: boolean;
   completedRefreshCount: number;
+  remainingRefreshCount: number;
   totalRefreshCount: number;
+  refreshAllInterrupted: boolean;
   summary?: ProfilesSummaryState;
   refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
@@ -209,9 +211,11 @@ class ProfilesSummaryStateValue implements ProfilesSummaryState {
 class ProfilesViewStateValue implements ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   profiles: ProfileRowState[] = [];
-  pendingRefreshCount: number = 0;
+  refreshAllPending: boolean = false;
   completedRefreshCount: number = 0;
+  remainingRefreshCount: number = 0;
   totalRefreshCount: number = 0;
+  refreshAllInterrupted: boolean = false;
   summary?: ProfilesSummaryState;
   refreshAllError?: SafeErrorState;
   error?: SafeErrorState;
@@ -508,18 +512,22 @@ export function createProfilesViewState(
   initialization: 'LOADING' | 'READY' | 'ERROR',
   profiles: ProfileRowState[],
   error: SafeErrorState | undefined,
-  pendingRefreshCount: number = 0,
+  refreshAllPending: boolean = false,
   completedRefreshCount: number = 0,
+  remainingRefreshCount: number = 0,
   totalRefreshCount: number = 0,
+  refreshAllInterrupted: boolean = false,
   summary: ProfilesSummaryState | undefined = undefined,
   refreshAllError: SafeErrorState | undefined = undefined
 ): ProfilesViewState {
   const state: ProfilesViewStateValue = new ProfilesViewStateValue();
   state.initialization = initialization;
   state.profiles = cloneProfileRowStates(profiles);
-  state.pendingRefreshCount = normalizeCount(pendingRefreshCount);
+  state.refreshAllPending = refreshAllPending;
   state.completedRefreshCount = normalizeCount(completedRefreshCount);
+  state.remainingRefreshCount = normalizeCount(remainingRefreshCount);
   state.totalRefreshCount = normalizeCount(totalRefreshCount);
+  state.refreshAllInterrupted = refreshAllInterrupted;
   state.summary = cloneProfilesSummaryState(summary);
   state.refreshAllError = cloneSafeErrorState(refreshAllError);
   state.error = cloneSafeErrorState(error);
@@ -531,9 +539,11 @@ export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewSt
     state.initialization,
     state.profiles,
     state.error,
-    state.pendingRefreshCount,
+    state.refreshAllPending,
     state.completedRefreshCount,
+    state.remainingRefreshCount,
     state.totalRefreshCount,
+    state.refreshAllInterrupted,
     state.summary,
     state.refreshAllError
   );
