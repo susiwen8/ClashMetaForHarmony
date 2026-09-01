@@ -123,7 +123,8 @@ export function buildProfile(id: string, availability: ProfileAvailability, upda
     lastError: null,
     createdAt: '2026-08-07T00:00:00.000Z',
     updatedAt,
-    lastSuccessfulUpdateAt: currentRevision === null ? null : '2026-08-07T00:10:00.000Z'
+    lastSuccessfulUpdateAt: currentRevision === null ? null : '2026-08-07T00:10:00.000Z',
+    autoUpdateIntervalMs: 0
   });
 }
 
@@ -483,7 +484,8 @@ export function cloneDurableRow(row: DurableProfileRow): DurableProfileRow {
     lastErrorJson: cloneRevisionJson(row.lastErrorJson),
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    lastSuccessfulUpdateAt: row.lastSuccessfulUpdateAt
+    lastSuccessfulUpdateAt: row.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: row.autoUpdateIntervalMs
   };
 }
 

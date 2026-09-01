@@ -44,8 +44,32 @@ function buildRemoteProfile(): Profile {
     ),
     createdAt: '2026-08-07T00:00:00.000Z',
     updatedAt: '2026-08-07T00:06:00.000Z',
-    lastSuccessfulUpdateAt: '2026-08-07T00:01:00.000Z'
+    lastSuccessfulUpdateAt: '2026-08-07T00:01:00.000Z',
+    autoUpdateIntervalMs: 300000
   });
+}
+
+function expectCreateProfileFailure(autoUpdateIntervalMs: number, expectedMessage: string): void {
+  try {
+    createProfile({
+      id: 'remote-invalid',
+      name: 'Remote Invalid',
+      sourceKind: 'REMOTE_URL',
+      sourceDisplay: 'https://subscription.example.com/profile.yaml',
+      sourceSecretRef: buildOpaqueRef('subscription://v1/opaque'),
+      currentRevision: null,
+      failedCandidate: null,
+      availability: 'INVALID',
+      lastError: null,
+      createdAt: '2026-08-07T00:00:00.000Z',
+      updatedAt: '2026-08-07T00:00:00.000Z',
+      lastSuccessfulUpdateAt: null,
+      autoUpdateIntervalMs
+    });
+    expect(false).assertTrue();
+  } catch (error) {
+    expect(`${error}`).assertContain(expectedMessage);
+  }
 }
 
 function expectDecodeFailure(row: DurableProfileRow, expectedMessage: string): void {
@@ -71,19 +95,59 @@ function mutateRow(row: DurableProfileRow): DurableProfileRow {
     lastErrorJson: row.lastErrorJson,
     createdAt: row.createdAt,
     updatedAt: row.updatedAt,
-    lastSuccessfulUpdateAt: row.lastSuccessfulUpdateAt
+    lastSuccessfulUpdateAt: row.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: row.autoUpdateIntervalMs
   };
 }
 
 export default function profileRowCodecTestsuite() {
   describe('ProfileRowCodecTest', () => {
+    it('defaultsAndValidatesProfileAutoUpdateInterval', 0, () => {
+      const defaulted: Profile = createProfile({
+        id: 'remote-default',
+        name: 'Remote Default',
+        sourceKind: 'REMOTE_URL',
+        sourceDisplay: 'https://subscription.example.com/profile.yaml?token=abc123',
+        sourceSecretRef: buildOpaqueRef('subscription://v1/default'),
+        currentRevision: null,
+        failedCandidate: null,
+        availability: 'INVALID',
+        lastError: null,
+        createdAt: '2026-08-07T00:00:00.000Z',
+        updatedAt: '2026-08-07T00:00:00.000Z',
+        lastSuccessfulUpdateAt: null
+      });
+      const preserved: Profile = createProfile({
+        id: 'remote-preserved',
+        name: 'Remote Preserved',
+        sourceKind: 'REMOTE_URL',
+        sourceDisplay: 'https://subscription.example.com/profile.yaml?token=abc123',
+        sourceSecretRef: buildOpaqueRef('subscription://v1/preserved'),
+        currentRevision: null,
+        failedCandidate: null,
+        availability: 'INVALID',
+        lastError: null,
+        createdAt: '2026-08-07T00:00:00.000Z',
+        updatedAt: '2026-08-07T00:00:00.000Z',
+        lastSuccessfulUpdateAt: null,
+        autoUpdateIntervalMs: 60000
+      });
+
+      expect(defaulted.autoUpdateIntervalMs).assertEqual(0);
+      expect(preserved.autoUpdateIntervalMs).assertEqual(60000);
+      expectCreateProfileFailure(-1, 'safe non-negative integer');
+      expectCreateProfileFailure(1.5, 'safe non-negative integer');
+      expectCreateProfileFailure(Number.MAX_SAFE_INTEGER + 1, 'safe non-negative integer');
+    });
+
     it('roundTripsEveryDurableFieldAndRedactsRemoteSourceDisplayStorage', 0, () => {
       const profile: Profile = buildRemoteProfile();
 
       const row: DurableProfileRow = encodeProfileRow(profile);
       const decoded: Profile = decodeProfileRow(row);
 
-      expect(row.schemaVersion).assertEqual(1);
+      expect(row.schemaVersion).assertEqual(2);
+      expect(row.autoUpdateIntervalMs).assertEqual(300000);
       expect(row.sourceDisplay.includes('http://')).assertFalse();
       expect(row.sourceDisplay.includes('https://')).assertFalse();
       expect(row.sourceDisplay.includes('/path')).assertFalse();
@@ -106,6 +170,7 @@ export default function profileRowCodecTestsuite() {
       expect(decoded.lastError?.userMessageResource).assertEqual('error.remote.timeout');
       expect(decoded.lastError?.retryable).assertTrue();
       expect(decoded.lastSuccessfulUpdateAt).assertEqual('2026-08-07T00:01:00.000Z');
+      expect(decoded.autoUpdateIntervalMs).assertEqual(300000);
     });
 
     it('roundTripsNullableColumnsAndLocalProfiles', 0, () => {
@@ -130,18 +195,55 @@ export default function profileRowCodecTestsuite() {
       expect(row.failedCandidateJson).assertNull();
       expect(row.lastErrorJson).assertNull();
       expect(row.lastSuccessfulUpdateAt).assertNull();
+      expect(row.autoUpdateIntervalMs).assertEqual(0);
       expect(decoded.sourceDisplay).assertEqual('local.yaml');
       expect(decoded.currentRevision).assertNull();
       expect(decoded.failedCandidate).assertNull();
       expect(decoded.lastError).assertNull();
       expect(decoded.lastSuccessfulUpdateAt).assertNull();
+      expect(decoded.autoUpdateIntervalMs).assertEqual(0);
     });
 
-    it('rejectsUnknownSchemaVersionAndInvalidEnums', 0, () => {
+    it('decodesLegacyVersionOneRowsAndRejectsUnsupportedVersions', 0, () => {
       const row: DurableProfileRow = encodeProfileRow(buildRemoteProfile());
-      const wrongVersion: DurableProfileRow = mutateRow(row);
-      wrongVersion.schemaVersion = 2;
-      expectDecodeFailure(wrongVersion, 'schema version');
+      const legacyRow: DurableProfileRow = mutateRow(row);
+      legacyRow.schemaVersion = 1;
+      legacyRow.autoUpdateIntervalMs = undefined;
+      const decodedLegacy: Profile = decodeProfileRow(legacyRow);
+      const legacyRowWithInjectedInterval: DurableProfileRow = mutateRow(row);
+      legacyRowWithInjectedInterval.schemaVersion = 1;
+      legacyRowWithInjectedInterval.autoUpdateIntervalMs = 999999;
+      const decodedLegacyWithInjectedInterval: Profile = decodeProfileRow(legacyRowWithInjectedInterval);
+
+      expect(decodedLegacy.autoUpdateIntervalMs).assertEqual(0);
+      expect(decodedLegacyWithInjectedInterval.autoUpdateIntervalMs).assertEqual(0);
+
+      const rowVersionZero: DurableProfileRow = mutateRow(row);
+      rowVersionZero.schemaVersion = 0;
+      expectDecodeFailure(rowVersionZero, 'schema version');
+
+      const rowVersionThree: DurableProfileRow = mutateRow(row);
+      rowVersionThree.schemaVersion = 3;
+      expectDecodeFailure(rowVersionThree, 'schema version');
+    });
+
+    it('rejectsInvalidIntervalsAndInvalidEnums', 0, () => {
+      const row: DurableProfileRow = encodeProfileRow(buildRemoteProfile());
+      const missingInterval: DurableProfileRow = mutateRow(row);
+      missingInterval.autoUpdateIntervalMs = undefined;
+      expectDecodeFailure(missingInterval, 'autoUpdateIntervalMs');
+
+      const negativeInterval: DurableProfileRow = mutateRow(row);
+      negativeInterval.autoUpdateIntervalMs = -1;
+      expectDecodeFailure(negativeInterval, 'autoUpdateIntervalMs');
+
+      const fractionalInterval: DurableProfileRow = mutateRow(row);
+      fractionalInterval.autoUpdateIntervalMs = 0.5;
+      expectDecodeFailure(fractionalInterval, 'autoUpdateIntervalMs');
+
+      const unsafeInterval: DurableProfileRow = mutateRow(row);
+      unsafeInterval.autoUpdateIntervalMs = Number.MAX_SAFE_INTEGER + 1;
+      expectDecodeFailure(unsafeInterval, 'autoUpdateIntervalMs');
 
       const wrongAvailability: DurableProfileRow = mutateRow(row);
       wrongAvailability.availability = 'BROKEN_ENUM';

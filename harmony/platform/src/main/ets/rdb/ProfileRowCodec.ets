@@ -65,8 +65,9 @@ class ParsedErrorShape {
   }
 }
 
-const SCHEMA_VERSION = 1;
+const SCHEMA_VERSION = 2;
 const UTF16_HEX_ENCODING = 'utf16hex';
+const LEGACY_SCHEMA_VERSION = 1;
 
 function textToUtf16Hex(rawText: string): string {
   let encoded = '';
@@ -153,7 +154,8 @@ export function encodeProfileRow(profile: Profile): DurableProfileRow {
     lastErrorJson: encodeError(profile.lastError),
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
-    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
+    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: profile.autoUpdateIntervalMs
   };
 }
 
@@ -307,9 +309,20 @@ function decodeAvailability(rawAvailability: string): ProfileAvailability {
   throw new Error('availability must be a known Profile availability.');
 }
 
+function decodeAutoUpdateIntervalMs(row: DurableProfileRow, schemaVersion: number): number {
+  if (schemaVersion === LEGACY_SCHEMA_VERSION) {
+    return 0;
+  }
+  const autoUpdateIntervalMs: number = requireNumber(row.autoUpdateIntervalMs as Object, 'autoUpdateIntervalMs');
+  if (!Number.isSafeInteger(autoUpdateIntervalMs) || autoUpdateIntervalMs < 0) {
+    throw new Error('autoUpdateIntervalMs must be a safe non-negative integer.');
+  }
+  return autoUpdateIntervalMs;
+}
+
 export function decodeProfileRow(row: DurableProfileRow): Profile {
   const schemaVersion: number = requireNumber(row.schemaVersion as Object, 'schemaVersion');
-  if (schemaVersion !== SCHEMA_VERSION) {
+  if (schemaVersion !== LEGACY_SCHEMA_VERSION && schemaVersion !== SCHEMA_VERSION) {
     throw new Error(`Unsupported schema version ${schemaVersion}.`);
   }
   const sourceKind: ProfileSourceKind = decodeSourceKind(requireString(row.sourceKind as Object, 'sourceKind'));
@@ -325,6 +338,7 @@ export function decodeProfileRow(row: DurableProfileRow): Profile {
     lastError: decodeError(requireNullableString(row.lastErrorJson, 'lastErrorJson')),
     createdAt: requireString(row.createdAt as Object, 'createdAt'),
     updatedAt: requireString(row.updatedAt as Object, 'updatedAt'),
-    lastSuccessfulUpdateAt: requireNullableString(row.lastSuccessfulUpdateAt, 'lastSuccessfulUpdateAt')
+    lastSuccessfulUpdateAt: requireNullableString(row.lastSuccessfulUpdateAt, 'lastSuccessfulUpdateAt'),
+    autoUpdateIntervalMs: decodeAutoUpdateIntervalMs(row, schemaVersion)
   });
 }

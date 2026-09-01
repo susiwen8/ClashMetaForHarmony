@@ -12,6 +12,7 @@ export interface DurableProfileRow {
   createdAt: string;
   updatedAt: string;
   lastSuccessfulUpdateAt: string | null;
+  autoUpdateIntervalMs?: number;
 }
 
 export interface DurableProxySelectionRow {

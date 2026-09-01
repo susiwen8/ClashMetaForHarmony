@@ -30,6 +30,7 @@ export interface Profile {
   createdAt: string;
   updatedAt: string;
   lastSuccessfulUpdateAt: string | null;
+  autoUpdateIntervalMs: number;
 }
 
 export interface CreateProfileInput {
@@ -45,6 +46,7 @@ export interface CreateProfileInput {
   createdAt: string;
   updatedAt: string;
   lastSuccessfulUpdateAt: string | null;
+  autoUpdateIntervalMs?: number;
 }
 
 const SHA256_DIGEST_PATTERN: RegExp = /^[0-9a-fA-F]{64}$/u;
@@ -253,6 +255,13 @@ function normalizeByteLength(byteLength: number): number {
   return byteLength;
 }
 
+function normalizeAutoUpdateIntervalMs(autoUpdateIntervalMs: number): number {
+  if (!Number.isSafeInteger(autoUpdateIntervalMs) || autoUpdateIntervalMs < 0) {
+    throw new Error('Profile autoUpdateIntervalMs must be a safe non-negative integer.');
+  }
+  return autoUpdateIntervalMs;
+}
+
 function cloneProfileRevision(revision: ProfileRevision | null): ProfileRevision | null {
   if (revision === null) {
     return null;
@@ -343,7 +352,8 @@ export function createProfile(input: CreateProfileInput): Profile {
     lastSuccessfulUpdateAt: normalizeOptionalProfileTimestamp(
       input.lastSuccessfulUpdateAt,
       'Profile lastSuccessfulUpdateAt'
-    )
+    ),
+    autoUpdateIntervalMs: normalizeAutoUpdateIntervalMs(input.autoUpdateIntervalMs ?? 0)
   };
 
   if (input.sourceSecretRef !== undefined && input.sourceSecretRef.trim().length > 0) {
