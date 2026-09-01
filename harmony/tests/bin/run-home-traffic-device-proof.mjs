@@ -169,14 +169,14 @@ function selectUniqueSemanticNode(layout, semanticId) {
 
 function parseTrafficDisplayValue(text, { expectSpeed }) {
   const pattern = expectSpeed
-    ? /^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\/s$/u
-    : /^(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)$/u;
+    ? /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)\/s$/u
+    : /^(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)$/u;
   const match = `${text ?? ''}`.trim().match(pattern);
   if (!match) {
     throw createFixedError('HOME_TRAFFIC_METRIC_TEXT_INVALID');
   }
   const value = Number.parseFloat(match[1]);
-  const units = { B: 1, KB: 1024, MB: 1024 ** 2, GB: 1024 ** 3, TB: 1024 ** 4 };
+  const units = { B: 1, KiB: 1024, MiB: 1024 ** 2, GiB: 1024 ** 3 };
   return Math.floor(value * units[match[2]]);
 }
 
@@ -247,7 +247,7 @@ export function analyzeHomeTrafficLayouts(beforeLayout, uploadLayout, downloadLa
 }
 
 function parseNotificationTrafficText(text) {
-  const match = `${text ?? ''}`.trim().match(/^↑\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\/s\s+↓\s*(\d+(?:\.\d+)?)\s*(B|KB|MB|GB|TB)\/s$/u);
+  const match = `${text ?? ''}`.trim().match(/^↑\s*(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)\/s\s+↓\s*(\d+(?:\.\d+)?)\s*(B|KiB|MiB|GiB)\/s$/u);
   if (!match) {
     throw createFixedError('HOME_TRAFFIC_NOTIFICATION_TEXT_INVALID');
   }
@@ -257,8 +257,14 @@ function parseNotificationTrafficText(text) {
   };
 }
 
-export function analyzeHomeTrafficNotificationEvidence(homeLayout, notificationLayout) {
-  const homeSnapshot = readSnapshot(homeLayout);
+function normalizeNotificationLayouts(notificationLayouts) {
+  if (Array.isArray(notificationLayouts)) {
+    return notificationLayouts;
+  }
+  return notificationLayouts ? [notificationLayouts] : [];
+}
+
+function extractUniqueNotificationPair(notificationLayout) {
   const selection = selectUniqueAppOngoingNotification(notificationLayout);
   const textCandidates = [];
   const joined = collectTextFragments(selection.node).join(' ');
@@ -272,15 +278,47 @@ export function analyzeHomeTrafficNotificationEvidence(homeLayout, notificationL
   if (matching.length !== 1) {
     throw createFixedError(matching.length === 0 ? 'HOME_TRAFFIC_NOTIFICATION_MISSING' : 'HOME_TRAFFIC_NOTIFICATION_AMBIGUOUS');
   }
-  const notificationSnapshot = parseNotificationTrafficText(matching[0]);
-  const nonzero = notificationSnapshot.uploadSpeed > 0 || notificationSnapshot.downloadSpeed > 0;
+  return parseNotificationTrafficText(matching[0]);
+}
+
+export function trafficRatesAgreeWithinTolerance(leftBytesPerSecond, rightBytesPerSecond) {
+  if (!Number.isSafeInteger(leftBytesPerSecond) || !Number.isSafeInteger(rightBytesPerSecond)) {
+    return false;
+  }
+  if (leftBytesPerSecond <= 0 || rightBytesPerSecond <= 0) {
+    return false;
+  }
+  const difference = Math.abs(leftBytesPerSecond - rightBytesPerSecond);
+  const tolerance = Math.max(1024, Math.floor(Math.max(leftBytesPerSecond, rightBytesPerSecond) * 0.25));
+  return difference <= tolerance;
+}
+
+export function analyzeHomeTrafficNotificationEvidence(homeLayout, notificationLayouts) {
+  const homeSnapshot = readSnapshot(homeLayout);
+  const layouts = normalizeNotificationLayouts(notificationLayouts);
+  let distinctNonzeroCount = 0;
+  let previousPairKey = '';
+  let homeNotificationAgreement = false;
+  for (const layout of layouts) {
+    const pair = extractUniqueNotificationPair(layout);
+    const nonzero = pair.uploadSpeed > 0 || pair.downloadSpeed > 0;
+    const pairKey = `${pair.uploadSpeed}:${pair.downloadSpeed}`;
+    if (nonzero) {
+      if (pairKey !== previousPairKey) {
+        distinctNonzeroCount += 1;
+        previousPairKey = pairKey;
+      }
+      if (
+        trafficRatesAgreeWithinTolerance(homeSnapshot.uploadSpeed, pair.uploadSpeed) &&
+        trafficRatesAgreeWithinTolerance(homeSnapshot.downloadSpeed, pair.downloadSpeed)
+      ) {
+        homeNotificationAgreement = true;
+      }
+    }
+  }
   return {
-    notificationTrafficUpdateCount: nonzero ? 1 : 0,
-    homeNotificationAgreement: nonzero &&
-      homeSnapshot.uploadSpeed > 0 &&
-      homeSnapshot.downloadSpeed > 0 &&
-      notificationSnapshot.uploadSpeed > 0 &&
-      notificationSnapshot.downloadSpeed > 0
+    notificationTrafficUpdateCount: distinctNonzeroCount,
+    homeNotificationAgreement
   };
 }
 
@@ -599,7 +637,8 @@ export async function defaultCollectEvidence({
     beforeLayout: null,
     uploadLayout: null,
     downloadLayout: null,
-    notificationLayout: null,
+    notificationHomeLayout: null,
+    notificationLayouts: [],
     probeResult: { result: 'fail', raw: null, normalized: null },
     homeLayoutPath,
     notificationLayoutPath
@@ -653,8 +692,9 @@ export async function defaultCollectEvidence({
           isDownloadSample(evidence.beforeLayout, evidence.uploadLayout, currentLayout)) {
           evidence.downloadLayout = currentLayout;
         }
-        if (!notificationAttempted && (evidence.uploadLayout !== null || evidence.downloadLayout !== null)) {
+        if (!notificationAttempted && evidence.uploadLayout !== null && evidence.downloadLayout !== null) {
           notificationAttempted = true;
+          evidence.notificationHomeLayout = currentLayout;
           try {
             await openNotificationCenterImpl(currentLayout, { target, hdcCommand, execImpl, cwd });
             const notificationEvidence = await waitForUniqueLayoutSelectionImpl({
@@ -663,9 +703,14 @@ export async function defaultCollectEvidence({
               maxAttempts: UI_POLL_ATTEMPTS,
               delayImpl
             });
-            evidence.notificationLayout = notificationEvidence.layout;
+            evidence.notificationLayouts.push(notificationEvidence.layout);
+            while (!probeState.done && evidence.notificationLayouts.length < 3) {
+              await delayImpl(UI_POLL_INTERVAL_MS);
+              evidence.notificationLayouts.push(await readNotificationLayout());
+            }
           } catch {
-            evidence.notificationLayout = null;
+            evidence.notificationHomeLayout = null;
+            evidence.notificationLayouts = [];
           }
         }
       }
@@ -679,7 +724,8 @@ export async function defaultCollectEvidence({
     if (!probeResultHasPositiveTraffic(evidence.probeResult)) {
       evidence.uploadLayout = null;
       evidence.downloadLayout = null;
-      evidence.notificationLayout = null;
+      evidence.notificationHomeLayout = null;
+      evidence.notificationLayouts = [];
     }
     return evidence;
   } finally {
@@ -740,7 +786,9 @@ export async function runHomeTrafficDeviceProof({
       evidence?.beforeLayout &&
       evidence?.uploadLayout &&
       evidence?.downloadLayout &&
-      evidence?.notificationLayout) {
+      evidence?.notificationHomeLayout &&
+      Array.isArray(evidence?.notificationLayouts) &&
+      evidence.notificationLayouts.length > 0) {
       try {
         const traffic = {
           ...analyzeHomeTrafficLayouts(
@@ -749,8 +797,8 @@ export async function runHomeTrafficDeviceProof({
             evidence.downloadLayout
           ),
           ...analyzeHomeTrafficNotificationEvidence(
-            evidence.downloadLayout,
-            evidence.notificationLayout
+            evidence.notificationHomeLayout,
+            evidence.notificationLayouts
           )
         };
         proof.traffic = traffic;

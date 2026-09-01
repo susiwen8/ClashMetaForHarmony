@@ -71,7 +71,7 @@ function createHomeTrafficLayout({
 }
 
 function createNotificationLayout({
-  speedText = '↑ 8.0 KB/s  ↓ 14.0 KB/s',
+  speedText = '↑ 8.0 KiB/s  ↓ 14.0 KiB/s',
   duplicate = false
 } = {}) {
   const item = createNode('notification.com.github.kr328.clash.harmony_bgmode_1', '', [
@@ -216,7 +216,7 @@ test('home traffic device proof schema/example and validator accept only the pri
     ...createPassProof(),
     traffic: {
       ...createPassProof().traffic,
-      uploadRateText: '12 KB/s'
+      uploadRateText: '12 KiB/s'
     }
   }, schema);
   assert.equal(extraTrafficValidation.valid, false);
@@ -236,21 +236,21 @@ test('home traffic device proof analyzer reduces synthetic upload/download layou
   const runner = await import(RUNNER_MODULE_PATH);
   const beforeLayout = createHomeTrafficLayout({
     uploadSpeed: '0 B/s',
-    uploadTotal: '1 KB',
+    uploadTotal: '1 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const uploadLayout = createHomeTrafficLayout({
-    uploadSpeed: '8 KB/s',
-    uploadTotal: '3 KB',
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const downloadLayout = createHomeTrafficLayout({
     uploadSpeed: '0 B/s',
-    uploadTotal: '3 KB',
-    downloadSpeed: '14 KB/s',
-    downloadTotal: '9 KB'
+    uploadTotal: '3 KiB',
+    downloadSpeed: '14 KiB/s',
+    downloadTotal: '9 KiB'
   });
 
   const analysis = runner.analyzeHomeTrafficLayouts(beforeLayout, uploadLayout, downloadLayout);
@@ -269,43 +269,65 @@ test('home traffic device proof analyzer reduces synthetic upload/download layou
     notificationTrafficUpdateCount: 0,
     homeNotificationAgreement: false
   });
-  assert.equal(JSON.stringify(analysis).includes('KB'), false);
+  assert.equal(JSON.stringify(analysis).includes('KiB'), false);
   assert.equal(JSON.stringify(analysis).includes('/s'), false);
 });
 
-test('home traffic device proof notification analyzer derives only count and agreement from unique nonzero app notification text', async () => {
+test('home traffic device proof notification analyzer counts distinct nonzero transitions and requires explicit tolerant value agreement', async () => {
   const runner = await import(RUNNER_MODULE_PATH);
   const homeLayout = createHomeTrafficLayout({
-    uploadSpeed: '8 KB/s',
-    uploadTotal: '3 KB',
-    downloadSpeed: '14 KB/s',
-    downloadTotal: '9 KB'
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
+    downloadSpeed: '14 KiB/s',
+    downloadTotal: '9 KiB'
   });
-  const notificationLayout = createNotificationLayout();
 
   assert.equal(typeof runner.analyzeHomeTrafficNotificationEvidence, 'function');
+  assert.equal(typeof runner.trafficRatesAgreeWithinTolerance, 'function');
 
-  const analysis = runner.analyzeHomeTrafficNotificationEvidence(homeLayout, notificationLayout);
+  const analysis = runner.analyzeHomeTrafficNotificationEvidence(homeLayout, [
+    createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' }),
+    createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' }),
+    createNotificationLayout({ speedText: '↑ 8.8 KiB/s  ↓ 15.0 KiB/s' })
+  ]);
   assert.deepEqual(analysis, {
-    notificationTrafficUpdateCount: 1,
+    notificationTrafficUpdateCount: 2,
     homeNotificationAgreement: true
   });
-  assert.equal(JSON.stringify(analysis).includes('KB'), false);
+  assert.equal(JSON.stringify(analysis).includes('KiB'), false);
   assert.equal(JSON.stringify(analysis).includes('↑'), false);
 
   const zeroNotification = runner.analyzeHomeTrafficNotificationEvidence(
     homeLayout,
-    createNotificationLayout({ speedText: '↑ 0 B/s  ↓ 0 B/s' })
+    [createNotificationLayout({ speedText: '↑ 0 B/s  ↓ 0 B/s' })]
   );
   assert.deepEqual(zeroNotification, {
     notificationTrafficUpdateCount: 0,
     homeNotificationAgreement: false
   });
 
+  const mismatchNotification = runner.analyzeHomeTrafficNotificationEvidence(
+    homeLayout,
+    [createNotificationLayout({ speedText: '↑ 64.0 KiB/s  ↓ 1.0 KiB/s' })]
+  );
+  assert.deepEqual(mismatchNotification, {
+    notificationTrafficUpdateCount: 1,
+    homeNotificationAgreement: false
+  });
+
+  assert.equal(
+    runner.trafficRatesAgreeWithinTolerance(8 * 1024, Math.floor(8.8 * 1024)),
+    true
+  );
+  assert.equal(
+    runner.trafficRatesAgreeWithinTolerance(14 * 1024, 32 * 1024),
+    false
+  );
+
   assert.throws(
     () => runner.analyzeHomeTrafficNotificationEvidence(
       homeLayout,
-      createNotificationLayout({ duplicate: true })
+      [createNotificationLayout({ duplicate: true })]
     ),
     /HOME_TRAFFIC_NOTIFICATION_(?:MISSING|AMBIGUOUS|TEXT_INVALID)/u
   );
@@ -315,38 +337,38 @@ test('home traffic device proof analyzer rejects duplicate selectors, missing se
   const runner = await import(RUNNER_MODULE_PATH);
   const beforeLayout = createHomeTrafficLayout({
     uploadSpeed: '0 B/s',
-    uploadTotal: '1 KB',
+    uploadTotal: '1 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const uploadLayout = createHomeTrafficLayout({
-    uploadSpeed: '8 KB/s',
-    uploadTotal: '3 KB',
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const malformedDownloadLayout = createHomeTrafficLayout({
     uploadSpeed: '0 B/s',
-    uploadTotal: '3 KB',
+    uploadTotal: '3 KiB',
     downloadSpeed: 'ready',
-    downloadTotal: '9 KB'
+    downloadTotal: '9 KiB'
   });
 
   assert.throws(
     () => runner.analyzeHomeTrafficLayouts(
       beforeLayout,
       createHomeTrafficLayout({
-        uploadSpeed: '8 KB/s',
-        uploadTotal: '3 KB',
+        uploadSpeed: '8 KiB/s',
+        uploadTotal: '3 KiB',
         downloadSpeed: '0 B/s',
-        downloadTotal: '2 KB',
+        downloadTotal: '2 KiB',
         duplicateUploadSpeed: true
       }),
       createHomeTrafficLayout({
         uploadSpeed: '0 B/s',
-        uploadTotal: '3 KB',
-        downloadSpeed: '14 KB/s',
-        downloadTotal: '9 KB'
+        uploadTotal: '3 KiB',
+        downloadSpeed: '14 KiB/s',
+        downloadTotal: '9 KiB'
       })
     ),
     /HOME_TRAFFIC_(?:SELECTOR_AMBIGUOUS|LAYOUT_INVALID)/u
@@ -358,9 +380,9 @@ test('home traffic device proof analyzer rejects duplicate selectors, missing se
       uploadLayout,
       createHomeTrafficLayout({
         uploadSpeed: '0 B/s',
-        uploadTotal: '3 KB',
-        downloadSpeed: '14 KB/s',
-        downloadTotal: '9 KB',
+        uploadTotal: '3 KiB',
+        downloadSpeed: '14 KiB/s',
+        downloadTotal: '9 KiB',
         includeCard: false
       })
     ),
@@ -387,23 +409,33 @@ test('home traffic device proof runner emits pass only with complete probe and n
   const fullEvidence = {
     beforeLayout: createHomeTrafficLayout({
       uploadSpeed: '0 B/s',
-      uploadTotal: '1 KB',
+      uploadTotal: '1 KiB',
       downloadSpeed: '0 B/s',
-      downloadTotal: '2 KB'
+      downloadTotal: '2 KiB'
     }),
     uploadLayout: createHomeTrafficLayout({
-      uploadSpeed: '8 KB/s',
-      uploadTotal: '3 KB',
+      uploadSpeed: '8 KiB/s',
+      uploadTotal: '3 KiB',
       downloadSpeed: '0 B/s',
-      downloadTotal: '2 KB'
+      downloadTotal: '2 KiB'
     }),
     downloadLayout: createHomeTrafficLayout({
-      uploadSpeed: '8 KB/s',
-      uploadTotal: '3 KB',
-      downloadSpeed: '14 KB/s',
-      downloadTotal: '9 KB'
+      uploadSpeed: '8 KiB/s',
+      uploadTotal: '3 KiB',
+      downloadSpeed: '14 KiB/s',
+      downloadTotal: '9 KiB'
     }),
-    notificationLayout: createNotificationLayout(),
+    notificationHomeLayout: createHomeTrafficLayout({
+      uploadSpeed: '8 KiB/s',
+      uploadTotal: '3 KiB',
+      downloadSpeed: '14 KiB/s',
+      downloadTotal: '9 KiB'
+    }),
+    notificationLayouts: [
+      createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' }),
+      createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' }),
+      createNotificationLayout({ speedText: '↑ 8.5 KiB/s  ↓ 15.0 KiB/s' })
+    ],
     probeResult: createPassingProbeResult()
   };
 
@@ -463,7 +495,8 @@ test('home traffic device proof runner emits pass only with complete probe and n
     execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
     collectEvidenceImpl: async () => ({
       ...fullEvidence,
-      notificationLayout: null
+      notificationHomeLayout: null,
+      notificationLayouts: []
     })
   });
   assert.deepEqual(missingNotification, createIncompleteProof());
@@ -500,23 +533,25 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
   let layoutReads = 0;
   const beforeLayout = createHomeTrafficLayout({
     uploadSpeed: '0 B/s',
-    uploadTotal: '1 KB',
+    uploadTotal: '1 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const uploadLayout = createHomeTrafficLayout({
-    uploadSpeed: '8 KB/s',
-    uploadTotal: '3 KB',
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
     downloadSpeed: '0 B/s',
-    downloadTotal: '2 KB'
+    downloadTotal: '2 KiB'
   });
   const downloadLayout = createHomeTrafficLayout({
-    uploadSpeed: '8 KB/s',
-    uploadTotal: '3 KB',
-    downloadSpeed: '14 KB/s',
-    downloadTotal: '9 KB'
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
+    downloadSpeed: '14 KiB/s',
+    downloadTotal: '9 KiB'
   });
-  const notificationLayout = createNotificationLayout();
+  const notificationLayoutA = createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' });
+  const notificationLayoutB = createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' });
+  const notificationLayoutC = createNotificationLayout({ speedText: '↑ 8.6 KiB/s  ↓ 15.2 KiB/s' });
 
   const evidencePromise = runner.defaultCollectEvidence({
     fsApi: fs,
@@ -571,14 +606,17 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
         return uploadLayout;
       }
       if (layoutReads === 3) {
-        return notificationLayout;
+        return downloadLayout;
       }
       if (layoutReads === 4) {
         events.push('active-sample');
         deferredProbe.resolve(createPassingProbeResult());
-        return downloadLayout;
+        return notificationLayoutA;
       }
-      return notificationLayout;
+      if (layoutReads === 5) {
+        return notificationLayoutB;
+      }
+      return notificationLayoutC;
     },
     openNotificationCenterImpl: async () => {
       events.push('open-notification-center');
@@ -587,7 +625,7 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
       events.push('read-notification-layout');
       return {
         layout: await readLayoutImpl(),
-        selection: { node: notificationLayout.root.children[0] }
+        selection: { node: notificationLayoutA.root.children[0] }
       };
     },
     delayImpl: async () => {}
@@ -602,7 +640,9 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
   assert.equal(evidence.beforeLayout !== null, true);
   assert.equal(evidence.uploadLayout !== null, true);
   assert.equal(evidence.downloadLayout !== null, true);
-  assert.equal(evidence.notificationLayout !== null, true);
+  assert.equal(evidence.notificationHomeLayout !== null, true);
+  assert.equal(Array.isArray(evidence.notificationLayouts), true);
+  assert.equal(evidence.notificationLayouts.length >= 2, true);
   assert.equal(evidence.probeResult.result, 'pass');
 
   const failedEvidence = await runner.defaultCollectEvidence({
@@ -641,7 +681,7 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
 
   assert.equal(failedEvidence.uploadLayout, null);
   assert.equal(failedEvidence.downloadLayout, null);
-  assert.equal(failedEvidence.notificationLayout, null);
+  assert.equal(failedEvidence.notificationLayouts.length, 0);
   assert.equal(failedEvidence.probeResult.result, 'fail');
 });
 
