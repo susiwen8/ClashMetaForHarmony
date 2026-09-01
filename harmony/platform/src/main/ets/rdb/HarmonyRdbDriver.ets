@@ -19,7 +19,8 @@ const PROFILES_TABLE_SQL =
   'last_error_json TEXT,' +
   'created_at TEXT NOT NULL,' +
   'updated_at TEXT NOT NULL,' +
-  'last_success_at TEXT' +
+  'last_success_at TEXT,' +
+  'auto_update_interval_ms INTEGER NOT NULL DEFAULT 0' +
   ')';
 const APP_STATE_TABLE_SQL =
   'CREATE TABLE IF NOT EXISTS app_state (' +
@@ -36,13 +37,23 @@ const PROXY_SELECTIONS_TABLE_SQL =
   'updated_at TEXT NOT NULL,' +
   'PRIMARY KEY (profile_id, group_name)' +
   ')';
+const PROFILE_REFRESH_LEASES_TABLE = 'profile_refresh_leases';
+const PROFILE_REFRESH_LEASES_TABLE_SQL =
+  'CREATE TABLE IF NOT EXISTS ' + PROFILE_REFRESH_LEASES_TABLE + ' (' +
+  'profile_id TEXT PRIMARY KEY NOT NULL,' +
+  'owner_token TEXT NOT NULL,' +
+  'expires_at INTEGER NOT NULL' +
+  ')';
+const PROFILE_AUTO_UPDATE_INTERVAL_COLUMN = 'auto_update_interval_ms';
+const PROFILE_AUTO_UPDATE_INTERVAL_SQL =
+  'ALTER TABLE profiles ADD COLUMN auto_update_interval_ms INTEGER NOT NULL DEFAULT 0';
 const APP_STATE_SEED_SQL = 'INSERT OR IGNORE INTO app_state (id, active_profile_id) VALUES (1, NULL)';
 const PROFILE_COLUMNS =
-  'schema_version, id, name, source_kind, source_display, source_secret_ref, current_revision_json, failed_candidate_json, availability, last_error_json, created_at, updated_at, last_success_at';
+  'schema_version, id, name, source_kind, source_display, source_secret_ref, current_revision_json, failed_candidate_json, availability, last_error_json, created_at, updated_at, last_success_at, auto_update_interval_ms';
 const PROXY_SELECTION_COLUMNS =
   'profile_id, group_name, selected_node_name, revision_id, updated_at';
 
-class TableColumnSpec {
+export class TableColumnSpec {
   readonly name: string;
   readonly type: string;
   readonly notNull: number;
@@ -56,7 +67,7 @@ class TableColumnSpec {
   }
 }
 
-const PROFILE_TABLE_SPECS: TableColumnSpec[] = [
+export const PROFILE_TABLE_SPECS: TableColumnSpec[] = [
   new TableColumnSpec('schema_version', 'INTEGER', 1, 0),
   new TableColumnSpec('id', 'TEXT', 1, 1),
   new TableColumnSpec('name', 'TEXT', 1, 0),
@@ -69,7 +80,8 @@ const PROFILE_TABLE_SPECS: TableColumnSpec[] = [
   new TableColumnSpec('last_error_json', 'TEXT', 0, 0),
   new TableColumnSpec('created_at', 'TEXT', 1, 0),
   new TableColumnSpec('updated_at', 'TEXT', 1, 0),
-  new TableColumnSpec('last_success_at', 'TEXT', 0, 0)
+  new TableColumnSpec('last_success_at', 'TEXT', 0, 0),
+  new TableColumnSpec('auto_update_interval_ms', 'INTEGER', 1, 0)
 ];
 
 const PROXY_SELECTION_TABLE_SPECS: TableColumnSpec[] = [
@@ -79,6 +91,11 @@ const PROXY_SELECTION_TABLE_SPECS: TableColumnSpec[] = [
   new TableColumnSpec('revision_id', 'TEXT', 1, 0),
   new TableColumnSpec('updated_at', 'TEXT', 1, 0)
 ];
+export const PROFILE_REFRESH_LEASE_TABLE_SPECS: TableColumnSpec[] = [
+  new TableColumnSpec('profile_id', 'TEXT', 1, 1),
+  new TableColumnSpec('owner_token', 'TEXT', 1, 0),
+  new TableColumnSpec('expires_at', 'INTEGER', 1, 0)
+];
 
 export interface HarmonyRdbInitializationOperations {
   currentVersion(): number;
@@ -86,25 +103,40 @@ export interface HarmonyRdbInitializationOperations {
   createAppStateTable(): Promise<void>;
   seedAppState(): Promise<void>;
   createProxySelectionsTable(): Promise<void>;
+  ensureProfileAutoUpdateIntervalColumn(): Promise<void>;
+  createProfileRefreshLeasesTable(): Promise<void>;
   validateProfilesTable(): Promise<void>;
   validateProxySelectionsTable(): Promise<void>;
+  validateProfileRefreshLeasesTable(): Promise<void>;
   writeVersion(version: number): void;
+}
+
+function isSupportedSchemaVersion(version: number): boolean {
+  return version === 0 || version === 1 || version === 2 || version === 3;
 }
 
 export async function runRdbInitialization(
   version: number,
   operations: HarmonyRdbInitializationOperations
 ): Promise<void> {
+  if (!isSupportedSchemaVersion(version)) {
+    throw new Error(`Unsupported database version ${version}.`);
+  }
   const currentVersion: number = operations.currentVersion();
-  if (currentVersion !== 0 && currentVersion !== 1 && currentVersion !== version) {
+  if (!isSupportedSchemaVersion(currentVersion)) {
     throw new Error(`Unsupported database version ${currentVersion}.`);
   }
   await operations.createProfilesTable();
   await operations.createAppStateTable();
   await operations.seedAppState();
   await operations.createProxySelectionsTable();
+  if (currentVersion === 1 || currentVersion === 2) {
+    await operations.ensureProfileAutoUpdateIntervalColumn();
+  }
+  await operations.createProfileRefreshLeasesTable();
   await operations.validateProfilesTable();
   await operations.validateProxySelectionsTable();
+  await operations.validateProfileRefreshLeasesTable();
   if (currentVersion !== version) {
     operations.writeVersion(version);
   }
@@ -160,7 +192,8 @@ function rowFromBucket(bucket: RelationalValuesBucket): DurableProfileRow {
     lastErrorJson: requireNullableStringValue(bucket.last_error_json, 'profiles.last_error_json'),
     createdAt: requireStringValue(bucket.created_at, 'profiles.created_at'),
     updatedAt: requireStringValue(bucket.updated_at, 'profiles.updated_at'),
-    lastSuccessfulUpdateAt: requireNullableStringValue(bucket.last_success_at, 'profiles.last_success_at')
+    lastSuccessfulUpdateAt: requireNullableStringValue(bucket.last_success_at, 'profiles.last_success_at'),
+    autoUpdateIntervalMs: requireNumberValue(bucket.auto_update_interval_ms, 'profiles.auto_update_interval_ms')
   };
 }
 
@@ -190,6 +223,7 @@ function bindRow(row: DurableProfileRow): Array<RelationalValueType> {
   values.push(row.createdAt);
   values.push(row.updatedAt);
   appendBindValue(values, row.lastSuccessfulUpdateAt);
+  values.push(row.autoUpdateIntervalMs ?? 0);
   return values;
 }
 
@@ -331,7 +365,7 @@ export class HarmonyRdbDriver implements RdbDriver {
       store,
       'INSERT OR REPLACE INTO profiles (' +
       PROFILE_COLUMNS +
-      ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
+      ') VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)',
       bindRow(_row)
     );
   }
@@ -586,6 +620,30 @@ export class HarmonyRdbDriver implements RdbDriver {
     }
   }
 
+  async tableHasColumn(
+    store: relationalStore.RdbStore,
+    tableName: string,
+    columnName: string,
+    fallback: string
+  ): Promise<boolean> {
+    const resultSet = await this.querySql(store, `PRAGMA table_info(${tableName})`);
+    let primaryError: Error | undefined = undefined;
+    try {
+      while (resultSet.goToNextRow()) {
+        const row = resultSet.getRow();
+        if (requireStringValue(row.name, `${tableName}.pragma.name`) === columnName) {
+          return true;
+        }
+      }
+      return false;
+    } catch (error) {
+      primaryError = toDriverError(error, fallback);
+      throw primaryError;
+    } finally {
+      this.closeResultSet(resultSet, primaryError);
+    }
+  }
+
   private async querySql(
     store: relationalStore.RdbStore,
     sql: string,
@@ -682,6 +740,23 @@ class HarmonyRdbStoreInitializationOperations implements HarmonyRdbInitializatio
     await this.driver.executeSql(this.store, PROXY_SELECTIONS_TABLE_SQL);
   }
 
+  async ensureProfileAutoUpdateIntervalColumn(): Promise<void> {
+    const columnExists = await this.driver.tableHasColumn(
+      this.store,
+      'profiles',
+      PROFILE_AUTO_UPDATE_INTERVAL_COLUMN,
+      'Profiles schema probe failed.'
+    );
+    if (columnExists) {
+      return;
+    }
+    await this.driver.executeSql(this.store, PROFILE_AUTO_UPDATE_INTERVAL_SQL);
+  }
+
+  async createProfileRefreshLeasesTable(): Promise<void> {
+    await this.driver.executeSql(this.store, PROFILE_REFRESH_LEASES_TABLE_SQL);
+  }
+
   async validateProfilesTable(): Promise<void> {
     await this.driver.assertTableSchema(this.store, 'profiles', PROFILE_TABLE_SPECS, 'Profiles schema validation failed.');
   }
@@ -692,6 +767,15 @@ class HarmonyRdbStoreInitializationOperations implements HarmonyRdbInitializatio
       PROXY_SELECTIONS_TABLE,
       PROXY_SELECTION_TABLE_SPECS,
       'Proxy selections schema validation failed.'
+    );
+  }
+
+  async validateProfileRefreshLeasesTable(): Promise<void> {
+    await this.driver.assertTableSchema(
+      this.store,
+      PROFILE_REFRESH_LEASES_TABLE,
+      PROFILE_REFRESH_LEASE_TABLE_SPECS,
+      'Profile refresh leases schema validation failed.'
     );
   }
 

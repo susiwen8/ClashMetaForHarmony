@@ -130,6 +130,7 @@ export default function rdbProfileRepositoryTestsuite() {
 
       expect(listResult.length).assertEqual(0);
       expect(getResult).assertUndefined();
+      expect(driver.log[0]).assertEqual('initialize:3');
 
       const retryDriver = new RecordingRdbDriver();
       retryDriver.injectFailure('initialize', new Error('first init failed'));
@@ -147,6 +148,7 @@ export default function rdbProfileRepositoryTestsuite() {
       const retriedList: Profile[] = await retryRepository.list();
       expect(retryDriver.initializeCallCount).assertEqual(2);
       expect(retriedList.length).assertEqual(0);
+      expect(retryDriver.log[0]).assertEqual('initialize:3');
     });
 
     it('recreatesMissingAppStateSingletonWhenSettingAndClearingActiveId', 0, async () => {

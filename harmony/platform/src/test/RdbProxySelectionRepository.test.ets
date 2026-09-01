@@ -20,6 +20,10 @@ import {
   cloneDurableProxySelectionRow,
   RecordingRdbDriver
 } from './fakes/PlatformFakes';
+import {
+  PROFILE_REFRESH_LEASE_TABLE_SPECS,
+  PROFILE_TABLE_SPECS
+} from '../main/ets/rdb/HarmonyRdbDriver';
 
 const PROFILE_ID = 'proxy-profile';
 const OTHER_PROFILE_ID = 'other-profile';
@@ -48,9 +52,11 @@ class RecordingInitializationOperations implements HarmonyRdbInitializationOpera
   readonly profileRows: Map<string, string> = new Map<string, string>();
   versionValue: number;
   private profilesTableExists: boolean = false;
+  private profileAutoUpdateIntervalColumnExists: boolean = false;
   private appStateTableExists: boolean = false;
   private appStateSeeded: boolean = false;
   private proxySelectionsTableExists: boolean = false;
+  private profileRefreshLeasesTableExists: boolean = false;
   private readonly failures: Map<string, ScriptedInitializationFailure[]> = new Map<string, ScriptedInitializationFailure[]>();
 
   constructor(versionValue: number, profilesPreserved: string[] = []) {
@@ -69,6 +75,7 @@ class RecordingInitializationOperations implements HarmonyRdbInitializationOpera
     this.log.push('createProfilesTable');
     this.failIfScripted('createProfilesTable');
     this.profilesTableExists = true;
+    this.profileAutoUpdateIntervalColumnExists = true;
   }
 
   async createAppStateTable(): Promise<void> {
@@ -92,11 +99,29 @@ class RecordingInitializationOperations implements HarmonyRdbInitializationOpera
     this.proxySelectionsTableExists = true;
   }
 
+  async ensureProfileAutoUpdateIntervalColumn(): Promise<void> {
+    this.log.push('ensureProfileAutoUpdateIntervalColumn');
+    this.failIfScripted('ensureProfileAutoUpdateIntervalColumn');
+    if (!this.profilesTableExists) {
+      throw new Error('profiles table must exist before adding auto update interval.');
+    }
+    this.profileAutoUpdateIntervalColumnExists = true;
+  }
+
+  async createProfileRefreshLeasesTable(): Promise<void> {
+    this.log.push('createProfileRefreshLeasesTable');
+    this.failIfScripted('createProfileRefreshLeasesTable');
+    this.profileRefreshLeasesTableExists = true;
+  }
+
   async validateProfilesTable(): Promise<void> {
     this.log.push('validateProfilesTable');
     this.failIfScripted('validateProfilesTable');
     if (!this.profilesTableExists) {
       throw new Error('profiles table must exist before validation.');
+    }
+    if (!this.profileAutoUpdateIntervalColumnExists) {
+      throw new Error('profiles auto update interval column must exist before validation.');
     }
     for (const profileId of this.profileRows.keys()) {
       if (!this.profileRows.has(profileId)) {
@@ -113,6 +138,14 @@ class RecordingInitializationOperations implements HarmonyRdbInitializationOpera
     }
     if (!this.appStateSeeded) {
       throw new Error('app_state must be seeded before proxy validation.');
+    }
+  }
+
+  async validateProfileRefreshLeasesTable(): Promise<void> {
+    this.log.push('validateProfileRefreshLeasesTable');
+    this.failIfScripted('validateProfileRefreshLeasesTable');
+    if (!this.profileRefreshLeasesTableExists) {
+      throw new Error('profile refresh leases table must exist before validation.');
     }
   }
 
@@ -211,70 +244,122 @@ async function expectSelectionFailure(
 
 export default function rdbProxySelectionRepositoryTestsuite() {
   describe('HarmonyRdbDriverInitializationTest', () => {
-    it('migratesVersionZeroToTwoAndAcceptsVersionTwoWithoutRewritingIt', 0, async () => {
+    it('migratesVersionsZeroOneAndTwoToThreeAndAcceptsVersionThreeWithoutRewritingIt', 0, async () => {
       const fresh = new RecordingInitializationOperations(0);
 
-      await runRdbInitialization(2, fresh);
+      await runRdbInitialization(3, fresh);
 
-      expect(fresh.versionValue).assertEqual(2);
+      expect(fresh.versionValue).assertEqual(3);
       expect(fresh.log.join('>')).assertEqual(
         'currentVersion:0>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
-        'validateProfilesTable>validateProxySelectionsTable>writeVersion:2'
+        'createProfileRefreshLeasesTable>validateProfilesTable>validateProxySelectionsTable>' +
+        'validateProfileRefreshLeasesTable>writeVersion:3'
       );
 
-      const current = new RecordingInitializationOperations(2);
-      await runRdbInitialization(2, current);
-      expect(current.versionValue).assertEqual(2);
-      expect(current.log.join('>')).assertEqual(
+      const versionOne = new RecordingInitializationOperations(1);
+      await runRdbInitialization(3, versionOne);
+      expect(versionOne.versionValue).assertEqual(3);
+      expect(versionOne.log.join('>')).assertEqual(
+        'currentVersion:1>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
+        'ensureProfileAutoUpdateIntervalColumn>createProfileRefreshLeasesTable>validateProfilesTable>' +
+        'validateProxySelectionsTable>validateProfileRefreshLeasesTable>writeVersion:3'
+      );
+
+      const versionTwo = new RecordingInitializationOperations(2);
+      await runRdbInitialization(3, versionTwo);
+      expect(versionTwo.versionValue).assertEqual(3);
+      expect(versionTwo.log.join('>')).assertEqual(
         'currentVersion:2>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
-        'validateProfilesTable>validateProxySelectionsTable'
+        'ensureProfileAutoUpdateIntervalColumn>createProfileRefreshLeasesTable>validateProfilesTable>' +
+        'validateProxySelectionsTable>validateProfileRefreshLeasesTable>writeVersion:3'
+      );
+
+      const current = new RecordingInitializationOperations(3);
+      await runRdbInitialization(3, current);
+      expect(current.versionValue).assertEqual(3);
+      expect(current.log.join('>')).assertEqual(
+        'currentVersion:3>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
+        'createProfileRefreshLeasesTable>validateProfilesTable>validateProxySelectionsTable>' +
+        'validateProfileRefreshLeasesTable'
       );
     });
 
     it('rejectsUnsupportedFutureVersionsAndKeepsTheStoredVersionUntouched', 0, async () => {
-      const operations = new RecordingInitializationOperations(9);
+      const futureOperations = new RecordingInitializationOperations(4);
 
       try {
-        await runRdbInitialization(2, operations);
+        await runRdbInitialization(3, futureOperations);
         expect(false).assertTrue();
       } catch (error) {
         expect(`${error}`).assertContain('Unsupported database version');
       }
 
-      expect(operations.versionValue).assertEqual(9);
-      expect(operations.log.join('>')).assertEqual('currentVersion:9');
-      expect(operations.log.includes('writeVersion:2')).assertFalse();
-    });
+      expect(futureOperations.versionValue).assertEqual(4);
+      expect(futureOperations.log.join('>')).assertEqual('currentVersion:4');
+      expect(futureOperations.log.includes('writeVersion:3')).assertFalse();
 
-    it('keepsVersionOneOnPartialFailureAndRetryPreservesProfiles', 0, async () => {
-      const operations = new RecordingInitializationOperations(1, [PROFILE_ID, OTHER_PROFILE_ID]);
-      operations.failOn('validateProxySelectionsTable', new Error('synthetic proxy validation failure'));
-
+      const negativeOperations = new RecordingInitializationOperations(-1);
       try {
-        await runRdbInitialization(2, operations);
+        await runRdbInitialization(3, negativeOperations);
         expect(false).assertTrue();
       } catch (error) {
-        expect(`${error}`).assertContain('synthetic proxy validation failure');
+        expect(`${error}`).assertContain('Unsupported database version');
+      }
+      expect(negativeOperations.versionValue).assertEqual(-1);
+      expect(negativeOperations.log.join('>')).assertEqual('currentVersion:-1');
+    });
+
+    it('exportsSchemaSpecsForProfileIntervalAndRefreshLeases', 0, () => {
+      expect(PROFILE_TABLE_SPECS.length).assertEqual(14);
+      expect(PROFILE_TABLE_SPECS[13].name).assertEqual('auto_update_interval_ms');
+      expect(PROFILE_TABLE_SPECS[13].type).assertEqual('INTEGER');
+      expect(PROFILE_TABLE_SPECS[13].notNull).assertEqual(1);
+      expect(PROFILE_TABLE_SPECS[13].primaryKeyPosition).assertEqual(0);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS.length).assertEqual(3);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[0].name).assertEqual('profile_id');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[0].type).assertEqual('TEXT');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[0].notNull).assertEqual(1);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[0].primaryKeyPosition).assertEqual(1);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[1].name).assertEqual('owner_token');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[1].type).assertEqual('TEXT');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[1].notNull).assertEqual(1);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[1].primaryKeyPosition).assertEqual(0);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[2].name).assertEqual('expires_at');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[2].type).assertEqual('INTEGER');
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[2].notNull).assertEqual(1);
+      expect(PROFILE_REFRESH_LEASE_TABLE_SPECS[2].primaryKeyPosition).assertEqual(0);
+    });
+
+    it('keepsVersionTwoOnPartialFailureAndRetryPreservesProfiles', 0, async () => {
+      const operations = new RecordingInitializationOperations(2, [PROFILE_ID, OTHER_PROFILE_ID]);
+      operations.failOn('validateProfileRefreshLeasesTable', new Error('synthetic lease validation failure'));
+
+      try {
+        await runRdbInitialization(3, operations);
+        expect(false).assertTrue();
+      } catch (error) {
+        expect(`${error}`).assertContain('synthetic lease validation failure');
       }
 
-      expect(operations.versionValue).assertEqual(1);
-      expect(operations.log.includes('writeVersion:2')).assertFalse();
+      expect(operations.versionValue).assertEqual(2);
+      expect(operations.log.includes('writeVersion:3')).assertFalse();
       expect(operations.hasProfileRow(PROFILE_ID)).assertTrue();
       expect(operations.hasProfileRow(OTHER_PROFILE_ID)).assertTrue();
       expect(operations.readProfileRow(PROFILE_ID)).assertEqual(`profile-row:${PROFILE_ID}`);
       expect(operations.readProfileRow(OTHER_PROFILE_ID)).assertEqual(`profile-row:${OTHER_PROFILE_ID}`);
 
       operations.log.length = 0;
-      await runRdbInitialization(2, operations);
+      await runRdbInitialization(3, operations);
 
-      expect(operations.versionValue).assertEqual(2);
+      expect(operations.versionValue).assertEqual(3);
       expect(operations.hasProfileRow(PROFILE_ID)).assertTrue();
       expect(operations.hasProfileRow(OTHER_PROFILE_ID)).assertTrue();
       expect(operations.readProfileRow(PROFILE_ID)).assertEqual(`profile-row:${PROFILE_ID}`);
       expect(operations.readProfileRow(OTHER_PROFILE_ID)).assertEqual(`profile-row:${OTHER_PROFILE_ID}`);
       expect(operations.log.join('>')).assertEqual(
-        'currentVersion:1>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
-        'validateProfilesTable>validateProxySelectionsTable>writeVersion:2'
+        'currentVersion:2>createProfilesTable>createAppStateTable>seedAppState>createProxySelectionsTable>' +
+        'ensureProfileAutoUpdateIntervalColumn>createProfileRefreshLeasesTable>validateProfilesTable>' +
+        'validateProxySelectionsTable>validateProfileRefreshLeasesTable>writeVersion:3'
       );
     });
   });
