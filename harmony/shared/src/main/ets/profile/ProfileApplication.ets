@@ -398,32 +398,39 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
     if (this.snapshot.status !== 'READY') {
       await this.initialize();
     }
+    if (!this.tryAcquireRuntimeMutationOwner('PROFILE_EDIT')) {
+      return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
+    }
     const batchUseCase: RefreshProfilesUseCase | undefined = this.refreshProfilesUseCase;
-    if (batchUseCase === undefined) {
-      return new RefreshAllSubscriptionsFailedResultValue(
-        createSubscriptionRefreshAllUnavailableError(this.commitService.now())
-      );
-    }
-    const drainError: AppError | undefined = await this.requireDelayDrainAppError('RUNTIME_START');
-    if (drainError !== undefined) {
-      return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
-    }
-    const admission = this.runtimeCoordinator.acquireMutationLease('REFRESH');
-    if (admission.error !== undefined) {
-      return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
-    }
     try {
-      const result: RefreshProfilesResult = await batchUseCase.execute({
-        mode: 'ALL'
-      });
-      await this.refreshSnapshotFromRepository(undefined);
-      return new RefreshAllSubscriptionsCompletedResultValue(result);
+      if (batchUseCase === undefined) {
+        return new RefreshAllSubscriptionsFailedResultValue(
+          createSubscriptionRefreshAllUnavailableError(this.commitService.now())
+        );
+      }
+      const drainError: AppError | undefined = await this.requireDelayDrainAppError('RUNTIME_START');
+      if (drainError !== undefined) {
+        return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
+      }
+      const admission = this.runtimeCoordinator.acquireMutationLease('REFRESH');
+      if (admission.error !== undefined) {
+        return new RefreshAllSubscriptionsFailedResultValue(createSubscriptionRefreshAllBusyError(this.commitService.now()));
+      }
+      try {
+        const result: RefreshProfilesResult = await batchUseCase.execute({
+          mode: 'ALL'
+        });
+        await this.refreshSnapshotFromRepository(undefined);
+        return new RefreshAllSubscriptionsCompletedResultValue(result);
+      } finally {
+        admission.lease?.release();
+      }
     } catch (_) {
       const appError: AppError = createSubscriptionRefreshAllFailedError(this.commitService.now());
       await this.refreshSnapshotFromRepository(appError);
       return new RefreshAllSubscriptionsFailedResultValue(appError);
     } finally {
-      admission.lease?.release();
+      this.releaseRuntimeMutationOwner('PROFILE_EDIT');
     }
   }
 
@@ -459,7 +466,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
       });
       await this.repository.save(updatedProfile);
       await this.refreshSnapshotFromRepository(undefined);
-      const scheduleError: AppError | undefined = await this.reconcileProfileRefreshSchedule();
+      const scheduleError: AppError | undefined = await this.reconcileProfileRefreshScheduleAndPublishError();
       if (scheduleError !== undefined) {
         return new UpdateProfileRefreshFailedResultValue(updatedProfile, scheduleError);
       }
@@ -477,7 +484,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
       return;
     }
     await this.refreshSnapshotFromRepository(undefined);
-    await this.reconcileProfileRefreshSchedule();
+    await this.reconcileProfileRefreshScheduleAndPublishError();
   }
 
   async enable(profileId: string): Promise<ManageEnableResult> {
@@ -506,7 +513,13 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
     }
     const result: ManageDeleteResult = await this.manageProfileUseCases.delete(profileId);
     await this.refreshSnapshotFromRepository(undefined);
-    await this.reconcileProfileRefreshSchedule();
+    if (result.kind === 'FAILED') {
+      return result;
+    }
+    const scheduleError: AppError | undefined = await this.reconcileProfileRefreshScheduleAndPublishError();
+    if (scheduleError !== undefined) {
+      return createManageProfileFailedResult(scheduleError);
+    }
     return result;
   }
 
@@ -787,7 +800,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
       await this.commitService.reconcileStoredContent();
       await this.runtimeCoordinator.initialize();
       await this.refreshSnapshotFromRepository(undefined);
-      await this.reconcileProfileRefreshSchedule();
+      await this.reconcileProfileRefreshScheduleAndPublishError();
     } catch (error) {
       const appError: AppError = createAppError('PERSISTENCE', resolveErrorMessage(error, 'Profile application initialization failed.'), {
         retryable: false
@@ -838,7 +851,7 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
     );
   }
 
-  private async reconcileProfileRefreshSchedule(): Promise<AppError | undefined> {
+  private async reconcileProfileRefreshScheduleAndPublishError(): Promise<AppError | undefined> {
     const schedule: ProfileRefreshSchedulePort | undefined = this.profileRefreshSchedule;
     if (schedule === undefined) {
       return undefined;
@@ -847,8 +860,23 @@ export class ProfileApplication implements ProxyOneClickVpnApplicationPort {
       await schedule.reconcile(this.hasScheduledRemoteProfiles());
       return undefined;
     } catch (_) {
-      return createSubscriptionScheduleFailedError(this.commitService.now());
+      const appError: AppError = createSubscriptionScheduleFailedError(this.commitService.now());
+      this.publishReadySnapshotError(appError);
+      return appError;
     }
+  }
+
+  private publishReadySnapshotError(error: AppError): void {
+    this.publish(
+      createProfileApplicationSnapshot(
+        'READY',
+        this.snapshot.profiles,
+        this.snapshot.activeProfileId,
+        this.snapshot.runtime,
+        this.snapshot.proxyReconciliation,
+        createProfileApplicationErrorSnapshot(error)
+      )
+    );
   }
 
   private hasScheduledRemoteProfiles(): boolean {
@@ -1637,7 +1665,7 @@ function createProfileEditBusyError(timestamp: string): AppError {
 function createSubscriptionRefreshAllBusyError(timestamp: string): AppError {
   return createAppError('RUNTIME_START', 'Subscription refresh is unavailable while runtime work is in progress.', {
     code: 'SUBSCRIPTION_REFRESH_ALL_BUSY',
-    retryable: false,
+    retryable: true,
     timestamp,
     userMessageResource: 'error.runtime.start'
   });
