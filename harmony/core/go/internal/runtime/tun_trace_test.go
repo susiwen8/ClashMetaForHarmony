@@ -83,6 +83,9 @@ func (t *blockingReadTraceTunnel) NatTable() C.NatTable { return fakeNatTable{} 
 type tracePacket struct {
 	payload []byte
 	dropped bool
+	writeBackN int
+	writeBackErr error
+	writeBackCalls int
 }
 
 func (p *tracePacket) Data() []byte { return p.payload }
@@ -90,7 +93,91 @@ func (p *tracePacket) Drop()        { p.dropped = true }
 func (p *tracePacket) LocalAddr() net.Addr {
 	return &net.UDPAddr{IP: net.IPv4(10, 0, 0, 2), Port: 5353}
 }
-func (p *tracePacket) WriteBack([]byte, net.Addr) (int, error) { return 0, nil }
+func (p *tracePacket) WriteBack(payload []byte, _ net.Addr) (int, error) {
+	p.writeBackCalls += 1
+	if p.writeBackN == 0 && p.writeBackErr == nil {
+		return len(payload), nil
+	}
+	return p.writeBackN, p.writeBackErr
+}
+
+type functionalTraceTunnel struct {
+	handleTCP func(net.Conn, *C.Metadata)
+	handleUDP func(C.UDPPacket, *C.Metadata)
+}
+
+func (t *functionalTraceTunnel) HandleTCPConn(conn net.Conn, metadata *C.Metadata) {
+	if t.handleTCP != nil {
+		t.handleTCP(conn, metadata)
+		return
+	}
+	_ = conn.Close()
+}
+
+func (t *functionalTraceTunnel) HandleUDPPacket(packet C.UDPPacket, metadata *C.Metadata) {
+	if t.handleUDP != nil {
+		t.handleUDP(packet, metadata)
+		return
+	}
+	packet.Drop()
+}
+
+func (t *functionalTraceTunnel) NatTable() C.NatTable { return fakeNatTable{} }
+
+type scriptedReadStep struct {
+	payload []byte
+	err     error
+}
+
+type scriptedWriteStep struct {
+	n   int
+	err error
+}
+
+type scriptedTrafficConn struct {
+	mu         sync.Mutex
+	reads      []scriptedReadStep
+	writes     [][]byte
+	writeSteps []scriptedWriteStep
+	closed     bool
+}
+
+func (c *scriptedTrafficConn) Read(target []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if len(c.reads) == 0 {
+		return 0, io.EOF
+	}
+	step := c.reads[0]
+	c.reads = c.reads[1:]
+	n := copy(target, step.payload)
+	return n, step.err
+}
+
+func (c *scriptedTrafficConn) Write(payload []byte) (int, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.writes = append(c.writes, append([]byte(nil), payload...))
+	if len(c.writeSteps) == 0 {
+		return len(payload), nil
+	}
+	step := c.writeSteps[0]
+	c.writeSteps = c.writeSteps[1:]
+	return step.n, step.err
+}
+
+func (c *scriptedTrafficConn) Close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	return nil
+}
+
+func (c *scriptedTrafficConn) LocalAddr() net.Addr              { return &net.TCPAddr{} }
+func (c *scriptedTrafficConn) RemoteAddr() net.Addr             { return &net.TCPAddr{} }
+func (c *scriptedTrafficConn) SetDeadline(time.Time) error      { return nil }
+func (c *scriptedTrafficConn) SetReadDeadline(time.Time) error  { return nil }
+func (c *scriptedTrafficConn) SetWriteDeadline(time.Time) error { return nil }
 
 type noReadTraceTunnel struct {
 	tcpCalls int
@@ -424,11 +511,185 @@ func TestIngressTraceRingDropsOldestAndNeverStoresPayload(t *testing.T) {
 		}
 	}
 	counters := recorder.Counters()
-	if counters.RXPackets != 3 {
-		t.Fatalf("rx packets = %d want 3", counters.RXPackets)
+	if counters.TXPackets != 3 {
+		t.Fatalf("tx packets = %d want 3", counters.TXPackets)
 	}
-	if counters.RXBytes == 0 {
-		t.Fatal("rx bytes should be monotonic and non-zero")
+	if counters.TXBytes == 0 {
+		t.Fatal("tx bytes should be monotonic and non-zero")
+	}
+	if counters.RXPackets != 0 || counters.RXBytes != 0 {
+		t.Fatalf("rx counters = %#v want zero download before WriteBack", counters)
+	}
+}
+
+func TestTunTrafficCountersTrackBidirectionalTCPAndUDPBytes(t *testing.T) {
+	tcpMetadata := &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.TCP,
+		SrcIP:   netip.MustParseAddr("172.19.0.2"),
+		SrcPort: 42424,
+		DstIP:   netip.MustParseAddr("1.1.1.1"),
+		DstPort: 443,
+	}
+	recorder := newTunTraceRecorder("session-1", &recordingSink{}, 8)
+	tcpConn := &scriptedTrafficConn{
+		reads: []scriptedReadStep{
+			{payload: []byte("hello")},
+			{payload: []byte("bye"), err: io.EOF},
+		},
+		writeSteps: []scriptedWriteStep{
+			{n: 4, err: nil},
+		},
+	}
+	tcpTunnel := &functionalTraceTunnel{
+		handleTCP: func(conn net.Conn, _ *C.Metadata) {
+			buffer := make([]byte, 16)
+			_, _ = conn.Read(buffer)
+			_, _ = conn.Read(buffer)
+			_, _ = conn.Write([]byte("pong"))
+			_ = conn.Close()
+		},
+	}
+	recorder.Wrap(tcpTunnel).HandleTCPConn(tcpConn, tcpMetadata)
+
+	udpPacket := &tracePacket{
+		payload:    []byte("udp-payload"),
+		writeBackN: 3,
+	}
+	recorder.Wrap(&functionalTraceTunnel{
+		handleUDP: func(packet C.UDPPacket, _ *C.Metadata) {
+			_, _ = packet.WriteBack([]byte("ack"), packet.LocalAddr())
+			packet.Drop()
+		},
+	}).HandleUDPPacket(udpPacket, &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.UDP,
+		SrcIP:   netip.MustParseAddr("172.19.0.2"),
+		SrcPort: 53000,
+		DstIP:   netip.MustParseAddr("8.8.8.8"),
+		DstPort: 53,
+	})
+
+	counters := recorder.Counters()
+	if counters.TXPackets != 3 {
+		t.Fatalf("tx packets = %d want 3", counters.TXPackets)
+	}
+	if counters.TXBytes != 19 {
+		t.Fatalf("tx bytes = %d want 19", counters.TXBytes)
+	}
+	if counters.RXPackets != 2 {
+		t.Fatalf("rx packets = %d want 2", counters.RXPackets)
+	}
+	if counters.RXBytes != 7 {
+		t.Fatalf("rx bytes = %d want 7", counters.RXBytes)
+	}
+}
+
+func TestTunTrafficCountersIgnoreZeroBytesAndCountShortWritesWithErrors(t *testing.T) {
+	recorder := newTunTraceRecorder("session-1", &recordingSink{}, 8)
+	tcpConn := &scriptedTrafficConn{
+		reads: []scriptedReadStep{
+			{payload: nil, err: nil},
+			{payload: []byte("abcde"), err: io.ErrUnexpectedEOF},
+		},
+		writeSteps: []scriptedWriteStep{
+			{n: 0, err: io.ErrClosedPipe},
+			{n: 2, err: io.ErrShortWrite},
+		},
+	}
+	recorder.Wrap(&functionalTraceTunnel{
+		handleTCP: func(conn net.Conn, _ *C.Metadata) {
+			buffer := make([]byte, 16)
+			_, _ = conn.Read(buffer)
+			_, _ = conn.Read(buffer)
+			_, _ = conn.Write([]byte("zero"))
+			_, _ = conn.Write([]byte("xyzw"))
+			_ = conn.Close()
+		},
+	}).HandleTCPConn(tcpConn, &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.TCP,
+		SrcIP:   netip.MustParseAddr("172.19.0.2"),
+		SrcPort: 42424,
+		DstIP:   netip.MustParseAddr("1.1.1.1"),
+		DstPort: 443,
+	})
+
+	udpPacket := &tracePacket{
+		payload:      nil,
+		writeBackN:   4,
+		writeBackErr: io.ErrClosedPipe,
+	}
+	recorder.Wrap(&functionalTraceTunnel{
+		handleUDP: func(packet C.UDPPacket, _ *C.Metadata) {
+			_, _ = packet.WriteBack([]byte("pong"), packet.LocalAddr())
+			packet.Drop()
+		},
+	}).HandleUDPPacket(udpPacket, &C.Metadata{
+		Type:    C.TUN,
+		NetWork: C.UDP,
+		SrcIP:   netip.MustParseAddr("172.19.0.2"),
+		SrcPort: 53000,
+		DstIP:   netip.MustParseAddr("8.8.8.8"),
+		DstPort: 53,
+	})
+
+	counters := recorder.Counters()
+	if counters.TXPackets != 1 {
+		t.Fatalf("tx packets = %d want 1", counters.TXPackets)
+	}
+	if counters.TXBytes != 5 {
+		t.Fatalf("tx bytes = %d want 5", counters.TXBytes)
+	}
+	if counters.RXPackets != 2 {
+		t.Fatalf("rx packets = %d want 2", counters.RXPackets)
+	}
+	if counters.RXBytes != 6 {
+		t.Fatalf("rx bytes = %d want 6", counters.RXBytes)
+	}
+}
+
+func TestTunTrafficCountersAddTxAndAddRxRemainMonotonicUnderConcurrency(t *testing.T) {
+	recorder := newTunTraceRecorder("session-1", &recordingSink{}, 1)
+	const workers = 12
+	const iterations = 40
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for worker := 0; worker < workers; worker += 1 {
+		go func() {
+			defer wg.Done()
+			for iteration := 0; iteration < iterations; iteration += 1 {
+				recorder.addTx(2)
+				recorder.addRx(3)
+			}
+		}()
+	}
+	wg.Wait()
+
+	counters := recorder.Counters()
+	if counters.TXPackets != workers*iterations {
+		t.Fatalf("tx packets = %d want %d", counters.TXPackets, workers*iterations)
+	}
+	if counters.TXBytes != workers*iterations*2 {
+		t.Fatalf("tx bytes = %d want %d", counters.TXBytes, workers*iterations*2)
+	}
+	if counters.RXPackets != workers*iterations {
+		t.Fatalf("rx packets = %d want %d", counters.RXPackets, workers*iterations)
+	}
+	if counters.RXBytes != workers*iterations*3 {
+		t.Fatalf("rx bytes = %d want %d", counters.RXBytes, workers*iterations*3)
+	}
+}
+
+func TestTunTrafficCountersResetWithNewRecorderSession(t *testing.T) {
+	first := newTunTraceRecorder("session-1", &recordingSink{}, 1)
+	first.addTx(5)
+	first.addRx(7)
+
+	second := newTunTraceRecorder("session-2", &recordingSink{}, 1)
+	counters := second.Counters()
+	if counters != (TunCounters{}) {
+		t.Fatalf("fresh recorder counters = %#v want zero values", counters)
 	}
 }
 

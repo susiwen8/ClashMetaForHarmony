@@ -72,6 +72,8 @@ type tunTraceRecorder struct {
 	resolverSlots chan struct{}
 }
 
+const maxUint64 = ^uint64(0)
+
 type tunOutboundProof struct {
 	terminalHash string
 	chainHash    string
@@ -196,6 +198,36 @@ func (r *tunTraceRecorder) Counters() TunCounters {
 	return r.counters
 }
 
+func saturatingAddUint64(current uint64, delta uint64) uint64 {
+	if delta == 0 {
+		return current
+	}
+	if maxUint64-current < delta {
+		return maxUint64
+	}
+	return current + delta
+}
+
+func (r *tunTraceRecorder) addTx(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters.TXPackets = saturatingAddUint64(r.counters.TXPackets, 1)
+	r.counters.TXBytes = saturatingAddUint64(r.counters.TXBytes, bytes)
+}
+
+func (r *tunTraceRecorder) addRx(bytes uint64) {
+	if bytes == 0 {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.counters.RXPackets = saturatingAddUint64(r.counters.RXPackets, 1)
+	r.counters.RXBytes = saturatingAddUint64(r.counters.RXBytes, bytes)
+}
+
 func (r *tunTraceRecorder) lenLocked() int {
 	if r.full {
 		return len(r.traces)
@@ -221,8 +253,6 @@ func (r *tunTraceRecorder) appendTrace(
 	defer r.mu.Unlock()
 
 	r.sequence += 1
-	r.counters.RXPackets += 1
-	r.counters.RXBytes += bytes
 
 	trace := TunTrace{
 		SessionID:            r.sessionID,
@@ -316,7 +346,7 @@ type tracedTunTunnel struct {
 }
 
 func (t tracedTunTunnel) HandleTCPConn(conn net.Conn, metadata *C.Metadata) {
-	tapped := &tapConn{Conn: conn}
+	tapped := &tapConn{Conn: conn, recorder: t.recorder}
 	var capturedMetadata *C.Metadata
 	if metadata != nil {
 		cloned := *metadata
@@ -347,7 +377,8 @@ func (t tracedTunTunnel) HandleUDPPacket(packet C.UDPPacket, metadata *C.Metadat
 		protocol = "dns"
 		correlationHash = hashBytesHex(payload)
 	}
-	t.delegate.HandleUDPPacket(packet, metadata)
+	t.recorder.addTx(uint64(len(payload)))
+	t.delegate.HandleUDPPacket(&tapPacket{UDPPacket: packet, recorder: t.recorder}, metadata)
 	t.recorder.appendTrace(protocol, metadata, uint64(len(payload)), correlationHash, t.recorder.outboundLookup(metadata))
 }
 
@@ -382,6 +413,7 @@ func (t tracedProviderTunnel) RuleUpdateCallback() *utils.Callback[P.RuleProvide
 
 type tapConn struct {
 	net.Conn
+	recorder         *tunTraceRecorder
 	mu               sync.Mutex
 	bytesRead        uint64
 	buffer           []byte
@@ -391,9 +423,17 @@ type tapConn struct {
 	onClose          func(bytesRead uint64)
 }
 
+type tapPacket struct {
+	C.UDPPacket
+	recorder *tunTraceRecorder
+}
+
 func (c *tapConn) Read(target []byte) (int, error) {
 	n, err := c.Conn.Read(target)
 	if n > 0 {
+		if c.recorder != nil {
+			c.recorder.addTx(uint64(n))
+		}
 		payload := append([]byte(nil), target[:n]...)
 		c.mu.Lock()
 		c.bytesRead += uint64(n)
@@ -415,6 +455,14 @@ func (c *tapConn) Read(target []byte) (int, error) {
 	return n, err
 }
 
+func (c *tapConn) Write(payload []byte) (int, error) {
+	n, err := c.Conn.Write(payload)
+	if n > 0 && c.recorder != nil {
+		c.recorder.addRx(uint64(n))
+	}
+	return n, err
+}
+
 func (c *tapConn) Close() error {
 	err := c.Conn.Close()
 	c.closeOnce.Do(func() {
@@ -427,6 +475,14 @@ func (c *tapConn) Close() error {
 		}
 	})
 	return err
+}
+
+func (p *tapPacket) WriteBack(payload []byte, addr net.Addr) (int, error) {
+	n, err := p.UDPPacket.WriteBack(payload, addr)
+	if n > 0 && p.recorder != nil {
+		p.recorder.addRx(uint64(n))
+	}
+	return n, err
 }
 
 func (c *tcpTraceCandidate) notePayloadObserved(_ []byte) {
