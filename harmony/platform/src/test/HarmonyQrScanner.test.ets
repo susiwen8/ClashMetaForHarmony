@@ -1,9 +1,16 @@
+import common from '@ohos.app.ability.common';
 import { describe, expect, it } from '@ohos/hypium';
 import type {
   ProfileTransferQrScanResult,
   ProfileTransferQrScannerError
 } from '@cmfa/shared';
-import { HarmonyQrScanner, type HarmonyQrScannerDriver, type HarmonyQrScannerRequest } from '../main/ets/source/HarmonyQrScanner';
+import {
+  HarmonyQrScanner,
+  type HarmonyQrScannerConfigurationError,
+  type HarmonyQrScannerDriver,
+  type HarmonyQrScannerRequest,
+  type HarmonyScanResultShape
+} from '../main/ets/source/HarmonyQrScanner';
 import { assertNoLeak } from './fakes/PlatformFakes';
 
 const QR_CODE_SCAN_TYPE: number = 4096;
@@ -15,26 +22,28 @@ interface ScannedResultView {
 }
 
 class FakeContext {
-  readonly label: string;
+  readonly filesDir: string;
+  readonly abilityInfo?: Object;
 
-  constructor(label: string) {
-    this.label = label;
+  constructor(filesDir: string, abilityInfo?: Object) {
+    this.filesDir = filesDir;
+    this.abilityInfo = abilityInfo;
   }
 }
 
 class DeferredDriverResult {
-  readonly promise: Promise<Object>;
-  private readonly resolveFn: (value: Object) => void;
+  readonly promise: Promise<HarmonyScanResultShape>;
+  private readonly resolveFn: (value: HarmonyScanResultShape) => void;
   private readonly rejectFn: (error: Error) => void;
 
   constructor() {
-    let resolveRef: ((value: Object) => void) | undefined = undefined;
+    let resolveRef: ((value: HarmonyScanResultShape) => void) | undefined = undefined;
     let rejectRef: ((error: Error) => void) | undefined = undefined;
-    this.promise = new Promise<Object>((resolve, reject) => {
+    this.promise = new Promise<HarmonyScanResultShape>((resolve, reject) => {
       resolveRef = resolve;
       rejectRef = reject;
     });
-    this.resolveFn = (value: Object) => {
+    this.resolveFn = (value: HarmonyScanResultShape) => {
       if (resolveRef !== undefined) {
         resolveRef(value);
       }
@@ -46,7 +55,7 @@ class DeferredDriverResult {
     };
   }
 
-  resolve(value: Object): void {
+  resolve(value: HarmonyScanResultShape): void {
     this.resolveFn(value);
   }
 
@@ -56,10 +65,10 @@ class DeferredDriverResult {
 }
 
 class FakeHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
-  readonly requests: { context: Object; options: HarmonyQrScannerRequest }[] = [];
-  readonly outcomes: Array<() => Promise<Object>> = [];
+  readonly requests: { context: common.UIAbilityContext; options: HarmonyQrScannerRequest }[] = [];
+  readonly outcomes: Array<() => Promise<HarmonyScanResultShape>> = [];
 
-  enqueueResolved(result: Object): void {
+  enqueueResolved(result: HarmonyScanResultShape): void {
     this.outcomes.push(() => Promise.resolve(result));
   }
 
@@ -71,12 +80,15 @@ class FakeHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
     this.outcomes.push(() => result.promise);
   }
 
-  async startScanForResult(context: Object, options: HarmonyQrScannerRequest): Promise<Object> {
+  async startScanForResult(
+    context: common.UIAbilityContext,
+    options: HarmonyQrScannerRequest
+  ): Promise<HarmonyScanResultShape> {
     this.requests.push({
       context,
       options
     });
-    const nextOutcome: (() => Promise<Object>) | undefined = this.outcomes.shift();
+    const nextOutcome: (() => Promise<HarmonyScanResultShape>) | undefined = this.outcomes.shift();
     if (nextOutcome === undefined) {
       throw new Error('Missing scripted QR scan outcome.');
     }
@@ -84,12 +96,38 @@ class FakeHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
   }
 }
 
-function buildScanner(driver: FakeHarmonyQrScannerDriver, context: FakeContext): HarmonyQrScanner {
+function createUiContext(
+  filesDir: string = '/data/storage/el2/base/files',
+  includeAbilityInfo: boolean = true
+): common.UIAbilityContext {
+  return new FakeContext(
+    filesDir,
+    includeAbilityInfo ? { name: 'MainAbility' } : undefined
+  ) as common.UIAbilityContext;
+}
+
+function buildScanner(driver: FakeHarmonyQrScannerDriver, context: common.UIAbilityContext): HarmonyQrScanner {
   return new HarmonyQrScanner({
     driver,
     context,
     qrCodeScanType: QR_CODE_SCAN_TYPE
   });
+}
+
+function expectConfigurationError(block: () => void): HarmonyQrScannerConfigurationError {
+  let capturedError: HarmonyQrScannerConfigurationError | undefined = undefined;
+  try {
+    block();
+  } catch (error) {
+    capturedError = error as HarmonyQrScannerConfigurationError;
+  }
+  expect(capturedError !== undefined).assertTrue();
+  const resolvedError: HarmonyQrScannerConfigurationError =
+    capturedError as HarmonyQrScannerConfigurationError;
+  expect(resolvedError.name).assertEqual('HarmonyQrScannerConfigurationError');
+  expect(resolvedError.code).assertEqual('HARMONY_QR_SCANNER_CONFIGURATION_INVALID');
+  expect(resolvedError.message).assertEqual('Harmony QR scanner requires a valid UI ability context.');
+  return resolvedError;
 }
 
 async function expectRejectsFixedError(
@@ -119,7 +157,7 @@ export default function harmonyQrScannerTestsuite() {
         originalValue: 'https://example.com/profile.yaml',
         scanType: QR_CODE_SCAN_TYPE
       });
-      const context = new FakeContext('context-a');
+      const context = createUiContext('/data/storage/el2/base/files-a');
       const scanner = buildScanner(driver, context);
 
       await scanner.scan();
@@ -138,7 +176,7 @@ export default function harmonyQrScannerTestsuite() {
         originalValue: 'https://example.com/profile.yaml?token=raw#frag',
         scanType: QR_CODE_SCAN_TYPE
       });
-      const scanner = buildScanner(driver, new FakeContext('context-b'));
+      const scanner = buildScanner(driver, createUiContext('/data/storage/el2/base/files-b'));
 
       const result = await scanner.scan();
 
@@ -151,7 +189,7 @@ export default function harmonyQrScannerTestsuite() {
       const cancelled = new Error('user cancelled /private/path');
       (cancelled as Error & { code: number }).code = CANCELLED_SCAN_ERROR_CODE;
       driver.enqueueRejected(cancelled);
-      const scanner = buildScanner(driver, new FakeContext('context-c'));
+      const scanner = buildScanner(driver, createUiContext('/data/storage/el2/base/files-c'));
 
       const result = await scanner.scan();
 
@@ -161,7 +199,7 @@ export default function harmonyQrScannerTestsuite() {
     it('returnsFixedErrorsForPlatformFailuresWithoutLeakingRawPayloads', 0, async () => {
       const driver = new FakeHarmonyQrScannerDriver();
       driver.enqueueRejected(new Error('secret platform failure at content://private/qr/result'));
-      const scanner = buildScanner(driver, new FakeContext('context-d'));
+      const scanner = buildScanner(driver, createUiContext('/data/storage/el2/base/files-d'));
 
       await expectRejectsFixedError(scanner.scan(), [
         'secret platform failure',
@@ -175,7 +213,7 @@ export default function harmonyQrScannerTestsuite() {
         originalValue: 'https://example.com/not-used',
         scanType: 7
       });
-      const nonQrScanner = buildScanner(nonQrDriver, new FakeContext('context-e'));
+      const nonQrScanner = buildScanner(nonQrDriver, createUiContext('/data/storage/el2/base/files-e'));
       await expectRejectsFixedError(nonQrScanner.scan(), ['https://example.com/not-used']);
 
       const blankDriver = new FakeHarmonyQrScannerDriver();
@@ -183,7 +221,7 @@ export default function harmonyQrScannerTestsuite() {
         originalValue: '   ',
         scanType: QR_CODE_SCAN_TYPE
       });
-      const blankScanner = buildScanner(blankDriver, new FakeContext('context-f'));
+      const blankScanner = buildScanner(blankDriver, createUiContext('/data/storage/el2/base/files-f'));
       await expectRejectsFixedError(blankScanner.scan(), ['   ']);
     });
 
@@ -193,7 +231,7 @@ export default function harmonyQrScannerTestsuite() {
       const driver = new FakeHarmonyQrScannerDriver();
       driver.enqueuePending(first);
       driver.enqueuePending(second);
-      const scanner = buildScanner(driver, new FakeContext('context-g'));
+      const scanner = buildScanner(driver, createUiContext('/data/storage/el2/base/files-g'));
 
       const firstPromise = scanner.scan();
       const secondPromise = scanner.scan();
@@ -215,6 +253,46 @@ export default function harmonyQrScannerTestsuite() {
       expect(secondResult.kind).assertEqual('SCANNED');
       expect((firstResult as ScannedResultView).value).assertEqual('first-value');
       expect((secondResult as ScannedResultView).value).assertEqual('second-value');
+    });
+
+    it('throwsFixedConfigurationErrorForDefaultDriverWhenContextIsMissingOrInvalid', 0, () => {
+      expectConfigurationError((): void => {
+        new HarmonyQrScanner({
+          context: undefined
+        });
+      });
+
+      expectConfigurationError((): void => {
+        new HarmonyQrScanner({
+          context: createUiContext('', true)
+        });
+      });
+
+      expectConfigurationError((): void => {
+        new HarmonyQrScanner({
+          context: createUiContext('/data/storage/el2/base/files-invalid', false)
+        });
+      });
+    });
+
+    it('allowsCustomDriversToUseNarrowTypedContextsWithoutDefaultUiInvariantChecks', 0, async () => {
+      const driver = new FakeHarmonyQrScannerDriver();
+      driver.enqueueResolved({
+        originalValue: 'https://example.com/custom.yaml',
+        scanType: QR_CODE_SCAN_TYPE
+      });
+
+      const scanner = new HarmonyQrScanner({
+        driver,
+        context: new FakeContext('', undefined) as common.UIAbilityContext,
+        qrCodeScanType: QR_CODE_SCAN_TYPE
+      });
+
+      const result = await scanner.scan();
+
+      expect(result.kind).assertEqual('SCANNED');
+      expect((result as ScannedResultView).value).assertEqual('https://example.com/custom.yaml');
+      expect(driver.requests.length).assertEqual(1);
     });
   });
 }

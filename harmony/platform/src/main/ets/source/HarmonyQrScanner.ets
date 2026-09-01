@@ -9,10 +9,26 @@ import {
 } from '@cmfa/shared';
 
 const QR_SCAN_CANCELLED_ERROR_CODE: number = 1000500002;
+const QR_SCANNER_CONFIGURATION_ERROR_MESSAGE: string =
+  'Harmony QR scanner requires a valid UI ability context.';
 
-interface HarmonyScanResultShape {
-  originalValue?: string;
-  scanType?: number;
+export interface HarmonyScanResultShape {
+  originalValue: string;
+  scanType: number;
+}
+
+export interface HarmonyQrScannerConfigurationError extends Error {
+  name: 'HarmonyQrScannerConfigurationError';
+  code: 'HARMONY_QR_SCANNER_CONFIGURATION_INVALID';
+}
+
+class HarmonyQrScannerConfigurationErrorValue extends Error implements HarmonyQrScannerConfigurationError {
+  name: 'HarmonyQrScannerConfigurationError' = 'HarmonyQrScannerConfigurationError';
+  code: 'HARMONY_QR_SCANNER_CONFIGURATION_INVALID' = 'HARMONY_QR_SCANNER_CONFIGURATION_INVALID';
+
+  constructor() {
+    super(QR_SCANNER_CONFIGURATION_ERROR_MESSAGE);
+  }
 }
 
 interface BusinessErrorLike {
@@ -20,12 +36,15 @@ interface BusinessErrorLike {
 }
 
 class SystemHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
-  async startScanForResult(context: Object, options: HarmonyQrScannerRequest): Promise<Object> {
-    return await scanBarcode.startScanForResult(context as common.UIAbilityContext, {
+  async startScanForResult(
+    context: common.UIAbilityContext,
+    options: HarmonyQrScannerRequest
+  ): Promise<HarmonyScanResultShape> {
+    return await scanBarcode.startScanForResult(context, {
       scanTypes: options.scanTypes.slice(),
       enableMultiMode: options.enableMultiMode,
       enableAlbum: options.enableAlbum
-    });
+    }) as HarmonyScanResultShape;
   }
 }
 
@@ -36,23 +55,29 @@ export interface HarmonyQrScannerRequest {
 }
 
 export interface HarmonyQrScannerDriver {
-  startScanForResult(context: Object, options: HarmonyQrScannerRequest): Promise<Object>;
+  startScanForResult(
+    context: common.UIAbilityContext,
+    options: HarmonyQrScannerRequest
+  ): Promise<HarmonyScanResultShape>;
 }
 
 export interface HarmonyQrScannerDependencies {
-  context: Object;
+  context: common.UIAbilityContext | null | undefined;
   driver?: HarmonyQrScannerDriver;
   qrCodeScanType?: number;
 }
 
 export class HarmonyQrScanner implements QrScannerPort {
-  private readonly context: Object;
+  private readonly context: common.UIAbilityContext;
   private readonly driver: HarmonyQrScannerDriver;
   private readonly qrCodeScanType: number;
 
   constructor(dependencies: HarmonyQrScannerDependencies) {
-    this.context = dependencies.context;
+    this.context = requireContext(dependencies.context);
     this.driver = dependencies.driver ?? new SystemHarmonyQrScannerDriver();
+    if (dependencies.driver === undefined) {
+      requireMinimalSystemContextInvariant(this.context);
+    }
     this.qrCodeScanType = dependencies.qrCodeScanType ?? scanCore.ScanType.QR_CODE;
   }
 
@@ -88,4 +113,22 @@ export function createHarmonyQrScanner(context: common.UIAbilityContext): Harmon
   return new HarmonyQrScanner({
     context
   });
+}
+
+function requireContext(
+  context: common.UIAbilityContext | null | undefined
+): common.UIAbilityContext {
+  if (context === undefined || context === null) {
+    throw new HarmonyQrScannerConfigurationErrorValue();
+  }
+  return context;
+}
+
+function requireMinimalSystemContextInvariant(context: common.UIAbilityContext): void {
+  if (typeof context.filesDir !== 'string' || context.filesDir.trim().length === 0) {
+    throw new HarmonyQrScannerConfigurationErrorValue();
+  }
+  if (context.abilityInfo === undefined) {
+    throw new HarmonyQrScannerConfigurationErrorValue();
+  }
 }

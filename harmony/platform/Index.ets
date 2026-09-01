@@ -27,9 +27,11 @@ export type {
 } from './src/main/ets/diagnostics/HarmonyRuntimeLogExporter';
 export { HarmonyQrScanner, createHarmonyQrScanner } from './src/main/ets/source/HarmonyQrScanner';
 export type {
+  HarmonyQrScannerConfigurationError,
   HarmonyQrScannerDependencies,
   HarmonyQrScannerDriver,
-  HarmonyQrScannerRequest
+  HarmonyQrScannerRequest,
+  HarmonyScanResultShape
 } from './src/main/ets/source/HarmonyQrScanner';
 export { HarmonyVpnNotificationDriver } from './src/main/ets/background/HarmonyVpnNotificationDriver';
 export type {
