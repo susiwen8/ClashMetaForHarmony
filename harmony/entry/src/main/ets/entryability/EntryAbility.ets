@@ -22,6 +22,7 @@ export default class EntryAbility extends UIAbility {
   private applicationComposition?: ApplicationComposition;
   private navigationPromise: Promise<void> = Promise.resolve();
   private navigationGeneration: number = 0;
+  private foregroundReloadGeneration?: number;
 
   onCreate(want: Want, launchParam: AbilityConstant.LaunchParam): void {
     applyPhase1LaunchWant(this.context, want);
@@ -69,12 +70,29 @@ export default class EntryAbility extends UIAbility {
 
   private scheduleForegroundReload(): void {
     const generation: number = this.navigationGeneration;
+    if (this.foregroundReloadGeneration === generation) {
+      return;
+    }
+    this.foregroundReloadGeneration = generation;
     this.navigationPromise = this.navigationPromise.catch(() => {
     }).then(async () => {
-      if (generation !== this.navigationGeneration) {
-        return;
+      try {
+        if (generation !== this.navigationGeneration) {
+          return;
+        }
+        const composition: ApplicationComposition | undefined = this.applicationComposition;
+        if (composition === undefined || composition.state().status !== 'READY') {
+          return;
+        }
+        const reloaded: boolean = await reloadApplicationCompositionOnForeground(composition);
+        if (!reloaded) {
+          hilog.warn(DOMAIN, 'testTag', '%{public}s', 'foreground.repository-reload.failed');
+        }
+      } finally {
+        if (this.foregroundReloadGeneration === generation) {
+          this.foregroundReloadGeneration = undefined;
+        }
       }
-      await reloadApplicationCompositionOnForeground(this.applicationComposition);
     });
   }
 

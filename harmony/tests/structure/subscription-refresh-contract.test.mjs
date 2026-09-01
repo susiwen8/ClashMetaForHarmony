@@ -55,6 +55,8 @@ test('subscription refresh foreground reload reads repository state without rest
 
   assert.match(ability, /onForeground\(\):\s*void\s*\{[\s\S]*scheduleForegroundReload\(\)/u);
   assert.match(ability, /private scheduleForegroundReload\(\):\s*void[\s\S]*navigationPromise[\s\S]*reloadApplicationCompositionOnForeground/u);
+  assert.match(ability, /foregroundReloadGeneration/u);
+  assert.match(ability, /foreground\.repository-reload\.failed/u);
   assert.match(ability, /await state\.application\.reloadFromRepository\(\)/u);
   const reloadStart = ability.indexOf('export async function reloadApplicationCompositionOnForeground');
   const reloadSource = ability.slice(reloadStart);

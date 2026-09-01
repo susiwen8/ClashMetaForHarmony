@@ -121,5 +121,32 @@ export default function entryAbilityTestsuite() {
       await surface.navigationPromise;
       expect(events).assertDeepEquals(['reload.start', 'reload.end', 'close']);
     });
+
+    it('coalescesDuplicateForegroundEventsWithinOneNavigationGeneration', 0, async () => {
+      const reloadBarrier = new DeferredValue<void>();
+      let reloadCalls = 0;
+      const readyState = {
+        status: 'READY',
+        application: {
+          reloadFromRepository: async (): Promise<void> => {
+            reloadCalls += 1;
+            await reloadBarrier.promise;
+          }
+        }
+      } as ApplicationCompositionState;
+      const ability = new EntryAbility();
+      const surface = ability as unknown as EntryAbilityTestSurface;
+      surface.applicationComposition = new FakeApplicationComposition(readyState);
+
+      ability.onForeground();
+      ability.onForeground();
+      ability.onForeground();
+      await settleMicrotasks();
+      expect(reloadCalls).assertEqual(1);
+
+      reloadBarrier.resolve(undefined);
+      await surface.navigationPromise;
+      expect(reloadCalls).assertEqual(1);
+    });
   });
 }
