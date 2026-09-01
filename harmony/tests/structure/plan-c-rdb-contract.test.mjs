@@ -67,13 +67,15 @@ test('plan c rdb contract keeps initialization helper on exact additive version 
 
   assert.match(source, /export interface HarmonyRdbInitializationOperations/u);
   assert.match(source, /export async function runRdbInitialization\(\s*version:\s*number,\s*operations:\s*HarmonyRdbInitializationOperations\s*\):\s*Promise<void>/u);
+  assert.match(source, /const TARGET_SCHEMA_VERSION = 3;/u);
   assert.match(source, /function isSupportedSchemaVersion\(version:\s*number\):\s*boolean\s*\{[\s\S]*version === 0[\s\S]*version === 1[\s\S]*version === 2[\s\S]*version === 3[\s\S]*\}/u);
-  assert.match(source, /if \(!isSupportedSchemaVersion\(version\)\)\s*\{[\s\S]*Unsupported database version/u);
+  assert.match(source, /if \(version !== TARGET_SCHEMA_VERSION\)\s*\{[\s\S]*Unsupported database version/u);
   assert.match(source, /if \(!isSupportedSchemaVersion\(currentVersion\)\)\s*\{[\s\S]*Unsupported database version/u);
   assert.match(source, /if \(currentVersion !== version\)\s*\{[\s\S]*operations\.writeVersion\(version\)/u);
   assert.match(initializationSource, /const currentVersion: number = operations\.currentVersion\(\);[\s\S]*await operations\.createProfilesTable\(\)[\s\S]*await operations\.createAppStateTable\(\)[\s\S]*await operations\.seedAppState\(\)[\s\S]*await operations\.createProxySelectionsTable\(\)/u);
   assert.match(initializationSource, /if \(currentVersion === 1 \|\| currentVersion === 2\)\s*\{[\s\S]*await operations\.ensureProfileAutoUpdateIntervalColumn\(\)[\s\S]*\}/u);
   assert.match(initializationSource, /await operations\.createProfileRefreshLeasesTable\(\)[\s\S]*await operations\.validateProfilesTable\(\)[\s\S]*await operations\.validateProxySelectionsTable\(\)[\s\S]*await operations\.validateProfileRefreshLeasesTable\(\)/u);
+  assert.doesNotMatch(initializationSource, /if \(!isSupportedSchemaVersion\(version\)\)/u);
 });
 
 test('plan c rdb contract keeps v1 to v3 migration additive only for profiles', async () => {

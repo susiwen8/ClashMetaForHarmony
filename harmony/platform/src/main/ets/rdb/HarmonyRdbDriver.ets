@@ -111,15 +111,17 @@ export interface HarmonyRdbInitializationOperations {
   writeVersion(version: number): void;
 }
 
+const TARGET_SCHEMA_VERSION = 3;
+
 function isSupportedSchemaVersion(version: number): boolean {
-  return version === 0 || version === 1 || version === 2 || version === 3;
+  return version === 0 || version === 1 || version === 2 || version === TARGET_SCHEMA_VERSION;
 }
 
 export async function runRdbInitialization(
   version: number,
   operations: HarmonyRdbInitializationOperations
 ): Promise<void> {
-  if (!isSupportedSchemaVersion(version)) {
+  if (version !== TARGET_SCHEMA_VERSION) {
     throw new Error(`Unsupported database version ${version}.`);
   }
   const currentVersion: number = operations.currentVersion();

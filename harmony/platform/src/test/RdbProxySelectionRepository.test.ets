@@ -228,6 +228,18 @@ function buildPair(groupName: string, selectedNodeName: string): ProxySelectionP
   };
 }
 
+async function expectInitializationUnsupportedVersion(
+  targetVersion: number,
+  operations: RecordingInitializationOperations
+): Promise<void> {
+  try {
+    await runRdbInitialization(targetVersion, operations);
+    expect(false).assertTrue();
+  } catch (error) {
+    expect(`${error}`).assertContain('Unsupported database version');
+  }
+}
+
 async function expectSelectionFailure(
   operation: () => Promise<void>,
   expectedDetail: string,
@@ -287,26 +299,36 @@ export default function rdbProxySelectionRepositoryTestsuite() {
     it('rejectsUnsupportedFutureVersionsAndKeepsTheStoredVersionUntouched', 0, async () => {
       const futureOperations = new RecordingInitializationOperations(4);
 
-      try {
-        await runRdbInitialization(3, futureOperations);
-        expect(false).assertTrue();
-      } catch (error) {
-        expect(`${error}`).assertContain('Unsupported database version');
-      }
+      await expectInitializationUnsupportedVersion(3, futureOperations);
 
       expect(futureOperations.versionValue).assertEqual(4);
       expect(futureOperations.log.join('>')).assertEqual('currentVersion:4');
       expect(futureOperations.log.includes('writeVersion:3')).assertFalse();
 
       const negativeOperations = new RecordingInitializationOperations(-1);
-      try {
-        await runRdbInitialization(3, negativeOperations);
-        expect(false).assertTrue();
-      } catch (error) {
-        expect(`${error}`).assertContain('Unsupported database version');
-      }
+      await expectInitializationUnsupportedVersion(3, negativeOperations);
       expect(negativeOperations.versionValue).assertEqual(-1);
       expect(negativeOperations.log.join('>')).assertEqual('currentVersion:-1');
+    });
+
+    it('rejectsDowngradeAndNonTargetVersionRequestsWithoutWriting', 0, async () => {
+      const downgradeToOne = new RecordingInitializationOperations(3);
+      await expectInitializationUnsupportedVersion(1, downgradeToOne);
+      expect(downgradeToOne.versionValue).assertEqual(3);
+      expect(downgradeToOne.log.join('>')).assertEqual('');
+      expect(downgradeToOne.log.includes('writeVersion:1')).assertFalse();
+
+      const downgradeToTwo = new RecordingInitializationOperations(3);
+      await expectInitializationUnsupportedVersion(2, downgradeToTwo);
+      expect(downgradeToTwo.versionValue).assertEqual(3);
+      expect(downgradeToTwo.log.join('>')).assertEqual('');
+      expect(downgradeToTwo.log.includes('writeVersion:2')).assertFalse();
+
+      const wrongTargetFromZero = new RecordingInitializationOperations(0);
+      await expectInitializationUnsupportedVersion(2, wrongTargetFromZero);
+      expect(wrongTargetFromZero.versionValue).assertEqual(0);
+      expect(wrongTargetFromZero.log.join('>')).assertEqual('');
+      expect(wrongTargetFromZero.log.includes('writeVersion:2')).assertFalse();
     });
 
     it('exportsSchemaSpecsForProfileIntervalAndRefreshLeases', 0, () => {
