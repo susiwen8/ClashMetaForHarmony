@@ -63,6 +63,7 @@ export interface ProfileRefreshPlatformFactoryDependencies {
   createComponents?: () => ProfileRefreshPlatformComponents | Promise<ProfileRefreshPlatformComponents>;
   createRdbDriver?: (context: common.Context, databaseName: string) => ProfileRefreshCloseableRdbDriver;
   createHuksDriver?: () => ProfileRefreshPrepareableHuksDriver;
+  resolveSdkApiVersion?: () => number | string | undefined;
 }
 
 export interface ProfileRefreshCloseableRdbDriver extends RdbDriver {
@@ -229,7 +230,9 @@ export class ProfileRefreshPlatformFactory {
         idGenerator
       });
       const remoteAcquirer: RemoteProfileAcquirer = new SubscriptionDownloader({
-        sdkApiVersion: resolveSdkApiVersionSafe(),
+        sdkApiVersion: normalizeProfileRefreshSdkApiVersion(
+          this.dependencies.resolveSdkApiVersion?.() ?? (deviceInfo.sdkApiVersion as number | string)
+        ),
         networkKitTransport,
         requestAgentTransport,
         fileDriver,
@@ -297,17 +300,22 @@ function collectReferencedSecretIds(profiles: Profile[]): string[] {
   const seen: Set<string> = new Set<string>();
   for (let index: number = 0; index < profiles.length; index += 1) {
     const secretId: string | undefined = profiles[index].sourceSecretRef;
-    if (secretId === undefined || seen.has(secretId)) {
+    if (secretId === undefined) {
       continue;
     }
-    seen.add(secretId);
-    referenced.push(secretId);
+    const normalizedSecretId: string = secretId.trim();
+    if (normalizedSecretId.length === 0 || seen.has(normalizedSecretId)) {
+      continue;
+    }
+    seen.add(normalizedSecretId);
+    referenced.push(normalizedSecretId);
   }
   return referenced;
 }
 
-function resolveSdkApiVersionSafe(): number {
-  const rawValue = deviceInfo.sdkApiVersion as number | string;
+export function normalizeProfileRefreshSdkApiVersion(
+  rawValue: number | string | undefined
+): number {
   let parsedValue: number;
   if (typeof rawValue === 'number') {
     parsedValue = rawValue;

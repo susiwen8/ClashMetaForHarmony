@@ -14,6 +14,7 @@ import type {
 } from '@cmfa/shared';
 import {
   ProfileRefreshPlatformFactory,
+  normalizeProfileRefreshSdkApiVersion,
   type ProfileRefreshCloseableRdbDriver,
   type ProfileRefreshPlatformComponents,
   type ProfileRefreshSecretStore
@@ -70,10 +71,14 @@ class FakeContentStore implements ProfileContentStore {
 
 class FakeSecretStore implements ProfileRefreshSecretStore {
   readonly log: string[];
+  reconciledSecretRefs: string[] = [];
 
   constructor(log: string[]) { this.log = log; }
 
-  async reconcile(_secretRefs: string[]): Promise<void> { this.log.push('secret.reconcile'); }
+  async reconcile(secretRefs: string[]): Promise<void> {
+    this.reconciledSecretRefs = secretRefs.slice();
+    this.log.push('secret.reconcile');
+  }
   async encrypt(_plaintext: string): Promise<string> { return 'secret-ref'; }
   async decrypt(_secretRef: string): Promise<string> { return 'https://example.invalid'; }
   async remove(_secretRef: string): Promise<void> {}
@@ -230,6 +235,41 @@ export default function profileRefreshPlatformFactoryTestsuite() {
       expect(drivers.length).assertEqual(2);
       expect(drivers[0].closeCalls).assertEqual(1);
       expect(drivers[1].closeCalls).assertEqual(1);
+    });
+
+    it('ignoresBlankLegacySecretReferencesDuringReconciliation', 0, async () => {
+      const log: string[] = [];
+      const components = createComponents(log);
+      const malformedProfile = {
+        id: 'legacy-profile',
+        name: 'Legacy',
+        sourceKind: 'REMOTE_URL',
+        sourceDisplay: 'https://example.invalid',
+        sourceSecretRef: '   ',
+        currentRevision: null,
+        failedCandidate: null,
+        availability: 'INVALID',
+        lastError: null,
+        createdAt: '2026-09-01T00:00:00.000Z',
+        updatedAt: '2026-09-01T00:00:00.000Z',
+        lastSuccessfulUpdateAt: null,
+        autoUpdateIntervalMs: 0
+      } as Profile;
+      (components.repository as FakeRepository).profiles = [malformedProfile];
+      const graph = await new ProfileRefreshPlatformFactory({ filesDir: '/data/test' } as common.Context, {
+        createComponents: (): ProfileRefreshPlatformComponents => components
+      }).create();
+
+      expect((components.secretStore as FakeSecretStore).reconciledSecretRefs.length).assertEqual(0);
+      await graph.close();
+    });
+
+    it('normalizesSdkApiVersionsFromNumbersAndStrings', 0, () => {
+      expect(normalizeProfileRefreshSdkApiVersion(24)).assertEqual(24);
+      expect(normalizeProfileRefreshSdkApiVersion('23')).assertEqual(23);
+      expect(normalizeProfileRefreshSdkApiVersion('invalid')).assertEqual(0);
+      expect(normalizeProfileRefreshSdkApiVersion(-1)).assertEqual(0);
+      expect(normalizeProfileRefreshSdkApiVersion(undefined)).assertEqual(0);
     });
   });
 }
