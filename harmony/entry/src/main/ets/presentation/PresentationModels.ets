@@ -103,7 +103,7 @@ export interface ProfilesViewState {
 export type ImportDraftIssue = 'REQUIRED' | 'TOO_LONG' | 'INVALID_URL' | 'INVALID_SCHEME';
 
 export interface ImportProfileViewState {
-  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR';
+  status: 'IDLE' | 'SCANNING' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR';
   nameIssue?: 'REQUIRED' | 'TOO_LONG';
   urlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
   httpConfirmationHost?: string;
@@ -226,7 +226,7 @@ class ProfilesViewStateValue implements ProfilesViewState {
 }
 
 class ImportProfileViewStateValue implements ImportProfileViewState {
-  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR' = 'IDLE';
+  status: 'IDLE' | 'SCANNING' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR' = 'IDLE';
   nameIssue?: 'REQUIRED' | 'TOO_LONG';
   urlIssue?: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME';
   httpConfirmationHost?: string;
@@ -561,7 +561,7 @@ export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewSt
 }
 
 export function createImportProfileViewState(
-  status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR',
+  status: 'IDLE' | 'SCANNING' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR',
   nameIssue: 'REQUIRED' | 'TOO_LONG' | undefined,
   urlIssue: 'REQUIRED' | 'INVALID_URL' | 'INVALID_SCHEME' | undefined,
   httpConfirmationHost: string | undefined,

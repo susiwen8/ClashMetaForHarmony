@@ -1,8 +1,12 @@
 import {
+  createAppError,
   ProfileApplication,
+  sanitizeProfileTransferQrUrl,
   type ImportProfileResult,
   type ProfileApplicationListener,
   type ProfileApplicationSnapshot,
+  type ProfileTransferQrScanResult,
+  type QrScannerPort,
   type RemoteImportCommand
 } from '@cmfa/shared';
 import {
@@ -33,6 +37,7 @@ class ImportNavigationIntentValue implements ImportNavigationIntent {
 export class ImportProfileViewModel {
   private readonly application: ProfileApplication;
   private readonly applicationListener: ProfileApplicationListener;
+  private readonly qrScanner?: QrScannerPort;
   private readonly listeners: Map<number, ImportProfileViewListener> = new Map();
   private readonly navigationListeners: Map<number, ImportNavigationListener> = new Map();
   private state: ImportProfileViewState;
@@ -50,13 +55,14 @@ export class ImportProfileViewModel {
   private pendingHttpImport?: ParsedRemoteSourceInput;
   private pendingHttpName?: string;
 
-  constructor(application: ProfileApplication) {
+  constructor(application: ProfileApplication, qrScanner?: QrScannerPort) {
     this.application = application;
+    this.qrScanner = qrScanner;
     const initialSnapshot: ProfileApplicationSnapshot = application.current();
     this.error = initialSnapshot.error === null ? undefined : createSafeErrorState(initialSnapshot.error);
     this.state = createImportProfileViewState('IDLE', undefined, undefined, undefined, this.error);
     this.applicationListener = (snapshot: ProfileApplicationSnapshot): void => {
-      if (this.state.status === 'SUBMITTING') {
+      if (this.state.status === 'SUBMITTING' || this.state.status === 'SCANNING') {
         return;
       }
       this.error = snapshot.error === null ? undefined : createSafeErrorState(snapshot.error);
@@ -128,7 +134,7 @@ export class ImportProfileViewModel {
   }
 
   async requestImportLocal(): Promise<void> {
-    if (this.state.status === 'SUBMITTING') {
+    if (this.state.status === 'SUBMITTING' || this.state.status === 'SCANNING') {
       return;
     }
     this.nameIssue = resolveNameIssue(this.nameDraft, false);
@@ -148,7 +154,7 @@ export class ImportProfileViewModel {
   }
 
   async requestImportUrl(): Promise<void> {
-    if (this.state.status === 'SUBMITTING') {
+    if (this.state.status === 'SUBMITTING' || this.state.status === 'SCANNING') {
       return;
     }
     this.nameIssue = resolveNameIssue(this.nameDraft, true);
@@ -174,6 +180,66 @@ export class ImportProfileViewModel {
       return;
     }
     await this.executeUrlImport(parsed, false, normalizeRequiredName(this.nameDraft));
+  }
+
+  async requestScanQr(): Promise<void> {
+    const scanner: QrScannerPort | undefined = this.qrScanner;
+    if (scanner === undefined || this.disposed || this.state.status === 'SUBMITTING' || this.state.status === 'SCANNING') {
+      return;
+    }
+    this.commandToken += 1;
+    const token: number = this.commandToken;
+    this.error = undefined;
+    this.urlIssue = undefined;
+    this.publishCurrent('SCANNING');
+    let scanResult: ProfileTransferQrScanResult;
+    try {
+      scanResult = await scanner.scan();
+    } catch (_) {
+      if (token !== this.commandToken || this.disposed) {
+        return;
+      }
+      this.error = createSafeErrorState(createAppError('IMPORT', 'QR scan failed.', {
+        code: 'PROFILE_TRANSFER_QR_SCAN_FAILED',
+        retryable: true
+      }));
+      this.publishCurrent('ERROR');
+      return;
+    }
+    if (token !== this.commandToken || this.disposed) {
+      return;
+    }
+    if (scanResult.kind === 'CANCELLED') {
+      this.publishCurrent('IDLE');
+      return;
+    }
+    const validation = sanitizeProfileTransferQrUrl(scanResult.value);
+    if (validation.kind === 'INVALID') {
+      this.error = createSafeErrorState(createAppError('IMPORT', validation.message, {
+        code: validation.code,
+        retryable: false
+      }));
+      this.publishCurrent('ERROR');
+      return;
+    }
+    const parsed: ParsedRemoteSourceInput | undefined = parseRemoteSourceInput(validation.url);
+    if (parsed === undefined) {
+      this.error = createSafeErrorState(createAppError('IMPORT', 'Scanned QR URL was invalid.', {
+        code: 'PROFILE_TRANSFER_INVALID_QR_URL',
+        retryable: false
+      }));
+      this.publishCurrent('ERROR');
+      return;
+    }
+    const importName: string = resolveQrImportName(this.nameDraft, validation.url);
+    if (parsed.plainHttp) {
+      this.pendingHttpImport = parsed;
+      this.pendingHttpName = importName;
+      this.httpConfirmationHost = parsed.host;
+      this.publishCurrent('CONFIRMING_HTTP');
+      return;
+    }
+    await this.executeUrlImport(parsed, false, importName);
   }
 
   cancelPlainHttpConfirmation(): void {
@@ -271,7 +337,7 @@ export class ImportProfileViewModel {
     }
   }
 
-  private publishCurrent(status: 'IDLE' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR'): void {
+  private publishCurrent(status: 'IDLE' | 'SCANNING' | 'CONFIRMING_HTTP' | 'SUBMITTING' | 'COMPLETED' | 'ERROR'): void {
     this.httpConfirmationHost = status === 'CONFIRMING_HTTP' && this.pendingHttpImport !== undefined
       ? this.pendingHttpImport.host
       : undefined;
@@ -306,6 +372,15 @@ export class ImportProfileViewModel {
       listeners[index](cloneNavigationIntent(intent));
     }
   }
+}
+
+function resolveQrImportName(currentDraft: string, normalizedUrl: string): string {
+  const existing: string = currentDraft.trim();
+  if (existing.length > 0 && existing.length <= 80) {
+    return existing;
+  }
+  const host: string = safeRemoteHostFromUrl(normalizedUrl) ?? 'QR subscription';
+  return host.length <= 80 ? host : host.substring(0, 80);
 }
 
 function createRemoteImportCommand(sourceUrl: string, name: string, allowPlainHttp: boolean): RemoteImportCommand {

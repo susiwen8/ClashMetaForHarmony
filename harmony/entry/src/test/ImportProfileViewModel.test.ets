@@ -1,5 +1,11 @@
 import { describe, expect, it } from '@ohos/hypium';
-import type { ImportProfileResult } from '@cmfa/shared';
+import {
+  createCancelledQrScanResult,
+  createScannedQrScanResult,
+  type ImportProfileResult,
+  type ProfileTransferQrScanResult,
+  type QrScannerPort
+} from '@cmfa/shared';
 import {
   ImportProfileViewModel,
   type ImportNavigationIntent
@@ -25,6 +31,20 @@ function assertNoPlaintextLeak(serialized: string): void {
   expect(serialized.includes('fixtures/')).assertFalse();
   expect(serialized.includes('opaque://')).assertFalse();
   expect(serialized.includes('proxies:')).assertFalse();
+}
+
+class FakeQrScanner implements QrScannerPort {
+  readonly outcomes: Array<Promise<ProfileTransferQrScanResult>> = [];
+  calls: number = 0;
+
+  async scan(): Promise<ProfileTransferQrScanResult> {
+    this.calls += 1;
+    const outcome = this.outcomes.shift();
+    if (outcome === undefined) {
+      throw new Error('unsafe scanner fixture');
+    }
+    return await outcome;
+  }
 }
 
 export default function importProfileViewModelTestsuite() {
@@ -354,6 +374,61 @@ export default function importProfileViewModelTestsuite() {
       expect(application.importUrlCommands.length).assertEqual(2);
       expect(application.commandLog.filter((entry: string): boolean => entry.startsWith('importUrl:')).length).assertEqual(2);
       assertNoPlaintextLeak(serialize(viewModel.current()));
+    });
+
+    it('importsScannedHttpsWithoutPublishingTheRawQrValue', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      application.queueImportUrlResult(createCreatedImportResult('qr-created'));
+      const scanner = new FakeQrScanner();
+      scanner.outcomes.push(Promise.resolve(
+        createScannedQrScanResult('https://qr.example.com/deep/config.yaml?token=secret')
+      ));
+      const viewModel = new ImportProfileViewModel(application, scanner);
+
+      await viewModel.requestScanQr();
+
+      expect(scanner.calls).assertEqual(1);
+      expect(application.importUrlCommands.length).assertEqual(1);
+      expect(application.importUrlCommands[0].profileName).assertEqual('qr.example.com');
+      expect(viewModel.currentUrlDraft()).assertEqual('');
+      expect(serialize(viewModel.current()).includes('token=secret')).assertFalse();
+    });
+
+    it('routesScannedHttpThroughConsentAndTreatsCancellationAsIdle', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      const scanner = new FakeQrScanner();
+      scanner.outcomes.push(Promise.resolve(createScannedQrScanResult('http://qr-http.example.com/config')));
+      scanner.outcomes.push(Promise.resolve(createCancelledQrScanResult()));
+      const viewModel = new ImportProfileViewModel(application, scanner);
+
+      await viewModel.requestScanQr();
+      expect(viewModel.current().status).assertEqual('CONFIRMING_HTTP');
+      expect(viewModel.current().httpConfirmationHost).assertEqual('qr-http.example.com');
+      expect(application.importUrlCommands.length).assertEqual(0);
+      viewModel.cancelPlainHttpConfirmation();
+      await viewModel.requestScanQr();
+      expect(viewModel.current().status).assertEqual('IDLE');
+    });
+
+    it('blocksDuplicateScansAndRedactsInvalidQrPayloads', 0, async () => {
+      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [], undefined, 'STOPPED'));
+      const scanner = new FakeQrScanner();
+      const deferred = new DeferredResult<ProfileTransferQrScanResult>();
+      scanner.outcomes.push(deferred.promise);
+      const viewModel = new ImportProfileViewModel(application, scanner);
+
+      const first = viewModel.requestScanQr();
+      const duplicate = viewModel.requestScanQr();
+      expect(viewModel.current().status).assertEqual('SCANNING');
+      expect(scanner.calls).assertEqual(1);
+      deferred.resolve(createScannedQrScanResult('ftp://secret.example.com/?token=secret'));
+      await first;
+      await duplicate;
+
+      expect(viewModel.current().status).assertEqual('ERROR');
+      expect(viewModel.current().error?.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
+      expect(serialize(viewModel.current()).includes('secret.example.com')).assertFalse();
+      expect(viewModel.currentUrlDraft()).assertEqual('');
     });
   });
 }
