@@ -22,7 +22,7 @@
 - Modify: `harmony/platform/Index.ets`
 - Modify: `harmony/platform/src/test/List.test.ets`
 
-- [ ] Write failing tests for missing, exact round-trip, 256-byte bound, corrupt/wrong-version/duplicate-key/invalid-ID fail-closed, short write, fsync/rename failure, `clearExpected` compare semantics, and idempotent repeated missing reads/non-matching clears/matching clears.
+- [ ] Write failing tests for missing, PREPARED/ACTIVE/RELEASED round-trip, 256-byte bound, corrupt/wrong-version/duplicate-key/invalid-phase/invalid-ID fail-closed, unique-temp write/write races, short write, fsync/rename failure, atomic-claim `clearExpected`, stale claims, and idempotent repeated reads/clears.
 - [ ] Run `cd harmony && ./hvigorw --mode module -p module=platform@default -p product=default -p buildMode=debug test`; confirm the new test is reported as `Error in HarmonyVpnOwnershipStoreTest` (Hvigor may still exit 0).
 - [ ] Implement `VpnPlatformOwnershipStorePort` and atomic `<filesDir>/vpn/active-platform-vpn-v1.json` storage without logging the ID.
 - [ ] Re-run the exact Platform command; require `BUILD SUCCESSFUL` and no `Error in` output.
@@ -35,7 +35,7 @@
 - Modify: `harmony/tests/structure/phase4-vpn-config.test.mjs`
 - Modify: `harmony/tests/structure/api20-sdk-contract.test.mjs`
 
-- [ ] Replace legacy expectations with failing tests for recover-old → clear → generate → persist → create(config.vpnId), real handle ID, ID-based normal destroy, failed create cleanup, failed destroy retention, corrupt-store rejection, and empty-store one-shot legacy fallback.
+- [ ] Replace legacy expectations with failing tests for PREPARED/ACTIVE/RELEASED recovery, generate → PREPARED → create/FD → ACTIVE, real handle ID, ID-based normal destroy → RELEASED → clear, failed create cleanup, platform-destroy vs store-cleanup retry separation, 19900001 recovery, corrupt-store rejection, and empty-store one-shot legacy fallback.
 - [ ] Run `cd harmony && ./hvigorw --mode module -p module=entry@default -p product=default -p buildMode=debug test` plus `node --test harmony/tests/structure/phase4-vpn-config.test.mjs harmony/tests/structure/api20-sdk-contract.test.mjs`; confirm RED.
 - [ ] Implement the minimal ordered driver state machine; only successful platform destroy may clear the durable ID.
 - [ ] Re-run focused tests and confirm GREEN.
