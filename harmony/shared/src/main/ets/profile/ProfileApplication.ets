@@ -95,6 +95,8 @@ export interface ProfileApplicationProfileSnapshot {
   sourceKind: ProfileSourceKind;
   availability: ProfileAvailability;
   updatedAt: string;
+  autoUpdateIntervalMs: number;
+  lastSuccessfulUpdateAt?: string;
   hasCurrentRevision: boolean;
   currentRevisionVersionId?: string;
   sourceRepairRequired: boolean;
@@ -1210,6 +1212,8 @@ class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfil
   sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   availability: ProfileAvailability = 'INVALID';
   updatedAt: string = '';
+  autoUpdateIntervalMs: number = 0;
+  lastSuccessfulUpdateAt?: string;
   hasCurrentRevision: boolean = false;
   currentRevisionVersionId?: string;
   sourceRepairRequired: boolean = false;
@@ -1287,6 +1291,8 @@ function createProfileApplicationProfileSnapshot(profile: Profile): ProfileAppli
   snapshot.sourceKind = profile.sourceKind;
   snapshot.availability = profile.availability;
   snapshot.updatedAt = profile.updatedAt;
+  snapshot.autoUpdateIntervalMs = profile.autoUpdateIntervalMs;
+  snapshot.lastSuccessfulUpdateAt = profile.lastSuccessfulUpdateAt === null ? undefined : profile.lastSuccessfulUpdateAt;
   snapshot.hasCurrentRevision = profile.currentRevision !== null;
   snapshot.currentRevisionVersionId = profile.currentRevision === null ? undefined : profile.currentRevision.validatedAt;
   snapshot.sourceRepairRequired = isSourceRepairRequired(profile);
@@ -1334,6 +1340,8 @@ function cloneProfileApplicationProfiles(profiles: ProfileApplicationProfileSnap
     snapshot.sourceKind = source.sourceKind;
     snapshot.availability = source.availability;
     snapshot.updatedAt = source.updatedAt;
+    snapshot.autoUpdateIntervalMs = source.autoUpdateIntervalMs;
+    snapshot.lastSuccessfulUpdateAt = source.lastSuccessfulUpdateAt;
     snapshot.hasCurrentRevision = source.hasCurrentRevision;
     snapshot.currentRevisionVersionId = source.currentRevisionVersionId;
     snapshot.sourceRepairRequired = source.sourceRepairRequired;

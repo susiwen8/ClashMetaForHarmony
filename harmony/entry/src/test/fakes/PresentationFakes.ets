@@ -96,6 +96,8 @@ interface ApplicationSnapshotOptions {
 interface ProfileSnapshotOptions {
   sourceKind?: ProfileSourceKind;
   lastError?: ProfileApplicationErrorSnapshot | null;
+  autoUpdateIntervalMs?: number;
+  lastSuccessfulUpdateAt?: string;
 }
 
 class DeferredCommand {
@@ -424,6 +426,8 @@ class ProfileApplicationProfileSnapshotValue implements ProfileApplicationProfil
   sourceKind: ProfileSourceKind = 'LOCAL_FILE';
   availability: 'VALID' | 'INVALID' | 'UPDATE_FAILED_USING_VALID' = 'INVALID';
   updatedAt: string = '';
+  autoUpdateIntervalMs: number = 0;
+  lastSuccessfulUpdateAt?: string;
   hasCurrentRevision: boolean = false;
   sourceRepairRequired: boolean = false;
   lastError: ProfileApplicationErrorSnapshot | null = null;
@@ -766,6 +770,8 @@ export function createProfileSnapshot(
   snapshot.sourceKind = options?.sourceKind ?? inferSourceKind(sourceDisplay);
   snapshot.availability = availability;
   snapshot.updatedAt = updatedAt;
+  snapshot.autoUpdateIntervalMs = options?.autoUpdateIntervalMs ?? 0;
+  snapshot.lastSuccessfulUpdateAt = options?.lastSuccessfulUpdateAt;
   snapshot.hasCurrentRevision = hasCurrentRevision;
   snapshot.lastError = options?.lastError ?? null;
   snapshot.sourceRepairRequired = resolveSourceRepairRequired(snapshot.sourceKind, snapshot.lastError);
@@ -1008,7 +1014,9 @@ function cloneProfiles(profiles: ProfileApplicationProfileSnapshot[]): ProfileAp
         profiles[index].hasCurrentRevision,
         {
           sourceKind: (profiles[index] as ProfileApplicationProfileSnapshotValue).sourceKind,
-          lastError: (profiles[index] as ProfileApplicationProfileSnapshotValue).lastError
+          lastError: (profiles[index] as ProfileApplicationProfileSnapshotValue).lastError,
+          autoUpdateIntervalMs: (profiles[index] as ProfileApplicationProfileSnapshotValue).autoUpdateIntervalMs,
+          lastSuccessfulUpdateAt: (profiles[index] as ProfileApplicationProfileSnapshotValue).lastSuccessfulUpdateAt
         }
       )
     );
@@ -1061,7 +1069,8 @@ function createProfileRecord(
     lastError: null,
     createdAt: '2026-08-11T12:30:00.000Z',
     updatedAt: '2026-08-11T12:30:00.000Z',
-    lastSuccessfulUpdateAt: availability === 'INVALID' ? null : '2026-08-11T12:30:00.000Z'
+    lastSuccessfulUpdateAt: availability === 'INVALID' ? null : '2026-08-11T12:30:00.000Z',
+    autoUpdateIntervalMs: 0
   });
 }
 

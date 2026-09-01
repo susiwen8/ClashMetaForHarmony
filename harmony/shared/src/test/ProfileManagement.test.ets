@@ -2269,7 +2269,7 @@ export default function profileManagementTestsuite() {
       const alphaRevision = buildRevision('alpha');
       const betaRevision = buildRevision('beta');
       const alpha = buildProfileRecord('alpha', 'VALID', 'LOCAL_FILE', alphaRevision);
-      const beta = buildProfileRecord('beta', 'UPDATE_FAILED_USING_VALID', 'REMOTE_URL', betaRevision, 'secret-beta');
+      const beta = buildProfileRecord('beta', 'UPDATE_FAILED_USING_VALID', 'REMOTE_URL', betaRevision, 'secret-beta', null, 300000);
       const repository = new FakeProfileRepository([alpha, beta], 'beta');
       const contentStore = new FakeProfileContentStore();
       const coreService = new FakeCoreService();
@@ -2290,6 +2290,15 @@ export default function profileManagementTestsuite() {
       expect(snapshot.profiles[0].id).assertEqual('alpha');
       expect(snapshot.profiles[1].id).assertEqual('beta');
       expect(snapshot.profiles[1].availability).assertEqual('UPDATE_FAILED_USING_VALID');
+      expect(snapshot.profiles[0].autoUpdateIntervalMs).assertEqual(0);
+      expect(snapshot.profiles[0].lastSuccessfulUpdateAt).assertEqual(buildTimestamp(3));
+      expect(snapshot.profiles[1].autoUpdateIntervalMs).assertEqual(300000);
+      expect(snapshot.profiles[1].lastSuccessfulUpdateAt).assertEqual(buildTimestamp(3));
+      snapshot.profiles[1].autoUpdateIntervalMs = 1;
+      snapshot.profiles[1].lastSuccessfulUpdateAt = 'mutated';
+      const clonedSnapshot: ProfileApplicationSnapshot = application.current();
+      expect(clonedSnapshot.profiles[1].autoUpdateIntervalMs).assertEqual(300000);
+      expect(clonedSnapshot.profiles[1].lastSuccessfulUpdateAt).assertEqual(buildTimestamp(3));
       expect(serialized.includes('sourceSecretRef')).assertFalse();
       expect(serialized.includes('/sandbox/profiles')).assertFalse();
       expect(serialized.includes('https://origin.example.com/subscription.yaml')).assertFalse();
@@ -2328,8 +2337,12 @@ export default function profileManagementTestsuite() {
       expect(repairSnapshot.sourceKind).assertEqual('REMOTE_URL');
       expect(repairSnapshot.sourceRepairRequired).assertTrue();
       expect(repairSnapshot.lastError?.code).assertEqual('SOURCE_SECRET_VERSION_UNSUPPORTED');
+      expect(repairSnapshot.autoUpdateIntervalMs).assertEqual(0);
+      expect(repairSnapshot.lastSuccessfulUpdateAt).assertEqual(undefined);
       expect(localSnapshot.sourceKind).assertEqual('LOCAL_FILE');
       expect(localSnapshot.sourceRepairRequired).assertFalse();
+      expect(localSnapshot.autoUpdateIntervalMs).assertEqual(0);
+      expect(localSnapshot.lastSuccessfulUpdateAt).assertEqual(undefined);
       expect(repairSnapshot.lastError?.technicalDetail.includes('https://repair.example.com')).assertTrue();
       expect(serialized.includes('token=secret')).assertFalse();
       expect(serialized.includes('/path')).assertFalse();
