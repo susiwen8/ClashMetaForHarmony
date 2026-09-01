@@ -327,7 +327,8 @@ export class ManageProfileUseCases {
         lastError: profile.lastError,
         createdAt: profile.createdAt,
         updatedAt: this.clock.now(),
-        lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
+        lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+        autoUpdateIntervalMs: profile.autoUpdateIntervalMs
       });
     } catch (error) {
       if (sourceChanged && nextSecretRef !== undefined) {

@@ -4,6 +4,7 @@ import type {
   IdGenerator,
   ImportProfileUseCaseDependencies as PortImportProfileUseCaseDependencies,
   LocalAcquireCommand as PortLocalAcquireCommand,
+  Profile,
   ProfileCommitServiceDependencies as PortProfileCommitServiceDependencies,
   ProfileContentStore,
   ProfileRepository,
@@ -13,7 +14,7 @@ import type {
   RemoteImportCommand as PortRemoteImportCommand,
   SubscriptionSecretStore
 } from '../../Index';
-import { SerialCommandQueue, ProfileCommitService, ImportProfileUseCase, RefreshProfileUseCase } from '../../Index';
+import { SerialCommandQueue, ProfileCommitService, ImportProfileUseCase, RefreshProfileUseCase, createProfile } from '../../Index';
 import {
   AcquiredLocalSource,
   AcquiredRemoteSource,
@@ -179,7 +180,7 @@ function assertNoPlaintextLeak(snapshot: string, forbiddenFragments: string[]): 
 function buildRemoteStateSnapshot(
   gateway: FakeProfileSourceGateway,
   secretStore: FakeSubscriptionSecretStore,
-  repository?: FakeProfileRepository
+  repository?: { savedProfiles: Profile[] }
 ): string {
   const parts: Object[] = [
     gateway.remoteCommands,
@@ -191,6 +192,93 @@ function buildRemoteStateSnapshot(
     parts.push(repository.savedProfiles);
   }
   return buildJsonStateSnapshot(parts);
+}
+
+function cloneProfileWithInterval(profile: Profile): Profile {
+  return createProfile({
+    id: profile.id,
+    name: profile.name,
+    sourceKind: profile.sourceKind,
+    sourceDisplay: profile.sourceDisplay,
+    sourceSecretRef: profile.sourceSecretRef,
+    currentRevision: profile.currentRevision,
+    failedCandidate: profile.failedCandidate,
+    availability: profile.availability,
+    lastError: profile.lastError,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: profile.autoUpdateIntervalMs
+  });
+}
+
+function buildProfileWithInterval(options: ProfileFixtureOptions, autoUpdateIntervalMs: number): Profile {
+  return createProfile({
+    id: options.id ?? 'profile-1',
+    name: options.name ?? 'Profile 1',
+    sourceKind: options.sourceKind ?? 'LOCAL_FILE',
+    sourceDisplay: options.sourceDisplay ?? 'profile.yaml',
+    sourceSecretRef: options.sourceSecretRef,
+    currentRevision: options.currentRevision ?? null,
+    failedCandidate: options.failedCandidate ?? null,
+    availability: options.availability ?? 'INVALID',
+    lastError: options.lastError ?? null,
+    createdAt: options.createdAt ?? '2026-08-07T00:00:00.000Z',
+    updatedAt: options.updatedAt ?? '2026-08-07T00:00:00.000Z',
+    lastSuccessfulUpdateAt: options.lastSuccessfulUpdateAt ?? null,
+    autoUpdateIntervalMs
+  });
+}
+
+class IntervalPreservingProfileRepository implements ProfileRepository {
+  readonly savedProfiles: Profile[] = [];
+  private readonly profiles: Map<string, Profile> = new Map<string, Profile>();
+  private activeIdValue: string | undefined;
+  private readonly timeline?: FakeOperationTimeline;
+
+  constructor(initialProfiles: Profile[], activeId?: string, timeline?: FakeOperationTimeline) {
+    for (let index = 0; index < initialProfiles.length; index += 1) {
+      const profile: Profile = initialProfiles[index];
+      this.profiles.set(profile.id, cloneProfileWithInterval(profile));
+    }
+    this.activeIdValue = activeId;
+    this.timeline = timeline;
+  }
+
+  async list(): Promise<Profile[]> {
+    const result: Profile[] = [];
+    for (const profile of this.profiles.values()) {
+      result.push(cloneProfileWithInterval(profile));
+    }
+    return result;
+  }
+
+  async get(id: string): Promise<Profile | undefined> {
+    this.timeline?.record('getProfile');
+    const profile: Profile | undefined = this.profiles.get(id);
+    return profile === undefined ? undefined : cloneProfileWithInterval(profile);
+  }
+
+  async save(profile: Profile): Promise<void> {
+    this.timeline?.record('saveProfile');
+    this.savedProfiles.push(cloneProfileWithInterval(profile));
+    this.profiles.set(profile.id, cloneProfileWithInterval(profile));
+  }
+
+  async deleteAndClearActive(id: string): Promise<void> {
+    this.profiles.delete(id);
+    if (this.activeIdValue === id) {
+      this.activeIdValue = undefined;
+    }
+  }
+
+  async getActiveId(): Promise<string | undefined> {
+    return this.activeIdValue;
+  }
+
+  async setActiveId(id: string | undefined): Promise<void> {
+    this.activeIdValue = id;
+  }
 }
 
 export default function profileImportUseCasesTestsuite() {
@@ -652,13 +740,12 @@ export default function profileImportUseCasesTestsuite() {
       existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
       existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
       existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
+      const existingProfile: Profile = buildProfileWithInterval(existingOptions, 300000);
       const timeline = new FakeOperationTimeline();
-      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-valid', timeline);
+      const repository = new IntervalPreservingProfileRepository([existingProfile], 'profile-refresh-valid', timeline);
       const contentStore = new FakeProfileContentStore(timeline);
       const gateway = new FakeProfileSourceGateway(timeline);
       const coreService = new FakeCoreService(timeline);
-      const firstSave: Deferred<void> = createDeferred<void>();
-      repository.saveDeferreds.push(firstSave);
       const useCase: RefreshProfileUseCase = createRefreshUseCase(
         repository,
         contentStore,
@@ -678,7 +765,6 @@ export default function profileImportUseCasesTestsuite() {
       await Promise.resolve();
 
       expect(contentStore.removedRevisions.length).assertEqual(0);
-      firstSave.resolve(undefined);
       const result = await pending;
 
       expect(result.kind).assertEqual('UPDATED');
@@ -689,6 +775,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.availability).assertEqual('VALID');
       expect(result.profile.currentRevision?.relativePath.includes('refresh-valid')).assertTrue();
       expect(result.profile.failedCandidate === null).assertTrue();
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(300000);
       expect(contentStore.removedRevisions.length).assertEqual(2);
       expect(collapseTimeline(timeline.entries)).assertEqual(
         'getProfile>acquire>validate>retainRevision>saveProfile>removeSuperseded'
@@ -706,7 +793,10 @@ export default function profileImportUseCasesTestsuite() {
       existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
       existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
       existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
-      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-refresh-invalid');
+      const repository = new IntervalPreservingProfileRepository(
+        [buildProfileWithInterval(existingOptions, 900000)],
+        'profile-refresh-invalid'
+      );
       const contentStore = new FakeProfileContentStore();
       const gateway = new FakeProfileSourceGateway();
       const coreService = new FakeCoreService();
@@ -737,6 +827,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
       expect(result.profile.failedCandidate !== null).assertTrue();
       expect(result.profile.lastError?.stage).assertEqual('VALIDATION');
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(900000);
       expect(contentStore.removedRevisions.length).assertEqual(0);
     });
 
@@ -798,7 +889,10 @@ export default function profileImportUseCasesTestsuite() {
       existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
       existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
       existingOptions.lastSuccessfulUpdateAt = '2026-08-07T00:00:00.000Z';
-      const repository = new FakeProfileRepository([buildProfile(existingOptions)], 'profile-remote-refresh');
+      const repository = new IntervalPreservingProfileRepository(
+        [buildProfileWithInterval(existingOptions, 120000)],
+        'profile-remote-refresh'
+      );
       const contentStore = new FakeProfileContentStore();
       const gateway = new FakeProfileSourceGateway();
       const secretStore = new FakeSubscriptionSecretStore();
@@ -823,10 +917,59 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.availability).assertEqual('UPDATE_FAILED_USING_VALID');
       expect(result.profile.currentRevision?.relativePath).assertEqual(previousCurrent.relativePath);
       expect(result.profile.failedCandidate === null).assertTrue();
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(120000);
       expect(result.profile.lastError?.code).assertEqual('SOURCE_SECRET_MISSING');
       expect(result.profile.lastError?.stage).assertEqual('PERSISTENCE');
       expect(result.profile.lastError?.retryable).assertFalse();
       expect(gateway.remoteCommands.length).assertEqual(0);
+    });
+
+    it('preservesAutoUpdateIntervalWhenRefreshingInvalidProfileFailure', 0, async () => {
+      const existingOptions = new ProfileFixtureOptions();
+      existingOptions.id = 'profile-refresh-invalid-no-current';
+      existingOptions.name = 'Refreshable Invalid';
+      existingOptions.sourceKind = 'LOCAL_FILE';
+      existingOptions.sourceDisplay = 'refresh-invalid.yaml';
+      existingOptions.currentRevision = null;
+      existingOptions.failedCandidate = null;
+      existingOptions.availability = 'INVALID';
+      existingOptions.createdAt = '2026-08-07T00:00:00.000Z';
+      existingOptions.updatedAt = '2026-08-07T00:00:30.000Z';
+      existingOptions.lastSuccessfulUpdateAt = null;
+      const repository = new IntervalPreservingProfileRepository(
+        [buildProfileWithInterval(existingOptions, 45000)],
+        'profile-refresh-invalid-no-current'
+      );
+      const contentStore = new FakeProfileContentStore();
+      const gateway = new FakeProfileSourceGateway();
+      const coreService = new FakeCoreService();
+      const useCase: RefreshProfileUseCase = createRefreshUseCase(
+        repository,
+        contentStore,
+        gateway,
+        new FakeSubscriptionSecretStore(),
+        coreService,
+        new FakeClock(['2026-08-07T01:00:00.000Z', '2026-08-07T01:01:00.000Z'])
+      );
+
+      gateway.localResults.push(new AcquiredLocalSource(
+        'Refreshable Invalid',
+        'refresh-invalid.yaml',
+        buildStagedSource('refresh-invalid-no-current', '/sandbox/cache/refresh-invalid-no-current.yaml')
+      ));
+      coreService.scriptedResults.push(new ScriptedVoidFailure(true, buildCoreError('CMFA_INVALID_ARGUMENT', 'invalid bearer hunter2', false)));
+
+      const result = await useCase.execute(new RefreshCommand('profile-refresh-invalid-no-current'));
+
+      expect(result.kind).assertEqual('UPDATED');
+      if (result.kind !== 'UPDATED') {
+        expect(false).assertTrue();
+        return;
+      }
+      expect(result.profile.availability).assertEqual('INVALID');
+      expect(result.profile.currentRevision).assertNull();
+      expect(result.profile.failedCandidate !== null).assertTrue();
+      expect(result.profile.autoUpdateIntervalMs).assertEqual(45000);
     });
 
     it('preservesSourceSecretVersionUnsupportedDuringRemoteRefreshWithoutAcquisitionOrNewCandidate', 0, async () => {

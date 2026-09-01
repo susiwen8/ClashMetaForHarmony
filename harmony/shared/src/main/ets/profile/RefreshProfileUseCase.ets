@@ -218,7 +218,8 @@ export class RefreshProfileUseCase {
         lastError: null,
         createdAt: existing.createdAt,
         updatedAt,
-        lastSuccessfulUpdateAt
+        lastSuccessfulUpdateAt,
+        autoUpdateIntervalMs: existing.autoUpdateIntervalMs
       });
       const superseded: ProfileRevision[] = collectSuperseded(existing.currentRevision, existing.failedCandidate);
       const transaction: SaveProfileTransaction = {
@@ -261,7 +262,8 @@ export class RefreshProfileUseCase {
       lastError: appError,
       createdAt: existing.createdAt,
       updatedAt,
-      lastSuccessfulUpdateAt: existing.lastSuccessfulUpdateAt
+      lastSuccessfulUpdateAt: existing.lastSuccessfulUpdateAt,
+      autoUpdateIntervalMs: existing.autoUpdateIntervalMs
     });
     const superseded: ProfileRevision[] = [];
     if (retainedFailedCandidate !== null && existing.failedCandidate !== null) {

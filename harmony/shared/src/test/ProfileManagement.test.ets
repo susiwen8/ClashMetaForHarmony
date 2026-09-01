@@ -1435,7 +1435,8 @@ function buildProfileRecord(
   sourceKind: 'LOCAL_FILE' | 'REMOTE_URL',
   currentRevision: ProfileRevision | null,
   sourceSecretRef?: string,
-  lastError: AppError | null = null
+  lastError: AppError | null = null,
+  autoUpdateIntervalMs: number = 0
 ): Profile {
   return createProfile({
     id,
@@ -1449,7 +1450,8 @@ function buildProfileRecord(
     lastError,
     createdAt: buildTimestamp(2),
     updatedAt: buildTimestamp(3),
-    lastSuccessfulUpdateAt: currentRevision === null ? null : buildTimestamp(3)
+    lastSuccessfulUpdateAt: currentRevision === null ? null : buildTimestamp(3),
+    autoUpdateIntervalMs
   });
 }
 
@@ -1488,7 +1490,8 @@ function cloneProfile(profile: Profile): Profile {
     lastError: profile.lastError,
     createdAt: profile.createdAt,
     updatedAt: profile.updatedAt,
-    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt
+    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: profile.autoUpdateIntervalMs
   });
 }
 
@@ -1971,7 +1974,7 @@ export default function profileManagementTestsuite() {
 
     it('updateMetadataRenamesWithoutSecretMutationAndMarksSourceUnchanged', 0, async () => {
       const revision = buildRevision('remote-update-name');
-      const profile = buildProfileRecord('remote-update-name', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const profile = buildProfileRecord('remote-update-name', 'VALID', 'REMOTE_URL', revision, 'secret-old', null, 300000);
       const repository = new FakeProfileRepository([profile], 'remote-update-name');
       const secretStore = new FakeSubscriptionSecretStore();
       secretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml?token=secret');
@@ -1990,15 +1993,17 @@ export default function profileManagementTestsuite() {
       }
       expect(updated.profile.name).assertEqual('Renamed remote profile');
       expect(updated.profile.sourceDisplay).assertEqual('https://origin.example.com');
+      expect(updated.profile.autoUpdateIntervalMs).assertEqual(300000);
       expect(updated.sourceChanged).assertFalse();
       expect(secretStore.encryptCalls.length).assertEqual(0);
       expect(secretStore.removeCalls.length).assertEqual(0);
       expect(repository.readProfile('remote-update-name')?.sourceSecretRef).assertEqual('secret-old');
+      expect(repository.readProfile('remote-update-name')?.autoUpdateIntervalMs).assertEqual(300000);
     });
 
     it('updateMetadataEncryptsNewRemoteUrlAndCompensatesValidationOrLocalFailures', 0, async () => {
       const revision = buildRevision('remote-update-url');
-      const profile = buildProfileRecord('remote-update-url', 'VALID', 'REMOTE_URL', revision, 'secret-old');
+      const profile = buildProfileRecord('remote-update-url', 'VALID', 'REMOTE_URL', revision, 'secret-old', null, 600000);
       const repository = new FakeProfileRepository([profile], 'remote-update-url');
       const secretStore = new FakeSubscriptionSecretStore();
       secretStore.storedSecrets.set('secret-old', 'https://origin.example.com/subscription.yaml');
@@ -2017,6 +2022,7 @@ export default function profileManagementTestsuite() {
       }
       expect(updated.profile.name).assertEqual('Renamed remote profile');
       expect(updated.profile.sourceDisplay).assertEqual('https://next.example.com');
+      expect(updated.profile.autoUpdateIntervalMs).assertEqual(600000);
       expect(updated.sourceChanged).assertTrue();
       expect(secretStore.encryptCalls.join('>')).assertEqual('https://next.example.com/subscription.yaml?token=next');
       expect(secretStore.removeCalls.join('>')).assertEqual('secret-old');
