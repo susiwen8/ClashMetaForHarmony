@@ -8,6 +8,11 @@ import { pathToFileURL } from 'node:url';
 
 import { inspectToolchain } from '../../tools/lib/toolchain.mjs';
 import {
+  defaultListArchiveEntries,
+  defaultReadSignature,
+  defaultVerifySignature
+} from './inspect-phase4-packages.mjs';
+import {
   createDefaultPhase4ExternalOrigin,
   normalizePhase4ExternalOrigin
 } from './phase4-external-origin.mjs';
@@ -114,6 +119,34 @@ function isObject(value) {
 
 function delay(milliseconds) {
   return new Promise((resolve) => setTimeout(resolve, milliseconds));
+}
+
+export async function defaultVerifySignedHap(hapPath, {
+  listArchiveEntriesImpl = defaultListArchiveEntries,
+  readSignatureImpl = defaultReadSignature,
+  verifySignatureImpl = async (options) => await defaultVerifySignature(options)
+} = {}) {
+  if (/-unsigned\.hap$/iu.test(path.basename(`${hapPath ?? ''}`))) {
+    return false;
+  }
+  try {
+    const archiveListing = await listArchiveEntriesImpl(hapPath);
+    const embeddedSignature = await readSignatureImpl(hapPath, archiveListing);
+    const verifiedSignature = await verifySignatureImpl({ hapPath });
+    return HASH_PATTERN.test(`${embeddedSignature?.signatureSha256 ?? ''}`) &&
+      HASH_PATTERN.test(`${verifiedSignature?.signatureSha256 ?? ''}`);
+  } catch {
+    return false;
+  }
+}
+
+export async function defaultCloseNotificationCenter({ target, hdcCommand, execImpl, cwd }) {
+  const result = await execImpl(
+    hdcCommand,
+    buildTargetedHdcArgs(target, ['shell', 'uitest', 'uiInput', 'keyEvent', 'Back']),
+    { cwd }
+  );
+  return !(result?.error || result?.timedOut || result?.exitCode !== 0);
 }
 
 async function readSchemaDocument(fsApi = fs) {
@@ -628,6 +661,7 @@ export async function defaultCollectEvidence({
   startOriginImpl = async (options) => await defaultStartOrigin(options),
   runVpnProbeImpl = async (options) => await defaultRunVpnProbeImpl(options),
   openNotificationCenterImpl = openNotificationCenter,
+  closeNotificationCenterImpl = async (options) => await defaultCloseNotificationCenter(options),
   waitForUniqueLayoutSelectionImpl = waitForUniqueLayoutSelection,
   delayImpl = async (milliseconds) => await delay(milliseconds)
 } = {}) {
@@ -644,6 +678,8 @@ export async function defaultCollectEvidence({
     notificationLayoutPath
   };
   let originHandle = null;
+  let probePromise = null;
+  let notificationCenterOpened = false;
   const readHomeLayout = async () => await dumpLayoutImpl({ target, hdcCommand, execImpl, cwd, localPath: homeLayoutPath });
   const readNotificationLayout = async () => await dumpLayoutImpl({ target, hdcCommand, execImpl, cwd, localPath: notificationLayoutPath });
   try {
@@ -657,7 +693,7 @@ export async function defaultCollectEvidence({
     originHandle = await startOriginImpl({ runId, deviceIpv4Candidates });
 
     const probeState = { done: false, result: null };
-    const probePromise = Promise.resolve(runVpnProbeImpl({
+    probePromise = Promise.resolve(runVpnProbeImpl({
       target,
       hdcCommand,
       execImpl,
@@ -697,6 +733,7 @@ export async function defaultCollectEvidence({
           evidence.notificationHomeLayout = currentLayout;
           try {
             await openNotificationCenterImpl(currentLayout, { target, hdcCommand, execImpl, cwd });
+            notificationCenterOpened = true;
             const notificationEvidence = await waitForUniqueLayoutSelectionImpl({
               readLayoutImpl: readNotificationLayout,
               selectImpl: selectUniqueAppOngoingNotification,
@@ -729,6 +766,12 @@ export async function defaultCollectEvidence({
     }
     return evidence;
   } finally {
+    if (probePromise !== null) {
+      await Promise.allSettled([probePromise]);
+    }
+    if (notificationCenterOpened) {
+      await closeNotificationCenterImpl({ target, hdcCommand, execImpl, cwd }).catch(() => {});
+    }
     await originHandle?.close?.().catch(() => {});
     await cleanupTempFiles(fsApi, [homeLayoutPath, notificationLayoutPath]);
   }
@@ -740,6 +783,7 @@ export async function runHomeTrafficDeviceProof({
   execImpl = execCommand,
   toolchainInspectorImpl = inspectToolchain,
   hashFileImpl = hashFile,
+  verifySignedHapImpl = async (hapPath) => await defaultVerifySignedHap(hapPath),
   collectEvidenceImpl = defaultCollectEvidence,
   writeValidatedProofImpl = writeValidatedHomeTrafficProof,
   serial = null,
@@ -755,9 +799,18 @@ export async function runHomeTrafficDeviceProof({
   try {
     const safeProductionHapPath = await ensureRepoScopedExistingFile(fsApi, repoRoot, productionHapPath, '--production-hap');
     const safeProbeHapPath = await ensureRepoScopedExistingFile(fsApi, repoRoot, probeHapPath, '--probe-hap');
-    const packageSha256 = await hashFileImpl(fsApi, safeProductionHapPath);
-    if (HASH_PATTERN.test(`${packageSha256 ?? ''}`)) {
-      proof.packageSha256 = packageSha256;
+    const [productionSigned, probeSigned] = await Promise.all([
+      verifySignedHapImpl(safeProductionHapPath).catch(() => false),
+      verifySignedHapImpl(safeProbeHapPath).catch(() => false)
+    ]);
+    if (productionSigned) {
+      const packageSha256 = await hashFileImpl(fsApi, safeProductionHapPath);
+      if (HASH_PATTERN.test(`${packageSha256 ?? ''}`)) {
+        proof.packageSha256 = packageSha256;
+      }
+    }
+    if (!productionSigned || !probeSigned) {
+      return await writeValidatedProofImpl(proof, { outputPath, fsApi, repoRoot });
     }
 
     const resolved = await resolveToolchainAndTarget({

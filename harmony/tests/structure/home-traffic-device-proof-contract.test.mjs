@@ -138,6 +138,12 @@ function createDeferred() {
   return { promise, resolve, reject };
 }
 
+async function flushMicrotasks(count = 4) {
+  for (let index = 0; index < count; index += 1) {
+    await Promise.resolve();
+  }
+}
+
 function createPassProof(overrides = {}) {
   return {
     schemaVersion: '1.0.0',
@@ -406,6 +412,7 @@ test('home traffic device proof runner emits pass only with complete probe and n
 
   const callOrder = [];
   const execCalls = [];
+  const verifiedPaths = [];
   const fullEvidence = {
     beforeLayout: createHomeTrafficLayout({
       uploadSpeed: '0 B/s',
@@ -447,6 +454,10 @@ test('home traffic device proof runner emits pass only with complete probe and n
     probeHapPath,
     outputPath,
     hashFileImpl: async () => FIXTURE_SHA256,
+    verifySignedHapImpl: async (hapPath) => {
+      verifiedPaths.push(hapPath);
+      return true;
+    },
     toolchainInspectorImpl: async () => ({
       report: { result: 'pass' },
       resolved: { paths: { hdc: 'hdc-bin' } }
@@ -479,6 +490,7 @@ test('home traffic device proof runner emits pass only with complete probe and n
   assert.equal(callOrder.findLastIndex((entry) => entry.startsWith('cleanup:')) > callOrder.indexOf('collect'), true);
   assert.equal(execCalls.some((entry) => entry.includes('force-stop com.github.kr328.clash.harmony')), true);
   assert.equal(execCalls.some((entry) => entry.includes('force-stop com.cmfa.phase4.trafficprobe')), true);
+  assert.deepEqual(verifiedPaths, [productionHapPath, probeHapPath]);
 
   const missingNotification = await runner.runHomeTrafficDeviceProof({
     repoRoot: REPO_ROOT,
@@ -488,6 +500,7 @@ test('home traffic device proof runner emits pass only with complete probe and n
     probeHapPath,
     outputPath,
     hashFileImpl: async () => FIXTURE_SHA256,
+    verifySignedHapImpl: async () => true,
     toolchainInspectorImpl: async () => ({
       report: { result: 'pass' },
       resolved: { paths: { hdc: 'hdc-bin' } }
@@ -509,6 +522,7 @@ test('home traffic device proof runner emits pass only with complete probe and n
     probeHapPath,
     outputPath,
     hashFileImpl: async () => FIXTURE_SHA256,
+    verifySignedHapImpl: async () => true,
     toolchainInspectorImpl: async () => ({
       report: { result: 'pass' },
       resolved: { paths: { hdc: 'hdc-bin' } }
@@ -524,6 +538,51 @@ test('home traffic device proof runner emits pass only with complete probe and n
     })
   });
   assert.deepEqual(missingProbe, createIncompleteProof());
+
+  let collectCalls = 0;
+  const unsignedProduction = await runner.runHomeTrafficDeviceProof({
+    repoRoot: REPO_ROOT,
+    serial: 'SERIAL123',
+    fsApi: fs,
+    productionHapPath,
+    probeHapPath,
+    outputPath,
+    hashFileImpl: async () => FIXTURE_SHA256,
+    verifySignedHapImpl: async (hapPath) => hapPath === productionHapPath ? false : true,
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: 'hdc-bin' } }
+    }),
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    collectEvidenceImpl: async () => {
+      collectCalls += 1;
+      return fullEvidence;
+    }
+  });
+  assert.deepEqual(unsignedProduction, createIncompleteProof());
+  assert.equal(collectCalls, 0);
+
+  const unsignedProbe = await runner.runHomeTrafficDeviceProof({
+    repoRoot: REPO_ROOT,
+    serial: 'SERIAL123',
+    fsApi: fs,
+    productionHapPath,
+    probeHapPath,
+    outputPath,
+    hashFileImpl: async () => FIXTURE_SHA256,
+    verifySignedHapImpl: async (hapPath) => hapPath === probeHapPath ? false : true,
+    toolchainInspectorImpl: async () => ({
+      report: { result: 'pass' },
+      resolved: { paths: { hdc: 'hdc-bin' } }
+    }),
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    collectEvidenceImpl: async () => {
+      collectCalls += 1;
+      return fullEvidence;
+    }
+  });
+  assert.deepEqual(unsignedProbe, createIncompleteProof());
+  assert.equal(collectCalls, 0);
 });
 
 test('home traffic default evidence collection uses controlled origin, real vpn probe, active layout sampling, and notification extraction; failed probe stays fail-closed', async () => {
@@ -683,6 +742,142 @@ test('home traffic default evidence collection uses controlled origin, real vpn 
   assert.equal(failedEvidence.downloadLayout, null);
   assert.equal(failedEvidence.notificationLayouts.length, 0);
   assert.equal(failedEvidence.probeResult.result, 'fail');
+});
+
+test('home traffic default evidence collection settles the probe before origin close on async failure and best-effort closes notification center after opening it', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  const deferredProbe = createDeferred();
+  const events = [];
+  let delayCount = 0;
+  const beforeLayout = createHomeTrafficLayout({
+    uploadSpeed: '0 B/s',
+    uploadTotal: '1 KiB',
+    downloadSpeed: '0 B/s',
+    downloadTotal: '2 KiB'
+  });
+  const uploadLayout = createHomeTrafficLayout({
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
+    downloadSpeed: '0 B/s',
+    downloadTotal: '2 KiB'
+  });
+  const downloadLayout = createHomeTrafficLayout({
+    uploadSpeed: '8 KiB/s',
+    uploadTotal: '3 KiB',
+    downloadSpeed: '14 KiB/s',
+    downloadTotal: '9 KiB'
+  });
+  const notificationLayout = createNotificationLayout({ speedText: '↑ 8.0 KiB/s  ↓ 14.0 KiB/s' });
+
+  const pending = runner.defaultCollectEvidence({
+    fsApi: fs,
+    target: 'SERIAL123',
+    hdcCommand: 'hdc-bin',
+    execImpl: async () => ({ exitCode: 0, stdout: '', stderr: '', timedOut: false }),
+    cwd: REPO_ROOT,
+    tempRoot: await fs.mkdtemp(path.join(HARMONY_ROOT, 'artifacts', 'home-traffic-evidence-pending-')),
+    runId: '33333333-3333-4333-8333-333333333333',
+    launchProductionImpl: async () => {
+      events.push('launch');
+    },
+    readDeviceLanIpv4CandidatesImpl: async () => [{ name: 'wlan0', address: '192.168.0.8', netmask: '255.255.255.0' }],
+    createExternalOriginImpl: async () => ({
+      hostIpv4: '52.43.121.77',
+      tcpHostIpv4: '223.5.5.5',
+      tcpPort: 80,
+      udpPort: 10001,
+      dnsPort: 10001
+    }),
+    normalizeExternalOriginImpl: (value) => value,
+    startOriginImpl: async () => ({
+      close: async () => {
+        events.push('close-origin');
+      },
+      https: { host: '192.168.0.9', port: 443, caPem: 'hidden' },
+      tcp: { port: 9090 },
+      udp: { port: 9091 }
+    }),
+    runVpnProbeImpl: async () => {
+      events.push('probe-start');
+      return await deferredProbe.promise;
+    },
+    dumpLayoutImpl: async () => {
+      if (!events.includes('home-1')) {
+        events.push('home-1');
+        return beforeLayout;
+      }
+      if (!events.includes('home-2')) {
+        events.push('home-2');
+        return uploadLayout;
+      }
+      if (!events.includes('home-3')) {
+        events.push('home-3');
+        return downloadLayout;
+      }
+      return notificationLayout;
+    },
+    openNotificationCenterImpl: async () => {
+      events.push('open-notification');
+    },
+    waitForUniqueLayoutSelectionImpl: async ({ readLayoutImpl }) => {
+      events.push('wait-notification');
+      return {
+        layout: await readLayoutImpl(),
+        selection: { node: notificationLayout.root.children[0] }
+      };
+    },
+    closeNotificationCenterImpl: async () => {
+      events.push('close-notification');
+      throw new Error('back failed');
+    },
+    delayImpl: async () => {
+      delayCount += 1;
+      if (delayCount === 1) {
+        throw new Error('sampling-failed');
+      }
+    }
+  });
+
+  await flushMicrotasks();
+  assert.equal(events.includes('close-origin'), false);
+  assert.equal(events.includes('close-notification'), false);
+
+  deferredProbe.resolve(createPassingProbeResult());
+  await assert.rejects(async () => await pending, /sampling-failed/u);
+  assert.equal(events.indexOf('close-notification') !== -1, true);
+  assert.equal(events.indexOf('close-origin') !== -1, true);
+  assert.equal(events.indexOf('close-notification') < events.indexOf('close-origin'), true);
+});
+
+test('home traffic signed hap verification accepts only embedded verified signatures and rejects unsigned packages', async () => {
+  const runner = await import(RUNNER_MODULE_PATH);
+  assert.equal(typeof runner.defaultVerifySignedHap, 'function');
+
+  assert.equal(
+    await runner.defaultVerifySignedHap('/tmp/entry-default-unsigned.hap'),
+    false
+  );
+
+  const verified = await runner.defaultVerifySignedHap('/tmp/entry-default-signed.hap', {
+    listArchiveEntriesImpl: async () => ({ entries: ['module.json'], entryCount: 1, occurrences: { 'module.json': 1 } }),
+    readSignatureImpl: async () => ({ signatureSha256: FIXTURE_SHA256 }),
+    verifySignatureImpl: async () => ({ signatureSha256: FIXTURE_SHA256 })
+  });
+  assert.equal(verified, true);
+
+  const missingEmbedded = await runner.defaultVerifySignedHap('/tmp/entry-default-signed.hap', {
+    listArchiveEntriesImpl: async () => ({ entries: ['module.json'], entryCount: 1, occurrences: { 'module.json': 1 } }),
+    readSignatureImpl: async () => null,
+    verifySignatureImpl: async () => ({ signatureSha256: FIXTURE_SHA256 })
+  });
+  assert.equal(missingEmbedded, false);
+
+  const missingVerified = await runner.defaultVerifySignedHap('/tmp/entry-default-signed.hap', {
+    listArchiveEntriesImpl: async () => ({ entries: ['module.json'], entryCount: 1, occurrences: { 'module.json': 1 } }),
+    readSignatureImpl: async () => ({ signatureSha256: FIXTURE_SHA256 }),
+    verifySignatureImpl: async () => null
+  });
+  assert.equal(missingVerified, false);
 });
 
 test('home traffic device proof writer enforces strict pass predicates and repo-safe output paths while falling back to canonical incomplete', async () => {
