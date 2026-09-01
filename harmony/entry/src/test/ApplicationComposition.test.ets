@@ -22,6 +22,7 @@ import {
   createVpnRuntimeSnapshot,
   createVpnStartRequest,
   ImportProfileUseCase,
+  LeasedRemoteProfileRefresher,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
   ProfileApplication,
@@ -62,6 +63,7 @@ import {
   type ProxySelectionRepository,
   type ProxySelectionResult,
   type ProfileContentStore,
+  type ProfileRefreshLeasePort,
   type ProfileRepository,
   type ProfileRevision,
   type ProfileSourceGateway,
@@ -261,6 +263,23 @@ class InertSecretStore implements SubscriptionSecretStore {
   }
 }
 
+class InertProfileRefreshLeasePort implements ProfileRefreshLeasePort {
+  tryAcquireCallCount: number = 0;
+
+  async tryAcquire(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    this.tryAcquireCallCount += 1;
+    return true;
+  }
+
+  async renew(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async release(_profileId: string, _ownerToken: string): Promise<boolean> {
+    return true;
+  }
+}
+
 class InertProxySelectionRepository implements ProxySelectionRepository {
   async listByProfile(_profileId: string): Promise<ProxySelectionRecord[]> {
     return [];
@@ -355,6 +374,7 @@ class RecordingOneClickVpnConfirmation implements OneClickVpnConfirmationPort {
 
 class RecordingPlatformGraph implements PlatformGraph {
   readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: InertProfileRefreshLeasePort;
   readonly proxySelectionRepository: ProxySelectionRepository;
   readonly proxyIdentityHasher: ProxyIdentityHasher;
   readonly contentStore: ProfileContentStore;
@@ -372,6 +392,7 @@ class RecordingPlatformGraph implements PlatformGraph {
     secretStore?: SubscriptionSecretStore
   ) {
     this.repository = repository ?? new InertRepository();
+    this.profileRefreshLeasePort = new InertProfileRefreshLeasePort();
     this.proxySelectionRepository = new InertProxySelectionRepository();
     this.proxyIdentityHasher = new InertProxyIdentityHasher();
     this.contentStore = contentStore ?? new InertContentStore();
@@ -1332,19 +1353,25 @@ function createProfileApplicationDependencies(
     queue,
     commitService
   });
+  const refreshClock = new FixedClock(
+    '2026-08-11T12:04:00.000Z',
+    '2026-08-11T12:04:01.000Z',
+    '2026-08-11T12:04:02.000Z'
+  );
   const refreshUseCase = new RefreshProfileUseCase({
     repository: graph.repository,
     contentStore: graph.contentStore,
     sourceGateway,
     secretStore,
     coreService,
-    clock: new FixedClock(
-      '2026-08-11T12:04:00.000Z',
-      '2026-08-11T12:04:01.000Z',
-      '2026-08-11T12:04:02.000Z'
-    ),
+    clock: refreshClock,
     queue,
-    commitService
+    commitService,
+    leasedRemoteRefresher: createLeasedRemoteProfileRefresher(
+      graph.profileRefreshLeasePort,
+      refreshClock,
+      graph.idGenerator
+    )
   });
   const manageProfileUseCases = new ManageProfileUseCases({
     repository: graph.repository,
@@ -1371,6 +1398,18 @@ function createProfileApplicationDependencies(
     vpnController,
     idGenerator: graph.idGenerator
   };
+}
+
+function createLeasedRemoteProfileRefresher(
+  leasePort: ProfileRefreshLeasePort,
+  clock: Clock,
+  idGenerator: IdGenerator
+): LeasedRemoteProfileRefresher {
+  return new LeasedRemoteProfileRefresher({
+    leasePort,
+    clock,
+    idGenerator
+  });
 }
 
 function createRealProfileApplication(

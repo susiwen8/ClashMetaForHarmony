@@ -5,6 +5,7 @@ import {
   ActiveProfileProxyResolver,
   createProfile,
   ImportProfileUseCase,
+  LeasedRemoteProfileRefresher,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
   ProfileApplication,
@@ -357,7 +358,8 @@ function createProductionProfileApplication(
       coreService,
       clock: graph.clock,
       queue,
-      commitService
+      commitService,
+      leasedRemoteRefresher: createLeasedRemoteProfileRefresher(graph)
     }),
     manageProfileUseCases: new ManageProfileUseCases({
       repository: graph.repository,
@@ -380,6 +382,14 @@ function createProductionProfileApplication(
       new VpnProxyCommandBus(),
       graph.clock
     )
+  });
+}
+
+function createLeasedRemoteProfileRefresher(graph: PlatformGraph): LeasedRemoteProfileRefresher {
+  return new LeasedRemoteProfileRefresher({
+    leasePort: graph.profileRefreshLeasePort,
+    clock: graph.clock,
+    idGenerator: graph.idGenerator
   });
 }
 

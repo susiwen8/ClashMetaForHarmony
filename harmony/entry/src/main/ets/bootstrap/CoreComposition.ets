@@ -18,6 +18,7 @@ import {
   createProxyRuntimeIdentity,
   ImportProfileUseCase,
   LocalRuntimeCoordinator,
+  LeasedRemoteProfileRefresher,
   ManageProfileUseCases,
   ProfileApplication,
   ProfileCommitService,
@@ -782,6 +783,11 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       contentStore: graph.contentStore,
       clock: graph.clock
     });
+    const leasedRemoteRefresher = new LeasedRemoteProfileRefresher({
+      leasePort: graph.profileRefreshLeasePort,
+      clock: graph.clock,
+      idGenerator: graph.idGenerator
+    });
     const importUseCase = new ImportProfileUseCase({
       repository: graph.repository,
       contentStore: graph.contentStore,
@@ -801,7 +807,8 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       coreService,
       clock: graph.clock,
       queue,
-      commitService
+      commitService,
+      leasedRemoteRefresher
     });
     const manageProfileUseCases = new ManageProfileUseCases({
       repository: graph.repository,

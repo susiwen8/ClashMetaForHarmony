@@ -1,6 +1,7 @@
 import { isCoreError, type CoreError } from '../core/CoreErrors';
 import { createAppError, type AppError } from './AppErrors';
 import { mapCoreError } from './CoreErrorMapper';
+import { LeasedRemoteProfileRefresher } from './LeasedRemoteProfileRefresher';
 import { createProfile, type Profile, type ProfileAvailability, type ProfileRevision } from './ProfileModels';
 import { ProfileCommitError, ProfileCommitService, type SaveProfileTransaction } from './ProfileCommitService';
 import type {
@@ -28,7 +29,13 @@ export interface RefreshProfileUseCaseDependencies {
   clock: Clock;
   queue: SerialCommandQueue;
   commitService: ProfileCommitService;
+  leasedRemoteRefresher: LeasedRemoteProfileRefresher;
 }
+
+const PROFILE_REFRESH_BUSY_CODE: string = 'PROFILE_REFRESH_BUSY';
+const PROFILE_REFRESH_BUSY_DETAIL: string = 'Profile refresh is already in progress.';
+const PROFILE_REFRESH_LEASE_FAILED_CODE: string = 'PROFILE_REFRESH_LEASE_FAILED';
+const PROFILE_REFRESH_LEASE_FAILED_DETAIL: string = 'Profile refresh lease failed.';
 
 interface ValidationCoreService {
   validateConfiguration(path: string): Promise<void>;
@@ -89,6 +96,7 @@ export class RefreshProfileUseCase {
   private readonly clock: Clock;
   private readonly queue: SerialCommandQueue;
   private readonly commitService: ProfileCommitService;
+  private readonly leasedRemoteRefresher: LeasedRemoteProfileRefresher;
 
   constructor(dependencies: RefreshProfileUseCaseDependencies) {
     this.repository = dependencies.repository;
@@ -99,6 +107,7 @@ export class RefreshProfileUseCase {
     this.clock = dependencies.clock;
     this.queue = dependencies.queue;
     this.commitService = dependencies.commitService;
+    this.leasedRemoteRefresher = dependencies.leasedRemoteRefresher;
   }
 
   execute(command: RefreshProfileCommand): Promise<RefreshProfileResult> {
@@ -116,8 +125,32 @@ export class RefreshProfileUseCase {
       if (existing.sourceKind === 'LOCAL_FILE') {
         return await this.refreshLocal(existing);
       }
-      return await this.refreshRemote(existing, command.allowPlainHttp === true);
+      return await this.refreshRemoteWithLease(existing, command.allowPlainHttp === true);
     });
+  }
+
+  private async refreshRemoteWithLease(existing: Profile, allowPlainHttp: boolean): Promise<RefreshProfileResult> {
+    try {
+      const leasedResult = await this.leasedRemoteRefresher.execute(
+        existing.id,
+        async (): Promise<RefreshProfileResult> => {
+          try {
+            return await this.refreshRemote(existing, allowPlainHttp);
+          } catch (error) {
+            return new RefreshProfileFailedResultValue(this.toUnexpectedStageError('DOWNLOAD', error));
+          }
+        }
+      );
+      if (leasedResult.kind === 'BUSY') {
+        return new RefreshProfileFailedResultValue(createProfileRefreshBusyError(this.clock));
+      }
+      return leasedResult.value;
+    } catch (error) {
+      if (isLeasedRemoteProfileRefreshError(error)) {
+        return new RefreshProfileFailedResultValue(createProfileRefreshLeaseFailedError(this.clock));
+      }
+      throw error;
+    }
   }
 
   private async refreshLocal(existing: Profile): Promise<RefreshProfileResult> {
@@ -327,6 +360,31 @@ export class RefreshProfileUseCase {
       timestamp: this.clock.now()
     });
   }
+}
+
+function createProfileRefreshBusyError(clock: Clock): AppError {
+  return createAppError('PERSISTENCE', PROFILE_REFRESH_BUSY_DETAIL, {
+    code: PROFILE_REFRESH_BUSY_CODE,
+    retryable: true,
+    timestamp: clock.now()
+  });
+}
+
+function createProfileRefreshLeaseFailedError(clock: Clock): AppError {
+  return createAppError('PERSISTENCE', PROFILE_REFRESH_LEASE_FAILED_DETAIL, {
+    code: PROFILE_REFRESH_LEASE_FAILED_CODE,
+    retryable: true,
+    timestamp: clock.now()
+  });
+}
+
+function isLeasedRemoteProfileRefreshError(value: Object | undefined): boolean {
+  if (value === undefined || typeof value !== 'object') {
+    return false;
+  }
+  const record: Record<string, Object> = value as Record<string, Object>;
+  return record.name === 'LeasedRemoteProfileRefreshError' &&
+    record.code === PROFILE_REFRESH_LEASE_FAILED_CODE;
 }
 
 function collectSuperseded(

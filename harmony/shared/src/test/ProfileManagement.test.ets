@@ -17,6 +17,7 @@ import {
   createProxyRuntimeNotReadyError,
   createProfileRevision,
   ImportProfileUseCase,
+  LeasedRemoteProfileRefresher,
   LocalRuntimeCoordinator,
   type LocalRuntimeCoordinatorDependencies,
   ManageProfileUseCases,
@@ -48,6 +49,7 @@ import {
   type LocalRuntimeStopResult,
   type Profile,
   type ProfileContentStore,
+  type ProfileRefreshLeasePort,
   type ProfileRepository,
   type ProfileRevision,
   type ProxyApplicationPort,
@@ -310,6 +312,26 @@ class FakeSourceGateway implements ProfileSourceGateway {
 
   queueRemoteAcquisition(acquisition: RemoteProfileAcquisition): void {
     this.queuedRemoteAcquisitions.push(acquisition);
+  }
+}
+
+class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
+  sharedLog?: string[];
+  tryAcquireCallCount: number = 0;
+
+  async tryAcquire(profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    this.tryAcquireCallCount += 1;
+    this.sharedLog?.push(`lease.tryAcquire:${profileId}`);
+    return true;
+  }
+
+  async renew(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async release(profileId: string, _ownerToken: string): Promise<boolean> {
+    this.sharedLog?.push(`lease.release:${profileId}`);
+    return true;
   }
 }
 
@@ -1587,7 +1609,8 @@ function createApplicationWithCoordinator(
   vpnController?: VpnControllerPort,
   idGenerator?: IdGenerator,
   proxyService?: ProxyApplicationPort,
-  oneClickVpnConfirmation?: OneClickVpnConfirmationPort
+  oneClickVpnConfirmation?: OneClickVpnConfirmationPort,
+  leasePort: ProfileRefreshLeasePort = new FakeProfileRefreshLeasePort()
 ): ProfileApplication {
   const gateway: FakeSourceGateway = sourceGateway ?? new FakeSourceGateway();
   const queue = new SerialCommandQueue();
@@ -1603,15 +1626,21 @@ function createApplicationWithCoordinator(
     queue,
     commitService
   });
+  const refreshClock = new FakeClock([buildTimestamp(17), buildTimestamp(18), buildTimestamp(19)]);
   const refreshUseCase = new RefreshProfileUseCase({
     repository,
     contentStore,
     sourceGateway: gateway,
     secretStore,
     coreService,
-    clock: new FakeClock([buildTimestamp(17), buildTimestamp(18), buildTimestamp(19)]),
+    clock: refreshClock,
     queue,
-    commitService
+    commitService,
+    leasedRemoteRefresher: createLeasedRemoteProfileRefresher(
+      leasePort,
+      refreshClock,
+      new FakeIdGenerator(['refresh-lease-owner'])
+    )
   });
   const manageProfileUseCases = new ManageProfileUseCases(
     new ManageProfileUseCasesDependencyBag(
@@ -1637,6 +1666,18 @@ function createApplicationWithCoordinator(
       idGenerator
     )
   );
+}
+
+function createLeasedRemoteProfileRefresher(
+  leasePort: ProfileRefreshLeasePort,
+  clock: Clock,
+  idGenerator: IdGenerator
+): LeasedRemoteProfileRefresher {
+  return new LeasedRemoteProfileRefresher({
+    leasePort,
+    clock,
+    idGenerator
+  });
 }
 
 async function waitForCondition(predicate: () => boolean, maxTurns: number = 20): Promise<void> {
@@ -4793,6 +4834,8 @@ export default function profileManagementTestsuite() {
       vpnController.sharedLog = sharedLog;
       const proxyService = new FakeProxyApplication();
       proxyService.sharedLog = sharedLog;
+      const leasePort = new FakeProfileRefreshLeasePort();
+      leasePort.sharedLog = sharedLog;
       const runtimeCoordinator = createRuntimeCoordinator(
         repository,
         contentStore,
@@ -4808,7 +4851,9 @@ export default function profileManagementTestsuite() {
         sourceGateway,
         vpnController,
         new FakeIdGenerator(['vpn-session-1']),
-        proxyService
+        proxyService,
+        undefined,
+        leasePort
       );
 
       await application.initialize();
@@ -4823,6 +4868,8 @@ export default function profileManagementTestsuite() {
       await application.reconcileActiveSelections();
 
       const combined: string = sharedLog.join('>');
+      expect(leasePort.tryAcquireCallCount).assertEqual(1);
+      expect(combined).assertContain('proxy.drain>repository.get:active>lease.tryAcquire:active>source.acquireRemote:Profile active');
       expect(combined).assertContain('proxy.drain>repository.get:active>source.acquireRemote:Profile active');
       expect(combined).assertContain('proxy.drain>repository.get:active');
       expect(combined).assertContain(

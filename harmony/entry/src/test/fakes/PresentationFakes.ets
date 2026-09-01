@@ -7,6 +7,7 @@ import {
   createOneClickVpnOperationSnapshot,
   createVpnRuntimeSnapshot,
   ImportProfileUseCase,
+  LeasedRemoteProfileRefresher,
   LocalRuntimeCoordinator,
   ManageProfileUseCases,
   ProfileApplication,
@@ -59,6 +60,7 @@ import {
   type ProfileApplicationRuntimeLatestSnapshot,
   type ProfileApplicationRuntimeSnapshot,
   type ProfileContentStore,
+  type ProfileRefreshLeasePort,
   type ProfileRepository,
   type ProfileRevision,
   type ProfileSourceGateway,
@@ -108,6 +110,20 @@ class DeferredCommand {
 
   resolve(): void {
     this.resolveRef?.();
+  }
+}
+
+class InertProfileRefreshLeasePort implements ProfileRefreshLeasePort {
+  async tryAcquire(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async renew(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async release(_profileId: string, _ownerToken: string): Promise<boolean> {
+    return true;
   }
 }
 
@@ -884,7 +900,12 @@ function createDependencies(): ProfileApplicationDependencies {
     coreService,
     clock,
     queue,
-    commitService
+    commitService,
+    leasedRemoteRefresher: createLeasedRemoteProfileRefresher(
+      new InertProfileRefreshLeasePort(),
+      clock,
+      new FixedIdGenerator()
+    )
   });
   const manageProfileUseCases = new ManageProfileUseCases({
     repository,
@@ -904,6 +925,18 @@ function createDependencies(): ProfileApplicationDependencies {
     oneClickVpnConfirmation: new InertOneClickVpnConfirmation(),
     proxyService: new InertProxyApplicationPort()
   };
+}
+
+function createLeasedRemoteProfileRefresher(
+  leasePort: ProfileRefreshLeasePort,
+  clock: Clock,
+  idGenerator: IdGenerator
+): LeasedRemoteProfileRefresher {
+  return new LeasedRemoteProfileRefresher({
+    leasePort,
+    clock,
+    idGenerator
+  });
 }
 
 function createRuntimeLatestSnapshot(
