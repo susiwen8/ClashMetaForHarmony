@@ -136,7 +136,6 @@ export class HomeViewModel {
       this.trafficSubscriptionId = trafficMonitor.subscribe((snapshot: VpnTrafficMonitorSnapshot): void => {
         this.handleTrafficSnapshot(snapshot);
       });
-      this.handleTrafficSnapshot(trafficMonitor.snapshot());
     }
     this.handleOneClickVpnOperation(this.application.currentOneClickVpnOperation());
     this.refreshTrafficState();
@@ -346,14 +345,19 @@ export class HomeViewModel {
 
     if (this.vpnSnapshot.state === 'RECOVERING') {
       const sessionId = this.vpnSnapshot.activeRequest?.sessionId;
+      const sessionChanged: boolean = sessionId !== undefined &&
+        this.activeTrafficSessionId !== undefined &&
+        this.activeTrafficSessionId !== sessionId;
+      const preservedTxBytes: number = sessionChanged ? 0 : this.trafficState.txBytes;
+      const preservedRxBytes: number = sessionChanged ? 0 : this.trafficState.rxBytes;
       if (sessionId !== undefined) {
         this.activeTrafficSessionId = sessionId;
       }
       this.trafficState = createHomeTrafficState(
         true,
         false,
-        this.trafficState.txBytes,
-        this.trafficState.rxBytes,
+        preservedTxBytes,
+        preservedRxBytes,
         0,
         0,
         true
@@ -374,11 +378,6 @@ export class HomeViewModel {
       const preservedTxBytes: number = this.trafficState.recovering && !sessionChanged ? this.trafficState.txBytes : 0;
       const preservedRxBytes: number = this.trafficState.recovering && !sessionChanged ? this.trafficState.rxBytes : 0;
       this.trafficState = createHomeTrafficState(true, false, preservedTxBytes, preservedRxBytes, 0, 0, false);
-      const trafficMonitor = this.trafficMonitor;
-      if (trafficMonitor !== undefined) {
-        this.handleTrafficSnapshot(trafficMonitor.snapshot());
-        return;
-      }
       this.publishCurrent(undefined);
       return;
     }

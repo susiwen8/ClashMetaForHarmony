@@ -246,14 +246,16 @@ export default function homeViewModelTestsuite() {
       expect(formatTrafficBytes(1023)).assertEqual('1023 B');
       expect(formatTrafficBytes(1024)).assertEqual('1 KiB');
       expect(formatTrafficBytes(1536)).assertEqual('1.5 KiB');
+      expect(formatTrafficBytes(1024 * 1024 - 1)).assertEqual('1023.9 KiB');
       expect(formatTrafficBytes(1024 * 1024)).assertEqual('1 MiB');
+      expect(formatTrafficBytes(1024 * 1024 * 1024 - 1)).assertEqual('1023.9 MiB');
       expect(formatTrafficBytes(1024 * 1024 * 1024)).assertEqual('1 GiB');
       expect(formatTrafficBytes(-1)).assertEqual('0 B');
       expect(formatTrafficBytes(Number.NaN)).assertEqual('0 B');
-      expect(formatTrafficBytes(Number.MAX_SAFE_INTEGER)).assertEqual('8388608 GiB');
+      expect(formatTrafficBytes(Number.MAX_SAFE_INTEGER)).assertEqual('8388607.9 GiB');
     });
 
-    it('subscribesToTrafficMonitorExactlyOnceSeedsFromSnapshotAndUnsubscribesOnDispose', 0, () => {
+    it('subscribesToTrafficMonitorExactlyOnceWithoutSeedingFromSnapshotAndUnsubscribesOnDispose', 0, () => {
       const application = new PresentationTestApplication(
         createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED')
       );
@@ -265,9 +267,16 @@ export default function homeViewModelTestsuite() {
       const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
 
       expect(trafficMonitor.subscribeCalls).assertEqual(1);
-      expect(trafficMonitor.snapshotCalls).assertEqual(1);
+      expect(trafficMonitor.snapshotCalls).assertEqual(0);
       expect(trafficMonitor.listenerCount()).assertEqual(1);
       expect(viewModel.current().traffic.visible).assertTrue();
+      expect(viewModel.current().traffic.available).assertFalse();
+      expect(viewModel.current().traffic.txBytes).assertEqual(0);
+      expect(viewModel.current().traffic.rxBytes).assertEqual(0);
+      expect(viewModel.current().traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(viewModel.current().traffic.downloadBytesPerSecond).assertEqual(0);
+
+      trafficMonitor.emit(createTrafficSnapshot(true, 1024, 2048, 32, 64));
       expect(viewModel.current().traffic.available).assertTrue();
       expect(viewModel.current().traffic.txBytes).assertEqual(1024);
       expect(viewModel.current().traffic.rxBytes).assertEqual(2048);
@@ -292,6 +301,16 @@ export default function homeViewModelTestsuite() {
       const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
 
       let traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(0);
+      expect(traffic.rxBytes).assertEqual(0);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
+      trafficMonitor.emit(createTrafficSnapshot(true, 4096, 8192, 512, 1024));
+      traffic = viewModel.current().traffic;
       expect(traffic.visible).assertTrue();
       expect(traffic.available).assertTrue();
       expect(traffic.recovering).assertFalse();
@@ -332,6 +351,16 @@ export default function homeViewModelTestsuite() {
       expect(traffic.uploadBytesPerSecond).assertEqual(0);
       expect(traffic.downloadBytesPerSecond).assertEqual(0);
 
+      emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RECOVERING', null, 'traffic-session-b'));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertFalse();
+      expect(traffic.recovering).assertTrue();
+      expect(traffic.txBytes).assertEqual(0);
+      expect(traffic.rxBytes).assertEqual(0);
+      expect(traffic.uploadBytesPerSecond).assertEqual(0);
+      expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
       trafficMonitor.setSnapshot(createTrafficSnapshot(false, 123456, 654321, 999, 999));
       emitVpnSnapshot(vpnRegistry, buildVpnSnapshot('RUNNING', null, 'traffic-session-b'));
       traffic = viewModel.current().traffic;
@@ -342,6 +371,16 @@ export default function homeViewModelTestsuite() {
       expect(traffic.rxBytes).assertEqual(0);
       expect(traffic.uploadBytesPerSecond).assertEqual(0);
       expect(traffic.downloadBytesPerSecond).assertEqual(0);
+
+      trafficMonitor.emit(createTrafficSnapshot(true, 512, 2048, 64, 256));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertTrue();
+      expect(traffic.available).assertTrue();
+      expect(traffic.recovering).assertFalse();
+      expect(traffic.txBytes).assertEqual(512);
+      expect(traffic.rxBytes).assertEqual(2048);
+      expect(traffic.uploadBytesPerSecond).assertEqual(64);
+      expect(traffic.downloadBytesPerSecond).assertEqual(256);
 
       const hiddenStates: Array<'AWAITING_CONSENT' | 'STARTING' | 'STOPPING' | 'ERROR'> = [
         'AWAITING_CONSENT',
@@ -358,6 +397,13 @@ export default function homeViewModelTestsuite() {
         expect(traffic.txBytes).assertEqual(0);
         expect(traffic.rxBytes).assertEqual(0);
       }
+
+      trafficMonitor.emit(createTrafficSnapshot(true, 9000, 12000, 333, 444));
+      traffic = viewModel.current().traffic;
+      expect(traffic.visible).assertFalse();
+      expect(traffic.available).assertFalse();
+      expect(traffic.txBytes).assertEqual(0);
+      expect(traffic.rxBytes).assertEqual(0);
 
       viewModel.dispose();
     });

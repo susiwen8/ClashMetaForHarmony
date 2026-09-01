@@ -570,10 +570,10 @@ function normalizeTrafficBytes(value: number): number {
 }
 
 function formatTrafficUnit(value: number, unit: string): string {
-  const roundedValue: number = Math.round(value * 10) / 10;
-  const formattedValue: string = Number.isInteger(roundedValue)
-    ? `${roundedValue}`
-    : `${roundedValue.toFixed(1)}`;
+  const flooredValue: number = Math.floor(value * 10) / 10;
+  const formattedValue: string = Number.isInteger(flooredValue)
+    ? `${flooredValue}`
+    : `${flooredValue.toFixed(1)}`;
   return `${formattedValue} ${unit}`;
 }
 
