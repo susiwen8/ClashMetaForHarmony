@@ -2043,6 +2043,56 @@ export default function applicationCompositionTestsuite() {
       expect(secondClient.closeCalls).assertEqual(1);
     });
 
+    it('defaultControllerReadyStatePublishesTrafficMonitorReadPortForHomeConsumers', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      const composition = createComposition({
+        coreService: new ProxyCapableRuntimeCoreService(),
+        createPlatformGraph: async (): Promise<PlatformGraph> => graph,
+        createVpnExtensionAbilityApi: (): InertVpnExtensionAbilityApi => new InertVpnExtensionAbilityApi(),
+        createVpnRpcPlatformBundle: (): HarmonyVpnRpcPlatformBundle => new StaticHarmonyVpnRpcPlatformBundle(),
+        createVpnRpcClient: (): VpnRpcClientPort => new CompositionRpcClient()
+      });
+
+      await composition.initialize();
+
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status !== 'READY') {
+        return;
+      }
+      expect(compositionState.trafficMonitor === undefined).assertFalse();
+      const trafficMonitor = compositionState.trafficMonitor;
+      const initialSnapshot = trafficMonitor?.snapshot();
+      expect(initialSnapshot?.available ?? true).assertFalse();
+      const subscriptionId = trafficMonitor?.subscribe((): void => {}) ?? 0;
+      expect(subscriptionId > 0).assertTrue();
+      trafficMonitor?.unsubscribe(subscriptionId);
+
+      await composition.close();
+    });
+
+    it('customControllerReadyStateLeavesTrafficMonitorUndefinedWhenCompositionDoesNotOwnOne', 0, async () => {
+      const graph = new RecordingPlatformGraph();
+      const composition = createComposition({
+        coreService: new ProxyCapableRuntimeCoreService(),
+        createPlatformGraph: async (): Promise<PlatformGraph> => graph,
+        createVpnController: (registry: VpnSessionRegistry): VpnControllerPort => {
+          return new HarmonyVpnController(registry, new InertVpnExtensionAbilityApi());
+        }
+      });
+
+      await composition.initialize();
+
+      const compositionState = composition.state();
+      expect(compositionState.status).assertEqual('READY');
+      if (compositionState.status !== 'READY') {
+        return;
+      }
+      expect(compositionState.trafficMonitor).assertUndefined();
+
+      await composition.close();
+    });
+
     it('runtimeMirrorHydrationFailureStillPublishesReadyAndSurfacesRegistryError', 0, async () => {
       const profile = createEligibleProfile('error-profile');
       const graph = new RecordingPlatformGraph(new SeededRepository(profile));

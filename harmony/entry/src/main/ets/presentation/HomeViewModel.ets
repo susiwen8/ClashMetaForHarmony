@@ -24,6 +24,7 @@ import {
   type SafeErrorState,
   type RuntimeModeState
 } from './PresentationModels';
+import type { VpnTrafficMonitorReadPort } from '../vpn/VpnTrafficMonitor';
 import { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 const VPN_COMMAND_LOG_DOMAIN: number = 0x0000;
@@ -71,6 +72,8 @@ export class HomeViewModel {
   private applicationSubscriptionId: number;
   private vpnSubscriptionId: number;
   private oneClickSubscriptionId: number;
+  private readonly trafficMonitor?: VpnTrafficMonitorReadPort;
+  private trafficMonitorSubscriptionId?: number;
   private nextListenerId: number = 0;
   private vpnCommandPending: boolean = false;
   private disposed: boolean = false;
@@ -88,11 +91,13 @@ export class HomeViewModel {
   constructor(
     application: ProfileApplication,
     vpnRegistry: VpnSessionRegistry,
-    runtimeModeClient?: VpnRpcRuntimeModeClientPort
+    runtimeModeClient?: VpnRpcRuntimeModeClientPort,
+    trafficMonitor?: VpnTrafficMonitorReadPort
   ) {
     this.application = application;
     this.vpnRegistry = vpnRegistry;
     this.runtimeModeClient = runtimeModeClient;
+    this.trafficMonitor = trafficMonitor;
     this.applicationSnapshot = application.current();
     this.vpnSnapshot = vpnRegistry.snapshot();
     this.state = createState(
@@ -117,6 +122,8 @@ export class HomeViewModel {
     });
     this.oneClickSubscriptionId = this.application.subscribeOneClickVpnOperation((snapshot: OneClickVpnOperationSnapshot): void => {
       this.handleOneClickVpnOperation(snapshot);
+    });
+    this.trafficMonitorSubscriptionId = trafficMonitor?.subscribe((): void => {
     });
     this.handleOneClickVpnOperation(this.application.currentOneClickVpnOperation());
     this.refreshSelectedProxySummary(false);
@@ -224,6 +231,10 @@ export class HomeViewModel {
     this.application.unsubscribe(this.applicationSubscriptionId);
     this.vpnRegistry.unsubscribe(this.vpnSubscriptionId);
     this.application.unsubscribeOneClickVpnOperation(this.oneClickSubscriptionId);
+    if (this.trafficMonitorSubscriptionId !== undefined) {
+      this.trafficMonitor?.unsubscribe(this.trafficMonitorSubscriptionId);
+    }
+    this.trafficMonitorSubscriptionId = undefined;
     this.listeners.clear();
     this.snapshotById.clear();
   }

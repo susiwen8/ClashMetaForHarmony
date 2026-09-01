@@ -17,6 +17,7 @@ import { LogsPage } from './LogsPage';
 import {
   HomeViewModel
 } from '../presentation/HomeViewModel';
+import type { VpnTrafficMonitorReadPort } from '../vpn/VpnTrafficMonitor';
 import {
   ImportProfileViewModel,
   type ImportNavigationIntent
@@ -331,6 +332,7 @@ struct Index {
         state.application,
         state.vpnRegistry,
         state.runtimeModeClient,
+        state.trafficMonitor,
         state.runtimeLogStore,
         state.runtimeLogExporter
       );
@@ -374,6 +376,7 @@ struct Index {
     application: ProfileApplication,
     vpnRegistry: import('../vpn/VpnSessionRegistry').VpnSessionRegistry,
     runtimeModeClient?: VpnRpcRuntimeModeClientPort,
+    trafficMonitor?: VpnTrafficMonitorReadPort,
     runtimeLogStore?: RuntimeLogStorePort,
     runtimeLogExporter?: RuntimeLogExportPort
   ): void {
@@ -388,7 +391,7 @@ struct Index {
     this.proxyDisposeGeneration += 1;
     this.proxyDisposeDrainFailed = false;
 
-    this.homeViewModel = new HomeViewModel(application, vpnRegistry, runtimeModeClient);
+    this.homeViewModel = new HomeViewModel(application, vpnRegistry, runtimeModeClient, trafficMonitor);
     this.homeSubscriptionId = this.homeViewModel.subscribe((state: HomeViewState): void => {
       this.homeState = state;
       this.homeSelectedProxyGroupName = state.selectedProxyGroupName;

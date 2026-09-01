@@ -5,6 +5,7 @@ import type {
   RuntimeLogStorePort,
   VpnRpcRuntimeModeClientPort
 } from '@cmfa/shared';
+import type { VpnTrafficMonitorReadPort } from '../vpn/VpnTrafficMonitor';
 import type { VpnSessionRegistry } from '../vpn/VpnSessionRegistry';
 
 interface ApplicationCompositionLoadingState {
@@ -16,6 +17,7 @@ interface ApplicationCompositionReadyState {
   application: ProfileApplication;
   vpnRegistry: VpnSessionRegistry;
   runtimeModeClient?: VpnRpcRuntimeModeClientPort;
+  trafficMonitor?: VpnTrafficMonitorReadPort;
   runtimeLogStore?: RuntimeLogStorePort;
   runtimeLogExporter?: RuntimeLogExportPort;
 }

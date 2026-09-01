@@ -253,6 +253,11 @@ class VpnRpcCatalogInputsValue implements VpnRpcCatalogInputs {
   configPath: string = '';
 }
 
+interface BoundHarmonyVpnControllerResult {
+  controller: HarmonyVpnController;
+  trafficMonitor: VpnTrafficMonitorReadPort;
+}
+
 class HarmonyVpnControllerDependenciesRecord implements HarmonyVpnControllerDependencies {
   runtimeMirror?: VpnProxyRuntimeMirrorPort;
   scheduler?: BoundedDelaySchedulerPort;
@@ -562,6 +567,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
   private application?: ProfileApplication;
   private vpnRegistry?: VpnSessionRegistry;
   private ownedVpnController?: HarmonyVpnController;
+  private ownedVpnTrafficMonitor?: VpnTrafficMonitorReadPort;
   private ownedVpnRpcPlatformBundle?: HarmonyVpnRpcPlatformBundle;
   private ownedVpnRpcClient?: VpnRpcClientPort;
 
@@ -652,6 +658,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
         application,
         vpnRegistry,
         runtimeModeClient,
+        this.ownedVpnTrafficMonitor,
         createHarmonyRuntimeLogStore(this.context.filesDir),
         createHarmonyRuntimeLogExporter(this.context)
       );
@@ -700,6 +707,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       try {
         await ownedVpnController.dispose();
         this.ownedVpnController = undefined;
+        this.ownedVpnTrafficMonitor = undefined;
       } catch (_) {
         cleanupError = cleanupError ?? createCleanupError();
       }
@@ -838,7 +846,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     if (this.ownedVpnController !== undefined) {
       return this.ownedVpnController;
     }
-    this.ownedVpnController = createBoundHarmonyVpnController(
+    const ownedController = createBoundHarmonyVpnController(
       registry,
       this.context,
       graph,
@@ -848,6 +856,8 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       vpnRpcBundle,
       this.dependencies
     );
+    this.ownedVpnController = ownedController.controller;
+    this.ownedVpnTrafficMonitor = ownedController.trafficMonitor;
     return this.ownedVpnController;
   }
 
@@ -952,6 +962,7 @@ function createReadyState(
   application: ProfileApplication,
   vpnRegistry: VpnSessionRegistry,
   runtimeModeClient?: import('@cmfa/shared').VpnRpcRuntimeModeClientPort,
+  trafficMonitor?: VpnTrafficMonitorReadPort,
   runtimeLogStore?: import('@cmfa/shared').RuntimeLogStorePort,
   runtimeLogExporter?: import('@cmfa/shared').RuntimeLogExportPort
 ): ApplicationCompositionState {
@@ -960,6 +971,7 @@ function createReadyState(
     application,
     vpnRegistry,
     runtimeModeClient,
+    trafficMonitor,
     runtimeLogStore,
     runtimeLogExporter
   };
@@ -1013,7 +1025,7 @@ function createBoundHarmonyVpnController(
   vpnRpcClient: VpnRpcClientPort | undefined,
   vpnRpcBundle: HarmonyVpnRpcPlatformBundle | undefined,
   dependencies: ApplicationCompositionDependencies
-): HarmonyVpnController {
+): BoundHarmonyVpnControllerResult {
   const api: UiOwnedVpnExtensionAbilityApiLike = dependencies.createVpnExtensionAbilityApi !== undefined
     ? dependencies.createVpnExtensionAbilityApi(context)
     : new UiOwnedVpnExtensionAbilityApi(
@@ -1055,5 +1067,8 @@ function createBoundHarmonyVpnController(
   api.bindStopHandler(() => {
     controller.handleExtensionDestroyed();
   });
-  return controller;
+  return {
+    controller,
+    trafficMonitor
+  };
 }
