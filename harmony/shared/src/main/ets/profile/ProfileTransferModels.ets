@@ -28,6 +28,8 @@ const SHA256_DIGEST_PATTERN: RegExp = /^[0-9a-f]{64}$/u;
 const BASE64_PATTERN: RegExp = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
 const CONTROL_CHARACTER_PATTERN: RegExp = /[\u0000-\u001f\u007f]/u;
 const CONTROL_CHARACTER_REPLACE_PATTERN: RegExp = /[\u0000-\u001f\u007f]/gu;
+const FORMAT_AND_BIDI_CHARACTER_REPLACE_PATTERN: RegExp = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu;
+const WHITESPACE_PATTERN: RegExp = /\s/u;
 
 export interface ScannedQrScanResult {
   kind: 'SCANNED';
@@ -289,11 +291,108 @@ function normalizeHttpLikeUrl(rawUrl: string): string {
     }
   }
   const authority: string = trimmed.substring(authorityStart, authorityEnd);
-  if (authority.length === 0 || authority.indexOf('@') >= 0 || authority.indexOf('<') >= 0 || authority.indexOf('>') >= 0) {
+  if (authority.length === 0) {
     createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
   }
-  const normalizedAuthority: string = authority.toLowerCase();
+  const normalizedAuthority: string = normalizeValidatedAuthority(authority);
   return `${scheme}://${normalizedAuthority}${trimmed.substring(authorityEnd)}`;
+}
+
+function containsWhitespaceOrControl(value: string): boolean {
+  if (CONTROL_CHARACTER_PATTERN.test(value)) {
+    CONTROL_CHARACTER_PATTERN.lastIndex = 0;
+    return true;
+  }
+  CONTROL_CHARACTER_PATTERN.lastIndex = 0;
+  return WHITESPACE_PATTERN.test(value);
+}
+
+function isNumeric(value: string): boolean {
+  if (value.length === 0) {
+    return false;
+  }
+  for (let index: number = 0; index < value.length; index += 1) {
+    const code: number = value.charCodeAt(index);
+    if (code < 48 || code > 57) {
+      return false;
+    }
+  }
+  return true;
+}
+
+function isAllowedHostCharacter(character: string): boolean {
+  const code: number = character.charCodeAt(0);
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 90) ||
+    (code >= 97 && code <= 122) ||
+    character === '.' ||
+    character === '-';
+}
+
+function validateAuthorityPort(port: string): void {
+  if (!isNumeric(port)) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+  const normalizedPort: number = Number.parseInt(port, 10);
+  if (normalizedPort < 1 || normalizedPort > 65535) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+}
+
+function validateBracketedIpv6Authority(hostPort: string): string {
+  const closingBracketIndex: number = hostPort.indexOf(']');
+  if (closingBracketIndex <= 1 || hostPort.lastIndexOf(']') !== closingBracketIndex) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+  const host: string = hostPort.substring(1, closingBracketIndex);
+  if (host.indexOf(':') < 0 || containsWhitespaceOrControl(host) || host.indexOf('[') >= 0 || host.indexOf(']') >= 0) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+  const suffix: string = hostPort.substring(closingBracketIndex + 1);
+  if (suffix.length > 0) {
+    if (!suffix.startsWith(':')) {
+      createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+    }
+    validateAuthorityPort(suffix.substring(1));
+  }
+  return `[${host.toLowerCase()}]${suffix}`;
+}
+
+function validateStandardAuthority(hostPort: string): string {
+  const firstColonIndex: number = hostPort.indexOf(':');
+  const lastColonIndex: number = hostPort.lastIndexOf(':');
+  if (firstColonIndex >= 0 && firstColonIndex !== lastColonIndex) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+
+  let host: string = hostPort;
+  let suffix: string = '';
+  if (lastColonIndex >= 0) {
+    host = hostPort.substring(0, lastColonIndex);
+    const port: string = hostPort.substring(lastColonIndex + 1);
+    validateAuthorityPort(port);
+    suffix = `:${port}`;
+  }
+
+  if (host.length === 0 || containsWhitespaceOrControl(host)) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+  for (let index: number = 0; index < host.length; index += 1) {
+    if (!isAllowedHostCharacter(host[index])) {
+      createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+    }
+  }
+  return `${host.toLowerCase()}${suffix}`;
+}
+
+function normalizeValidatedAuthority(authority: string): string {
+  if (authority.length === 0 || containsWhitespaceOrControl(authority) || authority.indexOf('@') >= 0) {
+    createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+  }
+  if (authority.startsWith('[')) {
+    return validateBracketedIpv6Authority(authority);
+  }
+  return validateStandardAuthority(authority);
 }
 
 function normalizeLocalSourceLabel(sourceLabel: string): string {
@@ -469,10 +568,15 @@ export function createPortableBackupYamlEntry(
   sha256Digest: string,
   contentBase64: string
 ): PortableBackupYamlEntry {
+  const normalizedByteLength: number = normalizeYamlEntryByteLength(byteLength);
   return {
-    byteLength: normalizeYamlEntryByteLength(byteLength),
+    byteLength: normalizedByteLength,
     sha256Digest: normalizeSha256Digest(sha256Digest, 'Profile transfer YAML sha256Digest'),
-    contentBase64: normalizeNonEmptyBase64(contentBase64, 'Profile transfer YAML contentBase64')
+    contentBase64: normalizeExactBase64ByteLength(
+      contentBase64,
+      normalizedByteLength,
+      'Profile transfer YAML contentBase64'
+    )
   };
 }
 
@@ -745,12 +849,16 @@ export function parsePortableBackupEnvelope(value: Object): PortableBackupEnvelo
 
 export function createProfileTransferSafeYamlFilename(rawName: string): string {
   let stem: string = rawName.trim();
+  if (typeof ''.normalize === 'function') {
+    stem = stem.normalize('NFKC');
+  }
   if (stem.toLowerCase().endsWith('.yaml')) {
     stem = stem.substring(0, stem.length - 5);
   } else if (stem.toLowerCase().endsWith('.yml')) {
     stem = stem.substring(0, stem.length - 4);
   }
   stem = stem.replace(CONTROL_CHARACTER_REPLACE_PATTERN, '');
+  stem = stem.replace(FORMAT_AND_BIDI_CHARACTER_REPLACE_PATTERN, '');
   stem = stem.replace(/[\\/:\*\?"<>\|]/gu, '');
   stem = stem.replace(/\.\./gu, '');
   stem = stem.replace(/\./gu, '');

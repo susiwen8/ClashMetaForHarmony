@@ -13,8 +13,8 @@ export interface ProfileYamlExporterPort {
 }
 
 export interface PortableBackupCodecPort {
-  encrypt(plaintext: Uint8Array, passphrase: string | Uint8Array): Promise<PortableBackupEnvelope>;
-  decrypt(envelope: PortableBackupEnvelope, passphrase: string | Uint8Array): Promise<Uint8Array>;
+  encrypt(plaintext: Uint8Array, passphrase: string): Promise<PortableBackupEnvelope>;
+  decrypt(envelope: PortableBackupEnvelope, passphrase: string): Promise<Uint8Array>;
 }
 
 export interface ProfileBackupDocumentDescriptor {

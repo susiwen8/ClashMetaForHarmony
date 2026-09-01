@@ -24,6 +24,7 @@ import {
   parsePortableBackupEnvelope,
   parsePortableBackupManifest,
   sanitizeProfileTransferQrUrl,
+  type PortableBackupCodecPort,
   type PortableBackupEnvelope,
   type PortableBackupManifest,
   type PortableBackupProfile,
@@ -68,12 +69,19 @@ function buildThirtyTwoByteBase64(): string {
   return 'AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=';
 }
 
-function buildYamlBase64(): string {
-  return 'cHJveGllczoKICAtIG5hbWU6IHRlc3QK';
+function buildYamlBase64(byteLength: number): string {
+  let encoded: string = 'AAAA'.repeat(Math.floor(byteLength / 3));
+  const remainder: number = byteLength % 3;
+  if (remainder === 1) {
+    encoded += 'AA==';
+  } else if (remainder === 2) {
+    encoded += 'AAA=';
+  }
+  return encoded;
 }
 
 function buildYamlEntry(byteLength: number, digest: string = buildSha256Digest()): PortableBackupYamlEntry {
-  return createPortableBackupYamlEntry(byteLength, digest, buildYamlBase64());
+  return createPortableBackupYamlEntry(byteLength, digest, buildYamlBase64(byteLength));
 }
 
 function buildRemoteProfile(
@@ -151,6 +159,13 @@ function buildRepeatedCharacter(character: string, count: number): string {
   return text;
 }
 
+function assertCodecPortRequiresStringPassphrase(port: PortableBackupCodecPort): void {
+  const encryptFn: (plaintext: Uint8Array, passphrase: string) => Promise<PortableBackupEnvelope> = port.encrypt;
+  const decryptFn: (envelope: PortableBackupEnvelope, passphrase: string) => Promise<Uint8Array> = port.decrypt;
+  void encryptFn;
+  void decryptFn;
+}
+
 export default function profileTransferModelsTestsuite() {
   describe('ProfileTransferModelsTest', () => {
     it('exposesExactConstantsAndClosedResultKinds', 0, () => {
@@ -192,16 +207,37 @@ export default function profileTransferModelsTestsuite() {
 
     it('sanitizesOnlyHttpAndHttpsWithoutEchoingRawInput', 0, () => {
       const valid = sanitizeProfileTransferQrUrl('https://Example.com/path?q=1#frag');
+      const validIpv6 = sanitizeProfileTransferQrUrl('https://[2001:DB8::1]:8443/path');
       const invalidRaw: string = 'ftp://example.com/secret?token=abc123';
       const invalid = sanitizeProfileTransferQrUrl(invalidRaw);
 
       expect(valid.kind).assertEqual('VALID');
       expect(valid.url).assertEqual('https://example.com/path?q=1#frag');
+      expect(validIpv6.kind).assertEqual('VALID');
+      expect(validIpv6.url).assertEqual('https://[2001:db8::1]:8443/path');
       expect(invalid.kind).assertEqual('INVALID');
       expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
       expect(invalid.message).assertEqual('Scanned QR code must contain an http or https URL.');
       expect(JSON.stringify(invalid).includes(invalidRaw)).assertFalse();
       expect(JSON.stringify(invalid).includes('abc123')).assertFalse();
+    });
+
+    it('rejectsInvalidUrlAuthoritiesWithoutEchoingRawInput', 0, () => {
+      const invalidAuthorities: string[] = [
+        'https://bad host/x',
+        'https://example.com:0/x',
+        'https://example.com:65536/x',
+        'https://example.com:abc/x',
+        'https://2001:db8::1/x'
+      ];
+
+      for (let index: number = 0; index < invalidAuthorities.length; index += 1) {
+        const invalidRaw: string = invalidAuthorities[index];
+        const invalid = sanitizeProfileTransferQrUrl(invalidRaw);
+        expect(invalid.kind).assertEqual('INVALID');
+        expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
+        expect(JSON.stringify(invalid).includes(invalidRaw)).assertFalse();
+      }
     });
 
     it('createsAndParsesManifestWithExactAllowlistedKeys', 0, () => {
@@ -259,6 +295,7 @@ export default function profileTransferModelsTestsuite() {
         buildRemoteProfile('remote-d', maxYamlEntry, undefined)
       ]);
       expect(withinProfileLimit.profiles.length).assertEqual(128);
+      expect(maxYamlEntry.byteLength).assertEqual(PROFILE_TRANSFER_MAX_YAML_ENTRY_BYTES);
       expect(withinAggregate.profiles.length).assertEqual(4);
 
       const tooManyProfiles: PortableBackupProfile[] = [];
@@ -275,6 +312,12 @@ export default function profileTransferModelsTestsuite() {
       }, 'Profile transfer backup must not contain more than 128 profiles.');
 
       expectThrowsMessage(() => buildYamlEntry(PROFILE_TRANSFER_MAX_YAML_ENTRY_BYTES + 1), '16 MiB');
+      expectThrowsMessage(() => {
+        createPortableBackupYamlEntry(1, buildSha256Digest(), buildYamlBase64(2));
+      }, 'exactly 1 bytes');
+      expectThrowsMessage(() => {
+        createPortableBackupYamlEntry(2, buildSha256Digest(), buildYamlBase64(1));
+      }, 'exactly 2 bytes');
       expectThrowsMessage(() => {
         buildManifest([
           buildRemoteProfile('remote-a', maxYamlEntry, undefined),
@@ -417,7 +460,7 @@ export default function profileTransferModelsTestsuite() {
           }
         });
       }, 'tag');
-      expectThrowsMessage(() => createPortableBackupYamlEntry(32, 'abc', buildYamlBase64()), 'SHA-256');
+      expectThrowsMessage(() => createPortableBackupYamlEntry(32, 'abc', buildYamlBase64(32)), 'SHA-256');
       expectThrowsMessage(() => createPortableBackupYamlEntry(32, buildSha256Digest(), '!not-base64!'), 'base64');
     });
 
@@ -425,6 +468,8 @@ export default function profileTransferModelsTestsuite() {
       expect(createProfileTransferSafeYamlFilename('../../')).assertEqual('profile.yaml');
       expect(createProfileTransferSafeYamlFilename('..\u0000/测试/配置')).assertEqual('测试配置.yaml');
       expect(createProfileTransferSafeYamlFilename(' already.yaml ')).assertEqual('already.yaml');
+      expect(createProfileTransferSafeYamlFilename('\u202Eab\u200Bc\uFEFF')).assertEqual('abc.yaml');
+      expect(createProfileTransferSafeYamlFilename('ＡＢＣ.yaml')).assertEqual('ABC.yaml');
 
       const longName: string = buildRepeatedCharacter('x', 120);
       const safeLongName: string = createProfileTransferSafeYamlFilename(longName);
@@ -433,7 +478,25 @@ export default function profileTransferModelsTestsuite() {
       expect(safeLongName.includes('/')).assertFalse();
       expect(safeLongName.includes('\\')).assertFalse();
       expect(safeLongName.includes('..')).assertFalse();
+      expect(safeLongName.includes('\u202E')).assertFalse();
+      expect(safeLongName.includes('\u200B')).assertFalse();
       expect(createProfileTransferSafeYamlFilename('')).assertEqual('profile.yaml');
+    });
+
+    it('keepsPortableBackupCodecPortPassphrasesStringOnly', 0, async () => {
+      const codecPort: PortableBackupCodecPort = {
+        async encrypt(_plaintext: Uint8Array, _passphrase: string): Promise<PortableBackupEnvelope> {
+          return buildEnvelope();
+        },
+        async decrypt(_envelope: PortableBackupEnvelope, _passphrase: string): Promise<Uint8Array> {
+          return new Uint8Array(0);
+        }
+      };
+
+      assertCodecPortRequiresStringPassphrase(codecPort);
+      const encrypted: PortableBackupEnvelope = await codecPort.encrypt(new Uint8Array(0), 'passphrase');
+      const decrypted: Uint8Array = await codecPort.decrypt(encrypted, 'passphrase');
+      expect(decrypted.length).assertEqual(0);
     });
   });
 }
