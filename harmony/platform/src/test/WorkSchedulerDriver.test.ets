@@ -1,8 +1,10 @@
 import { describe, expect, it } from '@ohos/hypium';
+import { workScheduler } from '@kit.BackgroundTasksKit';
 import {
   SUBSCRIPTION_REFRESH_REPEAT_MS,
   SUBSCRIPTION_REFRESH_WORK_ID,
   WorkSchedulerDriver,
+  createSubscriptionRefreshWorkInfo,
   type SubscriptionRefreshWorkInfo,
   type WorkSchedulerSystemPort
 } from '../main/ets/background/WorkSchedulerDriver';
@@ -92,15 +94,7 @@ class RecordingWorkSchedulerSystemPort implements WorkSchedulerSystemPort {
 }
 
 function desiredWork(): SubscriptionRefreshWorkInfo {
-  return {
-    workId: SUBSCRIPTION_REFRESH_WORK_ID,
-    bundleName: 'com.github.kr328.clash.harmony',
-    abilityName: 'SubscriptionRefreshWorkAbility',
-    isPersisted: true,
-    networkType: 0,
-    isRepeat: true,
-    repeatCycleTime: SUBSCRIPTION_REFRESH_REPEAT_MS
-  };
+  return createSubscriptionRefreshWorkInfo();
 }
 
 export default function workSchedulerDriverTestsuite() {
@@ -128,16 +122,16 @@ export default function workSchedulerDriverTestsuite() {
       expect(system.obtainCalls).assertEqual(2);
     });
 
-    it('treatsSdkMaterializedFalseZeroAndEmptyDefaultsAsNoConstraints', 0, async () => {
+    it('treatsSdkMaterializedNeutralEnumsZeroAndEmptyDefaultsAsNoConstraints', 0, async () => {
       const system = new RecordingWorkSchedulerSystemPort();
       const materialized = desiredWork();
-      materialized.isCharging = false;
-      materialized.chargerType = 0;
+      materialized.isCharging = undefined;
+      materialized.chargerType = workScheduler.ChargingType.CHARGING_PLUGGED_ANY;
       materialized.batteryLevel = 0;
-      materialized.batteryStatus = 0;
-      materialized.storageRequest = 0;
+      materialized.batteryStatus = workScheduler.BatteryStatus.BATTERY_STATUS_LOW_OR_OKAY;
+      materialized.storageRequest = workScheduler.StorageRequest.STORAGE_LEVEL_LOW_OR_OKAY;
       materialized.repeatCount = 0;
-      materialized.isDeepIdle = false;
+      materialized.isDeepIdle = undefined;
       materialized.idleWaitTime = 0;
       materialized.parameters = {};
       materialized.earliestStartTime = 0;
@@ -150,11 +144,24 @@ export default function workSchedulerDriverTestsuite() {
       expect(system.stopped.length).assertEqual(0);
     });
 
-    it('replacesAWorkWithAnActuallyEnabledChargingConstraint', 0, async () => {
+    it('replacesAWorkWithAnExplicitNotChargingConstraint', 0, async () => {
       const system = new RecordingWorkSchedulerSystemPort();
       const constrained = desiredWork();
-      constrained.isCharging = true;
-      constrained.chargerType = 0;
+      constrained.isCharging = false;
+      constrained.chargerType = workScheduler.ChargingType.CHARGING_PLUGGED_ANY;
+      system.works.push(constrained);
+      const driver = new WorkSchedulerDriver(system);
+
+      await driver.reconcile(true);
+
+      expect(system.stopped.length).assertEqual(1);
+      expect(system.started.length).assertEqual(1);
+    });
+
+    it('replacesAWorkWithAnExplicitNonIdleConstraint', 0, async () => {
+      const system = new RecordingWorkSchedulerSystemPort();
+      const constrained = desiredWork();
+      constrained.isDeepIdle = false;
       system.works.push(constrained);
       const driver = new WorkSchedulerDriver(system);
 

@@ -11,12 +11,12 @@ export interface SubscriptionRefreshWorkInfo {
   bundleName: string;
   abilityName: string;
   isPersisted?: boolean;
-  networkType?: number;
+  networkType?: workScheduler.NetworkType;
   isCharging?: boolean;
-  chargerType?: number;
+  chargerType?: workScheduler.ChargingType;
   batteryLevel?: number;
-  batteryStatus?: number;
-  storageRequest?: number;
+  batteryStatus?: workScheduler.BatteryStatus;
+  storageRequest?: workScheduler.StorageRequest;
   repeatCycleTime?: number;
   isRepeat?: boolean;
   repeatCount?: number;
@@ -134,16 +134,22 @@ function isDesiredSubscriptionRefreshWork(work: SubscriptionRefreshWorkInfo): bo
     work.networkType === workScheduler.NetworkType.NETWORK_TYPE_ANY &&
     work.isRepeat === true &&
     work.repeatCycleTime === SUBSCRIPTION_REFRESH_REPEAT_MS &&
-    work.isCharging !== true &&
-    isUnsetSdkNumber(work.chargerType) &&
+    work.isCharging === undefined &&
     isUnsetSdkNumber(work.batteryLevel) &&
-    isUnsetSdkNumber(work.batteryStatus) &&
-    isUnsetSdkNumber(work.storageRequest) &&
+    isAnyBatteryStatus(work.batteryStatus) &&
+    isAnyStorageRequest(work.storageRequest) &&
     isUnsetSdkNumber(work.repeatCount) &&
-    work.isDeepIdle !== true &&
-    isUnsetSdkNumber(work.idleWaitTime) &&
+    work.isDeepIdle === undefined &&
     isEmptyParameters(work.parameters) &&
     isUnsetSdkNumber(work.earliestStartTime);
+}
+
+function isAnyBatteryStatus(value: workScheduler.BatteryStatus | undefined): boolean {
+  return value === undefined || value === workScheduler.BatteryStatus.BATTERY_STATUS_LOW_OR_OKAY;
+}
+
+function isAnyStorageRequest(value: workScheduler.StorageRequest | undefined): boolean {
+  return value === undefined || value === workScheduler.StorageRequest.STORAGE_LEVEL_LOW_OR_OKAY;
 }
 
 function isUnsetSdkNumber(value: number | undefined): boolean {
@@ -217,12 +223,12 @@ function toSdkWorkInfo(work: SubscriptionRefreshWorkInfo): workScheduler.WorkInf
     bundleName: work.bundleName,
     abilityName: work.abilityName,
     isPersisted: work.isPersisted,
-    networkType: work.networkType as workScheduler.NetworkType,
+    networkType: work.networkType,
     isCharging: work.isCharging,
-    chargerType: work.chargerType as workScheduler.ChargingType | undefined,
+    chargerType: work.chargerType,
     batteryLevel: work.batteryLevel,
-    batteryStatus: work.batteryStatus as workScheduler.BatteryStatus | undefined,
-    storageRequest: work.storageRequest as workScheduler.StorageRequest | undefined,
+    batteryStatus: work.batteryStatus,
+    storageRequest: work.storageRequest,
     repeatCycleTime: work.repeatCycleTime,
     isRepeat: work.isRepeat,
     repeatCount: work.repeatCount,
