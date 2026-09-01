@@ -1040,10 +1040,5 @@ class HarmonyRdbTransaction implements RdbTransaction {
       toBindValues([id]),
       'Transaction profile delete failed.'
     );
-    await deleteProfileRefreshLeasesWithSafeFallback(
-      this.store,
-      id,
-      'Transaction profile refresh lease delete failed.'
-    );
   }
 }

@@ -446,7 +446,6 @@ export class RecordingRdbDriver implements RdbDriver {
     this.log.push(`deleteProfile:${id}`);
     this.failIfScripted(`deleteProfile:${id}`);
     this.committedRows.delete(id);
-    this.txDeleteProfileRefreshLeases(id);
   }
 
   txListProxySelectionRows(profileId: string): DurableProxySelectionRow[] {

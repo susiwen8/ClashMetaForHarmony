@@ -349,7 +349,7 @@ export default function rdbProfileRepositoryTestsuite() {
       await repository.deleteAndClearActive('delete-me');
 
       expect(driver.log.join('>')).assertContain(
-        'begin>clearActiveIfMatching:delete-me>deleteProfileSelections:delete-me>deleteProfileRefreshLeases:delete-me>deleteProfile:delete-me>deleteProfileRefreshLeases:delete-me>commit'
+        'begin>clearActiveIfMatching:delete-me>deleteProfileSelections:delete-me>deleteProfileRefreshLeases:delete-me>deleteProfile:delete-me>commit'
       );
       expect(await repository.get('delete-me')).assertUndefined();
       expect(await repository.getActiveId()).assertUndefined();
