@@ -20,6 +20,16 @@ function assertNotContains(source, fragment, context) {
   assert.equal(source.includes(fragment), false, `${context} must not contain ${fragment}`);
 }
 
+function assertOrdered(source, labelsAndNeedles) {
+  let previousIndex = -1;
+  for (const [label, needle] of labelsAndNeedles) {
+    const currentIndex = source.indexOf(needle);
+    assert.notEqual(currentIndex, -1, `missing ${label}`);
+    assert.ok(currentIndex > previousIndex, `${label} must preserve the required source order`);
+    previousIndex = currentIndex;
+  }
+}
+
 test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup contracts', async () => {
   const [driverSource, apiSource] = await Promise.all([
     readSource(DRIVER_PATH),
@@ -41,7 +51,7 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   assertContains(driverSource, 'implements VpnPlatformSessionPort', 'HarmonyVpnConnectionDriver');
   assert.match(
     driverSource,
-    /constructor\(\s*api:\s*VpnConnectionApi,\s*sessionId:\s*string,\s*reportStageLifecycle\?:\s*\(stage:\s*string\)\s*=>\s*void\s*\)/u,
+    /constructor\(\s*api:\s*VpnConnectionApi,\s*sessionId:\s*string,\s*store:\s*VpnPlatformOwnershipStorePort,\s*reportStageLifecycle\?:\s*\(stage:\s*string\)\s*=>\s*void\s*\)/u,
     'HarmonyVpnConnectionDriver must keep the exact constructor signature independent of formatting'
   );
   assertContains(driverSource, 'async protectProcess(): Promise<void>', 'HarmonyVpnConnectionDriver');
@@ -49,14 +59,21 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   assertContains(driverSource, 'async protectSocket(fd: number): Promise<void>', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'destroy(vpnId: string)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'protectProcessNet', 'HarmonyVpnConnectionDriver');
-  assertNotContains(driverSource, 'generateVpnId', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'generateVpnId', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'Number.isSafeInteger', 'HarmonyVpnConnectionDriver');
-  assertNotContains(driverSource, 'destroyWithVpnId', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'destroyWithVpnId', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'if (this.api.sdkApiVersion() >= API22)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'if (this.api.sdkApiVersion() < API22)', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'PROCESS_PROTECT_FAILED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'PROTECT_SOCKET_FAILED', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'CONSENT_DENIED', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'private readonly store: VpnPlatformOwnershipStorePort;', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'const platformConfig: PlatformVpnConfig = createPlatformVpnConfig(owner.vpnId);', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'return createTunHandle(fd, owner.vpnId, this.sessionId);', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'await this.store.clearExpected(vpnId);', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'await this.store.write(owner.vpnId);', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'const persistedVpnId: string | null = await this.store.read();', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'if (!owner.storeWasEmpty)', 'HarmonyVpnConnectionDriver');
   for (const stage of [
     'platform.config.begin',
     'platform.config.ok',
@@ -65,9 +82,9 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
     'platform.connection.ok',
     'platform.connection.consent',
     'platform.connection.active',
-    'platform.connection.reclaim.begin',
-    'platform.connection.reclaim.ok',
-    'platform.connection.reclaim.failed',
+    'platform.connection.legacy-reclaim.begin',
+    'platform.connection.legacy-reclaim.ok',
+    'platform.connection.legacy-reclaim.failed',
     'platform.connection.retry.begin',
     'platform.connection.retry.ok',
     'platform.connection.retry.consent',
@@ -109,6 +126,18 @@ test('phase4 vpn driver keeps the exact full-capture literals and owner cleanup 
   );
   assertContains(driverSource, 'trustedApplications: []', 'HarmonyVpnConnectionDriver');
   assertContains(driverSource, 'blockedApplications: [SELF_PACKAGE_NAME]', 'HarmonyVpnConnectionDriver');
+  assertContains(driverSource, 'vpnId,', 'HarmonyVpnConnectionDriver');
+  assertOrdered(driverSource, [
+    ['read persisted owner', 'const persistedVpnId: string | null = await this.store.read();'],
+    ['recover previous owner', 'await this.recoverPersistedOwner(owner, persistedVpnId);'],
+    ['generate vpn id', 'owner.vpnId = await this.generateVpnId(owner.connection);'],
+    ['persist vpn id', 'await this.store.write(owner.vpnId);']
+  ]);
+  assertOrdered(driverSource, [
+    ['destroy live owner by id', 'await liveHandle.connection.destroyWithVpnId(vpnId);'],
+    ['clear durable owner', 'await this.store.clearExpected(vpnId);'],
+    ['release live handle', 'this.liveHandle = undefined;']
+  ]);
   assertNotContains(driverSource, 'MANAGE_VPN', 'HarmonyVpnConnectionDriver');
   assertNotContains(driverSource, 'ohos.permission.', 'HarmonyVpnConnectionDriver');
   assertNotContains(apiSource, 'MANAGE_VPN', 'VpnConnectionApi');

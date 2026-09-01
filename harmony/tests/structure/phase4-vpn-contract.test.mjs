@@ -304,7 +304,7 @@ test('phase4 vpn composition persists stage-only coordinator diagnostics alongsi
   );
   assert.match(
     compositionSource,
-    /new HarmonyVpnConnectionDriver\([\s\S]*\(stage: string\) => \{\s*this\.recordVpnStartStage\(stage\);\s*\}/u,
+    /new HarmonyVpnConnectionDriver\([\s\S]*createHarmonyVpnOwnershipStore\(this\.context\.filesDir\),[\s\S]*\(stage: string\) => \{\s*this\.recordVpnStartStage\(stage\);\s*\}/u,
     'platform connection sub-stages must flow into the same private evidence journal'
   );
   assert.doesNotMatch(compositionSource, /reportStageLifecycle:[\s\S]{0,200}(request|want|error|message|profile|session|config)/u);

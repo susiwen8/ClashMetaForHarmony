@@ -154,6 +154,20 @@ test('the integrated SDK declarations expose the API 20 to API 24 network and re
   assert.match(requestApi, /readonly sizes: Array<number>;/u);
 });
 
+test('the integrated SDK declarations expose the API 20 VPN ownership lifecycle used by HarmonyVpnConnectionDriver', async () => {
+  const vpnExtensionApi = await fs.readFile(
+    path.join(REAL_INTEGRATED_SDK_ROOT, 'openharmony', 'ets', 'api', '@ohos.net.vpnExtension.d.ts'),
+    'utf8'
+  );
+
+  assert.match(vpnExtensionApi, /interface VpnConnection \{/u);
+  assert.match(vpnExtensionApi, /create\(config: VpnConfig\): Promise<number>;/u);
+  assert.match(vpnExtensionApi, /generateVpnId\(\): Promise<string>;/u);
+  assert.match(vpnExtensionApi, /destroy\(\): Promise<void>;/u);
+  assert.match(vpnExtensionApi, /destroy\(vpnId: string\): Promise<void>;/u);
+  assert.match(vpnExtensionApi, /protectProcessNet\(\): Promise<void>;/u);
+});
+
 test('preflight fallback report normalizes the node version', async () => {
   const source = await fs.readFile(preflightModulePath, 'utf8');
   const tempModulePath = path.join(os.tmpdir(), `preflight-fallback-${Date.now()}.mjs`);

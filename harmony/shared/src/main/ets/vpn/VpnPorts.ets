@@ -43,6 +43,12 @@ export class ContinuousNotificationPortError extends Error {
   }
 }
 
+export class OwnershipStoreCorruptError extends Error {
+  constructor() {
+    super('VPN ownership store is corrupt.');
+  }
+}
+
 export class TunRuntimePortError extends Error {
   failure: TunRuntimeFailure;
   nativeCode: string;
@@ -75,6 +81,12 @@ export interface VpnPlatformSessionPort {
   protectProcess(): Promise<void>;
   protectSocket(fd: number): Promise<void>;
   destroy(vpnId: string): Promise<void>;
+}
+
+export interface VpnPlatformOwnershipStorePort {
+  read(): Promise<string | null>;
+  write(vpnId: string): Promise<void>;
+  clearExpected(vpnId: string): Promise<void>;
 }
 
 export interface TunRuntimeEvent {

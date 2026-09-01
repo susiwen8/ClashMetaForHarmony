@@ -42,3 +42,10 @@ export type {
   HarmonyVpnRpcPlatformBundle,
   HarmonyVpnRpcPlatformDependencies
 } from './src/main/ets/vpn/HarmonyVpnRpcPlatformFactory';
+export {
+  HarmonyVpnOwnershipStore,
+  createHarmonyVpnOwnershipStore,
+  activePlatformVpnOwnershipDirectory,
+  activePlatformVpnOwnershipPath
+} from './src/main/ets/vpn/HarmonyVpnOwnershipStore';
+export type { HarmonyVpnOwnershipStoreDependencies } from './src/main/ets/vpn/HarmonyVpnOwnershipStore';

@@ -19,6 +19,7 @@ import subscriptionDownloaderTestsuite from './SubscriptionDownloader.test';
 import harmonyGeodataInstallerTestsuite from './HarmonyGeodataInstaller.test';
 import platformFactoryTestsuite from './PlatformFactory.test';
 import harmonyFileDriverTestsuite from './HarmonyFileDriver.test';
+import harmonyVpnOwnershipStoreTestsuite from './HarmonyVpnOwnershipStore.test';
 
 export default function testsuite() {
   profileRowCodecTestsuite();
@@ -40,6 +41,7 @@ export default function testsuite() {
   subscriptionDownloaderTestsuite();
   harmonyGeodataInstallerTestsuite();
   harmonyFileDriverTestsuite();
+  harmonyVpnOwnershipStoreTestsuite();
   platformFactoryTestsuite();
   describe('PlatformListTest', () => {
     it('contains a baseline passing case', 0, () => {

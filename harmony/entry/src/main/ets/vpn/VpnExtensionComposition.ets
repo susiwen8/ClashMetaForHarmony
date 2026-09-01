@@ -5,6 +5,7 @@ import { CoreTunRuntime, createCoreService, type CoreTunRuntimeConfig } from '@c
 import {
   HarmonyVpnRpcPlatformFactory,
   PlatformFactory,
+  createHarmonyVpnOwnershipStore,
   createHarmonyRuntimeLogStore,
   type HarmonyVpnRpcPlatformBundle,
   type PlatformGraph
@@ -1213,6 +1214,7 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
     return new HarmonyVpnConnectionDriver(
       new HarmonyVpnConnectionApi(this.context, defaultSdkApiVersionResolver),
       sessionId,
+      createHarmonyVpnOwnershipStore(this.context.filesDir),
       (stage: string) => {
         this.recordVpnStartStage(stage);
       }

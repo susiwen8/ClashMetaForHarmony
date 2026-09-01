@@ -1,7 +1,12 @@
 import { describe, expect, it } from '@ohos/hypium';
-import { createVpnCaptureConfig, type VpnCaptureConfig } from '@cmfa/shared';
+import {
+  createVpnCaptureConfig,
+  OwnershipStoreCorruptError,
+  VpnPlatformPortError,
+  type VpnCaptureConfig,
+  type VpnPlatformOwnershipStorePort
+} from '@cmfa/shared';
 import { HarmonyVpnConnectionDriver } from '../main/ets/vpn/HarmonyVpnConnectionDriver';
-import { VpnPlatformPortError } from '@cmfa/shared';
 import type {
   PlatformVpnConfig,
   PlatformVpnConnection,
@@ -29,41 +34,18 @@ class FakePlatformVpnConnection implements PlatformVpnConnection {
   readonly createConfigs: PlatformVpnConfig[] = [];
   createFd: number = 41;
   generatedVpnId: string = 'vpn-generated-1';
-  alreadyActiveCreateFailuresRemaining: number = 0;
-  useDeferredCreate: boolean = false;
-  useDeferredDestroy: boolean = false;
   createError?: Error | FakeBusinessError;
   generateVpnIdError?: Error | FakeBusinessError;
   protectProcessError?: Error | FakeBusinessError;
   protectError?: Error | FakeBusinessError;
   destroyError?: Error | FakeBusinessError;
   destroyWithVpnIdError?: Error | FakeBusinessError;
-  private createDeferredResolve?: (value: number) => void;
-  private readonly createDeferredPromise: Promise<number>;
-  private destroyDeferredResolve?: () => void;
-  private readonly destroyDeferredPromise: Promise<void>;
-
-  constructor() {
-    this.createDeferredPromise = new Promise<number>((resolve) => {
-      this.createDeferredResolve = resolve;
-    });
-    this.destroyDeferredPromise = new Promise<void>((resolve) => {
-      this.destroyDeferredResolve = resolve;
-    });
-  }
 
   async create(config: PlatformVpnConfig): Promise<number> {
     this.log.push('create');
     this.createConfigs.push(config);
-    if (this.alreadyActiveCreateFailuresRemaining > 0) {
-      this.alreadyActiveCreateFailuresRemaining -= 1;
-      throw new FakeBusinessError(2203002, 'existing vpn session');
-    }
     if (this.createError !== undefined) {
       throw requireFakeError(this.createError);
-    }
-    if (this.useDeferredCreate) {
-      return await this.createDeferredPromise;
     }
     return this.createFd;
   }
@@ -85,9 +67,6 @@ class FakePlatformVpnConnection implements PlatformVpnConnection {
 
   async destroy(): Promise<void> {
     this.log.push('destroy');
-    if (this.useDeferredDestroy) {
-      await this.destroyDeferredPromise;
-    }
     if (this.destroyError !== undefined) {
       throw requireFakeError(this.destroyError);
     }
@@ -105,14 +84,6 @@ class FakePlatformVpnConnection implements PlatformVpnConnection {
     if (this.protectProcessError !== undefined) {
       throw requireFakeError(this.protectProcessError);
     }
-  }
-
-  releaseDeferredCreate(fd?: number): void {
-    this.createDeferredResolve?.(fd ?? this.createFd);
-  }
-
-  releaseDeferredDestroy(): void {
-    this.destroyDeferredResolve?.();
   }
 }
 
@@ -140,6 +111,40 @@ class FakeVpnConnectionApi implements VpnConnectionApi {
   }
 }
 
+class FakeOwnershipStore implements VpnPlatformOwnershipStorePort {
+  readonly log: string[] = [];
+  readValue: string | null = null;
+  readError?: Object;
+  writeError?: Object;
+  clearError?: Object;
+
+  async read(): Promise<string | null> {
+    this.log.push('read');
+    if (this.readError !== undefined) {
+      throw this.readError as Error;
+    }
+    return this.readValue;
+  }
+
+  async write(vpnId: string): Promise<void> {
+    this.log.push(`write:${vpnId}`);
+    if (this.writeError !== undefined) {
+      throw this.writeError as Error;
+    }
+    this.readValue = vpnId;
+  }
+
+  async clearExpected(vpnId: string): Promise<void> {
+    this.log.push(`clearExpected:${vpnId}`);
+    if (this.clearError !== undefined) {
+      throw this.clearError as Error;
+    }
+    if (this.readValue === vpnId) {
+      this.readValue = null;
+    }
+  }
+}
+
 function buildExactCaptureConfig(): VpnCaptureConfig {
   return createVpnCaptureConfig({
     addresses: ['10.111.222.1/30', 'fd00:111:222::1/126'],
@@ -154,11 +159,16 @@ function buildExactCaptureConfig(): VpnCaptureConfig {
   });
 }
 
-function createDriver(api: VpnConnectionApi, sessionId: string): HarmonyVpnConnectionDriver {
-  return new HarmonyVpnConnectionDriver(api, sessionId);
+function createDriver(
+  api: VpnConnectionApi,
+  sessionId: string,
+  store?: VpnPlatformOwnershipStorePort,
+  reportStageLifecycle?: (stage: string) => void
+): HarmonyVpnConnectionDriver {
+  return new HarmonyVpnConnectionDriver(api, sessionId, store ?? new FakeOwnershipStore(), reportStageLifecycle);
 }
 
-async function expectRejects(action: () => Promise<void>): Promise<Error> {
+async function expectRejects<T>(action: () => Promise<T>): Promise<Error> {
   try {
     await action();
     expect().assertFail();
@@ -168,16 +178,6 @@ async function expectRejects(action: () => Promise<void>): Promise<Error> {
   return new Error('expected rejection');
 }
 
-async function waitForCondition(predicate: () => boolean, maxTurns: number = 12): Promise<void> {
-  for (let turn = 0; turn < maxTurns; turn += 1) {
-    if (predicate()) {
-      return;
-    }
-    await Promise.resolve();
-  }
-  expect().assertFail();
-}
-
 function expectPortErrorCode(error: Error, code: string): void {
   if (!(error instanceof VpnPlatformPortError)) {
     expect().assertFail();
@@ -185,8 +185,8 @@ function expectPortErrorCode(error: Error, code: string): void {
   expect((error as VpnPlatformPortError).code).assertEqual(code);
 }
 
-function assertExactConfig(config: PlatformVpnConfig): void {
-  expect(config.vpnId === undefined).assertTrue();
+function assertExactConfig(config: PlatformVpnConfig, vpnId: string): void {
+  expect(config.vpnId).assertEqual(vpnId);
   expect(config.addresses.length).assertEqual(2);
   expect(config.addresses[0].address.address).assertEqual('10.111.222.1');
   expect(config.addresses[0].address.family).assertEqual(1);
@@ -216,250 +216,182 @@ function assertExactConfig(config: PlatformVpnConfig): void {
 
 export default function harmonyVpnConnectionDriverTestsuite() {
   describe('HarmonyVpnConnectionDriverTest', () => {
-    it('usesLegacySingleVpnConfigSoTheSelfBlocklistCapturesEveryOtherApplication', 0, async () => {
+    it('recoversOldOwnerThenGeneratesPersistsAndCreatesWithASeparateVpnId', 0, async () => {
       const api = new FakeVpnConnectionApi(21);
-      const driver = createDriver(api, 'session-config');
+      const store = new FakeOwnershipStore();
+      store.readValue = 'vpn-stale-1';
+      const driver = createDriver(api, 'session-config', store);
+
+      const handle = await driver.create(buildExactCaptureConfig());
+
+      expect(handle.fd).assertEqual(41);
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(handle.sessionId).assertEqual('session-config');
+      expect(handle.vpnId === handle.sessionId).assertFalse();
+      expect(store.readValue).assertEqual('vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,clearExpected:vpn-stale-1,write:vpn-generated-1');
+      expect(api.connection.log.join(',')).assertEqual('destroyWithVpnId:vpn-stale-1,generateVpnId,create');
+      assertExactConfig(api.connection.createConfigs[0], 'vpn-generated-1');
+    });
+
+    it('protectsTheProcessBeforeCreateOnApi22AndSkipsPerSocketProtectionAfterward', 0, async () => {
+      const api = new FakeVpnConnectionApi(22);
+      const store = new FakeOwnershipStore();
+      const driver = createDriver(api, 'session-api22', store);
 
       await driver.protectProcess();
       const handle = await driver.create(buildExactCaptureConfig());
+      await driver.protectSocket(93);
 
-      expect(api.createConnectionCalls).assertEqual(1);
-      expect(api.connection.log.join(',')).assertEqual('create');
-      expect(handle.fd).assertEqual(41);
-      expect(handle.vpnId).assertEqual('session-config');
-      expect(handle.sessionId).assertEqual('session-config');
-      assertExactConfig(api.connection.createConfigs[0]);
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,protectProcessNet,create');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
     });
 
-    it('rejectsNonPositiveAndNonIntegerTunFileDescriptors', 0, async () => {
-      const zeroApi = new FakeVpnConnectionApi(21);
-      zeroApi.connection.createFd = 0;
-      const zeroDriver = createDriver(zeroApi, 'session-zero');
-
-      const zeroError = await expectRejects(async () => {
-        await zeroDriver.create(buildExactCaptureConfig());
-      });
-      expect(zeroError.message.includes('Tun')).assertTrue();
-
-      const fractionalApi = new FakeVpnConnectionApi(21);
-      fractionalApi.connection.createFd = 7.5;
-      const fractionalDriver = createDriver(fractionalApi, 'session-fractional');
-
-      const fractionalError = await expectRejects(async () => {
-        await fractionalDriver.create(buildExactCaptureConfig());
-      });
-      expect(fractionalError.message.includes('Tun')).assertTrue();
-
-      const unsafeApi = new FakeVpnConnectionApi(21);
-      unsafeApi.connection.createFd = Number.MAX_SAFE_INTEGER + 1;
-      const unsafeDriver = createDriver(unsafeApi, 'session-unsafe');
-
-      const unsafeError = await expectRejects(async () => {
-        await unsafeDriver.create(buildExactCaptureConfig());
-      });
-      expect(unsafeError.message.includes('Tun')).assertTrue();
-    });
-
-    it('protectsTheProcessBeforeCreateOnApi22AndAwaitProtectSocketOnApi21', 0, async () => {
-      const api22 = new FakeVpnConnectionApi(22);
-      const driver22 = createDriver(api22, 'session-api22');
-
-      await driver22.protectProcess();
-      await driver22.create(buildExactCaptureConfig());
-
-      expect(api22.connection.log.join(',')).assertEqual('protectProcessNet,create');
-
-      const api21 = new FakeVpnConnectionApi(21);
-      const driver21 = createDriver(api21, 'session-api21');
-
-      await driver21.protectProcess();
-      await driver21.create(buildExactCaptureConfig());
-      await driver21.protectSocket(93);
-
-      expect(api21.connection.log.join(',')).assertEqual('create,protect:93');
-    });
-
-    it('reusesThePreparedOwnerAcrossRepeatedProtectProcessCallsWithoutCreatingASecondConnection', 0, async () => {
-      const api22 = new FakeVpnConnectionApi(22);
-      const driver22 = createDriver(api22, 'session-owner-22');
-
-      await driver22.protectProcess();
-      await driver22.protectProcess();
-      await driver22.create(buildExactCaptureConfig());
-
-      expect(api22.createConnectionCalls).assertEqual(1);
-      expect(api22.connection.log.join(',')).assertEqual('protectProcessNet,create');
-
-      const api20 = new FakeVpnConnectionApi(20);
-      const driver20 = createDriver(api20, 'session-owner-20');
-
-      await driver20.protectProcess();
-      await driver20.protectProcess();
-      await driver20.create(buildExactCaptureConfig());
-      await driver20.protectSocket(73);
-
-      expect(api20.createConnectionCalls).assertEqual(1);
-      expect(api20.connection.log.join(',')).assertEqual('create,protect:73');
-    });
-
-    it('skipsPerSocketProtectionAfterTheProcessPathWasProtectedOnApi22', 0, async () => {
-      const api = new FakeVpnConnectionApi(22);
-      const driver = createDriver(api, 'session-api22-socket');
+    it('usesPerSocketProtectionOnApi21AfterCreate', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      const store = new FakeOwnershipStore();
+      const driver = createDriver(api, 'session-api21', store);
 
       await driver.create(buildExactCaptureConfig());
       await driver.protectSocket(61);
 
-      expect(api.createConnectionCalls).assertEqual(1);
-      expect(api.connection.log.join(',')).assertEqual('protectProcessNet,create');
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,protect:61');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
     });
 
-    it('stopsBeforeCreateWhenProcessProtectionFailsAndCleansUp', 0, async () => {
-      const api = new FakeVpnConnectionApi(22);
-      api.connection.protectProcessError = new Error('process protect failed');
-      const driver = createDriver(api, 'session-stop');
+    it('rejectsNonPositiveAndNonIntegerTunFileDescriptorsAndCleansUpThePersistedOwner', 0, async () => {
+      const zeroApi = new FakeVpnConnectionApi(21);
+      zeroApi.connection.createFd = 0;
+      const zeroStore = new FakeOwnershipStore();
+      const zeroDriver = createDriver(zeroApi, 'session-zero', zeroStore);
 
-      const error = await expectRejects(async () => {
-        await driver.protectProcess();
+      const zeroError = await expectRejects(async (): Promise<void> => {
+        await zeroDriver.create(buildExactCaptureConfig());
       });
+      expect(zeroError.message.includes('Tun')).assertTrue();
+      expect(zeroApi.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
+      expect(zeroStore.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(zeroStore.readValue).assertNull();
 
-      expect(error.message.includes('protect')).assertTrue();
-      expect(api.connection.log.join(',')).assertEqual('protectProcessNet,destroy');
+      const fractionalApi = new FakeVpnConnectionApi(21);
+      fractionalApi.connection.createFd = 7.5;
+      const fractionalStore = new FakeOwnershipStore();
+      const fractionalDriver = createDriver(fractionalApi, 'session-fractional', fractionalStore);
+
+      const fractionalError = await expectRejects(async (): Promise<void> => {
+        await fractionalDriver.create(buildExactCaptureConfig());
+      });
+      expect(fractionalError.message.includes('Tun')).assertTrue();
+      expect(fractionalStore.readValue).assertNull();
     });
 
-    it('rejectsDuplicateCreateAndOnlyDestroysTheLiveLegacyOwner', 0, async () => {
+    it('destroysWithTheRealVpnIdAndClearsOnlyAfterConfirmedSuccess', 0, async () => {
       const api = new FakeVpnConnectionApi(21);
-      const driver = createDriver(api, 'session-live');
+      const store = new FakeOwnershipStore();
+      const driver = createDriver(api, 'session-destroy', store);
 
-      await driver.protectProcess();
-      await driver.create(buildExactCaptureConfig());
+      const handle = await driver.create(buildExactCaptureConfig());
+      await driver.destroy(handle.vpnId);
+      await driver.destroy(handle.vpnId);
 
-      const duplicateError = await expectRejects(async () => {
-        await driver.create(buildExactCaptureConfig());
-      });
-      expect(duplicateError.message.includes('already')).assertTrue();
-
-      const mismatchError = await expectRejects(async () => {
-        await driver.destroy('vpn-other');
-      });
-      expect(mismatchError.message.includes('vpn')).assertTrue();
-
-      await driver.destroy('session-live');
-      await driver.destroy('session-live');
-
-      expect(api.connection.log.join(',')).assertEqual('create,destroy');
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(store.readValue).assertNull();
     });
 
-    it('rejectsConcurrentCreateWhileThePendingOwnerIsStillCreating', 0, async () => {
+    it('retainsDurableAndLiveOwnershipWhenDestroyFailsSoDestroyCanRetry', 0, async () => {
       const api = new FakeVpnConnectionApi(21);
-      api.connection.useDeferredCreate = true;
-      const driver = createDriver(api, 'session-pending');
+      const store = new FakeOwnershipStore();
+      const driver = createDriver(api, 'session-destroy', store);
 
-      await driver.protectProcess();
-      const pendingCreate = driver.create(buildExactCaptureConfig());
+      const handle = await driver.create(buildExactCaptureConfig());
+      api.connection.destroyWithVpnIdError = new Error('destroy failed');
 
-      const duplicateError = await expectRejects(async () => {
-        await driver.create(buildExactCaptureConfig());
-      });
-      expect(duplicateError.message.includes('creating')).assertTrue();
-
-      api.connection.releaseDeferredCreate();
-      const handle = await pendingCreate;
-      expect(handle.sessionId).assertEqual('session-pending');
-    });
-
-    it('cleansUpCreateFailuresThroughTheLegacySingleVpnOwner', 0, async () => {
-      const api = new FakeVpnConnectionApi(21);
-      api.connection.createError = new Error('create failed');
-      const driver = createDriver(api, 'session-create-fail');
-
-      const createError = await expectRejects(async () => {
-        await driver.protectProcess();
-        await driver.create(buildExactCaptureConfig());
-      });
-      expect(createError.message.includes('create')).assertTrue();
-      expect(api.connection.log.join(',')).assertEqual('create,destroy');
-    });
-
-    it('keepsTheOwnerBusyUntilLegacyCleanupFinishes', 0, async () => {
-      const api = new FakeVpnConnectionApi(21);
-      api.connection.createError = new Error('create failed');
-      api.connection.useDeferredDestroy = true;
-      const driver = createDriver(api, 'session-cleanup-race');
-
-      let primaryError: Error | undefined = undefined;
-      const pendingCreate = driver.create(buildExactCaptureConfig()).catch((error: Error) => {
-        primaryError = error;
-      });
-
-      await waitForCondition(() => api.connection.log.includes('destroy'));
-      api.connection.createError = undefined;
-
-      await driver.protectProcess();
-      expect(api.createConnectionCalls).assertEqual(1);
-
-      const duplicateError = await expectRejects(async () => {
-        await driver.create(buildExactCaptureConfig());
-      });
-      expect(duplicateError.message.includes('creating')).assertTrue();
-      expect(api.createConnectionCalls).assertEqual(1);
-
-      api.connection.releaseDeferredDestroy();
-      await pendingCreate;
-
-      expect(primaryError !== undefined).assertTrue();
-      const finalPrimaryError: Error = primaryError ?? new Error('missing primary create error');
-      expect(finalPrimaryError.message.includes('create')).assertTrue();
-      expect(api.connection.log.join(',')).assertEqual('create,destroy');
-    });
-
-    it('rejectsInvalidProtectSocketFileDescriptors', 0, async () => {
-      const api = new FakeVpnConnectionApi(21);
-      const driver = createDriver(api, 'session-protect');
-
-      await driver.create(buildExactCaptureConfig());
-
-      const zeroError = await expectRejects(async () => {
-        await driver.protectSocket(0);
-      });
-      expect(zeroError.message.includes('socket')).assertTrue();
-
-      const fractionalError = await expectRejects(async () => {
-        await driver.protectSocket(7.5);
-      });
-      expect(fractionalError.message.includes('socket')).assertTrue();
-
-      const unsafeError = await expectRejects(async () => {
-        await driver.protectSocket(Number.MAX_SAFE_INTEGER + 1);
-      });
-      expect(unsafeError.message.includes('socket')).assertTrue();
-
-      expect(api.connection.log.join(',')).assertEqual('create');
-    });
-
-    it('retainsLiveOwnershipWhenDestroyFailsSoDestroyCanRetry', 0, async () => {
-      const api = new FakeVpnConnectionApi(21);
-      api.connection.destroyError = new Error('destroy failed');
-      const driver = createDriver(api, 'session-destroy');
-
-      await driver.create(buildExactCaptureConfig());
-
-      const destroyError = await expectRejects(async () => {
-        await driver.destroy('session-destroy');
+      const destroyError = await expectRejects(async (): Promise<void> => {
+        await driver.destroy(handle.vpnId);
       });
       expect(destroyError.message.includes('destroy')).assertTrue();
+      expect(store.readValue).assertEqual('vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
 
-      api.connection.destroyError = undefined;
-      await driver.destroy('session-destroy');
+      api.connection.destroyWithVpnIdError = undefined;
+      await driver.destroy(handle.vpnId);
 
-      expect(api.connection.log.join(',')).assertEqual('create,destroy,destroy');
+      expect(api.connection.log.join(',')).assertEqual(
+        'generateVpnId,create,destroyWithVpnId:vpn-generated-1,destroyWithVpnId:vpn-generated-1'
+      );
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1,clearExpected:vpn-generated-1');
+      expect(store.readValue).assertNull();
+    });
+
+    it('retainsThePersistedOwnerWhenCreateCleanupDestroyFails', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      api.connection.createError = new Error('create failed');
+      api.connection.destroyWithVpnIdError = new Error('cleanup failed');
+      const store = new FakeOwnershipStore();
+      const driver = createDriver(api, 'session-create-fail', store);
+
+      const createError = await expectRejects(async (): Promise<void> => {
+        await driver.create(buildExactCaptureConfig());
+      });
+
+      expect(createError.message.includes('create')).assertTrue();
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroyWithVpnId:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(store.readValue).assertEqual('vpn-generated-1');
+    });
+
+    it('failsClosedWhenTheOwnershipStoreIsCorrupt', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      const store = new FakeOwnershipStore();
+      store.readError = new OwnershipStoreCorruptError();
+      const driver = createDriver(api, 'session-corrupt', store);
+
+      const error = await expectRejects(async (): Promise<void> => {
+        await driver.create(buildExactCaptureConfig());
+      });
+
+      expect(error instanceof OwnershipStoreCorruptError).assertTrue();
+      expect(api.connection.log.length).assertEqual(0);
+      expect(store.log.join(',')).assertEqual('read');
+    });
+
+    it('reclaimsOneLegacySystemVpnOnceWhenTheStoreIsEmptyAndCreateReturns2203002', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      api.connection.createError = new FakeBusinessError(2203002, 'existing vpn session');
+      api.replacementConnection = new FakePlatformVpnConnection();
+      const store = new FakeOwnershipStore();
+      const stages: string[] = [];
+      const driver = createDriver(api, 'session-reclaim', store, (stage: string): void => {
+        stages.push(stage);
+      });
+
+      const handle = await driver.create(buildExactCaptureConfig());
+
+      expect(handle.fd).assertEqual(41);
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(handle.sessionId).assertEqual('session-reclaim');
+      expect(api.createConnectionCalls).assertEqual(2);
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroy');
+      expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
+      expect(store.log.join(',')).assertEqual('read,write:vpn-generated-1');
+      expect(stages.join(',')).assertEqual(
+        'platform.config.begin,platform.config.ok,platform.connection.begin,' +
+        'platform.connection.active,platform.connection.legacy-reclaim.begin,platform.connection.legacy-reclaim.ok,' +
+        'platform.connection.retry.begin,platform.connection.retry.ok,platform.fd.ok'
+      );
+      const retryConfig: PlatformVpnConfig | undefined = api.replacementConnection?.createConfigs[0];
+      expect(retryConfig !== undefined).assertTrue();
+      assertExactConfig(retryConfig ?? api.connection.createConfigs[0], 'vpn-generated-1');
     });
 
     it('mapsBusinessErrorsToAllowlistedPortCodesWithoutLeakingRawSystemMessages', 0, async () => {
       const consentApi = new FakeVpnConnectionApi(21);
       consentApi.connection.createError = new FakeBusinessError(2203001, 'raw consent secret 42');
-      const consentDriver = createDriver(consentApi, 'session-consent');
+      const consentDriver = createDriver(consentApi, 'session-consent', new FakeOwnershipStore());
 
-      const consentError = await expectRejects(async () => {
+      const consentError = await expectRejects(async (): Promise<void> => {
         await consentDriver.create(buildExactCaptureConfig());
       });
       expectPortErrorCode(consentError, 'CONSENT_DENIED');
@@ -467,72 +399,34 @@ export default function harmonyVpnConnectionDriverTestsuite() {
 
       const createApi = new FakeVpnConnectionApi(21);
       createApi.connection.createError = new FakeBusinessError(2203999, 'raw create secret 77');
-      const createDriverPort = createDriver(createApi, 'session-create-error');
+      const createDriverPort = createDriver(createApi, 'session-create-error', new FakeOwnershipStore());
 
-      const createError = await expectRejects(async () => {
+      const createError = await expectRejects(async (): Promise<void> => {
         await createDriverPort.create(buildExactCaptureConfig());
       });
       expectPortErrorCode(createError, 'PLATFORM_CREATE_FAILED');
       expect(createError.message.includes('raw create secret 77')).assertFalse();
 
-      const activeApi = new FakeVpnConnectionApi(21);
-      activeApi.connection.createError = new FakeBusinessError(2203002, 'raw active secret 66');
-      const activeStages: string[] = [];
-      const activeDriver = new HarmonyVpnConnectionDriver(activeApi, 'session-already-active', (stage: string): void => {
-        activeStages.push(stage);
-      });
-
-      const activeError = await expectRejects(async () => {
-        await activeDriver.create(buildExactCaptureConfig());
-      });
-      expectPortErrorCode(activeError, 'ALREADY_ACTIVE');
-      expect(activeError.message.includes('raw active secret 66')).assertFalse();
-      expect(activeStages.includes('platform.connection.retry.active')).assertTrue();
-
       const processApi = new FakeVpnConnectionApi(22);
       processApi.connection.protectProcessError = new FakeBusinessError(2204999, 'raw process secret 99');
-      const processDriver = createDriver(processApi, 'session-process-error');
+      const processDriver = createDriver(processApi, 'session-process-error', new FakeOwnershipStore());
 
-      const processError = await expectRejects(async () => {
+      const processError = await expectRejects(async (): Promise<void> => {
         await processDriver.protectProcess();
       });
       expectPortErrorCode(processError, 'PROCESS_PROTECT_FAILED');
       expect(processError.message.includes('raw process secret 99')).assertFalse();
 
       const socketApi = new FakeVpnConnectionApi(21);
-      socketApi.connection.protectError = new FakeBusinessError(2205999, 'raw socket secret 101');
-      const socketDriver = createDriver(socketApi, 'session-socket-error');
+      const socketDriver = createDriver(socketApi, 'session-socket-error', new FakeOwnershipStore());
       await socketDriver.create(buildExactCaptureConfig());
+      socketApi.connection.protectError = new FakeBusinessError(2205999, 'raw socket secret 101');
 
-      const socketError = await expectRejects(async () => {
+      const socketError = await expectRejects(async (): Promise<void> => {
         await socketDriver.protectSocket(88);
       });
       expectPortErrorCode(socketError, 'PROTECT_SOCKET_FAILED');
       expect(socketError.message.includes('raw socket secret 101')).assertFalse();
     });
-
-    it('reclaimsOneLegacySystemVpnAndRetriesCreateOnce', 0, async () => {
-      const api = new FakeVpnConnectionApi(21);
-      api.connection.createError = new FakeBusinessError(2203002, 'existing vpn session');
-      api.replacementConnection = new FakePlatformVpnConnection();
-      const stages: string[] = [];
-      const driver = new HarmonyVpnConnectionDriver(api, 'session-reclaim', (stage: string): void => {
-        stages.push(stage);
-      });
-
-      const handle = await driver.create(buildExactCaptureConfig());
-
-      expect(handle.fd).assertEqual(41);
-      expect(handle.sessionId).assertEqual('session-reclaim');
-      expect(api.createConnectionCalls).assertEqual(2);
-      expect(api.connection.log.join(',')).assertEqual('create,destroy');
-      expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
-      expect(stages.join(',')).assertEqual(
-        'platform.config.begin,platform.config.ok,platform.connection.begin,' +
-        'platform.connection.active,platform.connection.reclaim.begin,platform.connection.reclaim.ok,' +
-        'platform.connection.retry.begin,platform.connection.retry.ok,platform.fd.ok'
-      );
-    });
-
   });
 }
