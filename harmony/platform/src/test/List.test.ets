@@ -23,6 +23,7 @@ import harmonyGeodataInstallerTestsuite from './HarmonyGeodataInstaller.test';
 import platformFactoryTestsuite from './PlatformFactory.test';
 import harmonyFileDriverTestsuite from './HarmonyFileDriver.test';
 import harmonyVpnOwnershipStoreTestsuite from './HarmonyVpnOwnershipStore.test';
+import harmonyQrScannerTestsuite from './HarmonyQrScanner.test';
 
 export default function testsuite() {
   profileRowCodecTestsuite();
@@ -48,6 +49,7 @@ export default function testsuite() {
   harmonyGeodataInstallerTestsuite();
   harmonyFileDriverTestsuite();
   harmonyVpnOwnershipStoreTestsuite();
+  harmonyQrScannerTestsuite();
   platformFactoryTestsuite();
   describe('PlatformListTest', () => {
     it('contains a baseline passing case', 0, () => {

@@ -17,6 +17,7 @@ export type ProfileTransferQrScanResultKind = 'SCANNED' | 'CANCELLED';
 export type ProfileTransferYamlExportResultCode = 'EXPORTED' | 'CANCELLED' | 'FAILED';
 export type PortableBackupProfileSourceKind = 'LOCAL_FILE' | 'REMOTE_URL';
 export type ProfileTransferQrUrlValidationCode = 'PROFILE_TRANSFER_INVALID_QR_URL';
+export type ProfileTransferQrScannerErrorCode = 'PROFILE_TRANSFER_QR_SCAN_FAILED';
 
 const profileTransferQrScanResultKinds: ProfileTransferQrScanResultKind[] = ['SCANNED', 'CANCELLED'];
 const profileTransferYamlExportResultCodes: ProfileTransferYamlExportResultCode[] = [
@@ -24,6 +25,9 @@ const profileTransferYamlExportResultCodes: ProfileTransferYamlExportResultCode[
   'CANCELLED',
   'FAILED'
 ];
+const PROFILE_TRANSFER_QR_SCANNER_ERROR_CODE: ProfileTransferQrScannerErrorCode = 'PROFILE_TRANSFER_QR_SCAN_FAILED';
+const PROFILE_TRANSFER_QR_SCANNER_ERROR_MESSAGE: string =
+  'QR scan did not produce a usable profile transfer payload.';
 const PORTABLE_BACKUP_PROFILE_SOURCE_KINDS: PortableBackupProfileSourceKind[] = ['LOCAL_FILE', 'REMOTE_URL'];
 const SHA256_DIGEST_PATTERN: RegExp = /^[0-9a-f]{64}$/u;
 const BASE64_PATTERN: RegExp = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/u;
@@ -46,6 +50,10 @@ export type ProfileTransferQrScanResult = ScannedQrScanResult | CancelledQrScanR
 
 export interface ProfileTransferYamlExportResult {
   code: ProfileTransferYamlExportResultCode;
+}
+
+export interface ProfileTransferQrScannerError extends Error {
+  code: ProfileTransferQrScannerErrorCode;
 }
 
 export interface ValidProfileTransferQrUrlResult {
@@ -642,6 +650,13 @@ export function createCancelledQrScanResult(): ProfileTransferQrScanResult {
   return {
     kind: normalizeQrScanResultKind('CANCELLED')
   };
+}
+
+export function createProfileTransferQrScannerError(): ProfileTransferQrScannerError {
+  const error = new Error(PROFILE_TRANSFER_QR_SCANNER_ERROR_MESSAGE) as ProfileTransferQrScannerError;
+  error.name = 'ProfileTransferQrScannerError';
+  error.code = PROFILE_TRANSFER_QR_SCANNER_ERROR_CODE;
+  return error;
 }
 
 export function sanitizeProfileTransferQrUrl(rawValue: string): ProfileTransferQrUrlValidationResult {

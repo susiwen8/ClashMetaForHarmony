@@ -17,6 +17,7 @@ import {
   createPortableBackupProfile,
   createPortableBackupProxySelection,
   createPortableBackupYamlEntry,
+  createProfileTransferQrScannerError,
   createProfileTransferSafeYamlFilename,
   createProfileYamlExportResult,
   createScannedQrScanResult,
@@ -206,6 +207,7 @@ export default function profileTransferModelsTestsuite() {
     it('createsClosedQrAndYamlExportResultShapes', 0, () => {
       const scanned: ProfileTransferQrScanResult = createScannedQrScanResult('https://example.com/a.yaml');
       const cancelled: ProfileTransferQrScanResult = createCancelledQrScanResult();
+      const qrScannerError = createProfileTransferQrScannerError();
       const exported: Object = createProfileYamlExportResult('EXPORTED');
       const failed: Object = createProfileYamlExportResult('FAILED');
 
@@ -217,6 +219,9 @@ export default function profileTransferModelsTestsuite() {
       expect(cancelled.kind).assertEqual('CANCELLED');
       expect(createProfileYamlExportResult('EXPORTED').code).assertEqual('EXPORTED');
       expect(createProfileYamlExportResult('FAILED').code).assertEqual('FAILED');
+      expect(qrScannerError.name).assertEqual('ProfileTransferQrScannerError');
+      expect(qrScannerError.code).assertEqual('PROFILE_TRANSFER_QR_SCAN_FAILED');
+      expect(qrScannerError.message).assertEqual('QR scan did not produce a usable profile transfer payload.');
     });
 
     it('sanitizesOnlyHttpAndHttpsWithoutEchoingRawInput', 0, () => {
