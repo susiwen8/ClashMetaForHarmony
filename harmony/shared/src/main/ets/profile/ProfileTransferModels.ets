@@ -2,6 +2,7 @@ import { normalizeCanonicalUtcIsoTimestamp } from './AppErrors';
 import { normalizeProfileName } from './ProfileModels';
 
 export const PROFILE_TRANSFER_MAX_PROFILES: number = 128;
+export const PROFILE_TRANSFER_MAX_PROXY_SELECTIONS: number = 8192;
 export const PROFILE_TRANSFER_MAX_YAML_ENTRY_BYTES: number = 16 * 1024 * 1024;
 export const PROFILE_TRANSFER_MAX_AGGREGATE_BYTES: number = 64 * 1024 * 1024;
 export const PROFILE_TRANSFER_BACKUP_SCHEMA_VERSION: number = 1;
@@ -30,6 +31,7 @@ const CONTROL_CHARACTER_PATTERN: RegExp = /[\u0000-\u001f\u007f]/u;
 const CONTROL_CHARACTER_REPLACE_PATTERN: RegExp = /[\u0000-\u001f\u007f]/gu;
 const FORMAT_AND_BIDI_CHARACTER_REPLACE_PATTERN: RegExp = /[\u061c\u200b-\u200f\u202a-\u202e\u2060-\u206f\ufeff]/gu;
 const WHITESPACE_PATTERN: RegExp = /\s/u;
+const UNSAFE_URL_CHARACTER_PATTERN: RegExp = /[\\<>"{}|^`]/u;
 
 export interface ScannedQrScanResult {
   kind: 'SCANNED';
@@ -295,7 +297,8 @@ function normalizeHttpLikeUrl(rawUrl: string): string {
     createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
   }
   const normalizedAuthority: string = normalizeValidatedAuthority(authority);
-  return `${scheme}://${normalizedAuthority}${trimmed.substring(authorityEnd)}`;
+  const normalizedRemainder: string = normalizeValidatedUrlRemainder(trimmed.substring(authorityEnd));
+  return `${scheme}://${normalizedAuthority}${normalizedRemainder}`;
 }
 
 function containsWhitespaceOrControl(value: string): boolean {
@@ -395,6 +398,32 @@ function normalizeValidatedAuthority(authority: string): string {
   return validateStandardAuthority(authority);
 }
 
+function isHexCharacter(character: string): boolean {
+  const code: number = character.charCodeAt(0);
+  return (code >= 48 && code <= 57) ||
+    (code >= 65 && code <= 70) ||
+    (code >= 97 && code <= 102);
+}
+
+function normalizeValidatedUrlRemainder(remainder: string): string {
+  for (let index: number = 0; index < remainder.length; index += 1) {
+    const character: string = remainder[index];
+    const code: number = character.charCodeAt(0);
+    if (code <= 32 || code === 127 || UNSAFE_URL_CHARACTER_PATTERN.test(character)) {
+      createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+    }
+    if (character === '%') {
+      if (index + 2 >= remainder.length ||
+        !isHexCharacter(remainder[index + 1]) ||
+        !isHexCharacter(remainder[index + 2])) {
+        createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
+      }
+      index += 2;
+    }
+  }
+  return remainder;
+}
+
 function normalizeLocalSourceLabel(sourceLabel: string): string {
   const normalized: string = normalizeNonEmptyTrimmedString(sourceLabel, 'Profile transfer local sourceLabel');
   if (normalized.indexOf('/') >= 0 || normalized.indexOf('\\') >= 0 || normalized === '.' || normalized === '..') {
@@ -409,6 +438,19 @@ function normalizeRemoteUrl(sourceLabelOrUrl: string, label: string): string {
   } catch (_) {
     createProfileTransferContractError(`${label} must be a valid http or https URL.`);
   }
+}
+
+function normalizeRemoteSourceLabel(sourceLabelOrUrl: string, label: string): string {
+  const normalizedRemoteUrl: string = normalizeRemoteUrl(sourceLabelOrUrl, label);
+  let authorityEnd: number = normalizedRemoteUrl.length;
+  for (let index: number = normalizedRemoteUrl.indexOf('://') + 3; index < normalizedRemoteUrl.length; index += 1) {
+    const character: string = normalizedRemoteUrl[index];
+    if (character === '/' || character === '?' || character === '#') {
+      authorityEnd = index;
+      break;
+    }
+  }
+  return normalizedRemoteUrl.substring(0, authorityEnd);
 }
 
 function clonePortableBackupYamlEntryOrUndefined(entry: PortableBackupYamlEntry | undefined): PortableBackupYamlEntry | undefined {
@@ -479,6 +521,67 @@ function computeAggregateYamlBytes(profiles: PortableBackupProfile[]): number {
 function ensureAggregateYamlBytesWithinLimit(profiles: PortableBackupProfile[]): void {
   if (computeAggregateYamlBytes(profiles) > PROFILE_TRANSFER_MAX_AGGREGATE_BYTES) {
     createProfileTransferContractError('Profile transfer backup aggregate YAML payload must not exceed 64 MiB.');
+  }
+}
+
+function ensureUniqueProfileSourceIds(profiles: PortableBackupProfile[]): void {
+  const seenSourceProfileIds: string[] = [];
+  for (let index: number = 0; index < profiles.length; index += 1) {
+    const sourceProfileId: string = profiles[index].sourceProfileId;
+    if (containsKey(seenSourceProfileIds, sourceProfileId)) {
+      createProfileTransferContractError('Profile transfer profiles must have unique sourceProfileId values.');
+    }
+    seenSourceProfileIds.push(sourceProfileId);
+  }
+}
+
+function ensureActiveProfileExists(
+  profiles: PortableBackupProfile[],
+  activeProfileSourceId: string | undefined
+): void {
+  if (activeProfileSourceId === undefined) {
+    return;
+  }
+  for (let index: number = 0; index < profiles.length; index += 1) {
+    if (profiles[index].sourceProfileId === activeProfileSourceId) {
+      return;
+    }
+  }
+  createProfileTransferContractError('Profile transfer activeProfileSourceId must reference an existing profile.');
+}
+
+function ensureProxySelectionsWithinLimit(proxySelections: PortableBackupProxySelection[]): void {
+  if (proxySelections.length > PROFILE_TRANSFER_MAX_PROXY_SELECTIONS) {
+    createProfileTransferContractError('Profile transfer proxySelections must not contain more than 8192 items.');
+  }
+}
+
+function ensureProxySelectionsReferenceKnownProfiles(
+  profiles: PortableBackupProfile[],
+  proxySelections: PortableBackupProxySelection[]
+): void {
+  const selectionKeys: string[] = [];
+  for (let index: number = 0; index < proxySelections.length; index += 1) {
+    const selection: PortableBackupProxySelection = proxySelections[index];
+    let knownProfile: boolean = false;
+    for (let profileIndex: number = 0; profileIndex < profiles.length; profileIndex += 1) {
+      if (profiles[profileIndex].sourceProfileId === selection.sourceProfileId) {
+        knownProfile = true;
+        break;
+      }
+    }
+    if (!knownProfile) {
+      createProfileTransferContractError(
+        'Profile transfer proxy selection sourceProfileId must reference an existing profile.'
+      );
+    }
+    const uniqueKey: string = `${selection.sourceProfileId}\u0000${selection.groupName}`;
+    if (containsKey(selectionKeys, uniqueKey)) {
+      createProfileTransferContractError(
+        'Profile transfer manifest must not contain a duplicate proxy selection for the same sourceProfileId and groupName.'
+      );
+    }
+    selectionKeys.push(uniqueKey);
   }
 }
 
@@ -582,12 +685,15 @@ export function createPortableBackupYamlEntry(
 
 export function createPortableBackupProfile(input: CreatePortableBackupProfileInput): PortableBackupProfile {
   const sourceKind: PortableBackupProfileSourceKind = normalizeSourceKind(input.sourceKind);
+  const normalizedRemoteSourceLabel: string | undefined = sourceKind === 'REMOTE_URL'
+    ? normalizeRemoteSourceLabel(input.sourceLabel, 'Profile transfer remote sourceLabel')
+    : undefined;
   const normalizedProfile: PortableBackupProfile = {
     sourceProfileId: normalizeSourceProfileId(input.sourceProfileId),
     name: normalizeProfileName(input.name),
     sourceKind,
     sourceLabel: sourceKind === 'REMOTE_URL'
-      ? normalizeRemoteUrl(input.sourceLabel, 'Profile transfer remote sourceLabel')
+      ? normalizedRemoteSourceLabel as string
       : normalizeLocalSourceLabel(input.sourceLabel),
     autoUpdateIntervalMs: normalizeSafeInteger(
       input.autoUpdateIntervalMs,
@@ -657,12 +763,20 @@ export function createPortableBackupManifest(input: CreatePortableBackupManifest
   if (profiles.length > PROFILE_TRANSFER_MAX_PROFILES) {
     createProfileTransferContractError('Profile transfer backup must not contain more than 128 profiles.');
   }
+  ensureUniqueProfileSourceIds(profiles);
   ensureAggregateYamlBytesWithinLimit(profiles);
 
   const proxySelections: PortableBackupProxySelection[] = [];
   for (let index: number = 0; index < input.proxySelections.length; index += 1) {
     proxySelections.push(clonePortableBackupProxySelection(input.proxySelections[index]));
   }
+  ensureProxySelectionsWithinLimit(proxySelections);
+
+  const normalizedActiveProfileSourceId: string | undefined = input.activeProfileSourceId !== undefined
+    ? normalizeSourceProfileId(input.activeProfileSourceId)
+    : undefined;
+  ensureActiveProfileExists(profiles, normalizedActiveProfileSourceId);
+  ensureProxySelectionsReferenceKnownProfiles(profiles, proxySelections);
 
   const manifest: PortableBackupManifest = {
     schemaVersion: requireProfileTransferSchemaVersion(
@@ -673,8 +787,8 @@ export function createPortableBackupManifest(input: CreatePortableBackupManifest
     proxySelections
   };
 
-  if (input.activeProfileSourceId !== undefined) {
-    manifest.activeProfileSourceId = normalizeSourceProfileId(input.activeProfileSourceId);
+  if (normalizedActiveProfileSourceId !== undefined) {
+    manifest.activeProfileSourceId = normalizedActiveProfileSourceId;
   }
   return manifest;
 }

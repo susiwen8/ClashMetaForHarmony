@@ -6,6 +6,7 @@ import {
   PROFILE_TRANSFER_BACKUP_ENVELOPE_VERSION,
   PROFILE_TRANSFER_BACKUP_SCHEMA_VERSION,
   PROFILE_TRANSFER_MAX_AGGREGATE_BYTES,
+  PROFILE_TRANSFER_MAX_PROXY_SELECTIONS,
   PROFILE_TRANSFER_MAX_PROFILES,
   PROFILE_TRANSFER_MAX_YAML_ENTRY_BYTES,
   PROFILE_TRANSFER_PBKDF2_ITERATIONS,
@@ -101,6 +102,19 @@ function buildRemoteProfile(
     lastSuccessfulUpdateAt: buildCanonicalTimestamp(),
     currentYaml,
     failedYaml
+  });
+}
+
+function buildSensitiveRemoteProfile(sourceProfileId: string): PortableBackupProfile {
+  return createPortableBackupProfile({
+    sourceProfileId,
+    name: 'Sensitive remote profile',
+    sourceKind: 'REMOTE_URL',
+    sourceLabel: 'https://example.com/tokenized/path.yaml?token=secret#frag',
+    remoteSourceUrl: 'https://example.com/tokenized/path.yaml?token=secret#frag',
+    autoUpdateIntervalMs: 60000,
+    createdAt: buildCanonicalTimestamp(),
+    updatedAt: buildCanonicalTimestamp()
   });
 }
 
@@ -208,6 +222,7 @@ export default function profileTransferModelsTestsuite() {
     it('sanitizesOnlyHttpAndHttpsWithoutEchoingRawInput', 0, () => {
       const valid = sanitizeProfileTransferQrUrl('https://Example.com/path?q=1#frag');
       const validIpv6 = sanitizeProfileTransferQrUrl('https://[2001:DB8::1]:8443/path');
+      const validEncoded = sanitizeProfileTransferQrUrl('https://example.com/a%20b?q=%2Fok#frag');
       const invalidRaw: string = 'ftp://example.com/secret?token=abc123';
       const invalid = sanitizeProfileTransferQrUrl(invalidRaw);
 
@@ -215,6 +230,8 @@ export default function profileTransferModelsTestsuite() {
       expect(valid.url).assertEqual('https://example.com/path?q=1#frag');
       expect(validIpv6.kind).assertEqual('VALID');
       expect(validIpv6.url).assertEqual('https://[2001:db8::1]:8443/path');
+      expect(validEncoded.kind).assertEqual('VALID');
+      expect(validEncoded.url).assertEqual('https://example.com/a%20b?q=%2Fok#frag');
       expect(invalid.kind).assertEqual('INVALID');
       expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
       expect(invalid.message).assertEqual('Scanned QR code must contain an http or https URL.');
@@ -228,7 +245,19 @@ export default function profileTransferModelsTestsuite() {
         'https://example.com:0/x',
         'https://example.com:65536/x',
         'https://example.com:abc/x',
-        'https://2001:db8::1/x'
+        'https://2001:db8::1/x',
+        'https://example.com/a b',
+        'https://example.com/?bad value',
+        'https://example.com/bad%',
+        'https://example.com/bad%2',
+        'https://example.com/bad%zz',
+        'https://example.com\\bad',
+        'https://example.com/<bad>',
+        'https://example.com/\"bad\"',
+        'https://example.com/{bad}',
+        'https://example.com/|bad',
+        'https://example.com/^bad',
+        'https://example.com/`bad`'
       ];
 
       for (let index: number = 0; index < invalidAuthorities.length; index += 1) {
@@ -243,7 +272,19 @@ export default function profileTransferModelsTestsuite() {
     it('createsAndParsesManifestWithExactAllowlistedKeys', 0, () => {
       const currentYaml: PortableBackupYamlEntry = buildYamlEntry(32);
       const failedYaml: PortableBackupYamlEntry = buildYamlEntry(16);
-      const remoteProfile: PortableBackupProfile = buildRemoteProfile('remote-1', currentYaml, failedYaml);
+      const remoteProfile: PortableBackupProfile = createPortableBackupProfile({
+        sourceProfileId: 'remote-1',
+        name: 'Remote profile',
+        sourceKind: 'REMOTE_URL',
+        sourceLabel: 'https://example.com/tokenized/path.yaml?token=secret#frag',
+        remoteSourceUrl: 'https://example.com/tokenized/path.yaml?token=secret#frag',
+        autoUpdateIntervalMs: 60000,
+        createdAt: buildCanonicalTimestamp(),
+        updatedAt: buildCanonicalTimestamp(),
+        lastSuccessfulUpdateAt: buildCanonicalTimestamp(),
+        currentYaml,
+        failedYaml
+      });
       const localProfile: PortableBackupProfile = buildLocalProfile('local-1');
       const manifest: PortableBackupManifest = buildManifest([remoteProfile, localProfile]);
       const parsed: PortableBackupManifest = parsePortableBackupManifest(
@@ -266,8 +307,15 @@ export default function profileTransferModelsTestsuite() {
       expect(exactKeysOf(parsed.profiles[0] as Object)).assertEqual(
         'autoUpdateIntervalMs,createdAt,currentYaml,failedYaml,lastSuccessfulUpdateAt,name,remoteSourceUrl,sourceKind,sourceLabel,sourceProfileId,updatedAt'
       );
+      expect(remoteProfile.sourceLabel).assertEqual('https://example.com');
+      expect(remoteProfile.remoteSourceUrl).assertEqual('https://example.com/tokenized/path.yaml?token=secret#frag');
 
       const manifestJson: string = JSON.stringify(manifest);
+      expect(manifestJson.includes('https://example.com/tokenized/path.yaml?token=secret#frag')).assertTrue();
+      expect(manifestJson.includes('\"sourceLabel\":\"https://example.com\"')).assertTrue();
+      expect(manifestJson.includes('tokenized/path')).assertTrue();
+      expect(manifestJson.includes('\"sourceLabel\":\"https://example.com/tokenized')).assertFalse();
+      expect(manifestJson.includes('\"sourceLabel\":\"https://example.com?token=secret')).assertFalse();
       expect(manifestJson.includes('sourceSecretRef')).assertFalse();
       expect(manifestJson.includes('relativePath')).assertFalse();
       expect(manifestJson.includes('validationPath')).assertFalse();
@@ -366,6 +414,64 @@ export default function profileTransferModelsTestsuite() {
       const selectionWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(withinAggregate));
       ((selectionWithUnknown.proxySelections as Object[])[0] as Record<string, Object>).sessionId = {};
       expectThrowsMessage(() => parsePortableBackupManifest(selectionWithUnknown), 'unknown keys');
+    });
+
+    it('enforcesManifestReferentialIntegrityAndProxySelectionBounds', 0, () => {
+      expect(PROFILE_TRANSFER_MAX_PROXY_SELECTIONS).assertEqual(8192);
+
+      const profiles: PortableBackupProfile[] = [buildLocalProfile('local-1'), buildSensitiveRemoteProfile('remote-1')];
+      const maxSelections: PortableBackupProxySelection[] = [];
+      for (let index: number = 0; index < PROFILE_TRANSFER_MAX_PROXY_SELECTIONS; index += 1) {
+        maxSelections.push(createPortableBackupProxySelection('local-1', `Group-${index}`, 'Node A'));
+      }
+
+      const withinLimit: PortableBackupManifest = createPortableBackupManifest({
+        profiles,
+        activeProfileSourceId: 'remote-1',
+        proxySelections: maxSelections
+      });
+      expect(withinLimit.proxySelections.length).assertEqual(8192);
+
+      expectThrowsMessage(() => {
+        createPortableBackupManifest({
+          profiles,
+          activeProfileSourceId: 'missing-profile',
+          proxySelections: []
+        });
+      }, 'activeProfileSourceId');
+
+      expectThrowsMessage(() => {
+        createPortableBackupManifest({
+          profiles: [buildLocalProfile('dup'), buildSensitiveRemoteProfile('dup')],
+          proxySelections: []
+        });
+      }, 'sourceProfileId');
+
+      expectThrowsMessage(() => {
+        createPortableBackupManifest({
+          profiles,
+          proxySelections: [createPortableBackupProxySelection('missing-profile', 'Auto', 'Node A')]
+        });
+      }, 'proxy selection sourceProfileId');
+
+      expectThrowsMessage(() => {
+        createPortableBackupManifest({
+          profiles,
+          proxySelections: [
+            createPortableBackupProxySelection('local-1', 'Auto', 'Node A'),
+            createPortableBackupProxySelection('local-1', 'Auto', 'Node B')
+          ]
+        });
+      }, 'duplicate proxy selection');
+
+      expectThrowsMessage(() => {
+        const tooManySelections: PortableBackupProxySelection[] = maxSelections.slice();
+        tooManySelections.push(createPortableBackupProxySelection('remote-1', 'Overflow', 'Node Z'));
+        createPortableBackupManifest({
+          profiles,
+          proxySelections: tooManySelections
+        });
+      }, '8192');
     });
 
     it('createsAndParsesEnvelopeWithExactAllowlistedKeysAndBounds', 0, () => {
