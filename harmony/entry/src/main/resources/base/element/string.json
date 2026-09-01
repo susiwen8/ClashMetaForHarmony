@@ -589,6 +589,14 @@
       "value": "从文件导入"
     },
     {
+      "name": "import_qr_action",
+      "value": "扫描二维码导入"
+    },
+    {
+      "name": "import_qr_scanning",
+      "value": "正在打开系统扫码"
+    },
+    {
       "name": "import_url_action",
       "value": "通过 URL 导入"
     },

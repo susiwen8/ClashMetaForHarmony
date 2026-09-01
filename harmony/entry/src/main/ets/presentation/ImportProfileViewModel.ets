@@ -189,6 +189,7 @@ export class ImportProfileViewModel {
     }
     this.commandToken += 1;
     const token: number = this.commandToken;
+    this.clearPendingHttpConfirmation();
     this.error = undefined;
     this.urlIssue = undefined;
     this.publishCurrent('SCANNING');

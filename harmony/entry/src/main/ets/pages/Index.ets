@@ -338,6 +338,7 @@ struct Index {
         state.vpnRegistry,
         state.runtimeModeClient,
         state.trafficMonitor,
+        state.qrScanner,
         state.runtimeLogStore,
         state.runtimeLogExporter
       );
@@ -382,6 +383,7 @@ struct Index {
     vpnRegistry: import('../vpn/VpnSessionRegistry').VpnSessionRegistry,
     runtimeModeClient?: VpnRpcRuntimeModeClientPort,
     trafficMonitor?: VpnTrafficMonitorReadPort,
+    qrScanner?: import('@cmfa/shared').QrScannerPort,
     runtimeLogStore?: RuntimeLogStorePort,
     runtimeLogExporter?: RuntimeLogExportPort
   ): void {
@@ -417,7 +419,7 @@ struct Index {
     });
     this.profilesState = this.profilesViewModel.current();
 
-    this.importViewModel = new ImportProfileViewModel(application);
+    this.importViewModel = new ImportProfileViewModel(application, qrScanner);
     this.importSubscriptionId = this.importViewModel.subscribe((state: ImportProfileViewState): void => {
       this.importState = state;
       this.synchronizeImportHttpAlert(state);

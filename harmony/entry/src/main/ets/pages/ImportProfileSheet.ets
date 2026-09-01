@@ -24,7 +24,7 @@ export struct ImportProfileSheet {
           .constraintSize({ minHeight: $r('app.float.touch_target_min') })
           .backgroundColor($r('app.color.color_surface_subtle'))
           .fontColor($r('app.color.color_text_primary'))
-          .enabled(this.state.status !== 'SUBMITTING')
+          .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
           .onClick(() => {
             this.onClose();
           })
@@ -53,9 +53,22 @@ export struct ImportProfileSheet {
         .constraintSize({ minHeight: $r('app.float.touch_target_min') })
         .backgroundColor($r('app.color.color_surface_subtle'))
         .fontColor($r('app.color.color_text_primary'))
-        .enabled(this.state.status !== 'SUBMITTING')
+        .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
         .onClick(() => {
           void this.viewModel?.requestImportLocal();
+        })
+
+      Button(this.state.status === 'SCANNING'
+        ? $r('app.string.import_qr_scanning')
+        : $r('app.string.import_qr_action'))
+        .id('import.qr')
+        .width('100%')
+        .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+        .backgroundColor($r('app.color.color_surface_subtle'))
+        .fontColor($r('app.color.color_text_primary'))
+        .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
+        .onClick(() => {
+          void this.viewModel?.requestScanQr();
         })
 
       Text($r('app.string.import_url_label'))
@@ -79,7 +92,7 @@ export struct ImportProfileSheet {
         .constraintSize({ minHeight: $r('app.float.touch_target_min') })
         .backgroundColor($r('app.color.color_action_primary'))
         .fontColor($r('app.color.color_text_inverse'))
-        .enabled(this.state.status !== 'SUBMITTING')
+        .enabled(this.state.status !== 'SUBMITTING' && this.state.status !== 'SCANNING')
         .onClick(() => {
           void this.viewModel?.requestImportUrl();
         })

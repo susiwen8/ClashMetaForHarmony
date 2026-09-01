@@ -3,6 +3,7 @@ import type {
   ProfileApplication,
   RuntimeLogExportPort,
   RuntimeLogStorePort,
+  QrScannerPort,
   VpnRpcRuntimeModeClientPort
 } from '@cmfa/shared';
 import type { VpnTrafficMonitorReadPort } from '../vpn/VpnTrafficMonitor';
@@ -18,6 +19,7 @@ interface ApplicationCompositionReadyState {
   vpnRegistry: VpnSessionRegistry;
   runtimeModeClient?: VpnRpcRuntimeModeClientPort;
   trafficMonitor?: VpnTrafficMonitorReadPort;
+  qrScanner?: QrScannerPort;
   runtimeLogStore?: RuntimeLogStorePort;
   runtimeLogExporter?: RuntimeLogExportPort;
 }

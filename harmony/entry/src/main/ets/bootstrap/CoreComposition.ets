@@ -7,6 +7,7 @@ import {
   HarmonyVpnRpcPlatformFactory,
   PlatformFactory,
   WorkSchedulerDriver,
+  createHarmonyQrScanner,
   createHarmonyRuntimeLogExporter,
   createHarmonyRuntimeLogStore,
   type HarmonyVpnRpcPlatformBundle,
@@ -45,6 +46,7 @@ import {
   type CoreService,
   type OneClickVpnConfirmationPort,
   type Profile,
+  type QrScannerPort,
   type VpnOpaqueCatalog,
   type VpnControllerPort,
   type VpnProxyCommandHandler,
@@ -418,6 +420,7 @@ export interface ApplicationCompositionDependencies {
   ) => VpnRpcClientPort;
   createVpnRpcHandler?: (client: VpnRpcClientPort, catalog: VpnOpaqueCatalog, clock: import('@cmfa/shared').Clock) => VpnProxyCommandHandler;
   createVpnExtensionAbilityApi?: (context: common.UIAbilityContext) => UiOwnedVpnExtensionAbilityApiLike;
+  createQrScanner?: (context: common.UIAbilityContext) => QrScannerPort;
 }
 
 export function getCoreService(): CoreService {
@@ -662,6 +665,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
         vpnRegistry,
         runtimeModeClient,
         this.ownedVpnTrafficMonitor,
+        this.dependencies.createQrScanner?.(this.context) ?? createHarmonyQrScanner(this.context),
         createHarmonyRuntimeLogStore(this.context.filesDir),
         createHarmonyRuntimeLogExporter(this.context)
       );
@@ -990,6 +994,7 @@ function createReadyState(
   vpnRegistry: VpnSessionRegistry,
   runtimeModeClient?: import('@cmfa/shared').VpnRpcRuntimeModeClientPort,
   trafficMonitor?: VpnTrafficMonitorReadPort,
+  qrScanner?: QrScannerPort,
   runtimeLogStore?: import('@cmfa/shared').RuntimeLogStorePort,
   runtimeLogExporter?: import('@cmfa/shared').RuntimeLogExportPort
 ): ApplicationCompositionState {
@@ -999,6 +1004,7 @@ function createReadyState(
     vpnRegistry,
     runtimeModeClient,
     trafficMonitor,
+    qrScanner,
     runtimeLogStore,
     runtimeLogExporter
   };
