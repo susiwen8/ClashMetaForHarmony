@@ -1,17 +1,13 @@
 import { describe, expect, it } from '@ohos/hypium';
-import type {
-  BoundedDelaySchedulerPort,
-  CancelableDelayTask,
-  ClockPort,
-  VpnRpcTrafficCounters
-} from '@cmfa/shared';
 import {
   VpnTrafficNotificationCoordinator,
-  VpnTrafficRateTracker,
-  type VpnTrafficCounterSourcePort,
-  type VpnTrafficNotificationSinkPort,
-  type VpnTrafficRateSample
+  type VpnTrafficNotificationSinkPort
 } from '../main/ets/vpn/VpnTrafficNotificationCoordinator';
+import type {
+  VpnTrafficMonitorListener,
+  VpnTrafficMonitorReadPort,
+  VpnTrafficMonitorSnapshot
+} from '../main/ets/vpn/VpnTrafficMonitor';
 
 class DeferredValue<T> {
   readonly promise: Promise<T>;
@@ -34,146 +30,13 @@ class DeferredValue<T> {
   }
 }
 
-class ManualClock implements ClockPort {
-  private nowValue: number;
-
-  constructor(nowMs: number = 0) {
-    this.nowValue = nowMs;
-  }
-
-  setNow(nowMs: number): void {
-    this.nowValue = nowMs;
-  }
-
-  nowMs(): number {
-    return this.nowValue;
-  }
-}
-
-class ManualDelayTask implements CancelableDelayTask {
-  readonly delayMs: number;
-  private readonly runner: () => Promise<void>;
-  canceled: boolean = false;
-
-  constructor(delayMs: number, runner: () => Promise<void>) {
-    this.delayMs = delayMs;
-    this.runner = runner;
-  }
-
-  cancel(): void {
-    this.canceled = true;
-  }
-
-  async run(): Promise<void> {
-    if (this.canceled) {
-      return;
-    }
-    await this.runner();
-  }
-}
-
-class ManualScheduler implements BoundedDelaySchedulerPort {
-  readonly tasks: ManualDelayTask[] = [];
-  readonly scheduledDelays: number[] = [];
-
-  schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask {
-    this.scheduledDelays.push(delayMs);
-    const task = new ManualDelayTask(delayMs, runner);
-    this.tasks.push(task);
-    return task;
-  }
-
-  pendingCount(): number {
-    let count = 0;
-    for (let index = 0; index < this.tasks.length; index += 1) {
-      if (!this.tasks[index].canceled) {
-        count += 1;
-      }
-    }
-    return count;
-  }
-
-  async runNext(): Promise<void> {
-    while (this.tasks.length > 0) {
-      const task = this.tasks.shift();
-      if (task === undefined || task.canceled) {
-        continue;
-      }
-      await task.run();
-      return;
-    }
-  }
-}
-
-class ThrowingScheduler extends ManualScheduler {
-  private readonly throwOnCalls: number[];
-  private callCount: number = 0;
-
-  constructor(...throwOnCalls: number[]) {
-    super();
-    this.throwOnCalls = throwOnCalls.slice();
-  }
-
-  schedule(delayMs: number, runner: () => Promise<void>): CancelableDelayTask {
-    this.callCount += 1;
-    if (this.throwOnCalls.includes(this.callCount)) {
-      throw new Error(`schedule failed:${this.callCount}`);
-    }
-    return super.schedule(delayMs, runner);
-  }
-}
-
-type ScriptedSourceStep = VpnRpcTrafficCounters | Error | DeferredValue<VpnRpcTrafficCounters>;
-type ScriptedSinkStep = Error | DeferredValue<void> | undefined;
-
 interface TrafficUpdateRecord {
   sessionId: string;
   uploadBytesPerSecond: number;
   downloadBytesPerSecond: number;
 }
 
-class ScriptedTrafficSource implements VpnTrafficCounterSourcePort {
-  readonly calls: number[] = [];
-  private readonly steps: ScriptedSourceStep[] = [];
-
-  queueValue(txBytes: number, rxBytes: number): void {
-    this.steps.push({
-      txBytes,
-      rxBytes
-    });
-  }
-
-  queueError(error: Error): void {
-    this.steps.push(error);
-  }
-
-  queueDeferred(): DeferredValue<VpnRpcTrafficCounters> {
-    const deferred = new DeferredValue<VpnRpcTrafficCounters>();
-    this.steps.push(deferred);
-    return deferred;
-  }
-
-  async refreshTrafficCounters(): Promise<VpnRpcTrafficCounters> {
-    this.calls.push(this.calls.length + 1);
-    const step = this.steps.shift();
-    if (step === undefined) {
-      return {
-        txBytes: 0,
-        rxBytes: 0
-      };
-    }
-    if (step instanceof Error) {
-      throw step;
-    }
-    if (step instanceof DeferredValue) {
-      return await step.promise;
-    }
-    return {
-      txBytes: step.txBytes,
-      rxBytes: step.rxBytes
-    };
-  }
-}
+type ScriptedSinkStep = Error | DeferredValue<void> | undefined;
 
 class RecordingTrafficSink implements VpnTrafficNotificationSinkPort {
   readonly updates: TrafficUpdateRecord[] = [];
@@ -210,15 +73,83 @@ class RecordingTrafficSink implements VpnTrafficNotificationSinkPort {
   }
 }
 
-function expectRateSample(
-  sample: VpnTrafficRateSample,
-  sessionId: string,
+class ScriptedTrafficMonitor implements VpnTrafficMonitorReadPort {
+  private readonly listeners: Map<number, VpnTrafficMonitorListener> = new Map();
+  private nextListenerId: number = 0;
+  private currentSnapshot: VpnTrafficMonitorSnapshot;
+  snapshotCallCount: number = 0;
+  subscribeCallCount: number = 0;
+  readonly unsubscribeCalls: number[] = [];
+
+  constructor(initialSnapshot: VpnTrafficMonitorSnapshot) {
+    this.currentSnapshot = cloneSnapshot(initialSnapshot);
+  }
+
+  snapshot(): VpnTrafficMonitorSnapshot {
+    this.snapshotCallCount += 1;
+    return cloneSnapshot(this.currentSnapshot);
+  }
+
+  subscribe(listener: VpnTrafficMonitorListener): number {
+    this.subscribeCallCount += 1;
+    this.nextListenerId += 1;
+    this.listeners.set(this.nextListenerId, listener);
+    return this.nextListenerId;
+  }
+
+  unsubscribe(id: number): void {
+    this.unsubscribeCalls.push(id);
+    this.listeners.delete(id);
+  }
+
+  listenerCount(): number {
+    return this.listeners.size;
+  }
+
+  async publish(snapshot: VpnTrafficMonitorSnapshot): Promise<void> {
+    this.currentSnapshot = cloneSnapshot(snapshot);
+    const listeners: VpnTrafficMonitorListener[] = [];
+    this.listeners.forEach((listener: VpnTrafficMonitorListener): void => {
+      listeners.push(listener);
+    });
+    for (let index = 0; index < listeners.length; index += 1) {
+      await listeners[index](cloneSnapshot(this.currentSnapshot));
+    }
+  }
+}
+
+class VpnTrafficMonitorSnapshotValue implements VpnTrafficMonitorSnapshot {
+  available: boolean = false;
+  txBytes: number = 0;
+  rxBytes: number = 0;
+  uploadBytesPerSecond: number = 0;
+  downloadBytesPerSecond: number = 0;
+}
+
+function createSnapshot(
+  available: boolean,
+  txBytes: number,
+  rxBytes: number,
   uploadBytesPerSecond: number,
   downloadBytesPerSecond: number
-): void {
-  expect(sample.sessionId).assertEqual(sessionId);
-  expect(sample.uploadBytesPerSecond).assertEqual(uploadBytesPerSecond);
-  expect(sample.downloadBytesPerSecond).assertEqual(downloadBytesPerSecond);
+): VpnTrafficMonitorSnapshot {
+  const snapshot = new VpnTrafficMonitorSnapshotValue();
+  snapshot.available = available;
+  snapshot.txBytes = txBytes;
+  snapshot.rxBytes = rxBytes;
+  snapshot.uploadBytesPerSecond = uploadBytesPerSecond;
+  snapshot.downloadBytesPerSecond = downloadBytesPerSecond;
+  return snapshot;
+}
+
+function cloneSnapshot(snapshot: VpnTrafficMonitorSnapshot): VpnTrafficMonitorSnapshot {
+  return createSnapshot(
+    snapshot.available,
+    snapshot.txBytes,
+    snapshot.rxBytes,
+    snapshot.uploadBytesPerSecond,
+    snapshot.downloadBytesPerSecond
+  );
 }
 
 function createReportStageCollector(target: string[]): (stage: string) => void {
@@ -235,354 +166,148 @@ async function settleMicrotasks(turns: number = 8): Promise<void> {
 
 export default function vpnTrafficNotificationCoordinatorTestsuite() {
   describe('VpnTrafficNotificationCoordinatorTest', () => {
-    it('trackerUsesZeroRatesForFirstSampleAndExactSecondDeltas', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      expectRateSample(tracker.sample('session-1', 1024, 2048, 1000), 'session-1', 0, 0);
-      expectRateSample(tracker.sample('session-1', 4096, 6144, 2000), 'session-1', 3072, 4096);
-    });
-
-    it('trackerFloorsRatesForPartialSecondElapsed', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 0, 0, 500);
-      expectRateSample(tracker.sample('session-1', 1536, 3072, 1012), 'session-1', 3000, 6000);
-    });
-
-    it('trackerResetsBaselineWhenSessionChanges', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 100, 200, 1000);
-      expectRateSample(tracker.sample('session-2', 700, 900, 1500), 'session-2', 0, 0);
-      expectRateSample(tracker.sample('session-2', 900, 1500, 2500), 'session-2', 200, 600);
-    });
-
-    it('trackerResetsBaselineWhenCountersRollbackOrTimeStops', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 1000, 2000, 1000);
-      expectRateSample(tracker.sample('session-1', 900, 2100, 2000), 'session-1', 0, 0);
-      expectRateSample(tracker.sample('session-1', 1100, 2200, 3000), 'session-1', 200, 100);
-
-      expectRateSample(tracker.sample('session-1', 1200, 2300, 3000), 'session-1', 0, 0);
-      expectRateSample(tracker.sample('session-1', 1500, 2600, 3500), 'session-1', 600, 600);
-    });
-
-    it('trackerClearsBaselineForInvalidInputUntilNextValidBaseline', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 100, 200, 1000);
-      expectRateSample(tracker.sample('session-1', -1, 250, 2000), 'session-1', 0, 0);
-      expectRateSample(tracker.sample('session-1', 300, 500, 3000), 'session-1', 0, 0);
-      expectRateSample(tracker.sample('session-1', 600, 1100, 4000), 'session-1', 300, 600);
-    });
-
-    it('trackerResetDropsPreviousBaseline', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 100, 200, 1000);
-      tracker.reset();
-      expectRateSample(tracker.sample('session-1', 400, 800, 2000), 'session-1', 0, 0);
-    });
-
-    it('trackerClampsRatesToSafeIntegers', 0, () => {
-      const tracker = new VpnTrafficRateTracker();
-
-      tracker.sample('session-1', 0, 0, 1000);
-      expectRateSample(
-        tracker.sample('session-1', Number.MAX_SAFE_INTEGER, Number.MAX_SAFE_INTEGER, 1001),
-        'session-1',
-        Number.MAX_SAFE_INTEGER,
-        Number.MAX_SAFE_INTEGER
-      );
-    });
-
-    it('startCreatesSingleLoopAndIgnoresDuplicateStartForSameSession', 0, () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
+    it('startReadsCurrentSnapshotSubscribesOnceAndForwardsFutureSnapshots', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
       const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
 
       coordinator.start('session-1');
       coordinator.start('session-1');
-
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-      expect(scheduler.pendingCount()).assertEqual(1);
-    });
-
-    it('startScheduleFailureRollsBackSoSameSessionCanRetry', 0, () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ThrowingScheduler(1);
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-
-      coordinator.start('session-1');
-      coordinator.start('session-1');
-
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-      expect(scheduler.pendingCount()).assertEqual(1);
-      expect(source.calls.length).assertEqual(0);
-      expect(sink.updates.length).assertEqual(0);
-    });
-
-    it('tickWaitsForSinkCompletionBeforeSchedulingTheNextRun', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-      const sinkDeferred = sink.queueDeferred();
-      source.queueValue(128, 256);
-
-      coordinator.start('session-1');
-      const runningTick = scheduler.runNext();
       await settleMicrotasks();
+      await monitor.publish(createSnapshot(true, 1024, 2048, 0, 0));
+      await monitor.publish(createSnapshot(true, 2048, 4096, 1024, 2048));
 
-      expect(source.calls.length).assertEqual(1);
-      expect(sink.updates.length).assertEqual(1);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-
-      sinkDeferred.resolve(undefined);
-      await runningTick;
-
-      expect(scheduler.scheduledDelays).assertDeepEquals([0, 1000]);
-      expect(scheduler.pendingCount()).assertEqual(1);
-    });
-
-    it('sourceFailurePublishesZeroAndRetriesFromAFreshBaseline', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-
-      source.queueError(new Error('rpc unavailable'));
-      source.queueValue(400, 800);
-      source.queueValue(1000, 1800);
-
-      coordinator.start('session-1');
-
-      await scheduler.runNext();
-      clock.setNow(2000);
-      await scheduler.runNext();
-      clock.setNow(3000);
-      await scheduler.runNext();
-
+      expect(monitor.snapshotCallCount).assertEqual(1);
+      expect(monitor.subscribeCallCount).assertEqual(1);
+      expect(monitor.listenerCount()).assertEqual(1);
       expect(sink.updates).assertDeepEquals([
         { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
         { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
-        { sessionId: 'session-1', uploadBytesPerSecond: 600, downloadBytesPerSecond: 1000 }
+        { sessionId: 'session-1', uploadBytesPerSecond: 1024, downloadBytesPerSecond: 2048 }
       ]);
     });
 
-    it('sinkFailureDoesNotStopFutureTicks', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
+    it('sinkFailureDoesNotStopFutureSnapshotHandling', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(true, 0, 0, 0, 0));
       const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-
-      source.queueValue(0, 0);
-      source.queueValue(2048, 4096);
       sink.queueError(new Error('notification publish failed'));
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
 
       coordinator.start('session-1');
-
-      await scheduler.runNext();
-      clock.setNow(2000);
-      await scheduler.runNext();
+      await settleMicrotasks();
+      await monitor.publish(createSnapshot(true, 2048, 4096, 2048, 4096));
 
       expect(sink.updates).assertDeepEquals([
         { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
         { sessionId: 'session-1', uploadBytesPerSecond: 2048, downloadBytesPerSecond: 4096 }
       ]);
-      expect(scheduler.pendingCount()).assertEqual(1);
+      expect(monitor.listenerCount()).assertEqual(1);
     });
 
-    it('rescheduleFailureStopsGenerationWithoutSourceFailureFallbackAndAllowsRetry', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ThrowingScheduler(2);
-      const source = new ScriptedTrafficSource();
+    it('startSwitchesSessionsByUnsubscribingOldListenerAndReplayingCurrentSnapshot', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(true, 4096, 8192, 256, 512));
       const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-
-      source.queueValue(128, 256);
-      source.queueValue(1152, 2304);
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
 
       coordinator.start('session-1');
-      await scheduler.runNext();
-
-      expect(source.calls.length).assertEqual(1);
-      expect(sink.updates).assertDeepEquals([
-        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
-      ]);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-      expect(scheduler.pendingCount()).assertEqual(0);
-
-      clock.setNow(2000);
-      coordinator.start('session-1');
-      await scheduler.runNext();
-
-      expect(source.calls.length).assertEqual(2);
-      expect(sink.updates).assertDeepEquals([
-        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 },
-        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
-      ]);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0, 0, 1000]);
-    });
-
-    it('stopDuringSourceAwaitPreventsLateUpdateAndReschedule', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-      const sourceDeferred = source.queueDeferred();
-
-      coordinator.start('session-1');
-      const runningTick = scheduler.runNext();
       await settleMicrotasks();
-
-      coordinator.stop('session-1');
-      sourceDeferred.resolve({
-        txBytes: 300,
-        rxBytes: 900
-      });
-      await runningTick;
-
-      expect(sink.updates.length).assertEqual(0);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-      expect(scheduler.pendingCount()).assertEqual(0);
-    });
-
-    it('sessionSwitchCancelsOldGenerationAndStartsFreshLoop', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-      const firstSessionSource = source.queueDeferred();
-      source.queueValue(500, 700);
-
-      coordinator.start('session-1');
-      const firstTick = scheduler.runNext();
-      await settleMicrotasks();
-
       coordinator.start('session-2');
-      firstSessionSource.resolve({
-        txBytes: 200,
-        rxBytes: 400
-      });
-      await firstTick;
-
-      clock.setNow(2000);
-      await scheduler.runNext();
-
-      expect(sink.updates).assertDeepEquals([
-        { sessionId: 'session-2', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
-      ]);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0, 0, 1000]);
-    });
-
-    it('disposeDuringSinkAwaitCancelsFollowUpScheduling', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
-      const coordinator = new VpnTrafficNotificationCoordinator(source, sink, clock, scheduler);
-      const sinkDeferred = sink.queueDeferred();
-      source.queueValue(1024, 2048);
-
-      coordinator.start('session-1');
-      const runningTick = scheduler.runNext();
       await settleMicrotasks();
 
-      coordinator.dispose();
-      sinkDeferred.resolve(undefined);
-      await runningTick;
+      expect(monitor.unsubscribeCalls).assertDeepEquals([1]);
+      expect(monitor.subscribeCallCount).assertEqual(2);
+      expect(monitor.listenerCount()).assertEqual(1);
+      expect(sink.updates).assertDeepEquals([
+        { sessionId: 'session-1', uploadBytesPerSecond: 256, downloadBytesPerSecond: 512 },
+        { sessionId: 'session-2', uploadBytesPerSecond: 256, downloadBytesPerSecond: 512 }
+      ]);
+    });
 
+    it('stopUnsubscribesAndIgnoresFutureSnapshots', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
+      const sink = new RecordingTrafficSink();
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
+
+      coordinator.start('session-1');
+      await settleMicrotasks();
+      coordinator.stop('session-1');
+      await monitor.publish(createSnapshot(true, 2048, 4096, 2048, 4096));
+
+      expect(monitor.unsubscribeCalls).assertDeepEquals([1]);
+      expect(monitor.listenerCount()).assertEqual(0);
       expect(sink.updates).assertDeepEquals([
         { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
       ]);
-      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
-      expect(scheduler.pendingCount()).assertEqual(0);
     });
 
-    it('reportsTrafficDiagnosticStagesOnlyOnTransitionsAndReplaysAfterSourceFailureReset', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
+    it('disposeUnsubscribesAndIgnoresFutureSnapshots', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(true, 1024, 2048, 0, 0));
       const sink = new RecordingTrafficSink();
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
+
+      coordinator.start('session-1');
+      await settleMicrotasks();
+      coordinator.dispose();
+      await monitor.publish(createSnapshot(true, 2048, 4096, 1024, 2048));
+
+      expect(monitor.unsubscribeCalls).assertDeepEquals([1]);
+      expect(monitor.listenerCount()).assertEqual(0);
+      expect(sink.updates).assertDeepEquals([
+        { sessionId: 'session-1', uploadBytesPerSecond: 0, downloadBytesPerSecond: 0 }
+      ]);
+    });
+
+    it('reportsTrafficDiagnosticStagesOnlyOnTransitionsAndReplaysAfterUnavailableSnapshot', 0, async () => {
       const reportStages: string[] = [];
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
+      const sink = new RecordingTrafficSink();
       const coordinator = new VpnTrafficNotificationCoordinator(
-        source,
+        monitor,
         sink,
-        clock,
-        scheduler,
         createReportStageCollector(reportStages)
       );
 
-      source.queueValue(0, 0);
-      source.queueValue(1024, 2048);
-      source.queueValue(2048, 4096);
-      source.queueError(new Error('refresh failed'));
-      source.queueValue(4096, 8192);
-
       coordinator.start('session-1');
-      await scheduler.runNext();
-      clock.setNow(2000);
-      await scheduler.runNext();
-      clock.setNow(3000);
-      await scheduler.runNext();
-      clock.setNow(4000);
-      await scheduler.runNext();
-      clock.setNow(5000);
-      await scheduler.runNext();
+      await settleMicrotasks();
+      await monitor.publish(createSnapshot(false, 0, 0, 0, 0));
+      await monitor.publish(createSnapshot(true, 0, 0, 0, 0));
+      await monitor.publish(createSnapshot(true, 1024, 2048, 0, 0));
+      await monitor.publish(createSnapshot(true, 2048, 4096, 1024, 2048));
+      await monitor.publish(createSnapshot(false, 2048, 4096, 0, 0));
+      await monitor.publish(createSnapshot(false, 2048, 4096, 0, 0));
 
       expect(reportStages).assertDeepEquals([
-        'notification.traffic.source-ok',
+        'notification.traffic.source-failed',
         'notification.traffic.counters-zero',
         'notification.traffic.rate-zero',
+        'notification.traffic.source-ok',
         'notification.traffic.counters-nonzero',
         'notification.traffic.rate-nonzero',
         'notification.traffic.source-failed',
-        'notification.traffic.source-ok',
-        'notification.traffic.counters-nonzero',
         'notification.traffic.rate-zero'
       ]);
     });
 
     it('startResetsTrafficDiagnosticTransitionsForTheNextSession', 0, async () => {
-      const clock = new ManualClock(1000);
-      const scheduler = new ManualScheduler();
-      const source = new ScriptedTrafficSource();
-      const sink = new RecordingTrafficSink();
       const reportStages: string[] = [];
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(false, 0, 0, 0, 0));
+      const sink = new RecordingTrafficSink();
       const coordinator = new VpnTrafficNotificationCoordinator(
-        source,
+        monitor,
         sink,
-        clock,
-        scheduler,
         createReportStageCollector(reportStages)
       );
 
-      source.queueValue(0, 0);
-      source.queueValue(0, 0);
-
       coordinator.start('session-1');
-      await scheduler.runNext();
-
+      await settleMicrotasks();
       coordinator.start('session-2');
-      clock.setNow(2000);
-      await scheduler.runNext();
+      await settleMicrotasks();
 
       expect(reportStages).assertDeepEquals([
-        'notification.traffic.source-ok',
+        'notification.traffic.source-failed',
         'notification.traffic.counters-zero',
         'notification.traffic.rate-zero',
-        'notification.traffic.source-ok',
+        'notification.traffic.source-failed',
         'notification.traffic.counters-zero',
         'notification.traffic.rate-zero'
       ]);
