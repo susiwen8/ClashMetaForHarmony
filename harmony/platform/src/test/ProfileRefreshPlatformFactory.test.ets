@@ -210,6 +210,7 @@ export default function profileRefreshPlatformFactoryTestsuite() {
 
     it('closesAnRdbCreatedBeforeDefaultComponentConstructionFails', 0, async () => {
       const drivers: CloseableRecordingRdbDriver[] = [];
+      let sdkResolutionCalls = 0;
       const factory = new ProfileRefreshPlatformFactory({ filesDir: '/data/test' } as common.Context, {
         createRdbDriver: (): ProfileRefreshCloseableRdbDriver => {
           const driver = new CloseableRecordingRdbDriver();
@@ -218,6 +219,10 @@ export default function profileRefreshPlatformFactoryTestsuite() {
         },
         createHuksDriver: () => {
           throw new Error('unsafe constructor detail');
+        },
+        resolveSdkApiVersion: (): string => {
+          sdkResolutionCalls += 1;
+          return '23';
         }
       });
 
@@ -235,6 +240,7 @@ export default function profileRefreshPlatformFactoryTestsuite() {
       expect(drivers.length).assertEqual(2);
       expect(drivers[0].closeCalls).assertEqual(1);
       expect(drivers[1].closeCalls).assertEqual(1);
+      expect(sdkResolutionCalls).assertEqual(2);
     });
 
     it('ignoresBlankLegacySecretReferencesDuringReconciliation', 0, async () => {
@@ -255,12 +261,22 @@ export default function profileRefreshPlatformFactoryTestsuite() {
         lastSuccessfulUpdateAt: null,
         autoUpdateIntervalMs: 0
       } as Profile;
-      (components.repository as FakeRepository).profiles = [malformedProfile];
+      const firstSecretProfile = { ...malformedProfile } as Profile;
+      firstSecretProfile.id = 'legacy-secret-a';
+      firstSecretProfile.sourceSecretRef = 'secret-a';
+      const duplicateSecretProfile = { ...malformedProfile } as Profile;
+      duplicateSecretProfile.id = 'legacy-secret-a-spaced';
+      duplicateSecretProfile.sourceSecretRef = ' secret-a ';
+      (components.repository as FakeRepository).profiles = [
+        malformedProfile,
+        firstSecretProfile,
+        duplicateSecretProfile
+      ];
       const graph = await new ProfileRefreshPlatformFactory({ filesDir: '/data/test' } as common.Context, {
         createComponents: (): ProfileRefreshPlatformComponents => components
       }).create();
 
-      expect((components.secretStore as FakeSecretStore).reconciledSecretRefs.length).assertEqual(0);
+      expect((components.secretStore as FakeSecretStore).reconciledSecretRefs).assertDeepEquals(['secret-a']);
       await graph.close();
     });
 

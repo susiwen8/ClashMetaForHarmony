@@ -210,6 +210,9 @@ export class ProfileRefreshPlatformFactory {
     const filesDir: string = this.context.filesDir;
     const clock: Clock = new SystemClock();
     const idGenerator: IdGenerator = new SystemIdGenerator();
+    const sdkApiVersion: number = normalizeProfileRefreshSdkApiVersion(
+      this.dependencies.resolveSdkApiVersion?.() ?? (deviceInfo.sdkApiVersion as number | string)
+    );
     const fileDriver = new HarmonyFileDriver();
     let rdbDriver: ProfileRefreshCloseableRdbDriver | undefined = undefined;
     try {
@@ -230,9 +233,7 @@ export class ProfileRefreshPlatformFactory {
         idGenerator
       });
       const remoteAcquirer: RemoteProfileAcquirer = new SubscriptionDownloader({
-        sdkApiVersion: normalizeProfileRefreshSdkApiVersion(
-          this.dependencies.resolveSdkApiVersion?.() ?? (deviceInfo.sdkApiVersion as number | string)
-        ),
+        sdkApiVersion,
         networkKitTransport,
         requestAgentTransport,
         fileDriver,
