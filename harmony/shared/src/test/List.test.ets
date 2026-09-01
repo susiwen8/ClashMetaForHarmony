@@ -1,4 +1,5 @@
 import { describe, expect, it } from '@ohos/hypium';
+import leasedRemoteProfileRefresherTestsuite from './LeasedRemoteProfileRefresher.test';
 import localRuntimeCoordinatorTestsuite from './LocalRuntimeCoordinator.test';
 import oneClickVpnConfirmationTestsuite from './OneClickVpnConfirmation.test';
 import profileDomainTestsuite from './ProfileDomain.test';
@@ -26,6 +27,7 @@ import vpnRpcClientTestsuite from './VpnRpcClient.test';
 import vpnRpcProxyHandlerTestsuite from './VpnRpcProxyHandler.test';
 
 export default function testsuite() {
+  leasedRemoteProfileRefresherTestsuite();
   profileDomainTestsuite();
   profileImportUseCasesTestsuite();
   profileManagementTestsuite();

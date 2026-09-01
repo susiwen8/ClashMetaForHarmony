@@ -20,6 +20,7 @@ export * from './src/main/ets/profile/ProfilePorts';
 export * from './src/main/ets/profile/SerialCommandQueue';
 export * from './src/main/ets/profile/ProfileCommitService';
 export * from './src/main/ets/profile/ImportProfileUseCase';
+export * from './src/main/ets/profile/LeasedRemoteProfileRefresher';
 export * from './src/main/ets/profile/RefreshProfileUseCase';
 export * from './src/main/ets/profile/LocalRuntimeCoordinator';
 export * from './src/main/ets/profile/ManageProfileUseCases';
