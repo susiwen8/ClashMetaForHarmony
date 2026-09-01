@@ -353,6 +353,10 @@
       "value": "正在刷新订阅"
     },
     {
+      "name": "profiles_refresh_progress",
+      "value": "已处理"
+    },
+    {
       "name": "profiles_refresh_success",
       "value": "成功"
     },
@@ -379,6 +383,10 @@
     {
       "name": "profiles_refresh_interrupted",
       "value": "本次刷新已中断，剩余订阅稍后处理"
+    },
+    {
+      "name": "profiles_refresh_remaining",
+      "value": "剩余订阅"
     },
     {
       "name": "profiles_empty_title",

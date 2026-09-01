@@ -153,6 +153,8 @@ test('subscription refresh profiles UI wires refresh-all progress and privacy-sa
   assert.match(page, /\.id\('profiles\.refresh-progress'\)/u);
   assert.match(page, /\.id\('profiles\.refresh-summary'\)/u);
   assert.match(page, /refreshAllSummary/u);
+  assert.match(page, /state\.remoteProfileCount/u);
+  assert.doesNotMatch(page, /sourceKind\s*===\s*['"]REMOTE_URL['"]/u);
   assert.match(page, /summary\.success/u);
   assert.match(page, /summary\.failedUsingCurrent/u);
   assert.match(page, /summary\.skippedHttp/u);
@@ -164,13 +166,15 @@ test('subscription refresh profiles UI wires refresh-all progress and privacy-sa
   for (const name of [
     'profiles_refresh_all',
     'profiles_refresh_pending',
+    'profiles_refresh_progress',
     'profiles_refresh_success',
     'profiles_refresh_failed_using_current',
     'profiles_refresh_failed',
     'profiles_refresh_skipped_http',
     'profiles_refresh_skipped_not_due',
     'profiles_refresh_busy',
-    'profiles_refresh_interrupted'
+    'profiles_refresh_interrupted',
+    'profiles_refresh_remaining'
   ]) {
     assert.equal(names.has(name), true, `missing string resource ${name}`);
   }

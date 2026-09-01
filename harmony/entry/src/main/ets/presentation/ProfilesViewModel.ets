@@ -241,7 +241,8 @@ function createState(
     refreshAllTotalCount,
     refreshAllInterrupted,
     refreshAllSummary,
-    refreshAllError
+    refreshAllError,
+    countRemoteProfiles(snapshot.profiles)
   );
 }
 

@@ -16,7 +16,7 @@ export struct ProfilesPage {
   };
 
   build() {
-    const remoteCount: number = countRemoteProfileRows(this.state.profiles);
+    const remoteCount: number = this.state.remoteProfileCount;
     const refreshSummary: ProfilesRefreshSummaryState | undefined = this.state.refreshAllSummary;
     const showRefreshPanel: boolean = remoteCount > 0 ||
       this.state.refreshAllPending ||
@@ -74,10 +74,16 @@ export struct ProfilesPage {
               })
 
             if (this.state.refreshAllPending) {
-              Text(`${this.state.completedRefreshCount} / ${this.state.totalRefreshCount}`)
-                .id('profiles.refresh-progress')
-                .fontSize($r('app.float.type_caption'))
-                .fontColor($r('app.color.color_text_secondary'))
+              Row({ space: $r('app.float.space_xs') }) {
+                Text($r('app.string.profiles_refresh_progress'))
+                  .fontSize($r('app.float.type_caption'))
+                  .fontColor($r('app.color.color_text_secondary'))
+
+                Text(`${this.state.completedRefreshCount} / ${this.state.totalRefreshCount}`)
+                  .id('profiles.refresh-progress')
+                  .fontSize($r('app.float.type_caption'))
+                  .fontColor($r('app.color.color_text_primary'))
+              }
             }
 
             if (refreshSummary !== undefined) {
@@ -101,6 +107,18 @@ export struct ProfilesPage {
                 }, (item: RefreshSummaryItem) => item.key)
 
                 if (this.state.refreshAllInterrupted) {
+                  Row({ space: $r('app.float.space_xs') }) {
+                    Text($r('app.string.profiles_refresh_remaining'))
+                      .fontSize($r('app.float.type_caption'))
+                      .fontColor($r('app.color.color_status_warning'))
+
+                    Text(`${this.state.remainingRefreshCount}`)
+                      .fontSize($r('app.float.type_caption'))
+                      .fontWeight(FontWeight.Medium)
+                      .fontColor($r('app.color.color_status_warning'))
+                  }
+                  .margin({ right: $r('app.float.space_md'), bottom: $r('app.float.space_xs') })
+
                   Text($r('app.string.profiles_refresh_interrupted'))
                     .fontSize($r('app.float.type_caption'))
                     .fontColor($r('app.color.color_status_warning'))
@@ -166,16 +184,6 @@ interface RefreshSummaryItem {
   key: string;
   label: Resource;
   count: number;
-}
-
-function countRemoteProfileRows(rows: ProfileRowState[]): number {
-  let count: number = 0;
-  for (let index: number = 0; index < rows.length; index += 1) {
-    if (rows[index].sourceKind === 'REMOTE_URL') {
-      count += 1;
-    }
-  }
-  return count;
 }
 
 function createRefreshSummaryItems(summary: ProfilesRefreshSummaryState): RefreshSummaryItem[] {

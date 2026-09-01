@@ -89,6 +89,7 @@ export interface ProfilesRefreshSummaryState {
 export interface ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR';
   profiles: ProfileRowState[];
+  remoteProfileCount: number;
   refreshAllPending: boolean;
   completedRefreshCount: number;
   remainingRefreshCount: number;
@@ -211,6 +212,7 @@ class ProfilesRefreshSummaryStateValue implements ProfilesRefreshSummaryState {
 class ProfilesViewStateValue implements ProfilesViewState {
   initialization: 'LOADING' | 'READY' | 'ERROR' = 'LOADING';
   profiles: ProfileRowState[] = [];
+  remoteProfileCount: number = 0;
   refreshAllPending: boolean = false;
   completedRefreshCount: number = 0;
   remainingRefreshCount: number = 0;
@@ -520,11 +522,13 @@ export function createProfilesViewState(
   totalRefreshCount: number = 0,
   refreshAllInterrupted: boolean = false,
   refreshAllSummary: ProfilesRefreshSummaryState | undefined = undefined,
-  refreshAllError: SafeErrorState | undefined = undefined
+  refreshAllError: SafeErrorState | undefined = undefined,
+  remoteProfileCount: number = 0
 ): ProfilesViewState {
   const state: ProfilesViewStateValue = new ProfilesViewStateValue();
   state.initialization = initialization;
   state.profiles = cloneProfileRowStates(profiles);
+  state.remoteProfileCount = normalizeCount(remoteProfileCount);
   state.refreshAllPending = refreshAllPending;
   state.completedRefreshCount = normalizeCount(completedRefreshCount);
   state.remainingRefreshCount = normalizeCount(remainingRefreshCount);
@@ -547,7 +551,8 @@ export function cloneProfilesViewState(state: ProfilesViewState): ProfilesViewSt
     state.totalRefreshCount,
     state.refreshAllInterrupted,
     state.refreshAllSummary,
-    state.refreshAllError
+    state.refreshAllError,
+    state.remoteProfileCount
   );
 }
 
