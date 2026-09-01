@@ -717,10 +717,11 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     if (ownedVpnRpcClient !== undefined) {
       try {
         await ownedVpnRpcClient.close();
-        this.ownedVpnRpcClient = undefined;
-        this.ownedVpnRpcPlatformBundle = undefined;
       } catch (_) {
         cleanupError = cleanupError ?? createCleanupError();
+      } finally {
+        this.ownedVpnRpcClient = undefined;
+        this.ownedVpnRpcPlatformBundle = undefined;
       }
     }
     if (graph !== undefined) {
@@ -738,7 +739,7 @@ class ApplicationCompositionRecord implements ApplicationComposition {
     if (this.application !== undefined || this.currentState.status !== 'READY') {
       return;
     }
-    this.currentState = createLoadingState();
+    this.publish(createLoadingState());
   }
 
   private createPlatformGraph(context: common.UIAbilityContext): Promise<PlatformGraph> {

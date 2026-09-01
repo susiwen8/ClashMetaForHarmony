@@ -15,10 +15,6 @@ import {
 } from '@cmfa/shared';
 import type { HomeViewState } from '../main/ets/presentation/PresentationModels';
 import { HomeViewModel } from '../main/ets/presentation/HomeViewModel';
-import type {
-  VpnTrafficMonitorReadPort,
-  VpnTrafficMonitorSnapshot
-} from '../main/ets/vpn/VpnTrafficMonitor';
 import { VpnSessionRegistry } from '../main/ets/vpn/VpnSessionRegistry';
 import {
   createApplicationSnapshot,
@@ -109,51 +105,6 @@ class FakeRuntimeModeClient implements VpnRpcRuntimeModeClientPort {
     this.setCalls.push(mode);
     this.mode = mode;
     return mode;
-  }
-}
-
-class FakeTrafficMonitorReadPort implements VpnTrafficMonitorReadPort {
-  readonly subscribeCalls: number[] = [];
-  readonly unsubscribeCalls: number[] = [];
-  startCalls: number = 0;
-  stopCalls: number = 0;
-  markRecoveringCalls: number = 0;
-  disposeCalls: number = 0;
-
-  snapshot(): VpnTrafficMonitorSnapshot {
-    return {
-      available: false,
-      txBytes: 0,
-      rxBytes: 0,
-      uploadBytesPerSecond: 0,
-      downloadBytesPerSecond: 0
-    };
-  }
-
-  subscribe(_listener: (snapshot: VpnTrafficMonitorSnapshot) => void | Promise<void>): number {
-    const subscriptionId = this.subscribeCalls.length + 1;
-    this.subscribeCalls.push(subscriptionId);
-    return subscriptionId;
-  }
-
-  unsubscribe(id: number): void {
-    this.unsubscribeCalls.push(id);
-  }
-
-  start(_sessionId: string): void {
-    this.startCalls += 1;
-  }
-
-  stop(_sessionId?: string): void {
-    this.stopCalls += 1;
-  }
-
-  markRecovering(_sessionId: string): void {
-    this.markRecoveringCalls += 1;
-  }
-
-  dispose(): void {
-    this.disposeCalls += 1;
   }
 }
 
@@ -509,29 +460,6 @@ export default function homeViewModelTestsuite() {
       expect(application.listenerCount()).assertEqual(1);
       viewModel.dispose();
       expect(application.listenerCount()).assertEqual(0);
-    });
-
-    it('subscribesToInjectedTrafficMonitorReadPortOnceAndDisposesWithoutTouchingLifecycleApis', 0, () => {
-      const application = new PresentationTestApplication(createApplicationSnapshot('READY', [createActiveProfile('VALID', true)], 'active', 'STOPPED'));
-      const vpnRegistry = createTestVpnRegistry();
-      const trafficMonitor = new FakeTrafficMonitorReadPort();
-      const viewModel = new HomeViewModel(application, vpnRegistry, undefined, trafficMonitor);
-
-      expect(trafficMonitor.subscribeCalls.length).assertEqual(1);
-      expect(trafficMonitor.unsubscribeCalls.length).assertEqual(0);
-      expect(trafficMonitor.startCalls).assertEqual(0);
-      expect(trafficMonitor.stopCalls).assertEqual(0);
-      expect(trafficMonitor.markRecoveringCalls).assertEqual(0);
-      expect(trafficMonitor.disposeCalls).assertEqual(0);
-
-      viewModel.dispose();
-
-      expect(trafficMonitor.unsubscribeCalls.length).assertEqual(1);
-      expect(trafficMonitor.unsubscribeCalls[0]).assertEqual(1);
-      expect(trafficMonitor.startCalls).assertEqual(0);
-      expect(trafficMonitor.stopCalls).assertEqual(0);
-      expect(trafficMonitor.markRecoveringCalls).assertEqual(0);
-      expect(trafficMonitor.disposeCalls).assertEqual(0);
     });
 
     it('reconstructsFromTheLiveVpnRegistrySnapshotAndDisposeNeverStopsVpn', 0, () => {

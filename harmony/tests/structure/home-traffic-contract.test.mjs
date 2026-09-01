@@ -71,12 +71,6 @@ test('home traffic contract keeps monitor ownership inside composition and expos
   assert.match(homeViewModelSource, /constructor\([\s\S]*trafficMonitor\?: VpnTrafficMonitorReadPort[\s\S]*\)/u,
     'HomeViewModel must accept an optional read-only traffic monitor port'
   );
-  assert.match(homeViewModelSource, /this\.trafficMonitorSubscriptionId = trafficMonitor\?\.subscribe\(/u,
-    'HomeViewModel must subscribe once to the read-only monitor port'
-  );
-  assert.match(homeViewModelSource, /trafficMonitor\?\.unsubscribe\(this\.trafficMonitorSubscriptionId\);/u,
-    'HomeViewModel dispose must clean up the read-only monitor subscription'
-  );
 });
 
 test('home traffic contract forbids polling, rpc snapshots, notification imports, and monitor lifecycle ownership in home surfaces', async () => {
@@ -96,4 +90,6 @@ test('home traffic contract forbids polling, rpc snapshots, notification imports
   assertNoPattern(homeViewModelSource, /\.stop\(/u, 'HomeViewModel must not own monitor stop lifecycle');
   assertNoPattern(homeViewModelSource, /\.markRecovering\(/u, 'HomeViewModel must not own monitor recovery lifecycle');
   assertNoPattern(homeViewModelSource, /\.dispose\(/u, 'HomeViewModel must not dispose the shared monitor');
+  assertNoPattern(homeViewModelSource, /trafficMonitor\?\.subscribe\(/u, 'HomeViewModel must not eagerly subscribe before Task 4 consumes traffic data');
+  assertNoPattern(homeViewModelSource, /trafficMonitor\?\.unsubscribe\(/u, 'HomeViewModel must not manage shared monitor subscriptions without real traffic behavior');
 });

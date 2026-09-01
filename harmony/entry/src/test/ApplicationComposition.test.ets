@@ -766,6 +766,7 @@ class CompositionRpcClient implements VpnRpcClientPort {
   connectCalls: number = 0;
   closeCalls: number = 0;
   unsubscribeCalls: number = 0;
+  closeError?: Error;
   stateValue: 'DISCONNECTED' | 'CONNECTING' | 'AUTHENTICATING' | 'READY' | 'RECONNECTING' | 'CLOSED' = 'DISCONNECTED';
   snapshotValue: VpnRuntimeSnapshot = createVpnRuntimeSnapshot({
     state: 'STOPPED',
@@ -870,6 +871,9 @@ class CompositionRpcClient implements VpnRpcClientPort {
   async close(): Promise<void> {
     this.closeCalls += 1;
     this.stateValue = 'CLOSED';
+    if (this.closeError !== undefined) {
+      throw this.closeError;
+    }
   }
 }
 
@@ -981,18 +985,6 @@ class InertVpnExtensionAbilityApi implements VpnExtensionAbilityApi {
   }
 
   bindStopHandler(_handler: () => void): void {
-  }
-}
-
-class DisposeFailingVpnExtensionAbilityApi extends InertVpnExtensionAbilityApi {
-  disposeCallCount: number = 0;
-  throwOnDispose: boolean = true;
-
-  dispose(): void {
-    this.disposeCallCount += 1;
-    if (this.throwOnDispose) {
-      throw new Error('extension dispose failed after traffic shutdown');
-    }
   }
 }
 
@@ -2401,13 +2393,14 @@ export default function applicationCompositionTestsuite() {
       expect(graph.closeCallCount).assertEqual(1);
     });
 
-    it('ownedControllerDisposeFailureClearsReadyStateAndRetryInitializeCreatesAFreshTrafficMonitor', 0, async () => {
+    it('ownedRpcCloseFailurePublishesLoadingAndRetryInitializeCreatesFreshTrafficWiring', 0, async () => {
       const firstGraph = new RecordingPlatformGraph();
       const secondGraph = new RecordingPlatformGraph();
       const firstApplication = new RecordingApplication();
       const secondApplication = new RecordingApplication();
-      const extensionApis: DisposeFailingVpnExtensionAbilityApi[] = [];
+      const bundles: HarmonyVpnRpcPlatformBundle[] = [];
       const rpcClients: CompositionRpcClient[] = [];
+      const invalidatedStates: ApplicationCompositionState[] = [];
       let reuseSecondAttempt: boolean = false;
       const composition = createComposition({
         coreService: new ProxyCapableRuntimeCoreService(),
@@ -2417,21 +2410,28 @@ export default function applicationCompositionTestsuite() {
         createProfileApplication: (): ProfileApplication => {
           return reuseSecondAttempt ? secondApplication : firstApplication;
         },
-        createVpnExtensionAbilityApi: (): DisposeFailingVpnExtensionAbilityApi => {
-          const api = new DisposeFailingVpnExtensionAbilityApi();
-          api.throwOnDispose = !reuseSecondAttempt;
-          extensionApis.push(api);
-          return api;
+        createVpnExtensionAbilityApi: (): InertVpnExtensionAbilityApi => {
+          return new InertVpnExtensionAbilityApi();
         },
-        createVpnRpcPlatformBundle: (): HarmonyVpnRpcPlatformBundle => new StaticHarmonyVpnRpcPlatformBundle(),
+        createVpnRpcPlatformBundle: (): HarmonyVpnRpcPlatformBundle => {
+          const bundle = new StaticHarmonyVpnRpcPlatformBundle();
+          bundles.push(bundle);
+          return bundle;
+        },
         createVpnRpcClient: (): VpnRpcClientPort => {
           const client = new CompositionRpcClient();
+          client.closeError = reuseSecondAttempt
+            ? undefined
+            : new Error('rpc close failed after controller dispose');
           rpcClients.push(client);
           return client;
         }
       });
 
       await composition.initialize();
+      composition.subscribe((state: ApplicationCompositionState): void => {
+        invalidatedStates.push(state);
+      });
 
       const firstReadyState = composition.state();
       expect(firstReadyState.status).assertEqual('READY');
@@ -2449,10 +2449,11 @@ export default function applicationCompositionTestsuite() {
       }
 
       expect(firstCloseError !== undefined).assertTrue();
-      expect(extensionApis.length).assertEqual(1);
-      expect(extensionApis[0].disposeCallCount).assertEqual(1);
+      expect(bundles.length).assertEqual(1);
       expect(rpcClients[0].closeCalls).assertEqual(1);
       expect(firstGraph.closeCallCount).assertEqual(1);
+      expect(invalidatedStates.length).assertEqual(1);
+      expect(invalidatedStates[0].status).assertEqual('LOADING');
       expect(composition.state().status).assertEqual('LOADING');
 
       reuseSecondAttempt = true;
@@ -2463,14 +2464,15 @@ export default function applicationCompositionTestsuite() {
       if (secondReadyState.status !== 'READY') {
         return;
       }
-      expect(extensionApis.length).assertEqual(2);
+      expect(bundles.length).assertEqual(2);
       expect(rpcClients.length).assertEqual(2);
       expect(secondReadyState.trafficMonitor === undefined).assertFalse();
       expect(secondReadyState.trafficMonitor === firstTrafficMonitor).assertFalse();
+      expect(rpcClients[1] === rpcClients[0]).assertFalse();
+      expect(bundles[1] === bundles[0]).assertFalse();
 
       await composition.close();
 
-      expect(extensionApis[1].disposeCallCount).assertEqual(1);
       expect(rpcClients[1].closeCalls).assertEqual(1);
       expect(secondGraph.closeCallCount).assertEqual(1);
     });
