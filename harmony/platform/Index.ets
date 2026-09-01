@@ -1,6 +1,6 @@
 export { PlatformFactory } from './src/main/ets/PlatformFactory';
 export type { PlatformGraph } from './src/main/ets/PlatformFactory';
-export { RdbProfileRefreshLeaseStore } from './src/main/ets/rdb/RdbProfileRefreshLeaseStore';
+export * from './ProfileRefresh';
 export { HarmonyNetworkMonitor } from './src/main/ets/network/HarmonyNetworkMonitor';
 export type {
   DriverNetworkState,
