@@ -13,6 +13,7 @@ import harmonyFilePickerTestsuite from './HarmonyFilePicker.test';
 import harmonyNetworkMonitorTestsuite from './HarmonyNetworkMonitor.test';
 import harmonyNetworkConnectionDriverTestsuite from './HarmonyNetworkConnectionDriver.test';
 import harmonyRuntimeLogStoreTestsuite from './HarmonyRuntimeLogStore.test';
+import workSchedulerDriverTestsuite from './WorkSchedulerDriver.test';
 import harmonyRuntimeLogExporterTestsuite from './HarmonyRuntimeLogExporter.test';
 import harmonyVpnNotificationDriverTestsuite from './HarmonyVpnNotificationDriver.test';
 import huksSubscriptionSecretStoreTestsuite from './HuksSubscriptionSecretStore.test';
@@ -37,6 +38,7 @@ export default function testsuite() {
   harmonyNetworkMonitorTestsuite();
   harmonyNetworkConnectionDriverTestsuite();
   harmonyRuntimeLogStoreTestsuite();
+  workSchedulerDriverTestsuite();
   harmonyRuntimeLogExporterTestsuite();
   harmonyVpnNotificationDriverTestsuite();
   huksSubscriptionSecretStoreTestsuite();
