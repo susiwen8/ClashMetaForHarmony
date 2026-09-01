@@ -408,8 +408,7 @@ function isHexCharacter(character: string): boolean {
 function normalizeValidatedUrlRemainder(remainder: string): string {
   for (let index: number = 0; index < remainder.length; index += 1) {
     const character: string = remainder[index];
-    const code: number = character.charCodeAt(0);
-    if (code <= 32 || code === 127 || UNSAFE_URL_CHARACTER_PATTERN.test(character)) {
+    if (containsWhitespaceOrControl(character) || UNSAFE_URL_CHARACTER_PATTERN.test(character)) {
       createProfileTransferContractError(INVALID_QR_URL_MESSAGE);
     }
     if (character === '%') {

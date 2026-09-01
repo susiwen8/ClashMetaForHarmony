@@ -247,6 +247,8 @@ export default function profileTransferModelsTestsuite() {
         'https://example.com:abc/x',
         'https://2001:db8::1/x',
         'https://example.com/a b',
+        'https://example.com/a\u00A0b',
+        'https://example.com/a\u3000b',
         'https://example.com/?bad value',
         'https://example.com/bad%',
         'https://example.com/bad%2',
@@ -267,6 +269,30 @@ export default function profileTransferModelsTestsuite() {
         expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
         expect(JSON.stringify(invalid).includes(invalidRaw)).assertFalse();
       }
+    });
+
+    it('rejectsRemoteProfileUnicodeWhitespaceUrlsWithoutEchoingRawInput', 0, () => {
+      const invalidRaw: string = 'https://example.com/a\u00A0b?token=secret';
+      let didThrow: boolean = false;
+      try {
+        createPortableBackupProfile({
+          sourceProfileId: 'remote-invalid',
+          name: 'Remote invalid',
+          sourceKind: 'REMOTE_URL',
+          sourceLabel: invalidRaw,
+          remoteSourceUrl: invalidRaw,
+          autoUpdateIntervalMs: 60000,
+          createdAt: buildCanonicalTimestamp(),
+          updatedAt: buildCanonicalTimestamp()
+        });
+      } catch (error) {
+        didThrow = true;
+        const message: string = error instanceof Error ? error.message : `${error}`;
+        expect(message).assertEqual('Profile transfer remote sourceLabel must be a valid http or https URL.');
+        expect(message.includes(invalidRaw)).assertFalse();
+        expect(message.includes('secret')).assertFalse();
+      }
+      expect(didThrow).assertTrue();
     });
 
     it('createsAndParsesManifestWithExactAllowlistedKeys', 0, () => {
