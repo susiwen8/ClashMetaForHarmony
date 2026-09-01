@@ -402,7 +402,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       expect(api.createConnectionCalls).assertEqual(2);
       expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroy');
       expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
-      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1');
+      expect(store.log.join(',')).assertEqual('read,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1');
       expect(stages.join(',')).assertEqual(
         'platform.config.begin,platform.config.ok,platform.connection.begin,' +
         'platform.connection.active,platform.connection.legacy-reclaim.begin,platform.connection.legacy-reclaim.ok,' +
@@ -454,6 +454,56 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       });
       expectPortErrorCode(socketError, 'PROTECT_SOCKET_FAILED');
       expect(socketError.message.includes('raw socket secret 101')).assertFalse();
+    });
+
+    it('allowsOneLegacyReclaimAfterClearingAPersistedReleasedOwner', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      api.connection.createError = new FakeBusinessError(2203002, 'existing vpn session');
+      api.replacementConnection = new FakePlatformVpnConnection();
+      const store = new FakeOwnershipStore();
+      store.readValue = createOwnership('RELEASED', 'vpn-released-1');
+      const driver = createDriver(api, 'session-released-fallback', store);
+
+      const handle = await driver.create(buildExactCaptureConfig());
+
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(api.connection.log.join(',')).assertEqual('create,destroy');
+      expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
+      expect(store.log.join(',')).assertEqual(
+        'read,clearExpected:RELEASED:vpn-released-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
+      );
+    });
+
+    it('treatsPreparedDestroyAlreadyReleasedAsReleasedAndContinuesStart', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      api.connection.destroyWithVpnIdError = new FakeBusinessError(19900001, 'already released');
+      const store = new FakeOwnershipStore();
+      store.readValue = createOwnership('PREPARED', 'vpn-prepared-1');
+      const driver = createDriver(api, 'session-prepared-recover', store);
+
+      const handle = await driver.create(buildExactCaptureConfig());
+
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(api.connection.log.join(',')).assertEqual('destroyWithVpnId:vpn-prepared-1,generateVpnId,create');
+      expect(store.log.join(',')).assertEqual(
+        'read,write:RELEASED:vpn-prepared-1,clearExpected:RELEASED:vpn-prepared-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
+      );
+    });
+
+    it('treatsActiveDestroyAlreadyReleasedAsReleasedAndContinuesStart', 0, async () => {
+      const api = new FakeVpnConnectionApi(21);
+      api.connection.destroyWithVpnIdError = new FakeBusinessError(19900001, 'already released');
+      const store = new FakeOwnershipStore();
+      store.readValue = createOwnership('ACTIVE', 'vpn-active-1');
+      const driver = createDriver(api, 'session-active-recover', store);
+
+      const handle = await driver.create(buildExactCaptureConfig());
+
+      expect(handle.vpnId).assertEqual('vpn-generated-1');
+      expect(api.connection.log.join(',')).assertEqual('destroyWithVpnId:vpn-active-1,generateVpnId,create');
+      expect(store.log.join(',')).assertEqual(
+        'read,write:RELEASED:vpn-active-1,clearExpected:RELEASED:vpn-active-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
+      );
     });
   });
 }
