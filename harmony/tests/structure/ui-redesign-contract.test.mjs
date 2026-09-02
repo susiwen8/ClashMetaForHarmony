@@ -12,6 +12,7 @@ const DARK_ELEMENT_ROOT = path.join(ENTRY_ROOT, 'resources', 'dark', 'element');
 
 const FILES = {
   home: path.join(ETS_ROOT, 'pages', 'HomePage.ets'),
+  runtimeStatus: path.join(ETS_ROOT, 'components', 'RuntimeStatusCard.ets'),
   profiles: path.join(ETS_ROOT, 'pages', 'ProfilesPage.ets'),
   detail: path.join(ETS_ROOT, 'pages', 'ProfileDetailPage.ets'),
   proxies: path.join(ETS_ROOT, 'pages', 'ProxiesPage.ets'),
@@ -107,6 +108,15 @@ test('Home puts the complete connection state and action before secondary conten
   assert.match(source, /\.id\('home\.scroll'\)/u);
   assert.match(source, /resolveActionBackground\(this\.state\.vpnGlobalCapture\.action\)/u);
   assert.match(source, /resolveActionForeground\(this\.state\.vpnGlobalCapture\.action\)/u);
+});
+
+test('Connection detail never presents unavailable capture facts as disabled runtime features', async () => {
+  const source = await readUtf8(FILES.runtimeStatus);
+  assert.match(source, /if \(this\.hasCaptureFacts\(\)\) \{/u,
+    'capture facts must render only after the runtime publishes a real capture configuration');
+  assert.match(source, /private hasCaptureFacts\(\): boolean/u);
+  assert.match(source, /this\.vpnState\.notificationActive \|\| this\.vpnState\.status === 'RECOVERING'/u,
+    'notification and recovery operations should render only when they are active');
 });
 
 test('Main screens keep compact, deterministic task order and distinct scroll identities', async () => {

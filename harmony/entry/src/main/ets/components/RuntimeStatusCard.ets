@@ -26,45 +26,63 @@ export struct RuntimeStatusCard {
 
       this.buildSelectedProxyRows()
 
-      Divider()
-        .color($r('app.color.color_border_subtle'))
+      if (this.hasCaptureFacts()) {
+        Divider()
+          .color($r('app.color.color_border_subtle'))
 
-      Row({ space: $r('app.float.space_lg') }) {
-        Column({ space: $r('app.float.space_sm') }) {
-          buildFactRow(
-            $r('app.string.home_vpn_ipv4_label'),
-            this.vpnState.ipv4Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled')
-          )
-          buildFactRow(
-            $r('app.string.home_vpn_dns_label'),
-            this.vpnState.dnsServers.length > 0 ? this.vpnState.dnsServers.join(', ') : undefined
-          )
-          buildFactRow(
-            $r('app.string.home_vpn_notification_label'),
-            this.vpnState.notificationActive
-              ? $r('app.string.home_vpn_notification_active')
-              : $r('app.string.home_vpn_notification_inactive')
-          )
-        }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+        Row({ space: $r('app.float.space_lg') }) {
+          Column({ space: $r('app.float.space_sm') }) {
+            buildFactRow(
+              $r('app.string.home_vpn_ipv4_label'),
+              this.vpnState.ipv4Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled')
+            )
+            buildFactRow(
+              $r('app.string.home_vpn_dns_label'),
+              this.vpnState.dnsServers.length > 0 ? this.vpnState.dnsServers.join(', ') : undefined
+            )
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
 
-        Column({ space: $r('app.float.space_sm') }) {
-          buildFactRow(
-            $r('app.string.home_vpn_ipv6_label'),
-            this.vpnState.ipv6Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled')
-          )
-          buildFactRow(
-            $r('app.string.home_vpn_mtu_label'),
-            this.vpnState.mtu === undefined ? undefined : `${this.vpnState.mtu}`
-          )
-          buildFactRow($r('app.string.home_vpn_recovery_label'), resolveRecoveryValue(this.vpnState))
+          Column({ space: $r('app.float.space_sm') }) {
+            buildFactRow(
+              $r('app.string.home_vpn_ipv6_label'),
+              this.vpnState.ipv6Enabled ? $r('app.string.home_vpn_enabled') : $r('app.string.home_vpn_disabled')
+            )
+            buildFactRow(
+              $r('app.string.home_vpn_mtu_label'),
+              this.vpnState.mtu === undefined ? undefined : `${this.vpnState.mtu}`
+            )
+          }
+          .layoutWeight(1)
+          .alignItems(HorizontalAlign.Start)
         }
-        .layoutWeight(1)
-        .alignItems(HorizontalAlign.Start)
+        .width('100%')
+        .alignItems(VerticalAlign.Top)
       }
-      .width('100%')
-      .alignItems(VerticalAlign.Top)
+
+      if (this.vpnState.notificationActive || this.vpnState.status === 'RECOVERING') {
+        Divider()
+          .color($r('app.color.color_border_subtle'))
+
+        Row({ space: $r('app.float.space_lg') }) {
+          Column() {
+            buildFactRow(
+              $r('app.string.home_vpn_notification_label'),
+              this.vpnState.notificationActive
+                ? $r('app.string.home_vpn_notification_active')
+                : $r('app.string.home_vpn_notification_inactive')
+            )
+          }
+          .layoutWeight(1)
+
+          Column() {
+            buildFactRow($r('app.string.home_vpn_recovery_label'), resolveRecoveryValue(this.vpnState))
+          }
+          .layoutWeight(1)
+        }
+        .width('100%')
+      }
 
       Divider()
         .color($r('app.color.color_border_subtle'))
@@ -80,6 +98,13 @@ export struct RuntimeStatusCard {
     .padding($r('app.float.space_md'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
+  }
+
+  private hasCaptureFacts(): boolean {
+    return this.vpnState.ipv4Enabled ||
+      this.vpnState.ipv6Enabled ||
+      this.vpnState.dnsServers.length > 0 ||
+      this.vpnState.mtu !== undefined;
   }
 
   @Builder
