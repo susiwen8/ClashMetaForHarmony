@@ -302,39 +302,39 @@
     },
     {
       "name": "error_vpn_permission_denied",
-      "value": "VPN permission was denied."
+      "value": "未授予 VPN 权限。"
     },
     {
       "name": "error_vpn_already_active",
-      "value": "VPN global capture is already active."
+      "value": "VPN 已由当前应用占用。"
     },
     {
       "name": "error_vpn_system_revoked",
-      "value": "VPN global capture was revoked or replaced by the system."
+      "value": "VPN 已被系统撤销或被其他连接替换。"
     },
     {
       "name": "error_vpn_background_task_failed",
-      "value": "VPN global capture could not keep its background task active."
+      "value": "VPN 无法保持后台运行。"
     },
     {
       "name": "error_vpn_stop_failed",
-      "value": "VPN global capture could not stop cleanly."
+      "value": "VPN 未能正常断开。"
     },
     {
       "name": "error_vpn_profile_unavailable",
-      "value": "The selected profile has no committed version for VPN global capture."
+      "value": "当前配置不可用于启动 VPN。"
     },
     {
       "name": "error_vpn_start_failed",
-      "value": "VPN global capture could not start with the selected profile."
+      "value": "无法使用当前配置启动 VPN。"
     },
     {
       "name": "error_vpn_recovering",
-      "value": "VPN global capture state is being restored."
+      "value": "正在恢复上次 VPN 会话。"
     },
     {
       "name": "home_runtime_indicator",
-      "value": "●"
+      "value": "状态"
     },
     {
       "name": "profiles_title",

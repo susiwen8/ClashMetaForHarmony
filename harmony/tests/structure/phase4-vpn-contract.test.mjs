@@ -36,9 +36,9 @@ const EXACT_STRING_VALUES = new Map([
   ['home_vpn_primary_stop', '断开 VPN'],
   ['home_vpn_boundary_note', 'VPN 仅接管系统允许交给当前会话的流量。'],
   ['home_vpn_notification_label', '后台状态'],
-  ['error_vpn_permission_denied', 'VPN permission was denied.'],
-  ['error_vpn_profile_unavailable', 'The selected profile has no committed version for VPN global capture.'],
-  ['error_vpn_start_failed', 'VPN global capture could not start with the selected profile.']
+  ['error_vpn_permission_denied', '未授予 VPN 权限。'],
+  ['error_vpn_profile_unavailable', '当前配置不可用于启动 VPN。'],
+  ['error_vpn_start_failed', '无法使用当前配置启动 VPN。']
 ]);
 
 const FORBIDDEN_PERMISSION_PATTERNS = [

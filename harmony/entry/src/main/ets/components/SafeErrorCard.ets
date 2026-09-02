@@ -30,10 +30,6 @@ export struct SafeErrorCard {
           .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.color_status_danger'))
 
-        Text(this.error.technicalDetail)
-          .fontSize($r('app.float.type_caption'))
-          .fontColor($r('app.color.color_text_secondary'))
-
         if (this.error.technicalDetail.trim().length > 0) {
           Button($r('app.string.detail_copy_detail'))
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })

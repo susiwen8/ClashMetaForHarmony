@@ -116,6 +116,10 @@ test('Main screens keep compact, deterministic task order and distinct scroll id
     readUtf8(FILES.logs)
   ]);
   assert.match(profiles, /\.id\('profiles\.scroll'\)/u);
+  assert.match(profiles, /\.constraintSize\(\{\s*minHeight:\s*'100%'\s*\}\)/u,
+    'short profile lists must fill the viewport so ArkUI cannot vertically center the screen content');
+  assert.match(profiles, /ForEach\(this\.state\.profiles[\s\S]*ProfileListItem\([\s\S]*\.borderRadius\(\$r\('app\.float\.radius_card'\)\)[\s\S]*\.clip\(true\)/u,
+    'the grouped profile surface must clip child row backgrounds to its rounded corners');
   assert.match(detail, /\.id\('detail\.scroll'\)/u);
   assert.match(logs, /\.id\('logs\.list'\)/u);
   assertOrdered(profiles, [
@@ -160,6 +164,8 @@ test('Secondary surfaces stay dense without losing automation or safe callbacks'
   ]) {
     assert.match(proxies, new RegExp(marker.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&'), 'u'));
   }
+  assert.match(proxies, /ForEach\(this\.state\.groups[\s\S]*\.constraintSize\(\{\s*minWidth:\s*'100%'\s*\}\)/u,
+    'a short proxy-group row must fill the horizontal scroller instead of centering one group');
   assert.doesNotMatch(proxies, /function buildNodeButton[\s\S]*\.border\(\{[\s\S]*color:\s*\$r\('app\.color\.color_border_subtle'\)/u,
     'node rows must use grouped separators instead of one outlined card per node');
   assert.match(logs, /@Prop\s+state:\s*LogsViewState/u);
@@ -176,5 +182,7 @@ test('Secondary surfaces stay dense without losing automation or safe callbacks'
   }
   assert.match(importSheet, /Scroll\(\)/u, 'medium import sheet must own one internal scroll');
   assert.match(safeError, /this\.copyTechnicalDetail\(this\.error\.technicalDetail\)/u);
+  assert.doesNotMatch(safeError, /Text\(this\.error\.technicalDetail\)/u,
+    'redacted technical detail must stay behind the explicit copy action instead of duplicating the public message');
   assert.doesNotMatch(`${proxies}\n${logs}\n${importSheet}`, /home\.local\.action|Start Local proxy|system proxy/iu);
 });

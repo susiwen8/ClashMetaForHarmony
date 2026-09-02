@@ -102,6 +102,8 @@ export struct ProxiesPage {
                 })
               }, (group: ProxyGroupTabState) => group.semanticId)
             }
+            .constraintSize({ minWidth: '100%' })
+            .justifyContent(FlexAlign.Start)
           }
           .width('100%')
           .scrollable(ScrollDirection.Horizontal)

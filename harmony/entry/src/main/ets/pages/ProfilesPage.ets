@@ -171,14 +171,17 @@ export struct ProfilesPage {
           .width('100%')
           .borderRadius($r('app.float.radius_card'))
           .backgroundColor($r('app.color.color_surface_card'))
+          .clip(true)
         }
 
         Blank()
           .height($r('app.float.space_3xl'))
       }
       .width('100%')
+      .constraintSize({ minHeight: '100%' })
       .padding(this.compactLayout ? $r('app.float.page_padding_compact') : $r('app.float.page_padding_regular'))
       .alignItems(HorizontalAlign.Start)
+      .justifyContent(FlexAlign.Start)
     }
     .id('profiles.scroll')
     .width('100%')
