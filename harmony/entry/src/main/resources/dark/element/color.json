@@ -2,23 +2,23 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#10151D"
+      "value": "#090F19"
     },
     {
       "name": "color_surface_background",
-      "value": "#10151D"
+      "value": "#090F19"
     },
     {
       "name": "color_surface_card",
-      "value": "#18202A"
+      "value": "#111B29"
     },
     {
       "name": "color_surface_subtle",
-      "value": "#243040"
+      "value": "#1B2A3F"
     },
     {
       "name": "color_surface_info_panel",
-      "value": "#183154"
+      "value": "#132848"
     },
     {
       "name": "color_text_primary",
@@ -26,47 +26,79 @@
     },
     {
       "name": "color_text_secondary",
-      "value": "#A8B6C7"
+      "value": "#9BA9BC"
     },
     {
       "name": "color_text_inverse",
-      "value": "#0E131A"
+      "value": "#07111E"
     },
     {
       "name": "color_border_subtle",
-      "value": "#314153"
+      "value": "#26364C"
     },
     {
       "name": "color_action_primary",
-      "value": "#63A0FF"
+      "value": "#6EA8FF"
     },
     {
       "name": "color_action_primary_pressed",
-      "value": "#8AB8FF"
+      "value": "#91BEFF"
     },
     {
       "name": "color_action_primary_disabled",
-      "value": "#3B4451"
+      "value": "#273447"
     },
     {
       "name": "color_action_disabled_text",
-      "value": "#96A0AF"
+      "value": "#8290A5"
     },
     {
       "name": "color_status_success",
-      "value": "#60C88D"
+      "value": "#5BE0AE"
     },
     {
       "name": "color_status_warning",
-      "value": "#F2B158"
+      "value": "#F2B35B"
     },
     {
       "name": "color_status_danger",
-      "value": "#F17D73"
+      "value": "#FF7A86"
     },
     {
       "name": "color_status_info",
-      "value": "#8BB6FF"
+      "value": "#8AB7FF"
+    },
+    {
+      "name": "color_surface_hero",
+      "value": "#050B13"
+    },
+    {
+      "name": "color_surface_hero_subtle",
+      "value": "#132038"
+    },
+    {
+      "name": "color_text_on_hero",
+      "value": "#FFFFFFFF"
+    },
+    {
+      "name": "color_text_on_hero_secondary",
+      "value": "#AFC2D8"
+    },
+    {
+      "name": "color_signal_active",
+      "value": "#5AF0BD"
+    },
+    {
+      "name": "color_signal_idle",
+      "value": "#6F7E93"
+    },
+    {
+      "name": "color_surface_danger",
+      "value": "#341C25"
+    },
+    {
+      "name": "color_surface_success",
+      "value": "#112E29"
     }
   ]
 }

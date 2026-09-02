@@ -261,7 +261,7 @@ const BANNED_COPY_TERMS = [
 ];
 
 const APPROVED_BOUNDARY_STRING_VALUES = new Map([
-  ['home_vpn_boundary_note', 'TUN capture is limited to traffic handled by this app session.']
+  ['home_vpn_boundary_note', 'VPN 仅接管系统允许交给当前会话的流量。']
 ]);
 
 async function readJson(filePath) {

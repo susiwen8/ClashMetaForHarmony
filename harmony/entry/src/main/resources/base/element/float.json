@@ -29,12 +29,24 @@
       "value": "32vp"
     },
     {
+      "name": "space_3xl",
+      "value": "40vp"
+    },
+    {
       "name": "radius_chip",
       "value": "12vp"
     },
     {
       "name": "radius_card",
-      "value": "20vp"
+      "value": "18vp"
+    },
+    {
+      "name": "radius_action",
+      "value": "14vp"
+    },
+    {
+      "name": "radius_hero",
+      "value": "24vp"
     },
     {
       "name": "radius_sheet",
@@ -55,6 +67,14 @@
     {
       "name": "type_headline",
       "value": "28fp"
+    },
+    {
+      "name": "type_display",
+      "value": "32fp"
+    },
+    {
+      "name": "type_metric",
+      "value": "24fp"
     },
     {
       "name": "touch_target_min",

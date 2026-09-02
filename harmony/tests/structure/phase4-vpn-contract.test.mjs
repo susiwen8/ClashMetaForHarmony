@@ -31,11 +31,11 @@ const SHARED_VPN_COORDINATOR_PATH = path.join(HARMONY_ROOT, 'shared', 'src', 'ma
 const CORE_TUN_RUNTIME_PATH = path.join(HARMONY_ROOT, 'core', 'src', 'main', 'ets', 'CoreTunRuntime.ets');
 
 const EXACT_STRING_VALUES = new Map([
-  ['home_vpn_title', 'VPN global capture'],
-  ['home_vpn_primary_start', 'Start VPN global capture'],
-  ['home_vpn_primary_stop', 'Stop VPN global capture'],
-  ['home_vpn_boundary_note', 'TUN capture is limited to traffic handled by this app session.'],
-  ['home_vpn_notification_label', 'Continuous notification'],
+  ['home_vpn_title', '连接详情'],
+  ['home_vpn_primary_start', '连接 VPN'],
+  ['home_vpn_primary_stop', '断开 VPN'],
+  ['home_vpn_boundary_note', 'VPN 仅接管系统允许交给当前会话的流量。'],
+  ['home_vpn_notification_label', '后台状态'],
   ['error_vpn_permission_denied', 'VPN permission was denied.'],
   ['error_vpn_profile_unavailable', 'The selected profile has no committed version for VPN global capture.'],
   ['error_vpn_start_failed', 'VPN global capture could not start with the selected profile.']
@@ -631,9 +631,9 @@ test('phase4 vpn contract keeps exact VPN-only home resources and safe copy', as
     'HomeViewModel must stay VPN-only on the home command surface');
   assert.match(cardSource, /\$r\('app\.string\.home_vpn_notification_label'\)/u, 'RuntimeStatusCard must surface notification facts');
   assert.match(cardSource, /\$r\('app\.string\.home_vpn_recovery_label'\)/u, 'RuntimeStatusCard must surface recovery facts');
-  assert.equal(getStringValue(stringDocument, 'home_vpn_proxy_group_label'), 'Proxy group',
+  assert.equal(getStringValue(stringDocument, 'home_vpn_proxy_group_label'), '代理组',
     'string.json must publish the selected proxy group label');
-  assert.equal(getStringValue(stringDocument, 'home_vpn_proxy_node_label'), 'Current node',
+  assert.equal(getStringValue(stringDocument, 'home_vpn_proxy_node_label'), '当前节点',
     'string.json must publish the selected proxy node label');
   assert.match(cardSource, /@Link\s+selectedProxyGroupName:\s*string;/u,
     'RuntimeStatusCard must accept the selected proxy group string as an ArkUI link');

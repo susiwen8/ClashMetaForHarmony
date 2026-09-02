@@ -22,11 +22,11 @@
     },
     {
       "name": "home_title",
-      "value": "VPN global capture"
+      "value": "Clash Meta"
     },
     {
       "name": "home_subtitle",
-      "value": "Use the TUN-based VPN capture session to route traffic through the active profile."
+      "value": "连接清晰，切换简单"
     },
     {
       "name": "home_profile_title",
@@ -46,7 +46,7 @@
     },
     {
       "name": "home_profile_manage_trailing",
-      "value": "›"
+      "value": "查看"
     },
     {
       "name": "home_runtime_primary_busy",
@@ -54,7 +54,7 @@
     },
     {
       "name": "home_vpn_title",
-      "value": "VPN global capture"
+      "value": "连接详情"
     },
     {
       "name": "home_runtime_listener_placeholder",
@@ -62,39 +62,39 @@
     },
     {
       "name": "home_vpn_status_stopped",
-      "value": "VPN capture stopped"
+      "value": "未连接"
     },
     {
       "name": "home_vpn_status_awaiting_consent",
-      "value": "Waiting for VPN consent"
+      "value": "等待系统授权"
     },
     {
       "name": "home_vpn_status_starting",
-      "value": "Starting TUN capture"
+      "value": "正在连接"
     },
     {
       "name": "home_vpn_status_running",
-      "value": "TUN capture active"
+      "value": "已连接"
     },
     {
       "name": "home_vpn_status_recovering",
-      "value": "Recovering TUN capture"
+      "value": "正在恢复连接"
     },
     {
       "name": "home_vpn_status_stopping",
-      "value": "Stopping TUN capture"
+      "value": "正在断开"
     },
     {
       "name": "home_vpn_status_error",
-      "value": "VPN capture error"
+      "value": "连接异常"
     },
     {
       "name": "home_vpn_primary_start",
-      "value": "Start VPN global capture"
+      "value": "连接 VPN"
     },
     {
       "name": "home_vpn_primary_stop",
-      "value": "Stop VPN global capture"
+      "value": "断开 VPN"
     },
     {
       "name": "home_vpn_ipv4_label",
@@ -114,47 +114,47 @@
     },
     {
       "name": "home_vpn_notification_label",
-      "value": "Continuous notification"
+      "value": "后台状态"
     },
     {
       "name": "home_vpn_proxy_group_label",
-      "value": "Proxy group"
+      "value": "代理组"
     },
     {
       "name": "home_vpn_proxy_node_label",
-      "value": "Current node"
+      "value": "当前节点"
     },
     {
       "name": "home_vpn_recovery_label",
-      "value": "Recovery"
+      "value": "自动恢复"
     },
     {
       "name": "home_vpn_enabled",
-      "value": "Enabled"
+      "value": "已启用"
     },
     {
       "name": "home_vpn_disabled",
-      "value": "Disabled"
+      "value": "未启用"
     },
     {
       "name": "home_vpn_notification_active",
-      "value": "Active"
+      "value": "运行中"
     },
     {
       "name": "home_vpn_notification_inactive",
-      "value": "Inactive"
+      "value": "未运行"
     },
     {
       "name": "home_vpn_recovery_active",
-      "value": "Recovery active"
+      "value": "已安排重试"
     },
     {
       "name": "home_vpn_recovery_idle",
-      "value": "Idle"
+      "value": "空闲"
     },
     {
       "name": "home_vpn_boundary_note",
-      "value": "TUN capture is limited to traffic handled by this app session."
+      "value": "VPN 仅接管系统允许交给当前会话的流量。"
     },
     {
       "name": "home_traffic_title",
@@ -186,7 +186,7 @@
     },
     {
       "name": "home_mode_title",
-      "value": "运行模式"
+      "value": "流量模式"
     },
     {
       "name": "home_mode_rule",
@@ -234,7 +234,7 @@
     },
     {
       "name": "home_logs_open",
-      "value": "日志与诊断"
+      "value": "查看运行日志"
     },
     {
       "name": "logs_title",

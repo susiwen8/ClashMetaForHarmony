@@ -2,11 +2,11 @@
   "color": [
     {
       "name": "start_window_background",
-      "value": "#FFFFFF"
+      "value": "#F5F3EE"
     },
     {
       "name": "color_surface_background",
-      "value": "#F4F7FB"
+      "value": "#F5F3EE"
     },
     {
       "name": "color_surface_card",
@@ -14,7 +14,7 @@
     },
     {
       "name": "color_surface_subtle",
-      "value": "#E9EFF6"
+      "value": "#ECEFF3"
     },
     {
       "name": "color_surface_info_panel",
@@ -22,11 +22,11 @@
     },
     {
       "name": "color_text_primary",
-      "value": "#1C2430"
+      "value": "#111827"
     },
     {
       "name": "color_text_secondary",
-      "value": "#5E6B7C"
+      "value": "#677386"
     },
     {
       "name": "color_text_inverse",
@@ -34,39 +34,71 @@
     },
     {
       "name": "color_border_subtle",
-      "value": "#D4DDE8"
+      "value": "#D9DEE7"
     },
     {
       "name": "color_action_primary",
-      "value": "#0A6CFF"
+      "value": "#176BFF"
     },
     {
       "name": "color_action_primary_pressed",
-      "value": "#0854C5"
+      "value": "#0B52D6"
     },
     {
       "name": "color_action_primary_disabled",
-      "value": "#D8DCE3"
+      "value": "#D9DEE7"
     },
     {
       "name": "color_action_disabled_text",
-      "value": "#8A94A3"
+      "value": "#8490A2"
     },
     {
       "name": "color_status_success",
-      "value": "#197A42"
+      "value": "#087D58"
     },
     {
       "name": "color_status_warning",
-      "value": "#9A5600"
+      "value": "#9C5900"
     },
     {
       "name": "color_status_danger",
-      "value": "#C4372B"
+      "value": "#D63D4B"
     },
     {
       "name": "color_status_info",
-      "value": "#2A5CAA"
+      "value": "#3367B9"
+    },
+    {
+      "name": "color_surface_hero",
+      "value": "#0C1728"
+    },
+    {
+      "name": "color_surface_hero_subtle",
+      "value": "#17263D"
+    },
+    {
+      "name": "color_text_on_hero",
+      "value": "#F7FAFF"
+    },
+    {
+      "name": "color_text_on_hero_secondary",
+      "value": "#AAB9CD"
+    },
+    {
+      "name": "color_signal_active",
+      "value": "#4DE3B2"
+    },
+    {
+      "name": "color_signal_idle",
+      "value": "#75839A"
+    },
+    {
+      "name": "color_surface_danger",
+      "value": "#FFF0F1"
+    },
+    {
+      "name": "color_surface_success",
+      "value": "#EAFBF5"
     }
   ]
 }
