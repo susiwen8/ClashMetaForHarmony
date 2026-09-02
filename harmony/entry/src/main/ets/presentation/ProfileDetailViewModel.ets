@@ -498,7 +498,7 @@ export class ProfileDetailViewModel {
       : createProfileDetailProfileState(profile);
     const sourceRepairRequired: boolean = profile?.sourceRepairRequired === true;
     const sourceRetryAvailable: boolean = profile?.lastError?.code === 'SOURCE_DECRYPT_FAILED';
-    const canEnable: boolean = isProfileStartEligible(profile);
+    const canEnable: boolean = isProfileStartEligible(profile) && snapshot.activeProfileId !== profile?.id;
     const canRefresh: boolean = profile !== undefined &&
       (!sourceRepairRequired || sourceRetryAvailable);
     const canDelete: boolean = profile !== undefined;

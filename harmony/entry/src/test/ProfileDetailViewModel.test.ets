@@ -67,10 +67,25 @@ export default function profileDetailViewModelTestsuite() {
         )
       );
 
-      expect(viewModel.current().canEnable).assertTrue();
+      expect(viewModel.current().canEnable).assertFalse();
       expect(viewModel.current().canRefresh).assertTrue();
       expect(viewModel.current().canDelete).assertTrue();
       expect(viewModel.current().canReplaceSubscriptionUrl).assertFalse();
+
+      application.emitSnapshot(
+        createApplicationSnapshot(
+          'READY',
+          [
+            createProfileSnapshot('alpha', 'Alpha', 'https://alpha.example.com/subscription.yaml', 'VALID', '2026-08-11T12:33:00.000Z', true, {
+              sourceKind: 'REMOTE_URL'
+            })
+          ],
+          undefined,
+          'STOPPED'
+        )
+      );
+
+      expect(viewModel.current().canEnable).assertTrue();
     });
 
     it('mapsIntervalMetadataForRemoteAndLocalProfilesWithoutLeakingAnythingElse', 0, () => {
