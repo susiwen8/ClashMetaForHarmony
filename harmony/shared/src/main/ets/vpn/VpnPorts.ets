@@ -84,10 +84,12 @@ export interface VpnPlatformSessionPort {
 }
 
 export type VpnPlatformOwnershipPhase = 'PREPARED' | 'ACTIVE' | 'RELEASED';
+export type VpnPlatformOwnershipBinding = 'PLATFORM_ID' | 'LEGACY_GLOBAL';
 
 export interface VpnPlatformOwnershipRecord {
   phase: VpnPlatformOwnershipPhase;
   vpnId: string;
+  binding: VpnPlatformOwnershipBinding;
 }
 
 export interface VpnPlatformOwnershipStorePort {

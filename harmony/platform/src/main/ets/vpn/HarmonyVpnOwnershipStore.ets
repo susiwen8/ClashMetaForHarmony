@@ -3,6 +3,7 @@ import {
   decodeVpnRpcUtf8,
   encodeVpnRpcUtf8,
   OwnershipStoreCorruptError,
+  type VpnPlatformOwnershipBinding,
   type VpnPlatformOwnershipPhase,
   type VpnPlatformOwnershipRecord,
   type VpnPlatformOwnershipStorePort
@@ -16,7 +17,7 @@ import {
 } from '../files/FileDriver';
 import { HarmonyFileDriver } from '../files/HarmonyFileDriver';
 
-const STORE_VERSION: number = 1;
+const STORE_VERSION: number = 2;
 const MAX_DOCUMENT_BYTES: number = 256;
 const VPN_DIRECTORY: string = 'vpn';
 const ACTIVE_VPN_FILE_NAME: string = 'active-platform-vpn-v1.json';
@@ -27,12 +28,14 @@ interface OwnershipStoreDocument {
   version: number;
   phase: VpnPlatformOwnershipPhase;
   vpnId: string;
+  binding: VpnPlatformOwnershipBinding;
 }
 
 interface OwnershipStoreJsonShape {
   version?: Object;
   phase?: Object;
   vpnId?: Object;
+  binding?: Object;
 }
 
 export interface HarmonyVpnOwnershipStoreDependencies {
@@ -46,11 +49,18 @@ class OwnershipStoreDocumentRecord implements OwnershipStoreDocument, VpnPlatfor
   readonly version: number;
   readonly phase: VpnPlatformOwnershipPhase;
   readonly vpnId: string;
+  readonly binding: VpnPlatformOwnershipBinding;
 
-  constructor(version: number, phase: VpnPlatformOwnershipPhase, vpnId: string) {
+  constructor(
+    version: number,
+    phase: VpnPlatformOwnershipPhase,
+    vpnId: string,
+    binding: VpnPlatformOwnershipBinding
+  ) {
     this.version = version;
     this.phase = phase;
     this.vpnId = vpnId;
+    this.binding = binding;
   }
 }
 
@@ -293,7 +303,7 @@ function activePlatformVpnOwnershipClaimPath(filesDir: string): string {
 
 function serializeDocument(ownership: OwnershipStoreDocumentRecord): Uint8Array {
   return encodeVpnRpcUtf8(
-    JSON.stringify(new OwnershipStoreDocumentRecord(STORE_VERSION, ownership.phase, ownership.vpnId)),
+    JSON.stringify(new OwnershipStoreDocumentRecord(STORE_VERSION, ownership.phase, ownership.vpnId, ownership.binding)),
     MAX_DOCUMENT_BYTES
   );
 }
@@ -317,15 +327,35 @@ function parseDocument(rawText: string): OwnershipStoreDocumentRecord {
   }
   const record: OwnershipStoreJsonShape = parsed as OwnershipStoreJsonShape;
   const keys: string[] = Object.keys(parsed as Record<string, Object>);
-  if (keys.length !== 3 || !keys.includes('version') || !keys.includes('phase') || !keys.includes('vpnId')) {
-    throw new OwnershipStoreCorruptError();
+  if (record.version === 1) {
+    if (
+      keys.length !== 3 ||
+      !keys.includes('version') ||
+      !keys.includes('phase') ||
+      !keys.includes('vpnId') ||
+      countFieldOccurrences(rawText, 'binding') !== 0
+    ) {
+      throw new OwnershipStoreCorruptError();
+    }
+    const version1Phase: VpnPlatformOwnershipPhase = normalizeOwnershipPhase(record.phase, true);
+    const version1VpnId: string = normalizePersistentVpnId(record.vpnId, true);
+    return new OwnershipStoreDocumentRecord(STORE_VERSION, version1Phase, version1VpnId, 'PLATFORM_ID');
   }
-  if (record.version !== STORE_VERSION) {
+  if (
+    record.version !== STORE_VERSION ||
+    keys.length !== 4 ||
+    !keys.includes('version') ||
+    !keys.includes('phase') ||
+    !keys.includes('vpnId') ||
+    !keys.includes('binding') ||
+    countFieldOccurrences(rawText, 'binding') !== 1
+  ) {
     throw new OwnershipStoreCorruptError();
   }
   const phase: VpnPlatformOwnershipPhase = normalizeOwnershipPhase(record.phase, true);
   const vpnId: string = normalizePersistentVpnId(record.vpnId, true);
-  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId);
+  const binding: VpnPlatformOwnershipBinding = normalizeOwnershipBinding(record.binding, true);
+  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId, binding);
 }
 
 function normalizeOwnershipRecord(
@@ -334,11 +364,12 @@ function normalizeOwnershipRecord(
 ): OwnershipStoreDocumentRecord {
   const phase: VpnPlatformOwnershipPhase = normalizeOwnershipPhase(ownership.phase, failClosed);
   const vpnId: string = normalizePersistentVpnId(ownership.vpnId, failClosed);
-  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId);
+  const binding: VpnPlatformOwnershipBinding = normalizeOwnershipBinding(ownership.binding, failClosed);
+  return new OwnershipStoreDocumentRecord(STORE_VERSION, phase, vpnId, binding);
 }
 
 function sameOwnership(left: OwnershipStoreDocumentRecord, right: OwnershipStoreDocumentRecord): boolean {
-  return left.phase === right.phase && left.vpnId === right.vpnId;
+  return left.phase === right.phase && left.vpnId === right.vpnId && left.binding === right.binding;
 }
 
 function countFieldOccurrences(rawText: string, fieldName: string): number {
@@ -370,6 +401,19 @@ function normalizePersistentVpnId(value: Object | undefined, failClosed: boolean
     throw new Error('VPN ownership id is invalid.');
   }
   return value;
+}
+
+function normalizeOwnershipBinding(
+  value: Object | undefined,
+  failClosed: boolean
+): VpnPlatformOwnershipBinding {
+  if (value === 'PLATFORM_ID' || value === 'LEGACY_GLOBAL') {
+    return value as VpnPlatformOwnershipBinding;
+  }
+  if (failClosed) {
+    throw new OwnershipStoreCorruptError();
+  }
+  throw new Error('VPN ownership binding is invalid.');
 }
 
 function normalizeOperationId(rawValue: string): string {

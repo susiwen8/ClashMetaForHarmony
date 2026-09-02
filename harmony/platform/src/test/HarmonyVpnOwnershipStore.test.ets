@@ -1,5 +1,5 @@
 import { describe, expect, it } from '@ohos/hypium';
-import type { VpnPlatformOwnershipRecord } from '@cmfa/shared';
+import type { VpnPlatformOwnershipBinding, VpnPlatformOwnershipRecord } from '@cmfa/shared';
 import { OwnershipStoreCorruptError } from '@cmfa/shared';
 import { HarmonyVpnOwnershipStore, activePlatformVpnOwnershipPath } from '../main/ets/vpn/HarmonyVpnOwnershipStore';
 import { BufferIoOptionsRecord } from '../main/ets/files/FileDriver';
@@ -11,14 +11,17 @@ const TARGET_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.json`;
 const CLAIM_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.claim.json`;
 const TEMP_A_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.op-a.tmp`;
 const TEMP_B_PATH: string = `${VPN_DIRECTORY}/active-platform-vpn-v1.op-b.tmp`;
+type TestOwnershipBinding = 'PLATFORM_ID' | 'LEGACY_GLOBAL' | 'MISSING';
 
 class OwnershipRecord implements VpnPlatformOwnershipRecord {
   readonly phase: 'PREPARED' | 'ACTIVE' | 'RELEASED';
   readonly vpnId: string;
+  readonly binding: VpnPlatformOwnershipBinding;
 
-  constructor(phase: 'PREPARED' | 'ACTIVE' | 'RELEASED', vpnId: string) {
+  constructor(phase: 'PREPARED' | 'ACTIVE' | 'RELEASED', vpnId: string, binding: VpnPlatformOwnershipBinding) {
     this.phase = phase;
     this.vpnId = vpnId;
+    this.binding = binding;
   }
 }
 
@@ -39,8 +42,26 @@ async function expectCorrupt(action: () => Promise<VpnPlatformOwnershipRecord | 
   expect(error instanceof OwnershipStoreCorruptError).assertTrue();
 }
 
-function createOwnership(phase: 'PREPARED' | 'ACTIVE' | 'RELEASED', vpnId: string): OwnershipRecord {
-  return new OwnershipRecord(phase, vpnId);
+function readOwnershipBinding(ownership: VpnPlatformOwnershipRecord | null | undefined): TestOwnershipBinding {
+  if (ownership === null || ownership === undefined) {
+    return 'MISSING';
+  }
+  const bindingValue: Object | undefined = (ownership as Object as Record<string, Object>).binding;
+  if (typeof bindingValue === 'string' && (bindingValue === 'PLATFORM_ID' || bindingValue === 'LEGACY_GLOBAL')) {
+    return bindingValue;
+  }
+  return 'MISSING';
+}
+
+function createOwnership(
+  phase: 'PREPARED' | 'ACTIVE' | 'RELEASED',
+  vpnId: string,
+  binding: TestOwnershipBinding = 'LEGACY_GLOBAL'
+): OwnershipRecord {
+  if (binding === 'MISSING') {
+    throw new Error('Test ownership binding must be persisted as a concrete binding.');
+  }
+  return new OwnershipRecord(phase, vpnId, binding);
 }
 
 function createStore(
@@ -51,13 +72,13 @@ function createStore(
   return new HarmonyVpnOwnershipStore({
     fileDriver,
     filesDir: FILES_DIR,
-    fsync,
+    fsync: fsync ?? ((_fd: number): void => {}),
     createOperationId: (): string => operationId
   });
 }
 
 function buildOversizeDocument(): string {
-  return `{"version":1,"phase":"ACTIVE","vpnId":"${'v'.repeat(220)}"}`;
+  return `{"version":2,"phase":"ACTIVE","vpnId":"${'v'.repeat(220)}","binding":"LEGACY_GLOBAL"}`;
 }
 
 class WriteDuringClaimFileDriver extends FakeFileDriver {
@@ -125,33 +146,41 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       expect(files.operationLog.some((entry: string): boolean => entry.startsWith(`unlink:${TARGET_PATH}`))).assertFalse();
     });
 
-    it('writesReadsAndClearsExactOwnershipRecordsAcrossPreparedActiveAndReleased', 0, async () => {
+    it('readsVersion1RecordsAsPlatformBoundThenWritesVersion2RecordsWithExactBindingMatching', 0, async () => {
       const files = new FakeFileDriver();
-      const preparedStore = createStore(files, 'op-a');
-      const activeStore = createStore(files, 'op-b');
-      const releasedStore = createStore(files, 'op-c');
+      const legacyReadStore = createStore(files, 'op-a');
+      files.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-v1-1"}');
 
-      await preparedStore.write(createOwnership('PREPARED', 'vpn-live-1'));
-      expect(files.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"PREPARED","vpnId":"vpn-live-1"}');
-      const prepared = await preparedStore.read();
-      expect(prepared?.phase ?? '').assertEqual('PREPARED');
-      expect(prepared?.vpnId ?? '').assertEqual('vpn-live-1');
+      const migrated = await legacyReadStore.read();
+      expect(migrated?.phase ?? '').assertEqual('ACTIVE');
+      expect(migrated?.vpnId ?? '').assertEqual('vpn-v1-1');
+      expect(readOwnershipBinding(migrated)).assertEqual('PLATFORM_ID');
 
-      await activeStore.write(createOwnership('ACTIVE', 'vpn-live-1'));
-      expect(files.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1"}');
+      const platformStore = createStore(files, 'op-b');
+      await platformStore.write(createOwnership('PREPARED', 'vpn-platform-1', 'PLATFORM_ID'));
+      expect(files.readFileText(TARGET_PATH)).assertEqual(
+        '{"version":2,"phase":"PREPARED","vpnId":"vpn-platform-1","binding":"PLATFORM_ID"}'
+      );
+      const platformRoundTrip = await platformStore.read();
+      expect(platformRoundTrip?.phase ?? '').assertEqual('PREPARED');
+      expect(platformRoundTrip?.vpnId ?? '').assertEqual('vpn-platform-1');
+      expect(readOwnershipBinding(platformRoundTrip)).assertEqual('PLATFORM_ID');
 
-      await releasedStore.write(createOwnership('RELEASED', 'vpn-live-1'));
-      expect(files.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"RELEASED","vpnId":"vpn-live-1"}');
+      const legacyStore = createStore(files, 'op-c');
+      await legacyStore.write(createOwnership('RELEASED', 'vpn-legacy-1', 'LEGACY_GLOBAL'));
+      expect(files.readFileText(TARGET_PATH)).assertEqual(
+        '{"version":2,"phase":"RELEASED","vpnId":"vpn-legacy-1","binding":"LEGACY_GLOBAL"}'
+      );
 
-      await releasedStore.clearExpected(createOwnership('ACTIVE', 'vpn-live-1'));
+      await legacyStore.clearExpected(createOwnership('RELEASED', 'vpn-legacy-1', 'PLATFORM_ID'));
       expect(files.fileExists(TARGET_PATH)).assertTrue();
 
-      await releasedStore.clearExpected(createOwnership('RELEASED', 'vpn-live-1'));
+      await legacyStore.clearExpected(createOwnership('RELEASED', 'vpn-legacy-1', 'LEGACY_GLOBAL'));
       expect(files.fileExists(TARGET_PATH)).assertFalse();
       expect(files.fileExists(CLAIM_PATH)).assertFalse();
     });
 
-    it('rejectsOversizeMalformedWrongVersionDuplicateKeyInvalidPhaseAndInvalidIdDocumentsAsCorrupt', 0, async () => {
+    it('rejectsOversizeMalformedWrongVersionDuplicateKeyMissingBindingInvalidBindingInvalidPhaseAndInvalidIdDocumentsAsCorrupt', 0, async () => {
       const files = new FakeFileDriver();
       const store = createStore(files, 'op-a');
 
@@ -161,16 +190,28 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       files.writeTextFile(TARGET_PATH, '{"version":1,');
       await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
 
-      files.writeTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1"}');
+      files.writeTextFile(TARGET_PATH, '{"version":3,"phase":"ACTIVE","vpnId":"vpn-live-1","binding":"LEGACY_GLOBAL"}');
       await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
 
       files.writeTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1","vpnId":"vpn-live-2"}');
       await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
 
-      files.writeTextFile(TARGET_PATH, '{"version":1,"phase":"UNKNOWN","vpnId":"vpn-live-1"}');
+      files.writeTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1"}');
       await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
 
-      files.writeTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"  "}');
+      files.writeTextFile(
+        TARGET_PATH,
+        '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1","binding":"LEGACY_GLOBAL","binding":"PLATFORM_ID"}'
+      );
+      await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
+
+      files.writeTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1","binding":"OTHER"}');
+      await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
+
+      files.writeTextFile(TARGET_PATH, '{"version":2,"phase":"UNKNOWN","vpnId":"vpn-live-1","binding":"LEGACY_GLOBAL"}');
+      await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
+
+      files.writeTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"  ","binding":"LEGACY_GLOBAL"}');
       await expectCorrupt(async (): Promise<VpnPlatformOwnershipRecord | null> => store.read());
     });
 
@@ -203,7 +244,9 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
 
       await shortWriteStore.write(createOwnership('ACTIVE', 'vpn-live-1'));
       expect(shortWriteFiles.fileExists(TARGET_PATH)).assertTrue();
-      expect(shortWriteFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1"}');
+      expect(shortWriteFiles.readFileText(TARGET_PATH)).assertEqual(
+        '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1","binding":"LEGACY_GLOBAL"}'
+      );
       expect(shortWriteFiles.fileExists(TEMP_A_PATH)).assertFalse();
 
       const fsyncFiles = new FakeFileDriver();
@@ -229,9 +272,12 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
     it('treatsCorruptStoredStateAsFatalDuringExactClear', 0, async () => {
       const files = new FakeFileDriver();
       const store = createStore(files, 'op-a');
-      files.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1","vpnId":"vpn-live-2"}');
+      files.seedTextFile(
+        TARGET_PATH,
+        '{"version":2,"phase":"ACTIVE","vpnId":"vpn-live-1","binding":"LEGACY_GLOBAL","vpnId":"vpn-live-2"}'
+      );
 
-      await expectCorrupt(async (): Promise<void> => store.clearExpected(createOwnership('ACTIVE', 'vpn-live-1')));
+      await expectCorrupt(async (): Promise<void> => store.clearExpected(createOwnership('ACTIVE', 'vpn-live-1', 'LEGACY_GLOBAL')));
       expect(files.fileExists(TARGET_PATH)).assertFalse();
       expect(files.fileExists(CLAIM_PATH)).assertTrue();
     });
@@ -244,6 +290,7 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       const recovered = await validStore.read();
       expect(recovered?.phase ?? '').assertEqual('RELEASED');
       expect(recovered?.vpnId ?? '').assertEqual('vpn-claimed-1');
+      expect(readOwnershipBinding(recovered)).assertEqual('PLATFORM_ID');
       expect(validFiles.fileExists(TARGET_PATH)).assertTrue();
       expect(validFiles.fileExists(CLAIM_PATH)).assertFalse();
 
@@ -257,24 +304,28 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
     });
 
     it('neverDeletesANewOwnerWrittenConcurrentlyDuringClearExpected', 0, async () => {
-      const matchingFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-1'), (): void => {});
+      const matchingFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-1', 'LEGACY_GLOBAL'), (): void => {});
       const matchingStore = createStore(matchingFiles, 'op-a', (): void => {});
-      matchingFiles.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-old-1"}');
+      matchingFiles.seedTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"vpn-old-1","binding":"LEGACY_GLOBAL"}');
 
-      await matchingStore.clearExpected(createOwnership('ACTIVE', 'vpn-old-1'));
+      await matchingStore.clearExpected(createOwnership('ACTIVE', 'vpn-old-1', 'LEGACY_GLOBAL'));
 
       expect(matchingFiles.fileExists(TARGET_PATH)).assertTrue();
-      expect(matchingFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-new-1"}');
+      expect(matchingFiles.readFileText(TARGET_PATH)).assertEqual(
+        '{"version":2,"phase":"ACTIVE","vpnId":"vpn-new-1","binding":"LEGACY_GLOBAL"}'
+      );
       expect(matchingFiles.fileExists(CLAIM_PATH)).assertFalse();
 
-      const mismatchFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-2'), (): void => {});
+      const mismatchFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-2', 'LEGACY_GLOBAL'), (): void => {});
       const mismatchStore = createStore(mismatchFiles, 'op-a', (): void => {});
-      mismatchFiles.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-old-2"}');
+      mismatchFiles.seedTextFile(TARGET_PATH, '{"version":2,"phase":"ACTIVE","vpnId":"vpn-old-2","binding":"LEGACY_GLOBAL"}');
 
-      await mismatchStore.clearExpected(createOwnership('ACTIVE', 'vpn-other'));
+      await mismatchStore.clearExpected(createOwnership('ACTIVE', 'vpn-other', 'PLATFORM_ID'));
 
       expect(mismatchFiles.fileExists(TARGET_PATH)).assertTrue();
-      expect(mismatchFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-new-2"}');
+      expect(mismatchFiles.readFileText(TARGET_PATH)).assertEqual(
+        '{"version":2,"phase":"ACTIVE","vpnId":"vpn-new-2","binding":"LEGACY_GLOBAL"}'
+      );
       expect(mismatchFiles.fileExists(CLAIM_PATH)).assertFalse();
     });
 
@@ -291,8 +342,8 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       expect(nestedDriver.fileExists(TEMP_A_PATH)).assertFalse();
       expect(nestedDriver.fileExists(TEMP_B_PATH)).assertFalse();
       const finalText: string = nestedDriver.readFileText(TARGET_PATH);
-      const finalIsA: boolean = finalText === '{"version":1,"phase":"PREPARED","vpnId":"vpn-write-a"}';
-      const finalIsB: boolean = finalText === '{"version":1,"phase":"ACTIVE","vpnId":"vpn-write-b"}';
+      const finalIsA: boolean = finalText === '{"version":2,"phase":"PREPARED","vpnId":"vpn-write-a","binding":"LEGACY_GLOBAL"}';
+      const finalIsB: boolean = finalText === '{"version":2,"phase":"ACTIVE","vpnId":"vpn-write-b","binding":"LEGACY_GLOBAL"}';
       expect(finalIsA || finalIsB).assertTrue();
     });
   });

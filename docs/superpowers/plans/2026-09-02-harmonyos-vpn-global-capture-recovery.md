@@ -22,7 +22,7 @@
 - [ ] Add `VpnPlatformOwnershipBinding` to test ownership records and helpers.
 - [ ] Change the exact platform-config assertion to require `config.vpnId === undefined`, `trustedApplications` empty, and `blockedApplications` containing only the VPN bundle.
 - [ ] Add tests proving a new session persists `LEGACY_GLOBAL`, a live stop uses parameterless `destroy()`, and an ID-scoped v1 migration still calls `destroyWithVpnId`.
-- [ ] Add a test proving a persisted `LEGACY_GLOBAL` owner authorizes one `2203002 -> destroy() -> retry` sequence, but never a second reclaim.
+- [ ] Add tests proving only `ACTIVE + LEGACY_GLOBAL` authorizes one `2203002 -> destroy() -> retry` sequence, while `PREPARED`/`RELEASED` never reclaim and retry never performs a second reclaim.
 - [ ] Run `cd harmony && ./hvigorw --mode module -p module=entry@default -p product=default -p buildMode=debug test` and confirm the new expectations fail against the current ID-scoped implementation.
 - [ ] Run the two Node structure tests and confirm their new binding/config assertions fail for the expected reason.
 
@@ -70,8 +70,8 @@
 
 - [ ] Remove `vpnId` from `createPlatformVpnConfig`; retain blocked-self and empty trusted lists.
 - [ ] Generate an internal marker and persist all new `PREPARED`, `ACTIVE`, and `RELEASED` records with `binding: 'LEGACY_GLOBAL'`.
-- [ ] Recover `PLATFORM_ID` by exact `destroyWithVpnId`; recover `LEGACY_GLOBAL` by deferring cleanup until a legacy create returns `2203002`.
-- [ ] Destroy live and create-failure `LEGACY_GLOBAL` sessions with parameterless `destroy()` before writing `RELEASED` and exact-clearing the marker.
+- [ ] Recover `PLATFORM_ID` by exact `destroyWithVpnId`; only `ACTIVE + LEGACY_GLOBAL` defers one cleanup until a legacy create returns `2203002`, while `PREPARED`/`RELEASED` are exact-cleared without reclaim authority.
+- [ ] Destroy live and post-create-failure `LEGACY_GLOBAL` sessions with parameterless `destroy()` before writing `RELEASED` and exact-clearing the marker; pre-live failures clear their marker without platform destroy.
 - [ ] Keep reclaim bounded to one attempt and create the retry connection only after the original connection has been destroyed.
 - [ ] Run the entry unit tests and require no ArkTS errors or `ERROR: Error in` failures.
 - [ ] Run the focused Node VPN config/ownership tests and require all pass.

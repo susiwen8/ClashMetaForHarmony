@@ -26,9 +26,9 @@ The ownership store remains a `PREPARED -> ACTIVE -> RELEASED` state machine, bu
 
 Version-1 documents are read as `PLATFORM_ID` and rewritten in version-2 form on the next state transition. New sessions always write `LEGACY_GLOBAL`.
 
-Recovery branches on binding. `PLATFORM_ID` records use the existing exact `destroyWithVpnId` cleanup. `LEGACY_GLOBAL` records do not call ID-scoped destroy; they authorize one bounded parameterless reclaim only if the next legacy create reports `2203002`. A successful create means no stale single VPN remained.
+Recovery branches on binding and phase. `PLATFORM_ID` records use the existing exact `destroyWithVpnId` cleanup. Only an `ACTIVE + LEGACY_GLOBAL` record proves this bundle previously owned a live single VPN and may authorize one bounded parameterless reclaim if the next legacy create reports `2203002`. `PREPARED` never proves live ownership, while `RELEASED` proves successful teardown; both are exact-cleared without platform destroy or reclaim authority. A successful create means no stale single VPN remained.
 
-For a live `LEGACY_GLOBAL` session, stop and create-failure cleanup use parameterless destroy, then persist `RELEASED` and clear only the matching ownership marker. Repeated cleanup stays idempotent.
+For a live `LEGACY_GLOBAL` session, stop and post-create failure cleanup use parameterless destroy, then persist `RELEASED` and clear only the matching ownership marker. Pre-live failures never call platform destroy; they best-effort transition the private marker to `RELEASED` and exact-clear it. Repeated cleanup stays idempotent.
 
 Parameterless fallback destroy is restricted to an ownership record created by this bundle and to one attempt. The product maintains at most one VPN owner for its calling UID; migration first removes any `PLATFORM_ID` record, so fallback cannot intentionally delete a second product-created multi-VPN entry. It never targets another application's UID, but same-UID collateral deletion remains a platform behavior and is covered by the single-owner invariant.
 
