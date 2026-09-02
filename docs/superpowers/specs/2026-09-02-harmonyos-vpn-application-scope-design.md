@@ -2,38 +2,47 @@
 
 ## Problem
 
-HarmonyOS creates the VPN interface, but a VPN Extension receives no application UID ranges when `trustedApplications` is empty. The current production configuration passes an empty trustlist, so the system displays a VPN indicator while ordinary application traffic bypasses the TUN file descriptor.
+HarmonyOS creates the VPN interface, but ordinary application traffic does not enter its TUN file descriptor. The system shows a VPN indicator while browser requests fail and `multitun-vpn1` application counters remain unchanged.
 
-This behavior is confirmed by the OpenHarmony `NetVpnImpl::GenerateUidRanges` implementation: VPN Extension calls with an empty accepted-application list return without generating UID ranges. On the physical API 24 phone, the VPN lifecycle reaches `tun-start-ok`, while browser and Traffic Probe requests do not increment `multitun-vpn1` counters.
+The regression was introduced when platform ownership persistence added `vpnId` to `VpnConfig`. OpenHarmony parses a configuration containing `vpnId` through a different multi-VPN/system-VPN path. On the physical Huawei device that path creates the interface but does not install effective application UID ranges for the product's empty trustlist/block-self configuration. The public upstream source does not fully explain the vendor device behavior, so the device observation and the last physically proven legacy configuration are the release gate rather than an asserted upstream implementation detail.
+
+Commit `953c1657` had deliberately omitted `vpnId` from the platform configuration and used parameterless `destroy()` to keep real full-device capture working. Commit `468757e4` restored `vpnId` for durable ownership, but its commit record states that physical device proof was not run.
 
 ## Decision
 
-Resolve a non-empty list of launchable installed applications before creating the platform VPN. Use the normal-level `ohos.permission.GET_BUNDLE_INFO` permission and query abilities matching the launcher home action/entity. Normalize the result by trimming bundle names, removing duplicates, sorting deterministically, and excluding `com.github.kr328.clash.harmony` so the VPN core cannot capture its own outbound sockets.
+Keep the shared policy as full-device capture except the VPN application's own sockets, and translate it through the legacy VPN Extension configuration path:
 
-Pass the resolved bundle names through `trustedApplications` and leave `blockedApplications` empty in the platform `VpnConfig`. The shared capture policy remains “all applications except self”; the platform driver translates that policy into the explicit allowlist required by HarmonyOS VPN Extension.
+- Do not include `vpnId` in the `PlatformVpnConfig` passed to `VpnConnection.create`.
+- Continue to pass `blockedApplications: [com.github.kr328.clash.harmony]` and an empty `trustedApplications` list.
+- Continue generating a private identifier for durable ownership records and RPC/session correlation, but record that it is not bound to the platform VPN configuration.
+- Destroy a live legacy VPN with parameterless `VpnConnection.destroy()`.
 
-## Boundaries
+## Recovery and Migration
 
-- `VpnApplicationScopeResolver` owns installed-application discovery and normalization.
-- `HarmonyVpnConnectionDriver` requests the application scope before `VpnConnection.create` and does not know BundleManager details.
-- The default resolver uses the public BundleManager API; tests inject deterministic resolvers.
-- Application discovery happens for every newly created VPN session so newly installed apps are included after the next restart.
+The ownership store remains a `PREPARED -> ACTIVE -> RELEASED` state machine, but its document schema advances to version 2 and adds an explicit binding:
 
-## Failure Policy
+- `PLATFORM_ID`: the identifier is a real multi-VPN platform ID written by the broken version-1 build.
+- `LEGACY_GLOBAL`: the identifier is only a private ownership marker for a legacy single-VPN session.
 
-Discovery failure, an empty result, or a result containing only the VPN app fails closed with a sanitized `VPN_CREATE_FAILED` error. The driver must not call `VpnConnection.create`, because an interface with no UID ranges is misleading and unusable.
+Version-1 documents are read as `PLATFORM_ID` and rewritten in version-2 form on the next state transition. New sessions always write `LEGACY_GLOBAL`.
 
-Malformed and duplicate bundle names are ignored. The VPN app's own bundle name is always removed even if BundleManager returns it.
+Recovery branches on binding. `PLATFORM_ID` records use the existing exact `destroyWithVpnId` cleanup. `LEGACY_GLOBAL` records do not call ID-scoped destroy; they authorize one bounded parameterless reclaim only if the next legacy create reports `2203002`. A successful create means no stale single VPN remained.
+
+For a live `LEGACY_GLOBAL` session, stop and create-failure cleanup use parameterless destroy, then persist `RELEASED` and clear only the matching ownership marker. Repeated cleanup stays idempotent.
+
+Parameterless fallback destroy is restricted to an ownership record created by this bundle and to one attempt. The product maintains at most one VPN owner for its calling UID; migration first removes any `PLATFORM_ID` record, so fallback cannot intentionally delete a second product-created multi-VPN entry. It never targets another application's UID, but same-UID collateral deletion remains a platform behavior and is covered by the single-owner invariant.
 
 ## Verification
 
-1. Unit tests prove normalization, deterministic ordering, self-exclusion, non-empty enforcement, and that resolution failure prevents platform creation.
-2. Entry ArkTS tests and the signed production build pass.
-3. On the physical HarmonyOS 6/API 24 phone, `multitun-vpn1` counters increase for Traffic Probe traffic, the runtime journal records TUN ingress, and a browser HTTPS request succeeds.
-4. Only after the debug device test passes is a release-mode signed HAP built and installed.
+1. A failing driver test first proves that a production platform config containing `vpnId` violates the global-capture contract.
+2. Unit tests prove v1-to-v2 binding migration, parameterless live stop/cleanup, persisted old-ID migration, one bounded legacy reclaim, and exact ownership-store transitions.
+3. Entry and focused structure tests pass; the signed debug HAP builds without stub code.
+4. On the physical HarmonyOS 6/API 24 phone, Traffic Probe traffic increments `multitun-vpn1`, the runtime journal records TUN ingress, and browser HTTPS succeeds.
+5. Only after the debug device proof passes is a release-mode signed HAP built and installed.
 
 ## Rejected Alternatives
 
+- Enumerating launcher applications into `trustedApplications` is neither proven available to an ordinary third-party app nor equivalent to all installed applications.
+- `GET_BUNDLE_INFO_PRIVILEGED` cannot be granted to a normal third-party release.
 - A manual per-app picker does not satisfy global capture.
-- `GET_BUNDLE_INFO_PRIVILEGED` and `getAllBundleInfo` require system-level authority unavailable to a normal third-party release.
-- Omitting both application lists still produces no UID ranges for a VPN Extension and therefore does not fix the device behavior.
+- Removing ownership persistence entirely would regress the requested abnormal-recovery behavior.
