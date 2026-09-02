@@ -24,6 +24,7 @@ export struct ProfilesPage {
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })
             .backgroundColor($r('app.color.color_surface_card'))
             .fontColor($r('app.color.color_text_primary'))
+            .borderRadius($r('app.float.radius_action'))
             .onClick(() => {
               this.onBack();
             })
@@ -42,6 +43,8 @@ export struct ProfilesPage {
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })
             .backgroundColor($r('app.color.color_action_primary'))
             .fontColor($r('app.color.color_text_inverse'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
             .onClick(() => {
               this.onOpenAddSheet();
             })
@@ -64,7 +67,9 @@ export struct ProfilesPage {
               .constraintSize({ minHeight: $r('app.float.touch_target_min') })
               .enabled(this.state.remoteProfileCount > 0 && !this.state.refreshAllPending)
               .backgroundColor($r('app.color.color_surface_card'))
-              .fontColor($r('app.color.color_text_primary'))
+              .fontColor($r('app.color.color_action_primary'))
+              .fontWeight(FontWeight.Medium)
+              .borderRadius($r('app.float.radius_action'))
               .onClick(() => {
                 this.onRefreshAll();
               })
@@ -130,13 +135,9 @@ export struct ProfilesPage {
             }
           }
           .width('100%')
-          .padding($r('app.float.space_lg'))
+          .padding($r('app.float.space_md'))
           .borderRadius($r('app.float.radius_card'))
           .backgroundColor($r('app.color.color_surface_card'))
-          .border({
-            width: 1,
-            color: $r('app.color.color_border_subtle')
-          })
         }
 
         if (this.state.profiles.length === 0) {
@@ -159,20 +160,31 @@ export struct ProfilesPage {
             color: $r('app.color.color_border_subtle')
           })
         } else {
-          ForEach(this.state.profiles, (row: ProfileRowState) => {
-            ProfileListItem({
-              row,
-              onOpenProfile: this.onOpenProfile
-            })
-          }, (row: ProfileRowState) => row.id)
+          Column() {
+            ForEach(this.state.profiles, (row: ProfileRowState) => {
+              ProfileListItem({
+                row,
+                onOpenProfile: this.onOpenProfile
+              })
+            }, (row: ProfileRowState) => row.id)
+          }
+          .width('100%')
+          .borderRadius($r('app.float.radius_card'))
+          .backgroundColor($r('app.color.color_surface_card'))
         }
+
+        Blank()
+          .height($r('app.float.space_3xl'))
       }
       .width('100%')
       .padding(this.compactLayout ? $r('app.float.page_padding_compact') : $r('app.float.page_padding_regular'))
       .alignItems(HorizontalAlign.Start)
     }
+    .id('profiles.scroll')
     .width('100%')
     .height('100%')
+    .scrollBar(BarState.Off)
+    .backgroundColor($r('app.color.color_surface_background'))
   }
 }
 

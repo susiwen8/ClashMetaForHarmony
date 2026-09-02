@@ -96,11 +96,7 @@ export struct ProxiesPage {
                   bottom: $r('app.float.space_sm')
                 })
                 .backgroundColor(group.active ? $r('app.color.color_action_primary') : $r('app.color.color_surface_card'))
-                .borderRadius($r('app.float.radius_card'))
-                .border({
-                  width: 1,
-                  color: group.active ? $r('app.color.color_action_primary') : $r('app.color.color_border_subtle')
-                })
+                .borderRadius($r('app.float.radius_action'))
                 .onClick(() => {
                   this.onOpenGroup(group.index);
                 })
@@ -131,12 +127,15 @@ export struct ProxiesPage {
             this.buildDelaySection();
           }
 
-          Column({ space: $r('app.float.space_sm') }) {
+          Column({ space: 0 }) {
             ForEach(this.state.nodes, (row: ProxyNodeRowState) => {
               buildNodeButton(row, this.state, this.onSelectNode)
             }, (row: ProxyNodeRowState) => `${this.renderVersion}:${row.semanticId}`)
           }
           .width('100%')
+          .borderRadius($r('app.float.radius_card'))
+          .backgroundColor($r('app.color.color_surface_card'))
+          .clip(true)
       }
     }
     .width('100%')
@@ -157,6 +156,8 @@ export struct ProxiesPage {
         .constraintSize({ minHeight: $r('app.float.touch_target_min') })
         .backgroundColor(isDelayActionLive(this.state.delayState) ? $r('app.color.color_status_danger') : $r('app.color.color_action_primary'))
         .fontColor($r('app.color.color_text_inverse'))
+        .fontWeight(FontWeight.Medium)
+        .borderRadius($r('app.float.radius_action'))
         .focusable(true)
         .accessibilityText(resolveDelayActionLabel(this.state.delayState))
         .enabled(isDelayActionEnabled(this.state))
@@ -237,10 +238,6 @@ export struct ProxiesPage {
     .padding($r('app.float.space_md'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({
-      width: 1,
-      color: $r('app.color.color_border_subtle')
-    })
   }
 }
 
@@ -257,10 +254,6 @@ function buildMessageCard(message: Resource): void {
   .padding($r('app.float.space_xl'))
   .borderRadius($r('app.float.radius_card'))
   .backgroundColor($r('app.color.color_surface_card'))
-  .border({
-    width: 1,
-    color: $r('app.color.color_border_subtle')
-  })
 }
 
 @Builder
@@ -285,11 +278,7 @@ function buildErrorCard(state: ProxyViewState, onRetry: () => void): void {
   .width('100%')
   .padding($r('app.float.space_xl'))
   .borderRadius($r('app.float.radius_card'))
-  .backgroundColor($r('app.color.color_surface_card'))
-  .border({
-    width: 1,
-    color: $r('app.color.color_border_subtle')
-  })
+  .backgroundColor($r('app.color.color_surface_danger'))
 }
 
 @Builder
@@ -314,11 +303,7 @@ function buildActivationErrorCard(state: ProxyViewState, onRetry: () => void): v
   .width('100%')
   .padding($r('app.float.space_xl'))
   .borderRadius($r('app.float.radius_card'))
-  .backgroundColor($r('app.color.color_surface_card'))
-  .border({
-    width: 1,
-    color: $r('app.color.color_border_subtle')
-  })
+  .backgroundColor($r('app.color.color_surface_danger'))
 }
 
 @Builder
@@ -401,12 +386,10 @@ function buildNodeButton(
   .width('100%')
   .constraintSize({ minHeight: $r('app.float.touch_target_min') })
   .padding($r('app.float.space_md'))
-  .backgroundColor($r('app.color.color_surface_card'))
-  .borderRadius($r('app.float.radius_card'))
-  .border({
-    width: 1,
-    color: $r('app.color.color_border_subtle')
-  })
+  .backgroundColor(row.runtimeSelected
+    ? $r('app.color.color_surface_success')
+    : $r('app.color.color_surface_card'))
+  .borderRadius(0)
   .onClick(() => {
     onSelectNode(row.index);
   })

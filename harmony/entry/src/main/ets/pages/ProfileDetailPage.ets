@@ -38,6 +38,7 @@ export struct ProfileDetailPage {
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })
             .backgroundColor($r('app.color.color_surface_subtle'))
             .fontColor($r('app.color.color_text_primary'))
+            .borderRadius($r('app.float.radius_action'))
             .onClick(() => {
               this.onBack();
             })
@@ -57,22 +58,31 @@ export struct ProfileDetailPage {
           Column({ space: $r('app.float.space_sm') }) {
             Text(this.state.profile.name)
               .fontSize($r('app.float.type_title'))
-              .fontWeight(FontWeight.Medium)
+              .fontWeight(FontWeight.Bold)
               .fontColor($r('app.color.color_text_primary'))
+              .width('100%')
+              .textAlign(TextAlign.Start)
 
             Text(sourceKindLabel(this.state.profile.sourceKind))
               .fontSize($r('app.float.type_caption'))
               .fontColor($r('app.color.color_text_secondary'))
+              .padding({ left: $r('app.float.space_sm'), right: $r('app.float.space_sm'), top: 2, bottom: 2 })
+              .borderRadius($r('app.float.radius_chip'))
+              .backgroundColor($r('app.color.color_surface_subtle'))
 
             Text(this.state.profile.sourceDisplay)
               .fontSize($r('app.float.type_body'))
-              .fontColor($r('app.color.color_text_primary'))
+              .fontColor($r('app.color.color_text_secondary'))
+              .maxLines(1)
+              .textOverflow({ overflow: TextOverflow.Ellipsis })
+              .width('100%')
+              .textAlign(TextAlign.Start)
 
             Text($r('app.string.detail_updated_at'))
               .fontSize($r('app.float.type_caption'))
               .fontColor($r('app.color.color_text_secondary'))
 
-            Text(this.state.profile.updatedAt)
+            Text(formatDetailTimestamp(this.state.profile.updatedAt))
               .fontSize($r('app.float.type_caption'))
               .fontColor($r('app.color.color_text_primary'))
 
@@ -81,7 +91,9 @@ export struct ProfileDetailPage {
                 .fontSize($r('app.float.type_caption'))
                 .fontColor($r('app.color.color_text_secondary'))
 
-              Text(this.state.profile.lastSuccessfulUpdateAt ?? $r('app.string.detail_last_successful_update_never'))
+              Text(this.state.profile.lastSuccessfulUpdateAt === undefined
+                ? $r('app.string.detail_last_successful_update_never')
+                : formatDetailTimestamp(this.state.profile.lastSuccessfulUpdateAt))
                 .id('detail.last-successful-update')
                 .fontSize($r('app.float.type_caption'))
                 .fontColor($r('app.color.color_text_primary'))
@@ -91,13 +103,44 @@ export struct ProfileDetailPage {
           .padding($r('app.float.space_lg'))
           .borderRadius($r('app.float.radius_card'))
           .backgroundColor($r('app.color.color_surface_card'))
-          .border({
-            width: 1,
-            color: $r('app.color.color_border_subtle')
-          })
+          .alignItems(HorizontalAlign.Start)
+        }
+
+        if (!this.state.editing && this.state.canEnable) {
+          Button($r('app.string.detail_enable'))
+            .id('detail.enable')
+            .width('100%')
+            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+            .enabled(!this.commandPending)
+            .backgroundColor($r('app.color.color_action_primary'))
+            .fontColor($r('app.color.color_text_inverse'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
+            .onClick(() => {
+              void this.viewModel?.requestEnable();
+            })
+        }
+
+        if (!this.state.editing) {
+          this.buildProxyManager()
         }
 
         this.buildEditSurface()
+
+        if (!this.state.editing && this.state.canRefresh) {
+          Button(refreshLabel(this.state))
+            .id('detail.refresh')
+            .width('100%')
+            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
+            .enabled(!this.commandPending)
+            .backgroundColor($r('app.color.color_surface_subtle'))
+            .fontColor($r('app.color.color_text_primary'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
+            .onClick(() => {
+              void this.viewModel?.requestRefresh();
+            })
+        }
 
         if (this.state.profile?.sourceKind === 'REMOTE_URL') {
           this.buildAutoUpdateSurface()
@@ -117,36 +160,6 @@ export struct ProfileDetailPage {
           SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
         }
 
-        if (!this.state.editing && this.state.canEnable) {
-          Button($r('app.string.detail_enable'))
-            .id('detail.enable')
-            .width('100%')
-            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
-            .enabled(!this.commandPending)
-            .backgroundColor($r('app.color.color_action_primary'))
-            .fontColor($r('app.color.color_text_inverse'))
-            .onClick(() => {
-              void this.viewModel?.requestEnable();
-            })
-        }
-
-        if (!this.state.editing) {
-          this.buildProxyManager()
-        }
-
-        if (!this.state.editing && this.state.canRefresh) {
-          Button(refreshLabel(this.state))
-            .id('detail.refresh')
-            .width('100%')
-            .constraintSize({ minHeight: $r('app.float.touch_target_min') })
-            .enabled(!this.commandPending)
-            .backgroundColor($r('app.color.color_surface_subtle'))
-            .fontColor($r('app.color.color_text_primary'))
-            .onClick(() => {
-              void this.viewModel?.requestRefresh();
-            })
-        }
-
         if (!this.state.editing && this.state.canDelete) {
           Button($r('app.string.detail_delete'))
             .id('detail.delete')
@@ -155,25 +168,33 @@ export struct ProfileDetailPage {
             .enabled(!this.commandPending)
             .backgroundColor($r('app.color.color_status_danger'))
             .fontColor($r('app.color.color_text_inverse'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
             .onClick(() => {
               this.viewModel?.requestDelete();
             })
         }
+
+        Blank()
+          .height($r('app.float.space_3xl'))
       }
       .width('100%')
       .padding(this.compactLayout ? $r('app.float.page_padding_compact') : $r('app.float.page_padding_regular'))
       .alignItems(HorizontalAlign.Start)
     }
+    .id('detail.scroll')
     .width('100%')
     .height('100%')
+    .scrollBar(BarState.Off)
+    .backgroundColor($r('app.color.color_surface_background'))
   }
 
   @Builder
   private buildAutoUpdateSurface(): void {
     Column({ space: $r('app.float.space_sm') }) {
       Text($r('app.string.detail_auto_update_title'))
-        .fontSize($r('app.float.type_title'))
-        .fontWeight(FontWeight.Medium)
+        .fontSize($r('app.float.type_body'))
+        .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.color_text_primary'))
         .width('100%')
 
@@ -207,6 +228,8 @@ export struct ProfileDetailPage {
             .fontColor(this.state.profile?.autoUpdateIntervalMs === intervalMs
               ? $r('app.color.color_text_inverse')
               : $r('app.color.color_text_primary'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
             .margin({ right: $r('app.float.space_sm'), bottom: $r('app.float.space_sm') })
             .onClick(() => {
               void this.viewModel?.requestAutoUpdateInterval(intervalMs);
@@ -220,7 +243,6 @@ export struct ProfileDetailPage {
     .padding($r('app.float.space_lg'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({ width: 1, color: $r('app.color.color_border_subtle') })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -344,10 +366,6 @@ export struct ProfileDetailPage {
     .padding($r('app.float.space_lg'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({
-      width: 1,
-      color: $r('app.color.color_border_subtle')
-    })
     .alignItems(HorizontalAlign.Start)
   }
 
@@ -356,8 +374,8 @@ export struct ProfileDetailPage {
     Column({ space: $r('app.float.space_md') }) {
       Row({ space: $r('app.float.space_md') }) {
         Text($r('app.string.detail_proxy_title'))
-          .fontSize($r('app.float.type_title'))
-          .fontWeight(FontWeight.Medium)
+          .fontSize($r('app.float.type_body'))
+          .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.color_text_primary'))
           .layoutWeight(1)
           .textAlign(TextAlign.Start)
@@ -374,6 +392,8 @@ export struct ProfileDetailPage {
           .fontColor(this.proxyExpanded || this.canManageProxies
             ? $r('app.color.color_text_inverse')
             : $r('app.color.color_action_disabled_text'))
+          .fontWeight(FontWeight.Medium)
+          .borderRadius($r('app.float.radius_action'))
           .onClick(() => {
             this.onToggleProxyManager();
           })
@@ -406,10 +426,6 @@ export struct ProfileDetailPage {
     .padding($r('app.float.space_lg'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({
-      width: 1,
-      color: $r('app.color.color_border_subtle')
-    })
     .alignItems(HorizontalAlign.Start)
   }
 }
@@ -418,6 +434,14 @@ function sourceKindLabel(sourceKind: 'LOCAL_FILE' | 'REMOTE_URL') {
   return sourceKind === 'LOCAL_FILE'
     ? $r('app.string.detail_source_kind_file')
     : $r('app.string.detail_source_kind_url');
+}
+
+function formatDetailTimestamp(timestamp: string): string {
+  const normalized: string = timestamp.trim().replace('T', ' ');
+  if (normalized.length <= 16) {
+    return normalized;
+  }
+  return normalized.substring(0, 16);
 }
 
 function autoUpdateIntervalLabel(intervalMs: number): Resource {

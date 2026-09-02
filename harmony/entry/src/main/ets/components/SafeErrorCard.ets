@@ -27,6 +27,7 @@ export struct SafeErrorCard {
 
         Text(this.error.code)
           .fontSize($r('app.float.type_caption'))
+          .fontWeight(FontWeight.Bold)
           .fontColor($r('app.color.color_status_danger'))
 
         Text(this.error.technicalDetail)
@@ -38,6 +39,8 @@ export struct SafeErrorCard {
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })
             .backgroundColor($r('app.color.color_surface_subtle'))
             .fontColor($r('app.color.color_text_primary'))
+            .fontWeight(FontWeight.Medium)
+            .borderRadius($r('app.float.radius_action'))
             .onClick(() => {
               this.copyTechnicalDetail(this.error.technicalDetail);
             })
@@ -49,11 +52,7 @@ export struct SafeErrorCard {
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor(this.error.code.trim().length === 0 && this.error.technicalDetail.trim().length === 0
       ? Color.Transparent
-      : $r('app.color.color_surface_card'))
-    .border({
-      width: this.error.code.trim().length === 0 && this.error.technicalDetail.trim().length === 0 ? 0 : 1,
-      color: $r('app.color.color_border_subtle')
-    })
+      : $r('app.color.color_surface_danger'))
   }
 
   private copyTechnicalDetail(technicalDetail: string): void {

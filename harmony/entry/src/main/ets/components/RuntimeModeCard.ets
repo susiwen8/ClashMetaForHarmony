@@ -11,8 +11,8 @@ export struct RuntimeModeCard {
   build() {
     Column({ space: $r('app.float.space_md') }) {
       Text($r('app.string.home_mode_title'))
-        .fontSize($r('app.float.type_title'))
-        .fontWeight(FontWeight.Medium)
+        .fontSize($r('app.float.type_body'))
+        .fontWeight(FontWeight.Bold)
         .fontColor($r('app.color.color_text_primary'))
         .width('100%')
         .textAlign(TextAlign.Start)
@@ -29,6 +29,9 @@ export struct RuntimeModeCard {
         this.buildModeButton('DIRECT', $r('app.string.home_mode_direct'))
       }
       .width('100%')
+      .padding($r('app.float.space_xs'))
+      .borderRadius($r('app.float.radius_action'))
+      .backgroundColor($r('app.color.color_surface_subtle'))
 
       Text($r('app.string.home_mode_rule_note'))
         .fontSize($r('app.float.type_caption'))
@@ -43,10 +46,6 @@ export struct RuntimeModeCard {
     .padding($r('app.float.space_md'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({
-      width: 1,
-      color: $r('app.color.color_border_subtle')
-    })
   }
 
   @Builder
@@ -57,10 +56,12 @@ export struct RuntimeModeCard {
       .constraintSize({ minHeight: $r('app.float.touch_target_min') })
       .backgroundColor(this.state.mode === mode
         ? $r('app.color.color_action_primary')
-        : $r('app.color.color_surface_subtle'))
+        : Color.Transparent)
       .fontColor(this.state.mode === mode
         ? $r('app.color.color_text_inverse')
         : $r('app.color.color_text_primary'))
+      .fontWeight(FontWeight.Medium)
+      .borderRadius($r('app.float.radius_action'))
       .onClick(() => {
         this.onSelect(mode);
       })

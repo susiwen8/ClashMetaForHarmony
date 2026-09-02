@@ -10,22 +10,22 @@ export struct HomeTrafficCard {
 
   build() {
     Column({ space: $r('app.float.space_md') }) {
-      Text($r('app.string.home_traffic_title'))
-        .fontSize($r('app.float.type_title'))
-        .fontWeight(FontWeight.Medium)
-        .fontColor($r('app.color.color_text_primary'))
-        .width('100%')
-        .textAlign(TextAlign.Start)
+      Row({ space: $r('app.float.space_sm') }) {
+        Text($r('app.string.home_traffic_title'))
+          .fontSize($r('app.float.type_body'))
+          .fontWeight(FontWeight.Bold)
+          .fontColor($r('app.color.color_text_primary'))
 
-      Text(resolveTrafficStatus(this.state))
-        .id('home.traffic.status')
-        .fontSize($r('app.float.type_caption'))
-        .fontColor($r('app.color.color_text_secondary'))
-        .width('100%')
-        .textAlign(TextAlign.Start)
+        Blank()
 
-      Divider()
-        .color($r('app.color.color_border_subtle'))
+        Text(resolveTrafficStatus(this.state))
+          .id('home.traffic.status')
+          .fontSize($r('app.float.type_caption'))
+          .fontColor(this.state.available
+            ? $r('app.color.color_status_success')
+            : $r('app.color.color_text_secondary'))
+      }
+      .width('100%')
 
       Row({ space: $r('app.float.space_md') }) {
         buildTrafficMetric(
@@ -44,16 +44,15 @@ export struct HomeTrafficCard {
         )
       }
       .width('100%')
+      .padding($r('app.float.space_sm'))
+      .borderRadius($r('app.float.radius_action'))
+      .backgroundColor($r('app.color.color_surface_subtle'))
     }
     .id('home.traffic.card')
     .width('100%')
     .padding($r('app.float.space_md'))
     .borderRadius($r('app.float.radius_card'))
     .backgroundColor($r('app.color.color_surface_card'))
-    .border({
-      width: 1,
-      color: $r('app.color.color_border_subtle')
-    })
   }
 }
 
@@ -74,7 +73,7 @@ function buildTrafficMetric(
 
     Text(`${speed}/s`)
       .id(speedId)
-      .fontSize($r('app.float.type_headline'))
+      .fontSize($r('app.float.type_metric'))
       .fontWeight(FontWeight.Medium)
       .fontColor($r('app.color.color_text_primary'))
       .width('100%')
