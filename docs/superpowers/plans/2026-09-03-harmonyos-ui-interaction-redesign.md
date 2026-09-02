@@ -264,7 +264,7 @@
   Resolve the one physical target with:
 
   ```bash
-  HDC=/Applications/DevEco-Studio.app/Contents/sdk/default/openharmony/toolchains/hdc
+  HDC="$(node --input-type=module -e "import fs from 'node:fs'; import path from 'node:path'; const r=JSON.parse(fs.readFileSync('harmony/toolchain.requirements.json','utf8')); process.stdout.write(path.join(r.defaults.sdkRoots[0], r.files.hdc));")"
   "$HDC" list targets
   ```
 
