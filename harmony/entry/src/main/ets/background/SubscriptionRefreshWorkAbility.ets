@@ -24,6 +24,19 @@ class HarmonySubscriptionRefreshWorkCompletionPort implements SubscriptionRefres
   }
 }
 
+class DefaultSubscriptionRefreshWorkAbilityDependencies implements SubscriptionRefreshWorkAbilityDependencies {
+  createComposition(context: WorkSchedulerExtensionContext): SubscriptionRefreshWorkComposition {
+    return createSubscriptionRefreshComposition(context);
+  }
+
+  readonly completionPort: SubscriptionRefreshWorkCompletionPort =
+    new HarmonySubscriptionRefreshWorkCompletionPort();
+
+  nowMs(): number {
+    return Date.now();
+  }
+}
+
 let installedDependencies: SubscriptionRefreshWorkAbilityDependencies | undefined = undefined;
 
 export function installSubscriptionRefreshWorkAbilityDependenciesForTesting(
@@ -85,12 +98,7 @@ export default class SubscriptionRefreshWorkAbility extends WorkSchedulerExtensi
     if (installedDependencies !== undefined) {
       return installedDependencies;
     }
-    return {
-      createComposition: (context: WorkSchedulerExtensionContext): SubscriptionRefreshWorkComposition =>
-        createSubscriptionRefreshComposition(context),
-      completionPort: new HarmonySubscriptionRefreshWorkCompletionPort(),
-      nowMs: (): number => Date.now()
-    };
+    return new DefaultSubscriptionRefreshWorkAbilityDependencies();
   }
 }
 

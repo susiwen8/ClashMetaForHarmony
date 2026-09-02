@@ -16,6 +16,7 @@ import {
   parseRemoteSourceInput,
   resolveNameIssue,
   resolveRemoteUrlIssue,
+  safeRemoteHostFromUrl,
   type ImportProfileViewState,
   type ParsedRemoteSourceInput,
   type SafeErrorState

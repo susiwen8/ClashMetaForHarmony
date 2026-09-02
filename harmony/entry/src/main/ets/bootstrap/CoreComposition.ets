@@ -27,6 +27,7 @@ import {
   ProxyService,
   RefreshProfileUseCase,
   RefreshProfilesUseCase,
+  type RefreshProfilesUseCaseDependencies,
   SerialCommandQueue,
   SubscriptionOneClickVpnConfirmation,
   VpnProxyCommandBus,
@@ -47,6 +48,7 @@ import {
   type OneClickVpnConfirmationPort,
   type Profile,
   type QrScannerPort,
+  type ProfileRefreshExecutorPort,
   type VpnOpaqueCatalog,
   type VpnControllerPort,
   type VpnProxyCommandHandler,
@@ -62,12 +64,12 @@ import type { ApplicationComposition, ApplicationCompositionState } from './Appl
 import {
   HarmonyVpnController,
   type HarmonyVpnControllerDependencies,
+  type HarmonyVpnTrafficMonitorPort,
   type VpnExtensionAbilityApi
 } from '../vpn/HarmonyVpnController';
 import {
   VpnTrafficMonitor,
   type VpnTrafficCounterSourcePort,
-  type VpnTrafficMonitorLifecyclePort,
   type VpnTrafficMonitorReadPort
 } from '../vpn/VpnTrafficMonitor';
 import { UiOwnedVpnExtensionAbilityApi } from '../vpn/UiOwnedVpnExtensionAbilityApi';
@@ -266,7 +268,7 @@ interface BoundHarmonyVpnControllerResult {
 class HarmonyVpnControllerDependenciesRecord implements HarmonyVpnControllerDependencies {
   runtimeMirror?: VpnProxyRuntimeMirrorPort;
   scheduler?: BoundedDelaySchedulerPort;
-  trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
+  trafficMonitor?: HarmonyVpnTrafficMonitorPort;
   trafficReportStage?: (stage: string) => void;
   rpcClient?: VpnRpcClientPort;
 }
@@ -660,14 +662,19 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       const runtimeModeClient = vpnRpcClient === undefined
         ? undefined
         : new VpnRpcRuntimeToolsClient(vpnRpcClient);
+      const canCreateUiArtifacts: boolean = hasAbilityInfo(this.context);
+      const qrScanner = this.dependencies.createQrScanner?.(this.context) ??
+        (canCreateUiArtifacts ? createHarmonyQrScanner(this.context) : undefined);
+      const runtimeLogStore = createHarmonyRuntimeLogStore(this.context.filesDir);
+      const runtimeLogExporter = canCreateUiArtifacts ? createHarmonyRuntimeLogExporter(this.context) : undefined;
       const readyState: ApplicationCompositionState = createReadyState(
         application,
         vpnRegistry,
         runtimeModeClient,
         this.ownedVpnTrafficMonitor,
-        this.dependencies.createQrScanner?.(this.context) ?? createHarmonyQrScanner(this.context),
-        createHarmonyRuntimeLogStore(this.context.filesDir),
-        createHarmonyRuntimeLogExporter(this.context)
+        qrScanner,
+        runtimeLogStore,
+        runtimeLogExporter
       );
       this.publish(readyState);
     } catch (error) {
@@ -816,11 +823,12 @@ class ApplicationCompositionRecord implements ApplicationComposition {
       commitService,
       leasedRemoteRefresher
     });
-    const refreshProfilesUseCase = new RefreshProfilesUseCase({
+    const refreshProfilesDependencies: RefreshProfilesUseCaseDependencies = {
       repository: graph.repository,
-      executor: refreshUseCase,
+      executor: refreshUseCase as ProfileRefreshExecutorPort,
       clock: graph.clock
-    });
+    };
+    const refreshProfilesUseCase = new RefreshProfilesUseCase(refreshProfilesDependencies);
     const profileRefreshSchedule = new WorkSchedulerDriver();
     const manageProfileUseCases = new ManageProfileUseCases({
       repository: graph.repository,
@@ -962,6 +970,14 @@ function createCleanupError(): ApplicationCompositionPersistenceError {
   return new ApplicationCompositionPersistenceError('Application composition cleanup failed.');
 }
 
+interface AbilityInfoContext {
+  abilityInfo?: Object;
+}
+
+function hasAbilityInfo(context: common.UIAbilityContext): boolean {
+  return (context as AbilityInfoContext).abilityInfo !== undefined;
+}
+
 class ApplicationCompositionPersistenceError extends Error implements AppError {
   readonly code: string;
   readonly stage: 'PERSISTENCE' = 'PERSISTENCE';
@@ -1093,7 +1109,7 @@ function createBoundHarmonyVpnController(
     new SystemVpnRpcClock(),
     new TimeoutDelayScheduler()
   );
-  controllerDependencies.trafficMonitor = trafficMonitor;
+  controllerDependencies.trafficMonitor = trafficMonitor as HarmonyVpnTrafficMonitorPort;
   controllerDependencies.trafficReportStage = reportVpnUiStage;
   controllerDependencies.rpcClient = client;
   const controller = new HarmonyVpnController(registry, api, controllerDependencies);

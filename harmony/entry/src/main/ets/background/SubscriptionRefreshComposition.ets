@@ -6,11 +6,16 @@ import {
 } from '@cmfa/platform/ProfileRefresh';
 import {
   LeasedRemoteProfileRefresher,
+  type LeasedRemoteProfileRefresherDependencies,
   ProfileCommitService,
+  type ProfileCommitServiceDependencies,
   RefreshProfileUseCase,
+  type RefreshProfileUseCaseDependencies,
   RefreshProfilesUseCase,
+  type RefreshProfilesUseCaseDependencies,
   SerialCommandQueue,
   type CoreService,
+  type ProfileRefreshExecutorPort,
   type RefreshProfilesCommand,
   type RefreshProfilesResult
 } from '@cmfa/shared';
@@ -26,6 +31,16 @@ export interface SubscriptionRefreshBatchPort {
 export interface SubscriptionRefreshCompositionDependencies {
   createPlatformGraph(context: WorkSchedulerExtensionContext): Promise<ProfileRefreshPlatformGraph>;
   createBatchUseCase(graph: ProfileRefreshPlatformGraph): SubscriptionRefreshBatchPort;
+}
+
+class DefaultSubscriptionRefreshCompositionDependencies implements SubscriptionRefreshCompositionDependencies {
+  async createPlatformGraph(context: WorkSchedulerExtensionContext): Promise<ProfileRefreshPlatformGraph> {
+    return await new ProfileRefreshPlatformFactory(context).create();
+  }
+
+  createBatchUseCase(graph: ProfileRefreshPlatformGraph): SubscriptionRefreshBatchPort {
+    return createDefaultBatchUseCase(graph);
+  }
 }
 
 export class SubscriptionRefreshComposition implements SubscriptionRefreshWorkComposition {
@@ -57,7 +72,7 @@ export class SubscriptionRefreshComposition implements SubscriptionRefreshWorkCo
         await graph.close();
       } catch (closeError) {
         if (primaryError === undefined) {
-          throw closeError;
+          throw closeError instanceof Error ? closeError : new Error('Subscription refresh graph close failed.');
         }
       }
     }
@@ -74,27 +89,24 @@ export function createSubscriptionRefreshComposition(
 }
 
 function createDefaultDependencies(): SubscriptionRefreshCompositionDependencies {
-  return {
-    createPlatformGraph: async (context: WorkSchedulerExtensionContext): Promise<ProfileRefreshPlatformGraph> =>
-      await new ProfileRefreshPlatformFactory(context).create(),
-    createBatchUseCase: (graph: ProfileRefreshPlatformGraph): SubscriptionRefreshBatchPort =>
-      createDefaultBatchUseCase(graph)
-  };
+  return new DefaultSubscriptionRefreshCompositionDependencies();
 }
 
 function createDefaultBatchUseCase(graph: ProfileRefreshPlatformGraph): RefreshProfilesUseCase {
   const coreService: CoreService = createCoreService();
-  const commitService = new ProfileCommitService({
+  const commitServiceDependencies: ProfileCommitServiceDependencies = {
     repository: graph.repository,
     contentStore: graph.contentStore,
     clock: graph.clock
-  });
-  const leasedRemoteRefresher = new LeasedRemoteProfileRefresher({
+  };
+  const commitService = new ProfileCommitService(commitServiceDependencies);
+  const leasedRemoteRefresherDependencies: LeasedRemoteProfileRefresherDependencies = {
     leasePort: graph.profileRefreshLeasePort,
     clock: graph.clock,
     idGenerator: graph.idGenerator
-  });
-  const refreshUseCase = new RefreshProfileUseCase({
+  };
+  const leasedRemoteRefresher = new LeasedRemoteProfileRefresher(leasedRemoteRefresherDependencies);
+  const refreshUseCaseDependencies: RefreshProfileUseCaseDependencies = {
     repository: graph.repository,
     contentStore: graph.contentStore,
     sourceGateway: graph.sourceGateway,
@@ -104,10 +116,12 @@ function createDefaultBatchUseCase(graph: ProfileRefreshPlatformGraph): RefreshP
     queue: new SerialCommandQueue(),
     commitService,
     leasedRemoteRefresher
-  });
-  return new RefreshProfilesUseCase({
+  };
+  const refreshUseCase = new RefreshProfileUseCase(refreshUseCaseDependencies);
+  const refreshProfilesUseCaseDependencies: RefreshProfilesUseCaseDependencies = {
     repository: graph.repository,
-    executor: refreshUseCase,
+    executor: refreshUseCase as ProfileRefreshExecutorPort,
     clock: graph.clock
-  });
+  };
+  return new RefreshProfilesUseCase(refreshProfilesUseCaseDependencies);
 }

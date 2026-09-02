@@ -2,7 +2,8 @@ import { describe, expect, it } from '@ohos/hypium';
 import {
   FILE_OPEN_MODE_CREATE,
   FILE_OPEN_MODE_TRUNC,
-  FILE_OPEN_MODE_WRITE_ONLY
+  FILE_OPEN_MODE_WRITE_ONLY,
+  BufferIoOptionsRecord
 } from '../main/ets/files/FileDriver';
 import {
   HarmonyGeodataInstaller,
@@ -540,7 +541,11 @@ export default function harmonyGeodataInstallerTestsuite() {
       const path: string = `${FILES_DIR}/write-shape.metadb`;
       const bytes: Uint8Array = buildBytes(12);
       const handle = await fileDriver.open(path, FILE_OPEN_MODE_WRITE_ONLY | FILE_OPEN_MODE_CREATE);
-      const wrote: number = await fileDriver.write(handle.fd, bytes.buffer, { offset: 0, length: bytes.length });
+      const wrote: number = await fileDriver.write(
+        handle.fd,
+        bytes.buffer,
+        new BufferIoOptionsRecord(0, bytes.length)
+      );
       await fileDriver.close(handle);
 
       expect(wrote).assertEqual(bytes.length);

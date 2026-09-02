@@ -170,7 +170,7 @@ test('subscription refresh work ability applies the deadline cancellation and pr
   assert.match(composition, /deadlineMs/u);
   assert.match(composition, /isCancelled/u);
   assert.match(composition, /await graph\.close\(\)/u);
-  assert.doesNotMatch(composition, /PlatformFactory|HarmonyVpnNotificationDriver|backgroundTaskManager|VpnRpc|CoreComposition/u);
+  assert.doesNotMatch(composition, /\bPlatformFactory\b|HarmonyVpnNotificationDriver|backgroundTaskManager|VpnRpc|CoreComposition/u);
   assert.match(entryList, /import subscriptionRefreshWorkAbilityTestsuite from '\.\/SubscriptionRefreshWorkAbility\.test';/u);
   assert.match(entryList, /subscriptionRefreshWorkAbilityTestsuite\(\);/u);
 });

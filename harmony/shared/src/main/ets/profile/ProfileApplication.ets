@@ -26,7 +26,7 @@ import type {
   RefreshProfileResult,
   RefreshProfileUseCase
 } from './RefreshProfileUseCase';
-import type { RefreshProfilesResult, RefreshProfilesUseCase } from './RefreshProfilesUseCase';
+import type { RefreshProfilesItemResult, RefreshProfilesResult, RefreshProfilesUseCase } from './RefreshProfilesUseCase';
 import { redactSensitiveText } from './SecretRedactor';
 import {
   createVpnFailure,
@@ -1765,11 +1765,14 @@ function cloneAppError(error: AppError): AppError {
 }
 
 function cloneRefreshProfilesResult(result: RefreshProfilesResult): RefreshProfilesResult {
-  return {
-    items: result.items.map((item) => ({
+  const clonedItems: RefreshProfilesItemResult[] = result.items.map(
+    (item: RefreshProfilesItemResult): RefreshProfilesItemResult => ({
       profileId: item.profileId,
       status: item.status
-    })),
+    })
+  );
+  return {
+    items: clonedItems,
     deadlineReached: result.deadlineReached,
     cancelled: result.cancelled,
     remainingCount: result.remainingCount

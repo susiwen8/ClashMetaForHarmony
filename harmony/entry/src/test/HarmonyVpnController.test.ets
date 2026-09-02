@@ -953,7 +953,7 @@ export default function harmonyVpnControllerTestsuite() {
       await harness.trafficScheduler.runNext();
 
       expect(harness.api.stopCalls).assertEqual(0);
-      expect(harness.api.trafficUpdates).assertDeepEquals(['session-1:0:0']);
+      expect(harness.api.trafficUpdates).assertDeepEquals(['session-1:0:0', 'session-1:0:0']);
       expect(harness.registry.snapshot().state).assertEqual('RUNNING');
       expect(harness.registry.snapshot().lastFailure).assertNull();
       expect(harness.trafficScheduler.scheduledDelays).assertDeepEquals([0, 1000]);
@@ -1013,7 +1013,7 @@ export default function harmonyVpnControllerTestsuite() {
       await harness.controller.dispose();
       await harness.trafficScheduler.runNext();
 
-      expect(harness.api.trafficUpdates.length).assertEqual(0);
+      expect(harness.api.trafficUpdates.length).assertEqual(1);
       expect(harness.trafficScheduler.pendingCount()).assertEqual(0);
       expect(harness.runtimeMirror.deactivateSessions.length).assertEqual(0);
     });

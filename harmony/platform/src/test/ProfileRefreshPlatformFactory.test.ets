@@ -106,25 +106,51 @@ class CloseableRecordingRdbDriver extends RecordingRdbDriver implements ProfileR
   }
 }
 
+class TestProfileRefreshPlatformComponents implements ProfileRefreshPlatformComponents {
+  readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: ProfileRefreshLeasePort;
+  readonly contentStore: ProfileContentStore;
+  readonly sourceGateway: ProfileSourceGateway;
+  readonly secretStore: ProfileRefreshSecretStore;
+  readonly clock: Clock;
+  readonly idGenerator: IdGenerator;
+  private readonly log: string[];
+  private readonly prepareCallback: () => Promise<void>;
+  private readonly closeCallback: () => Promise<void>;
+
+  constructor(
+    log: string[],
+    prepare: () => Promise<void>,
+    close: () => Promise<void>
+  ) {
+    this.log = log;
+    this.repository = new FakeRepository(log);
+    this.profileRefreshLeasePort = new FakeLeasePort();
+    this.contentStore = new FakeContentStore(log);
+    this.sourceGateway = new FakeSourceGateway();
+    this.secretStore = new FakeSecretStore(log);
+    this.clock = new FakeClock();
+    this.idGenerator = new FakeIdGenerator();
+    this.prepareCallback = prepare;
+    this.closeCallback = close;
+  }
+
+  async prepareSecrets(): Promise<void> {
+    this.log.push('secret.prepare');
+    await this.prepareCallback();
+  }
+
+  async closeRdb(): Promise<void> {
+    await this.closeCallback();
+  }
+}
+
 function createComponents(
   log: string[],
   prepare: () => Promise<void> = async (): Promise<void> => {},
   close: () => Promise<void> = async (): Promise<void> => { log.push('rdb.close'); }
 ): ProfileRefreshPlatformComponents {
-  return {
-    repository: new FakeRepository(log),
-    profileRefreshLeasePort: new FakeLeasePort(),
-    contentStore: new FakeContentStore(log),
-    sourceGateway: new FakeSourceGateway(),
-    secretStore: new FakeSecretStore(log),
-    clock: new FakeClock(),
-    idGenerator: new FakeIdGenerator(),
-    prepareSecrets: async (): Promise<void> => {
-      log.push('secret.prepare');
-      await prepare();
-    },
-    closeRdb: close
-  };
+  return new TestProfileRefreshPlatformComponents(log, prepare, close);
 }
 
 export default function profileRefreshPlatformFactoryTestsuite() {
@@ -261,12 +287,8 @@ export default function profileRefreshPlatformFactoryTestsuite() {
         lastSuccessfulUpdateAt: null,
         autoUpdateIntervalMs: 0
       } as Profile;
-      const firstSecretProfile = { ...malformedProfile } as Profile;
-      firstSecretProfile.id = 'legacy-secret-a';
-      firstSecretProfile.sourceSecretRef = 'secret-a';
-      const duplicateSecretProfile = { ...malformedProfile } as Profile;
-      duplicateSecretProfile.id = 'legacy-secret-a-spaced';
-      duplicateSecretProfile.sourceSecretRef = ' secret-a ';
+      const firstSecretProfile: Profile = cloneProfile(malformedProfile, 'legacy-secret-a', 'secret-a');
+      const duplicateSecretProfile: Profile = cloneProfile(malformedProfile, 'legacy-secret-a-spaced', ' secret-a ');
       (components.repository as FakeRepository).profiles = [
         malformedProfile,
         firstSecretProfile,
@@ -288,4 +310,22 @@ export default function profileRefreshPlatformFactoryTestsuite() {
       expect(normalizeProfileRefreshSdkApiVersion(undefined)).assertEqual(0);
     });
   });
+}
+
+function cloneProfile(profile: Profile, id: string, sourceSecretRef: string): Profile {
+  return {
+    id,
+    name: profile.name,
+    sourceKind: profile.sourceKind,
+    sourceDisplay: profile.sourceDisplay,
+    sourceSecretRef,
+    currentRevision: profile.currentRevision,
+    failedCandidate: profile.failedCandidate,
+    availability: profile.availability,
+    lastError: profile.lastError,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: profile.autoUpdateIntervalMs
+  };
 }

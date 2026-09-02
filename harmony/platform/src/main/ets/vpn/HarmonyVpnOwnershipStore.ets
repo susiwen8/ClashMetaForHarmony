@@ -348,7 +348,7 @@ function countFieldOccurrences(rawText: string, fieldName: string): number {
 
 function normalizeOwnershipPhase(value: Object | undefined, failClosed: boolean): VpnPlatformOwnershipPhase {
   if (value === 'PREPARED' || value === 'ACTIVE' || value === 'RELEASED') {
-    return value;
+    return value as VpnPlatformOwnershipPhase;
   }
   if (failClosed) {
     throw new OwnershipStoreCorruptError();

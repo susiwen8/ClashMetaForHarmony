@@ -203,6 +203,22 @@ export default function vpnTrafficNotificationCoordinatorTestsuite() {
       expect(monitor.listenerCount()).assertEqual(1);
     });
 
+    it('sinkFailureRetriesTheSameTrafficRate', 0, async () => {
+      const monitor = new ScriptedTrafficMonitor(createSnapshot(true, 0, 0, 512, 1024));
+      const sink = new RecordingTrafficSink();
+      sink.queueError(new Error('notification publish failed'));
+      const coordinator = new VpnTrafficNotificationCoordinator(monitor, sink);
+
+      coordinator.start('session-1');
+      await settleMicrotasks();
+      await monitor.publish(createSnapshot(true, 2048, 4096, 512, 1024));
+
+      expect(sink.updates).assertDeepEquals([
+        { sessionId: 'session-1', uploadBytesPerSecond: 512, downloadBytesPerSecond: 1024 },
+        { sessionId: 'session-1', uploadBytesPerSecond: 512, downloadBytesPerSecond: 1024 }
+      ]);
+    });
+
     it('startSwitchesSessionsByUnsubscribingOldListenerAndReplayingCurrentSnapshot', 0, async () => {
       const monitor = new ScriptedTrafficMonitor(createSnapshot(true, 4096, 8192, 256, 512));
       const sink = new RecordingTrafficSink();

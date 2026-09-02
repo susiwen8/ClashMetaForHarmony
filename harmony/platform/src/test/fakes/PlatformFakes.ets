@@ -15,6 +15,7 @@ import {
   type HuksDriver,
   type HuksEncryptedPayload
 } from '../../main/ets/secrets/HuksDriver';
+import { BufferIoOptionsRecord } from '../../main/ets/files/FileDriver';
 import type { VpnRpcDerivedHmacOperations } from '../../main/ets/vpn/HarmonyVpnRpcKeyProvider';
 
 class ScriptedFailure {
@@ -1060,7 +1061,7 @@ export class FakeFileDriver implements FileDriver {
     return count;
   }
 
-  async write(fd: number, buffer: ArrayBuffer | string, options?: BufferIoOptionsShape): Promise<number> {
+  async write(fd: number, buffer: ArrayBuffer | string, options?: BufferIoOptionsRecord): Promise<number> {
     const handle: FakeOpenHandle = this.requireOpenHandle(fd);
     this.operationLog.push(`write:${handle.path}`);
     this.failIfScripted('write', handle.path);

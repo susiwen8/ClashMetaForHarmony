@@ -16,13 +16,6 @@ export struct ProfilesPage {
   };
 
   build() {
-    const remoteCount: number = this.state.remoteProfileCount;
-    const refreshSummary: ProfilesRefreshSummaryState | undefined = this.state.refreshAllSummary;
-    const showRefreshPanel: boolean = remoteCount > 0 ||
-      this.state.refreshAllPending ||
-      refreshSummary !== undefined ||
-      this.state.refreshAllError !== undefined;
-
     Scroll() {
       Column({ space: $r('app.float.space_lg') }) {
         Row({ space: $r('app.float.space_md') }) {
@@ -59,14 +52,17 @@ export struct ProfilesPage {
           SafeErrorCard({ error: this.state.error ?? createEmptySafeErrorState() })
         }
 
-        if (showRefreshPanel) {
+        if (this.state.remoteProfileCount > 0 ||
+          this.state.refreshAllPending ||
+          this.state.refreshAllSummary !== undefined ||
+          this.state.refreshAllError !== undefined) {
           Column({ space: $r('app.float.space_sm') }) {
             Button(this.state.refreshAllPending
               ? $r('app.string.profiles_refresh_pending')
               : $r('app.string.profiles_refresh_all'))
               .id('profiles.refresh-all')
               .constraintSize({ minHeight: $r('app.float.touch_target_min') })
-              .enabled(remoteCount > 0 && !this.state.refreshAllPending)
+              .enabled(this.state.remoteProfileCount > 0 && !this.state.refreshAllPending)
               .backgroundColor($r('app.color.color_surface_card'))
               .fontColor($r('app.color.color_text_primary'))
               .onClick(() => {
@@ -86,13 +82,13 @@ export struct ProfilesPage {
               }
             }
 
-            if (refreshSummary !== undefined) {
+            if (this.state.refreshAllSummary !== undefined) {
               Flex({
                 wrap: FlexWrap.Wrap,
                 justifyContent: FlexAlign.Start,
                 alignItems: ItemAlign.Center
               }) {
-                ForEach(createRefreshSummaryItems(refreshSummary), (item: RefreshSummaryItem) => {
+                ForEach(createRefreshSummaryItems(this.state.refreshAllSummary), (item: RefreshSummaryItem) => {
                   Row({ space: $r('app.float.space_xs') }) {
                     Text(`${item.count}`)
                       .fontSize($r('app.float.type_caption'))

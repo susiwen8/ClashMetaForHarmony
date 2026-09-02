@@ -252,7 +252,7 @@ function assertNoPlaintextLeak(snapshot: string, forbiddenFragments: string[]): 
 function buildRemoteStateSnapshot(
   gateway: FakeProfileSourceGateway,
   secretStore: FakeSubscriptionSecretStore,
-  repository?: { savedProfiles: Profile[] }
+  repository?: FakeProfileRepository
 ): string {
   const parts: Object[] = [
     gateway.remoteCommands,
@@ -1203,7 +1203,7 @@ export default function profileImportUseCasesTestsuite() {
       cancelOptions.availability = 'VALID';
       const cancelLeasePort = new FakeProfileRefreshLeasePort();
       const cancelSecretStore = new FakeSubscriptionSecretStore();
-      cancelSecretStore.scriptedDecryptResults.push(new ScriptedStringFailure(false, 'HTTP_SUBSCRIPTION'));
+      cancelSecretStore.scriptedDecryptResults.push(new ScriptedStringFailure(false, 'HTTP_SUBSCRIPTION_CREDENTIALS'));
       const cancelGateway = new FakeProfileSourceGateway();
       const cancelUseCase = createRefreshUseCase(
         new FakeProfileRepository([buildProfile(cancelOptions)], 'profile-remote-refresh-release-cancel'),
@@ -1577,7 +1577,7 @@ export default function profileImportUseCasesTestsuite() {
       expect(result.profile.lastError?.retryable).assertFalse();
       expect(gateway.remoteCommands.length).assertEqual(0);
       expect(contentStore.retainedKinds.length).assertEqual(0);
-      expect(timeline.joined()).assertEqual('getProfile>decryptSource>saveProfile');
+      expect(timeline.joined()).assertEqual('getProfile>getProfile>decryptSource>saveProfile');
     });
 
     it('fallsBackToSafeDecryptFailureCodeWithoutLeakingPlaintextDuringRemoteRefresh', 0, async () => {

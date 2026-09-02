@@ -247,7 +247,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       expect(store.readValue?.phase ?? '').assertEqual('ACTIVE');
       expect(store.readValue?.vpnId ?? '').assertEqual('vpn-generated-1');
       expect(store.log.join(',')).assertEqual(
-        'read,clearExpected:RELEASED:vpn-stale-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
+        'read,write:RELEASED:vpn-stale-1,clearExpected:RELEASED:vpn-stale-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'
       );
       expect(api.connection.log.join(',')).assertEqual('destroyWithVpnId:vpn-stale-1,generateVpnId,create');
       assertExactConfig(api.connection.createConfigs[0], 'vpn-generated-1');
@@ -467,7 +467,7 @@ export default function harmonyVpnConnectionDriverTestsuite() {
       const handle = await driver.create(buildExactCaptureConfig());
 
       expect(handle.vpnId).assertEqual('vpn-generated-1');
-      expect(api.connection.log.join(',')).assertEqual('create,destroy');
+      expect(api.connection.log.join(',')).assertEqual('generateVpnId,create,destroy');
       expect(api.replacementConnection?.log.join(',') ?? '').assertEqual('create');
       expect(store.log.join(',')).assertEqual(
         'read,clearExpected:RELEASED:vpn-released-1,write:PREPARED:vpn-generated-1,write:ACTIVE:vpn-generated-1'

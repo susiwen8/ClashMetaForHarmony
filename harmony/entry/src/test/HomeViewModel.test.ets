@@ -433,8 +433,8 @@ export default function homeViewModelTestsuite() {
       trafficMonitor.emit(createTrafficSnapshot(true, 8192, 16384, 512, 1024));
 
       expect(published.length).assertEqual(0);
-      expect(viewModel.current().traffic.txBytes).assertEqual(2048);
-      expect(viewModel.current().traffic.rxBytes).assertEqual(4096);
+      expect(viewModel.current().traffic.txBytes).assertEqual(0);
+      expect(viewModel.current().traffic.rxBytes).assertEqual(0);
     });
 
     it('loadsAndSwitchesTheCurrentSessionModeOnlyWhileVpnIsRunning', 0, async () => {

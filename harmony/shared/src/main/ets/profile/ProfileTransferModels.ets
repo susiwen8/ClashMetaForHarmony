@@ -613,10 +613,10 @@ function normalizeCipherName(name: string): 'AES-256-GCM' {
   return name;
 }
 
-function normalizeQrScanResultKind(kind: string): ProfileTransferQrScanResultKind {
+function normalizeQrScanResultKind<T extends ProfileTransferQrScanResultKind>(kind: T): T {
   for (let index: number = 0; index < profileTransferQrScanResultKinds.length; index += 1) {
     if (profileTransferQrScanResultKinds[index] === kind) {
-      return kind as ProfileTransferQrScanResultKind;
+      return kind;
     }
   }
   createProfileTransferContractError('Profile transfer QR scan result kind must stay inside the closed contract.');

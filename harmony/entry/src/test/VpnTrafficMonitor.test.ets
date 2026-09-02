@@ -274,7 +274,8 @@ export default function vpnTrafficMonitorTestsuite() {
       monitor.start('session-1');
       monitor.start('session-1');
 
-      expect(scheduler.scheduledDelays.length).assertEqual(0);
+      expect(scheduler.scheduledDelays).assertDeepEquals([0]);
+      expect(scheduler.pendingCount()).assertEqual(1);
       expect(source.calls.length).assertEqual(0);
     });
 
@@ -562,10 +563,10 @@ export default function vpnTrafficMonitorTestsuite() {
         'notification.traffic.counters-nonzero',
         'notification.traffic.rate-nonzero',
         'notification.traffic.source-failed',
+        'notification.traffic.source-failed',
         'notification.traffic.source-ok',
         'notification.traffic.counters-nonzero',
-        'notification.traffic.rate-zero',
-        'notification.traffic.rate-nonzero'
+        'notification.traffic.rate-zero'
       ]);
     });
   });

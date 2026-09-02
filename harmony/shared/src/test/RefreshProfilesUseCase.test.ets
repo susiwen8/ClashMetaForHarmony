@@ -5,6 +5,7 @@ import {
   type AppError,
   type Clock,
   type Profile,
+  type ProfileRevision,
   type ProfileRefreshExecutorPort,
   type ProfileRepository,
   type RefreshProfilesTimestampParser,
@@ -70,17 +71,32 @@ interface Deferred<T> {
   resolve(value: T): void;
 }
 
+interface ErrorWithCode {
+  code: string;
+}
+
+class DeferredValue<T> implements Deferred<T> {
+  promise: Promise<T>;
+  private resolveValue?: (value: T) => void;
+
+  constructor() {
+    this.promise = new Promise<T>((resolve) => {
+      this.resolveValue = resolve;
+    });
+  }
+
+  resolve(value: T): void {
+    this.resolveValue?.(value);
+  }
+}
+
 function createDeferred<T>(): Deferred<T> {
-  let resolveValue: ((value: T) => void) | undefined = undefined;
-  const promise: Promise<T> = new Promise<T>((resolve) => {
-    resolveValue = resolve;
-  });
-  return {
-    promise,
-    resolve(value: T): void {
-      resolveValue?.(value);
-    }
-  };
+  return new DeferredValue<T>();
+}
+
+interface RefreshExecutorCommand {
+  profileId: string;
+  allowPlainHttp?: boolean;
 }
 
 class FakeRefreshExecutor implements ProfileRefreshExecutorPort {
@@ -105,7 +121,7 @@ class FakeRefreshExecutor implements ProfileRefreshExecutorPort {
     this.thrownByProfileId.set(profileId, error);
   }
 
-  async execute(command: { profileId: string; allowPlainHttp?: boolean }): Promise<RefreshProfileResult> {
+  async execute(command: RefreshExecutorCommand): Promise<RefreshProfileResult> {
     this.calls.push(command.profileId);
     this.allowPlainHttpCalls.push(command.allowPlainHttp === true);
     this.activeCount += 1;
@@ -160,6 +176,24 @@ function buildRemoteProfile(
   };
 }
 
+function copyProfile(profile: Profile): Profile {
+  return {
+    id: profile.id,
+    name: profile.name,
+    sourceKind: profile.sourceKind,
+    sourceDisplay: profile.sourceDisplay,
+    sourceSecretRef: profile.sourceSecretRef,
+    currentRevision: profile.currentRevision,
+    failedCandidate: profile.failedCandidate,
+    availability: profile.availability,
+    lastError: profile.lastError,
+    createdAt: profile.createdAt,
+    updatedAt: profile.updatedAt,
+    lastSuccessfulUpdateAt: profile.lastSuccessfulUpdateAt,
+    autoUpdateIntervalMs: profile.autoUpdateIntervalMs
+  };
+}
+
 function buildLocalProfile(id: string): Profile {
   return {
     id,
@@ -183,36 +217,63 @@ function buildUpdatedResult(
   lastError: AppError | null,
   hasCurrentRevision: boolean
 ): RefreshProfileResult {
+  const currentRevision: ProfileRevision | null = hasCurrentRevision
+    ? {
+      relativePath: `profiles/${profile.id}/current.yaml`,
+      sha256Digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+      byteLength: 128,
+      validatedAt: isoAt(900)
+    }
+    : null;
+  const updatedProfile: Profile = copyProfile(profile);
+  updatedProfile.availability = availability;
+  updatedProfile.lastError = lastError;
+  updatedProfile.currentRevision = currentRevision;
   return {
     kind: 'UPDATED',
-    profile: {
-      ...profile,
-      availability,
-      lastError,
-      currentRevision: hasCurrentRevision
-        ? {
-          relativePath: `profiles/${profile.id}/current.yaml`,
-          sha256Digest: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
-          byteLength: 128,
-          validatedAt: isoAt(900)
-        }
-        : null
-    }
+    profile: updatedProfile
   };
 }
 
 function buildFailedResult(code: string): RefreshProfileResult {
+  const error: AppError = {
+    code,
+    stage: 'PERSISTENCE',
+    userMessageResource: 'error.persistence',
+    technicalDetail: `internal ${code}`,
+    timestamp: isoAt(1000),
+    retryable: code === 'PROFILE_REFRESH_BUSY'
+  };
   return {
     kind: 'FAILED',
-    error: {
-      code,
-      stage: 'PERSISTENCE',
-      userMessageResource: 'error.persistence',
-      technicalDetail: `internal ${code}`,
-      timestamp: isoAt(1000),
-      retryable: code === 'PROFILE_REFRESH_BUSY'
-    }
+    error
   };
+}
+
+function buildFailedError(code: string): AppError {
+  const result: RefreshProfileResult = buildFailedResult(code);
+  if (result.kind !== 'FAILED') {
+    throw new Error(`Expected FAILED result for ${code}.`);
+  }
+  return result.error;
+}
+
+interface BuildUseCaseResult {
+  useCase: RefreshProfilesUseCase;
+  fakeExecutor: FakeRefreshExecutor;
+  fakeClock: FakeClock;
+}
+
+class BuildUseCaseResultValue implements BuildUseCaseResult {
+  useCase: RefreshProfilesUseCase;
+  fakeExecutor: FakeRefreshExecutor;
+  fakeClock: FakeClock;
+
+  constructor(useCase: RefreshProfilesUseCase, fakeExecutor: FakeRefreshExecutor, fakeClock: FakeClock) {
+    this.useCase = useCase;
+    this.fakeExecutor = fakeExecutor;
+    this.fakeClock = fakeClock;
+  }
 }
 
 function buildUseCase(
@@ -221,15 +282,11 @@ function buildUseCase(
   executor?: FakeRefreshExecutor,
   clock?: Clock,
   parser?: RefreshProfilesTimestampParser
-): {
-  useCase: RefreshProfilesUseCase;
-  fakeExecutor: FakeRefreshExecutor;
-  fakeClock: FakeClock;
-} {
+): BuildUseCaseResult {
   const fakeExecutor = executor ?? new FakeRefreshExecutor();
   const fakeClock = clock instanceof FakeClock ? clock : new FakeClock(nowMs);
-  return {
-    useCase: new RefreshProfilesUseCase({
+  return new BuildUseCaseResultValue(
+    new RefreshProfilesUseCase({
       repository: new FakeProfileRepository(profiles),
       executor: fakeExecutor,
       clock: clock ?? fakeClock,
@@ -237,7 +294,7 @@ function buildUseCase(
     }),
     fakeExecutor,
     fakeClock
-  };
+  );
 }
 
 async function expectSafeUseCaseError(
@@ -251,7 +308,7 @@ async function expectSafeUseCaseError(
   } catch (error) {
     rejected = true;
     expect(error instanceof RefreshProfilesUseCaseError).assertTrue();
-    const record = error as Record<string, Object>;
+    const record = error as ErrorWithCode;
     expect(record.code).assertEqual(expectedCode);
     const message: string = error instanceof Error ? error.message : `${error}`;
     for (let index = 0; index < forbiddenFragments.length; index += 1) {
@@ -274,9 +331,15 @@ export default function refreshProfilesUseCaseTestsuite() {
       const executor = new FakeRefreshExecutor();
       executor.setDeferred('profile-a', firstDeferred);
       executor.setDeferred('profile-b', secondDeferred);
-      const { useCase } = buildUseCase([profileB, local, profileA], Date.parse(isoAt(500)), executor);
+      const useCaseBundle: BuildUseCaseResult = buildUseCase(
+        [profileB, local, profileA],
+        Date.parse(isoAt(500)),
+        executor
+      );
+      const useCase = useCaseBundle.useCase;
 
       const pending = useCase.execute({ mode: 'ALL' });
+      await Promise.resolve();
       await Promise.resolve();
 
       expect(executor.calls.length).assertEqual(1);
@@ -284,6 +347,8 @@ export default function refreshProfilesUseCaseTestsuite() {
       expect(executor.maxConcurrency).assertEqual(1);
 
       firstDeferred.resolve(buildUpdatedResult(profileA, 'VALID', null, true));
+      await Promise.resolve();
+      await Promise.resolve();
       await Promise.resolve();
 
       expect(executor.calls.length).assertEqual(2);
@@ -318,7 +383,12 @@ export default function refreshProfilesUseCaseTestsuite() {
       executor.setResult('profile-null', buildUpdatedResult(nullDue, 'VALID', null, true));
       executor.setResult('profile-older', buildUpdatedResult(olderDue, 'VALID', null, true));
       executor.setResult('profile-boundary', buildUpdatedResult(boundaryDue, 'VALID', null, true));
-      const { useCase } = buildUseCase([boundaryDue, future, disabled, olderDue, nullDue], nowMs, executor);
+      const useCaseBundle: BuildUseCaseResult = buildUseCase(
+        [boundaryDue, future, disabled, olderDue, nullDue],
+        nowMs,
+        executor
+      );
+      const useCase = useCaseBundle.useCase;
 
       const result = await useCase.execute({ mode: 'DUE' });
 
@@ -346,7 +416,12 @@ export default function refreshProfilesUseCaseTestsuite() {
       const httpsProfile = buildRemoteProfile('profile-https', 'https://secure.example.com', 1, 1);
       const executor = new FakeRefreshExecutor();
       executor.setResult('profile-https', buildUpdatedResult(httpsProfile, 'VALID', null, true));
-      const { useCase } = buildUseCase([httpsProfile, httpProfile], Date.parse(isoAt(500)), executor);
+      const useCaseBundle: BuildUseCaseResult = buildUseCase(
+        [httpsProfile, httpProfile],
+        Date.parse(isoAt(500)),
+        executor
+      );
+      const useCase = useCaseBundle.useCase;
 
       const result = await useCase.execute({ mode: 'ALL' });
 
@@ -379,17 +454,18 @@ export default function refreshProfilesUseCaseTestsuite() {
         buildUpdatedResult(
           failedUsingLastError,
           'VALID',
-          buildFailedResult('CMFA_DOWNLOAD_FAILED').error,
+          buildFailedError('CMFA_DOWNLOAD_FAILED'),
           true
         )
       );
       executor.setResult('e-invalid', buildUpdatedResult(failed, 'INVALID', null, false));
       executor.setResult('f-success', buildUpdatedResult(success, 'VALID', null, true));
-      const { useCase } = buildUseCase(
+      const useCaseBundle: BuildUseCaseResult = buildUseCase(
         [success, failed, cancelled, failedUsingLastError, busy, failedUsingCurrent],
         Date.parse(isoAt(500)),
         executor
       );
+      const useCase = useCaseBundle.useCase;
 
       const result = await useCase.execute({ mode: 'ALL' });
 
@@ -508,7 +584,15 @@ export default function refreshProfilesUseCaseTestsuite() {
       executor.setResult('profile-a', buildUpdatedResult(first, 'VALID', null, true));
       executor.setThrow('profile-b', new Error('https://sensitive.example.com token=abc123 lease-owner=xyz'));
       executor.setResult('profile-c', buildUpdatedResult(third, 'VALID', null, true));
-      const { useCase } = buildUseCase([first, second, third], Date.parse(isoAt(500)), executor);
+      const useCaseBundle: BuildUseCaseResult = buildUseCase([first, second, third], Date.parse(isoAt(500)), executor);
+      const useCase = useCaseBundle.useCase;
+
+      class InvalidClockValue implements Clock {
+        now(): string {
+          return 'not-a-date';
+        }
+      }
+      const invalidClock: Clock = new InvalidClockValue();
 
       const result = await useCase.execute({ mode: 'ALL' });
       const serialized: string = JSON.stringify(result);
@@ -521,12 +605,6 @@ export default function refreshProfilesUseCaseTestsuite() {
       expect(serialized.includes('token=abc123')).assertFalse();
       expect(serialized.includes('lease-owner=xyz')).assertFalse();
 
-      const invalidClock = {
-        now(): string {
-          return 'not-a-date';
-        }
-      };
-
       await expectSafeUseCaseError(
         new RefreshProfilesUseCase({
           repository: new FakeProfileRepository([first]),
@@ -538,14 +616,15 @@ export default function refreshProfilesUseCaseTestsuite() {
       );
 
       await expectSafeUseCaseError(
-        new RefreshProfilesUseCase({
-          repository: new FakeProfileRepository([{
-            ...first,
-            lastSuccessfulUpdateAt: 'yesterday'
-          }]),
-          executor: new FakeRefreshExecutor(),
-          clock: new FakeClock(Date.parse(isoAt(500)))
-        }).execute({ mode: 'DUE' }),
+        (() => {
+          const invalidProfile: Profile = copyProfile(first);
+          invalidProfile.lastSuccessfulUpdateAt = 'yesterday';
+          return new RefreshProfilesUseCase({
+            repository: new FakeProfileRepository([invalidProfile]),
+            executor: new FakeRefreshExecutor(),
+            clock: new FakeClock(Date.parse(isoAt(500)))
+          }).execute({ mode: 'DUE' });
+        })(),
         'REFRESH_PROFILES_INVALID_INPUT',
         ['profile-a', 'a.example.com', 'yesterday']
       );
@@ -563,14 +642,15 @@ export default function refreshProfilesUseCaseTestsuite() {
 
     it('rejectsOverflowFromInjectedTimestampParserWithFixedSafeError', 0, async () => {
       const profile = buildRemoteProfile('profile-overflow', 'https://overflow.example.com', 1, 2);
-      const parser: RefreshProfilesTimestampParser = {
+      class FixedRefreshProfilesTimestampParser implements RefreshProfilesTimestampParser {
         parseUtcMillis(_timestamp: string, label: string): number {
           if (label === 'Clock timestamp') {
             return Date.parse('2026-09-01T12:00:00.000Z');
           }
           return Number.MAX_SAFE_INTEGER;
         }
-      };
+      }
+      const parser: RefreshProfilesTimestampParser = new FixedRefreshProfilesTimestampParser();
 
       await expectSafeUseCaseError(
         buildUseCase(

@@ -319,13 +319,13 @@ export class VpnTrafficMonitor implements VpnTrafficMonitorReadPort, VpnTrafficM
         await this.terminateGeneration(sessionId, generation);
       }
     } catch (_) {
+      if (!this.isGenerationActive(sessionId, generation)) {
+        return;
+      }
       this.tracker.reset();
       this.reportSourceState(false);
       this.countersNonZero = undefined;
       this.rateNonZero = undefined;
-      if (!this.isGenerationActive(sessionId, generation)) {
-        return;
-      }
       await this.publishSnapshot(
         createSnapshot(false, this.currentSnapshot.txBytes, this.currentSnapshot.rxBytes, 0, 0)
       );

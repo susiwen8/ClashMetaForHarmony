@@ -54,6 +54,7 @@ import {
   type CoreProxySelectionApplied,
   type CoreService,
   type ProfileContentStore,
+  type ProfileRefreshLeasePort,
   type ProxyIdentityHasher,
   type ProxySelectionPair,
   type ProxySelectionRecord,
@@ -266,6 +267,7 @@ class InertProxyIdentityHasher implements ProxyIdentityHasher {
 
 class RecordingPlatformGraph implements PlatformGraph {
   readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: ProfileRefreshLeasePort = new InertProfileRefreshLeasePort();
   readonly proxySelectionRepository: ProxySelectionRepository = new InertProxySelectionRepository();
   readonly proxyIdentityHasher: ProxyIdentityHasher = new InertProxyIdentityHasher();
   readonly contentStore: ProfileContentStore;
@@ -368,6 +370,20 @@ class GraphClock {
 class GraphIdGenerator {
   nextId(): string {
     return 'generated-id';
+  }
+}
+
+class InertProfileRefreshLeasePort implements ProfileRefreshLeasePort {
+  async tryAcquire(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async renew(_profileId: string, _ownerToken: string, _nowMs: number, _expiresAtMs: number): Promise<boolean> {
+    return true;
+  }
+
+  async release(_profileId: string, _ownerToken: string): Promise<boolean> {
+    return true;
   }
 }
 

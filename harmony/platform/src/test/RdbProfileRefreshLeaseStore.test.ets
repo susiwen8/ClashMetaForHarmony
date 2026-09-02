@@ -1,9 +1,19 @@
 import common from '@ohos.app.ability.common';
 import { describe, expect, it } from '@ohos/hypium';
-import type { ProfileRefreshLeasePort } from '@cmfa/shared';
+import type {
+  LocalAcquireCommand,
+  LocalProfileAcquisition,
+  ProfileRefreshLeasePort,
+  ProfileSourceGateway,
+  RemoteAcquireCommand,
+  RemoteProfileAcquisition
+} from '@cmfa/shared';
 import { PlatformFactory, type PlatformFactoryDependencies, type PlatformGraph, type CloseableRdbDriver, type PrepareableHuksDriver } from '../main/ets/PlatformFactory';
+import type { GeodataInstaller } from '../main/ets/geodata/HarmonyGeodataInstaller';
 import { RdbProfileRefreshLeaseStore } from '../main/ets/rdb/RdbProfileRefreshLeaseStore';
 import type { DurableProfileRefreshLeaseRow } from '../main/ets/rdb/RdbDriver';
+import type { HttpTransport, HttpTransportRequest, HttpTransportResponse } from '../main/ets/source/HttpTransport';
+import type { LocalProfileAcquirer, RemoteProfileAcquirer } from '../main/ets/source/HarmonyProfileSourceGateway';
 import {
   DeterministicHuksDriver,
   FakeFileDriver,
@@ -28,6 +38,45 @@ class RecordingPrepareHuksDriver extends DeterministicHuksDriver implements Prep
   }
 }
 
+class FakeGeodataInstaller implements GeodataInstaller {
+  async ensureInstalled(): Promise<void> {
+  }
+}
+
+class FakePicker implements LocalProfileAcquirer {
+  async acquire(_command: LocalAcquireCommand): Promise<LocalProfileAcquisition> {
+    throw new Error('unused');
+  }
+}
+
+class FakeHttpTransportResponse implements HttpTransportResponse {
+  statusCode: number = 200;
+  headers: Map<string, Array<string>> = new Map<string, Array<string>>();
+  body: ArrayBuffer = new ArrayBuffer(0);
+}
+
+class FakeHttpTransport implements HttpTransport {
+  async fetch(_request: HttpTransportRequest): Promise<HttpTransportResponse> {
+    return new FakeHttpTransportResponse();
+  }
+}
+
+class FakeDownloader implements RemoteProfileAcquirer {
+  async acquire(_command: RemoteAcquireCommand): Promise<RemoteProfileAcquisition> {
+    throw new Error('unused');
+  }
+}
+
+class FakeSourceGateway implements ProfileSourceGateway {
+  async acquireLocal(_command: LocalAcquireCommand): Promise<LocalProfileAcquisition> {
+    throw new Error('unused');
+  }
+
+  async acquireRemote(_command: RemoteAcquireCommand): Promise<RemoteProfileAcquisition> {
+    throw new Error('unused');
+  }
+}
+
 class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
   readonly label: string;
 
@@ -48,6 +97,30 @@ class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
   }
 }
 
+class TestPlatformFactoryDependencies implements PlatformFactoryDependencies {
+  private readonly driver: CloseableRecordingRdbDriver;
+  private readonly huksDriver: PrepareableHuksDriver;
+
+  constructor(
+    driver: CloseableRecordingRdbDriver,
+    huksDriver: PrepareableHuksDriver
+  ) {
+    this.driver = driver;
+    this.huksDriver = huksDriver;
+  }
+
+  createFileDriver = (): FakeFileDriver => new FakeFileDriver();
+  createRdbDriver = (): CloseableRdbDriver => this.driver;
+  createHuksDriver = (): PrepareableHuksDriver => this.huksDriver;
+  createGeodataInstaller = (): GeodataInstaller => new FakeGeodataInstaller();
+  resolveSdkApiVersion = (): number => 23;
+  createPicker = (): LocalProfileAcquirer => new FakePicker();
+  createNetworkKitTransport = (): HttpTransport => new FakeHttpTransport();
+  createRequestAgentTransport = (): HttpTransport => new FakeHttpTransport();
+  createDownloader = (): RemoteProfileAcquirer => new FakeDownloader();
+  createSourceGateway = (): ProfileSourceGateway => new FakeSourceGateway();
+}
+
 function createContext(): common.UIAbilityContext {
   return {
     filesDir: '/sandbox/app/files'
@@ -58,48 +131,7 @@ function createDependencies(
   driver: CloseableRecordingRdbDriver,
   huksDriver: PrepareableHuksDriver
 ): PlatformFactoryDependencies {
-  return {
-    createFileDriver: (): FakeFileDriver => new FakeFileDriver(),
-    createRdbDriver: (): CloseableRdbDriver => driver,
-    createHuksDriver: (): PrepareableHuksDriver => huksDriver,
-    createGeodataInstaller: () => ({
-      ensureInstalled: async (): Promise<void> => {
-      }
-    }),
-    resolveSdkApiVersion: (): number => 23,
-    createPicker: () => ({
-      acquire: async () => {
-        throw new Error('unused');
-      }
-    }),
-    createNetworkKitTransport: () => ({
-      fetch: async () => ({
-        statusCode: 200,
-        headers: new Map<string, Array<string>>(),
-        body: new ArrayBuffer(0)
-      })
-    }),
-    createRequestAgentTransport: () => ({
-      fetch: async () => ({
-        statusCode: 200,
-        headers: new Map<string, Array<string>>(),
-        body: new ArrayBuffer(0)
-      })
-    }),
-    createDownloader: () => ({
-      acquire: async () => {
-        throw new Error('unused');
-      }
-    }),
-    createSourceGateway: () => ({
-      acquireLocal: async () => {
-        throw new Error('unused');
-      },
-      acquireRemote: async () => {
-        throw new Error('unused');
-      }
-    })
-  };
+  return new TestPlatformFactoryDependencies(driver, huksDriver);
 }
 
 function buildLeaseRow(

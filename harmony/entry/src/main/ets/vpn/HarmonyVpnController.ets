@@ -49,10 +49,12 @@ export interface VpnExtensionAbilityApi {
 export interface HarmonyVpnControllerDependencies {
   runtimeMirror?: VpnProxyRuntimeMirrorPort;
   scheduler?: BoundedDelaySchedulerPort;
-  trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
+  trafficMonitor?: HarmonyVpnTrafficMonitorPort;
   trafficReportStage?: (stage: string) => void;
   rpcClient?: VpnRpcClientPort;
 }
+
+export interface HarmonyVpnTrafficMonitorPort extends VpnTrafficMonitorReadPort, VpnTrafficMonitorLifecyclePort {}
 
 interface BusinessErrorShape {
   code?: number;
@@ -309,7 +311,7 @@ export class HarmonyVpnController implements VpnControllerPort {
   private readonly rpcClient: VpnRpcClientPort;
   private readonly runtimeMirror?: VpnProxyRuntimeMirrorPort;
   private readonly scheduler?: BoundedDelaySchedulerPort;
-  private readonly trafficMonitor?: VpnTrafficMonitorReadPort & VpnTrafficMonitorLifecyclePort;
+  private readonly trafficMonitor?: HarmonyVpnTrafficMonitorPort;
   private readonly trafficNotificationCoordinator?: VpnTrafficNotificationCoordinator;
   private rpcSubscriptionId: number = 0;
   private stopRequestInFlight?: Promise<void>;

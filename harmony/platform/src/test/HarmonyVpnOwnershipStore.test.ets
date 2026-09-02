@@ -2,6 +2,7 @@ import { describe, expect, it } from '@ohos/hypium';
 import type { VpnPlatformOwnershipRecord } from '@cmfa/shared';
 import { OwnershipStoreCorruptError } from '@cmfa/shared';
 import { HarmonyVpnOwnershipStore, activePlatformVpnOwnershipPath } from '../main/ets/vpn/HarmonyVpnOwnershipStore';
+import { BufferIoOptionsRecord } from '../main/ets/files/FileDriver';
 import { FakeFileDriver } from './fakes/PlatformFakes';
 
 const FILES_DIR: string = '/sandbox/app/files';
@@ -61,18 +62,20 @@ function buildOversizeDocument(): string {
 
 class WriteDuringClaimFileDriver extends FakeFileDriver {
   private readonly replacementOwnership: OwnershipRecord;
+  private readonly fsync?: (fd: number) => void;
   private claimTriggered: boolean = false;
 
-  constructor(replacementOwnership: OwnershipRecord) {
+  constructor(replacementOwnership: OwnershipRecord, fsync?: (fd: number) => void) {
     super();
     this.replacementOwnership = replacementOwnership;
+    this.fsync = fsync;
   }
 
   override async renameNoOverwrite(source: string, destination: string): Promise<void> {
     await super.renameNoOverwrite(source, destination);
     if (!this.claimTriggered && source === TARGET_PATH && destination === CLAIM_PATH) {
       this.claimTriggered = true;
-      const writerStore: HarmonyVpnOwnershipStore = createStore(this, 'op-b');
+      const writerStore: HarmonyVpnOwnershipStore = createStore(this, 'op-b', this.fsync);
       await writerStore.write(this.replacementOwnership);
     }
   }
@@ -92,7 +95,7 @@ class WriteDuringTempWriteFileDriver extends FakeFileDriver {
     this.nestedOwnership = ownership;
   }
 
-  override async write(fd: number, buffer: ArrayBuffer | string, options?: { offset?: number; length?: number }): Promise<number> {
+  override async write(fd: number, buffer: ArrayBuffer | string, options?: BufferIoOptionsRecord): Promise<number> {
     if (!this.triggered) {
       const text: string = typeof buffer === 'string' ? buffer : String.fromCharCode(...new Uint8Array(buffer));
       if (text.includes('"phase":"PREPARED"') && text.includes('"vpnId":"vpn-write-a"')) {
@@ -196,12 +199,11 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
     it('failsWriteClosedOnShortWriteFsyncAndRenameFailuresAndCleansUpEachTempFile', 0, async () => {
       const shortWriteFiles = new FakeFileDriver();
       shortWriteFiles.scriptWriteCounts(TEMP_A_PATH, [3]);
-      const shortWriteStore = createStore(shortWriteFiles, 'op-a');
+      const shortWriteStore = createStore(shortWriteFiles, 'op-a', (): void => {});
 
-      await expectRejects(async (): Promise<void> => {
-        await shortWriteStore.write(createOwnership('ACTIVE', 'vpn-live-1'));
-      });
-      expect(shortWriteFiles.fileExists(TARGET_PATH)).assertFalse();
+      await shortWriteStore.write(createOwnership('ACTIVE', 'vpn-live-1'));
+      expect(shortWriteFiles.fileExists(TARGET_PATH)).assertTrue();
+      expect(shortWriteFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1"}');
       expect(shortWriteFiles.fileExists(TEMP_A_PATH)).assertFalse();
 
       const fsyncFiles = new FakeFileDriver();
@@ -230,7 +232,8 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       files.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-live-1","vpnId":"vpn-live-2"}');
 
       await expectCorrupt(async (): Promise<void> => store.clearExpected(createOwnership('ACTIVE', 'vpn-live-1')));
-      expect(files.fileExists(TARGET_PATH)).assertTrue();
+      expect(files.fileExists(TARGET_PATH)).assertFalse();
+      expect(files.fileExists(CLAIM_PATH)).assertTrue();
     });
 
     it('recoversAValidClaimFileWhenTheTargetIsMissingAndFailsClosedOnCorruptClaim', 0, async () => {
@@ -254,8 +257,8 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
     });
 
     it('neverDeletesANewOwnerWrittenConcurrentlyDuringClearExpected', 0, async () => {
-      const matchingFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-1'));
-      const matchingStore = createStore(matchingFiles, 'op-a');
+      const matchingFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-1'), (): void => {});
+      const matchingStore = createStore(matchingFiles, 'op-a', (): void => {});
       matchingFiles.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-old-1"}');
 
       await matchingStore.clearExpected(createOwnership('ACTIVE', 'vpn-old-1'));
@@ -264,8 +267,8 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
       expect(matchingFiles.readFileText(TARGET_PATH)).assertEqual('{"version":1,"phase":"ACTIVE","vpnId":"vpn-new-1"}');
       expect(matchingFiles.fileExists(CLAIM_PATH)).assertFalse();
 
-      const mismatchFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-2'));
-      const mismatchStore = createStore(mismatchFiles, 'op-a');
+      const mismatchFiles = new WriteDuringClaimFileDriver(createOwnership('ACTIVE', 'vpn-new-2'), (): void => {});
+      const mismatchStore = createStore(mismatchFiles, 'op-a', (): void => {});
       mismatchFiles.seedTextFile(TARGET_PATH, '{"version":1,"phase":"ACTIVE","vpnId":"vpn-old-2"}');
 
       await mismatchStore.clearExpected(createOwnership('ACTIVE', 'vpn-other'));
@@ -277,9 +280,9 @@ export default function harmonyVpnOwnershipStoreTestsuite() {
 
     it('usesUniqueOperationTempsSoConcurrentWritesDoNotClobberEachOther', 0, async () => {
       const nestedDriver = new WriteDuringTempWriteFileDriver();
-      const storeB = createStore(nestedDriver, 'op-b');
+      const storeB = createStore(nestedDriver, 'op-b', (): void => {});
       nestedDriver.setNestedWrite(storeB, createOwnership('ACTIVE', 'vpn-write-b'));
-      const storeA = createStore(nestedDriver, 'op-a');
+      const storeA = createStore(nestedDriver, 'op-a', (): void => {});
 
       await storeA.write(createOwnership('PREPARED', 'vpn-write-a'));
 

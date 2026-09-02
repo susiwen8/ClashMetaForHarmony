@@ -246,7 +246,11 @@ function createState(
   );
 }
 
-function countRemoteProfiles(profiles: { sourceKind: string }[]): number {
+interface RemoteProfileLike {
+  sourceKind: string;
+}
+
+function countRemoteProfiles(profiles: RemoteProfileLike[]): number {
   let count: number = 0;
   for (let index: number = 0; index < profiles.length; index += 1) {
     if (profiles[index].sourceKind === 'REMOTE_URL') {

@@ -105,17 +105,17 @@ test('home traffic contract keeps monitor ownership inside composition and wires
   assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.card'\)/u,
     'traffic card root semantic id is required'
   );
-  assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.upload\.speed'\)/u,
-    'traffic upload speed semantic id is required'
+  assert.match(homeTrafficCardSource, /buildTrafficMetric\([\s\S]*'home\.traffic\.upload\.speed',\s*'home\.traffic\.upload\.total'\s*\)/u,
+    'traffic upload semantic ids must be passed to the metric builder'
   );
-  assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.upload\.total'\)/u,
-    'traffic upload total semantic id is required'
+  assert.match(homeTrafficCardSource, /buildTrafficMetric\([\s\S]*'home\.traffic\.download\.speed',\s*'home\.traffic\.download\.total'\s*\)/u,
+    'traffic download semantic ids must be passed to the metric builder'
   );
-  assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.download\.speed'\)/u,
-    'traffic download speed semantic id is required'
+  assert.match(homeTrafficCardSource, /\.id\(speedId\)/u,
+    'traffic speed metrics must apply their semantic id'
   );
-  assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.download\.total'\)/u,
-    'traffic download total semantic id is required'
+  assert.match(homeTrafficCardSource, /\.id\(totalId\)/u,
+    'traffic total metrics must apply their semantic id'
   );
   assert.match(homeTrafficCardSource, /\.id\('home\.traffic\.status'\)/u,
     'traffic status semantic id is required'

@@ -232,14 +232,22 @@ export default function profileTransferModelsTestsuite() {
       const invalid = sanitizeProfileTransferQrUrl(invalidRaw);
 
       expect(valid.kind).assertEqual('VALID');
-      expect(valid.url).assertEqual('https://example.com/path?q=1#frag');
+      if (valid.kind === 'VALID') {
+        expect(valid.url).assertEqual('https://example.com/path?q=1#frag');
+      }
       expect(validIpv6.kind).assertEqual('VALID');
-      expect(validIpv6.url).assertEqual('https://[2001:db8::1]:8443/path');
+      if (validIpv6.kind === 'VALID') {
+        expect(validIpv6.url).assertEqual('https://[2001:db8::1]:8443/path');
+      }
       expect(validEncoded.kind).assertEqual('VALID');
-      expect(validEncoded.url).assertEqual('https://example.com/a%20b?q=%2Fok#frag');
+      if (validEncoded.kind === 'VALID') {
+        expect(validEncoded.url).assertEqual('https://example.com/a%20b?q=%2Fok#frag');
+      }
       expect(invalid.kind).assertEqual('INVALID');
-      expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
-      expect(invalid.message).assertEqual('Scanned QR code must contain an http or https URL.');
+      if (invalid.kind === 'INVALID') {
+        expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
+        expect(invalid.message).assertEqual('Scanned QR code must contain an http or https URL.');
+      }
       expect(JSON.stringify(invalid).includes(invalidRaw)).assertFalse();
       expect(JSON.stringify(invalid).includes('abc123')).assertFalse();
     });
@@ -271,7 +279,9 @@ export default function profileTransferModelsTestsuite() {
         const invalidRaw: string = invalidAuthorities[index];
         const invalid = sanitizeProfileTransferQrUrl(invalidRaw);
         expect(invalid.kind).assertEqual('INVALID');
-        expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
+        if (invalid.kind === 'INVALID') {
+          expect(invalid.code).assertEqual('PROFILE_TRANSFER_INVALID_QR_URL');
+        }
         expect(JSON.stringify(invalid).includes(invalidRaw)).assertFalse();
       }
     });
@@ -431,19 +441,22 @@ export default function profileTransferModelsTestsuite() {
       }, 'Local backup profiles must not include remoteSourceUrl.');
 
       const rootWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(withinAggregate));
-      rootWithUnknown.extra = {};
+      rootWithUnknown.extra = {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupManifest(rootWithUnknown), 'unknown keys');
 
       const profileWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(withinAggregate));
-      ((profileWithUnknown.profiles as Object[])[0] as Record<string, Object>).relativePath = {};
+      ((profileWithUnknown.profiles as Object[])[0] as Record<string, Object>).relativePath =
+        {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupManifest(profileWithUnknown), 'unknown keys');
 
       const yamlWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(withinAggregate));
-      (((yamlWithUnknown.profiles as Object[])[0] as Record<string, Object>).currentYaml as Record<string, Object>).path = {};
+      (((yamlWithUnknown.profiles as Object[])[0] as Record<string, Object>).currentYaml as Record<string, Object>).path =
+        {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupManifest(yamlWithUnknown), 'unknown keys');
 
       const selectionWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(withinAggregate));
-      ((selectionWithUnknown.proxySelections as Object[])[0] as Record<string, Object>).sessionId = {};
+      ((selectionWithUnknown.proxySelections as Object[])[0] as Record<string, Object>).sessionId =
+        {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupManifest(selectionWithUnknown), 'unknown keys');
     });
 
@@ -522,15 +535,15 @@ export default function profileTransferModelsTestsuite() {
       expect(JSON.stringify(envelope).includes('relativePath')).assertFalse();
 
       const rootWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(envelope));
-      rootWithUnknown.extra = {};
+      rootWithUnknown.extra = {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupEnvelope(rootWithUnknown), 'unknown keys');
 
       const kdfWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(envelope));
-      (kdfWithUnknown.kdf as Record<string, Object>).keyLength = {};
+      (kdfWithUnknown.kdf as Record<string, Object>).keyLength = {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupEnvelope(kdfWithUnknown), 'unknown keys');
 
       const cipherWithUnknown: Record<string, Object> = buildMutablePlainObject(JSON.stringify(envelope));
-      (cipherWithUnknown.cipher as Record<string, Object>).headerBase64 = {};
+      (cipherWithUnknown.cipher as Record<string, Object>).headerBase64 = {} as Record<string, Object>;
       expectThrowsMessage(() => parsePortableBackupEnvelope(cipherWithUnknown), 'unknown keys');
 
       expectThrowsMessage(() => {
@@ -621,14 +634,17 @@ export default function profileTransferModelsTestsuite() {
     });
 
     it('keepsPortableBackupCodecPortPassphrasesStringOnly', 0, async () => {
-      const codecPort: PortableBackupCodecPort = {
+      class TestPortableBackupCodecPort implements PortableBackupCodecPort {
         async encrypt(_plaintext: Uint8Array, _passphrase: string): Promise<PortableBackupEnvelope> {
           return buildEnvelope();
-        },
+        }
+
         async decrypt(_envelope: PortableBackupEnvelope, _passphrase: string): Promise<Uint8Array> {
           return new Uint8Array(0);
         }
-      };
+      }
+
+      const codecPort: PortableBackupCodecPort = new TestPortableBackupCodecPort();
 
       assertCodecPortRequiresStringPassphrase(codecPort);
       const encrypted: PortableBackupEnvelope = await codecPort.encrypt(new Uint8Array(0), 'passphrase');

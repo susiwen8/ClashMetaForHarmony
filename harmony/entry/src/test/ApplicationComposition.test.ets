@@ -30,6 +30,7 @@ import {
   ProxyService,
   RefreshProfileUseCase,
   RefreshProfilesUseCase,
+  type RefreshProfilesUseCaseDependencies,
   SerialCommandQueue,
   VpnProxyCommandBus,
   type AppError,
@@ -1314,6 +1315,60 @@ function collectStatuses(history: ApplicationCompositionState[]): string {
   return statuses.join('>');
 }
 
+class RefreshProfilesUseCaseDependenciesRecord implements RefreshProfilesUseCaseDependencies {
+  readonly repository: ProfileRepository;
+  readonly executor: RefreshProfileUseCase;
+  readonly clock: Clock;
+
+  constructor(repository: ProfileRepository, executor: RefreshProfileUseCase, clock: Clock) {
+    this.repository = repository;
+    this.executor = executor;
+    this.clock = clock;
+  }
+}
+
+class ProfileApplicationDependenciesRecord implements ProfileApplicationDependencies {
+  readonly importUseCase: ImportProfileUseCase;
+  readonly refreshUseCase: RefreshProfileUseCase;
+  readonly refreshProfilesUseCase?: RefreshProfilesUseCase;
+  readonly profileRefreshSchedule?: WorkSchedulerDriver;
+  readonly manageProfileUseCases: ManageProfileUseCases;
+  readonly runtimeCoordinator: LocalRuntimeCoordinator;
+  readonly commitService: ProfileCommitService;
+  readonly repository: ProfileRepository;
+  readonly oneClickVpnConfirmation: OneClickVpnConfirmationPort;
+  readonly proxyService: ProxyApplicationPort;
+  readonly vpnController?: VpnControllerPort;
+  readonly idGenerator?: IdGenerator;
+
+  constructor(
+    importUseCase: ImportProfileUseCase,
+    refreshUseCase: RefreshProfileUseCase,
+    refreshProfilesUseCase: RefreshProfilesUseCase,
+    manageProfileUseCases: ManageProfileUseCases,
+    runtimeCoordinator: LocalRuntimeCoordinator,
+    commitService: ProfileCommitService,
+    repository: ProfileRepository,
+    oneClickVpnConfirmation: OneClickVpnConfirmationPort,
+    proxyService: ProxyApplicationPort,
+    vpnController?: VpnControllerPort,
+    idGenerator?: IdGenerator
+  ) {
+    this.importUseCase = importUseCase;
+    this.refreshUseCase = refreshUseCase;
+    this.refreshProfilesUseCase = refreshProfilesUseCase;
+    this.profileRefreshSchedule = new WorkSchedulerDriver();
+    this.manageProfileUseCases = manageProfileUseCases;
+    this.runtimeCoordinator = runtimeCoordinator;
+    this.commitService = commitService;
+    this.repository = repository;
+    this.oneClickVpnConfirmation = oneClickVpnConfirmation;
+    this.proxyService = proxyService;
+    this.vpnController = vpnController;
+    this.idGenerator = idGenerator;
+  }
+}
+
 function createProfileApplicationDependencies(
   coreService: CoreService,
   graph: PlatformGraph,
@@ -1374,11 +1429,9 @@ function createProfileApplicationDependencies(
       graph.idGenerator
     )
   });
-  const refreshProfilesUseCase = new RefreshProfilesUseCase({
-    repository: graph.repository,
-    executor: refreshUseCase,
-    clock: graph.clock
-  });
+  const refreshProfilesUseCase = new RefreshProfilesUseCase(
+    new RefreshProfilesUseCaseDependenciesRecord(graph.repository, refreshUseCase, graph.clock)
+  );
   const manageProfileUseCases = new ManageProfileUseCases({
     repository: graph.repository,
     contentStore: graph.contentStore,
@@ -1392,20 +1445,19 @@ function createProfileApplicationDependencies(
     runtimeCoordinator
   });
 
-  return {
+  return new ProfileApplicationDependenciesRecord(
     importUseCase,
     refreshUseCase,
     refreshProfilesUseCase,
-    profileRefreshSchedule: new WorkSchedulerDriver(),
     manageProfileUseCases,
     runtimeCoordinator,
     commitService,
-    repository: graph.repository,
-    oneClickVpnConfirmation: oneClickVpnConfirmation ?? new RecordingOneClickVpnConfirmation(),
-    proxyService: proxyService ?? new InertProxyApplicationPort(),
+    graph.repository,
+    oneClickVpnConfirmation ?? new RecordingOneClickVpnConfirmation(),
+    proxyService ?? new InertProxyApplicationPort(),
     vpnController,
-    idGenerator: graph.idGenerator
-  };
+    graph.idGenerator
+  );
 }
 
 function createLeasedRemoteProfileRefresher(
@@ -1762,11 +1814,16 @@ export default function applicationCompositionTestsuite() {
         new RuntimeAwareCoreService(),
         new RecordingPlatformGraph()
       );
-      const batchUseCaseRecord = dependencies.refreshProfilesUseCase as Record<string, Object> | undefined;
+      const refreshProfilesUseCase = dependencies.refreshProfilesUseCase;
+      expect(refreshProfilesUseCase !== undefined).assertTrue();
+      if (refreshProfilesUseCase === undefined) {
+        throw new Error('refreshProfilesUseCase was unexpectedly missing.');
+      }
+      const batchUseCaseRecord = Reflect.get(refreshProfilesUseCase, 'executor') as RefreshProfileUseCase;
 
       expect(dependencies.refreshProfilesUseCase instanceof RefreshProfilesUseCase).assertTrue();
       expect(dependencies.profileRefreshSchedule instanceof WorkSchedulerDriver).assertTrue();
-      expect(batchUseCaseRecord?.executor === dependencies.refreshUseCase).assertTrue();
+      expect(batchUseCaseRecord === dependencies.refreshUseCase).assertTrue();
     });
 
     it('explicitExtensionFactoryTestSeamCanStillUseTheExactInjectedRegistryAndCommandBus', 0, async () => {

@@ -13,6 +13,8 @@ import {
   type ProfileRepository,
   type ProfileRevision,
   type ProfileSourceGateway,
+  type RemoteAcquireCommand,
+  type RemoteProfileAcquisition,
   type SubscriptionSecretStore
 } from '@cmfa/shared';
 import { HarmonyFileDriver } from './files/HarmonyFileDriver';
@@ -101,6 +103,84 @@ class UnsupportedLocalProfileAcquirer implements LocalProfileAcquirer {
   }
 }
 
+class ProfileRefreshSecretStoreRecord implements ProfileRefreshSecretStore {
+  private readonly delegate: HuksSubscriptionSecretStore;
+
+  constructor(delegate: HuksSubscriptionSecretStore) {
+    this.delegate = delegate;
+  }
+
+  async encrypt(plaintext: string): Promise<string> {
+    return await this.delegate.encrypt(plaintext);
+  }
+
+  async decrypt(secretRef: string): Promise<string> {
+    return await this.delegate.decrypt(secretRef);
+  }
+
+  async remove(secretRef: string): Promise<void> {
+    await this.delegate.remove(secretRef);
+  }
+
+  async reconcile(referencedSecretIds: string[]): Promise<void> {
+    await this.delegate.reconcile(referencedSecretIds);
+  }
+}
+
+class RemoteProfileAcquirerRecord implements RemoteProfileAcquirer {
+  private readonly delegate: SubscriptionDownloader;
+
+  constructor(delegate: SubscriptionDownloader) {
+    this.delegate = delegate;
+  }
+
+  async acquire(command: RemoteAcquireCommand): Promise<RemoteProfileAcquisition> {
+    return await this.delegate.acquire(command);
+  }
+}
+
+class ProfileRefreshPlatformComponentsRecord implements ProfileRefreshPlatformComponents {
+  readonly repository: ProfileRepository;
+  readonly profileRefreshLeasePort: ProfileRefreshLeasePort;
+  readonly contentStore: ProfileContentStore;
+  readonly sourceGateway: ProfileSourceGateway;
+  readonly secretStore: ProfileRefreshSecretStore;
+  readonly clock: Clock;
+  readonly idGenerator: IdGenerator;
+  private readonly prepareSecretsAction: () => Promise<void>;
+  private readonly closeRdbAction: () => Promise<void>;
+
+  constructor(
+    repository: ProfileRepository,
+    profileRefreshLeasePort: ProfileRefreshLeasePort,
+    contentStore: ProfileContentStore,
+    sourceGateway: ProfileSourceGateway,
+    secretStore: ProfileRefreshSecretStore,
+    clock: Clock,
+    idGenerator: IdGenerator,
+    prepareSecrets: () => Promise<void>,
+    closeRdb: () => Promise<void>
+  ) {
+    this.repository = repository;
+    this.profileRefreshLeasePort = profileRefreshLeasePort;
+    this.contentStore = contentStore;
+    this.sourceGateway = sourceGateway;
+    this.secretStore = secretStore;
+    this.clock = clock;
+    this.idGenerator = idGenerator;
+    this.prepareSecretsAction = prepareSecrets;
+    this.closeRdbAction = closeRdb;
+  }
+
+  async prepareSecrets(): Promise<void> {
+    await this.prepareSecretsAction();
+  }
+
+  async closeRdb(): Promise<void> {
+    await this.closeRdbAction();
+  }
+}
+
 const GRAPH_CLOSE_ACTIONS: WeakMap<ProfileRefreshPlatformGraphRecord, () => Promise<void>> = new WeakMap();
 const GRAPH_CLOSE_PROMISES: WeakMap<ProfileRefreshPlatformGraphRecord, Promise<void>> = new WeakMap();
 const GRAPH_CLOSED_FLAGS: WeakMap<ProfileRefreshPlatformGraphRecord, boolean> = new WeakMap();
@@ -122,7 +202,7 @@ class ProfileRefreshPlatformGraphRecord implements ProfileRefreshPlatformGraph {
     this.secretStore = components.secretStore;
     this.clock = components.clock;
     this.idGenerator = components.idGenerator;
-    GRAPH_CLOSE_ACTIONS.set(this, components.closeRdb);
+    GRAPH_CLOSE_ACTIONS.set(this, (): Promise<void> => components.closeRdb());
     GRAPH_CLOSED_FLAGS.set(this, false);
   }
 
@@ -223,8 +303,9 @@ export class ProfileRefreshPlatformFactory {
       const contentStore: ProfileContentStore = new SandboxProfileContentStore(fileDriver, filesDir);
       const huksDriver: ProfileRefreshPrepareableHuksDriver = this.dependencies.createHuksDriver?.() ??
         new HarmonyHuksDriver();
-      const secretStore: ProfileRefreshSecretStore =
-        new HuksSubscriptionSecretStore(huksDriver, fileDriver, filesDir, idGenerator);
+      const secretStore: ProfileRefreshSecretStore = new ProfileRefreshSecretStoreRecord(
+        new HuksSubscriptionSecretStore(huksDriver, fileDriver, filesDir, idGenerator)
+      );
       const networkKitTransport = new NetworkKitHttpTransport();
       const requestAgentTransport = new RequestAgentRedirectTransport({
         context: this.context,
@@ -232,7 +313,7 @@ export class ProfileRefreshPlatformFactory {
         filesDir,
         idGenerator
       });
-      const remoteAcquirer: RemoteProfileAcquirer = new SubscriptionDownloader({
+      const remoteAcquirer: RemoteProfileAcquirer = new RemoteProfileAcquirerRecord(new SubscriptionDownloader({
         sdkApiVersion,
         networkKitTransport,
         requestAgentTransport,
@@ -240,14 +321,14 @@ export class ProfileRefreshPlatformFactory {
         filesDir,
         clock,
         idGenerator
-      });
+      }));
       const sourceGateway: ProfileSourceGateway = new HarmonyProfileSourceGateway({
         localAcquirer: new UnsupportedLocalProfileAcquirer(),
         remoteAcquirer
       });
       const ownedRdbDriver: ProfileRefreshCloseableRdbDriver = rdbDriver;
 
-      return {
+      return new ProfileRefreshPlatformComponentsRecord(
         repository,
         profileRefreshLeasePort,
         contentStore,
@@ -255,13 +336,13 @@ export class ProfileRefreshPlatformFactory {
         secretStore,
         clock,
         idGenerator,
-        prepareSecrets: async (): Promise<void> => {
+        async (): Promise<void> => {
           await huksDriver.prepare();
         },
-        closeRdb: async (): Promise<void> => {
+        async (): Promise<void> => {
           await ownedRdbDriver.close();
         }
-      };
+      );
     } catch (error) {
       if (rdbDriver !== undefined) {
         try {

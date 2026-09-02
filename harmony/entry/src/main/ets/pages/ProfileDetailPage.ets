@@ -196,7 +196,7 @@ export struct ProfileDetailPage {
       .width('100%')
 
       Flex({ wrap: FlexWrap.Wrap, justifyContent: FlexAlign.Start, alignItems: ItemAlign.Center }) {
-        ForEach(PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS, (intervalMs: number) => {
+        ForEach(PROFILE_AUTO_UPDATE_INTERVAL_PRESET_MS.slice(), (intervalMs: number) => {
           Button(autoUpdateIntervalLabel(intervalMs))
             .id(`detail.auto-update.${intervalMs}`)
             .constraintSize({ minHeight: $r('app.float.touch_target_min') })

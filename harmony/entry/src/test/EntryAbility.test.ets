@@ -6,17 +6,42 @@ import type {
 import { reloadApplicationCompositionOnForeground } from '../main/ets/entryability/EntryAbility';
 import EntryAbility from '../main/ets/entryability/EntryAbility';
 
+interface ReloadRepositoryPort {
+  reloadFromRepository(): Promise<void>;
+}
+
+interface ReadyCompositionState {
+  status: 'READY';
+  application: ReloadRepositoryPort;
+}
+
+interface LoadingCompositionState {
+  status: 'LOADING';
+}
+
+class ReloadRepositoryPortRecord implements ReloadRepositoryPort {
+  private readonly reloadAction: () => Promise<void>;
+
+  constructor(reloadAction: () => Promise<void>) {
+    this.reloadAction = reloadAction;
+  }
+
+  async reloadFromRepository(): Promise<void> {
+    await this.reloadAction();
+  }
+}
+
 class FakeApplicationComposition implements ApplicationComposition {
-  private readonly currentState: ApplicationCompositionState;
+  private readonly currentState: ReadyCompositionState | LoadingCompositionState;
   private readonly closeAction?: () => Promise<void>;
 
-  constructor(state: ApplicationCompositionState, closeAction?: () => Promise<void>) {
+  constructor(state: ReadyCompositionState | LoadingCompositionState, closeAction?: () => Promise<void>) {
     this.currentState = state;
     this.closeAction = closeAction;
   }
 
   async initialize(): Promise<void> {}
-  state(): ApplicationCompositionState { return this.currentState; }
+  state(): ApplicationCompositionState { return this.currentState as ApplicationCompositionState; }
   subscribe(): number { return 1; }
   unsubscribe(): void {}
   async close(): Promise<void> { await this.closeAction?.(); }
@@ -46,24 +71,32 @@ async function settleMicrotasks(turns: number = 8): Promise<void> {
   }
 }
 
+function createReadyState(reloadFromRepository: () => Promise<void>): ReadyCompositionState {
+  return {
+    status: 'READY',
+    application: new ReloadRepositoryPortRecord(reloadFromRepository)
+  };
+}
+
+function createLoadingState(): LoadingCompositionState {
+  return {
+    status: 'LOADING'
+  };
+}
+
 export default function entryAbilityTestsuite() {
   describe('EntryAbilityTest', () => {
     it('reloadsRepositoryStateOnlyWhenTheCompositionIsReady', 0, async () => {
       let reloadCalls = 0;
-      const readyState = {
-        status: 'READY',
-        application: {
-          reloadFromRepository: async (): Promise<void> => {
-            reloadCalls += 1;
-          }
-        }
-      } as ApplicationCompositionState;
+      const readyState = createReadyState(async (): Promise<void> => {
+        reloadCalls += 1;
+      });
 
       const reloaded = await reloadApplicationCompositionOnForeground(
         new FakeApplicationComposition(readyState)
       );
       const skippedLoading = await reloadApplicationCompositionOnForeground(
-        new FakeApplicationComposition({ status: 'LOADING' })
+        new FakeApplicationComposition(createLoadingState())
       );
       const skippedMissing = await reloadApplicationCompositionOnForeground(undefined);
 
@@ -74,14 +107,9 @@ export default function entryAbilityTestsuite() {
     });
 
     it('failsClosedWhenForegroundRepositoryReloadRejects', 0, async () => {
-      const readyState = {
-        status: 'READY',
-        application: {
-          reloadFromRepository: async (): Promise<void> => {
-            throw new Error('unsafe reload detail');
-          }
-        }
-      } as ApplicationCompositionState;
+      const readyState = createReadyState(async (): Promise<void> => {
+        throw new Error('unsafe reload detail');
+      });
 
       const reloaded = await reloadApplicationCompositionOnForeground(
         new FakeApplicationComposition(readyState)
@@ -93,22 +121,16 @@ export default function entryAbilityTestsuite() {
     it('serializesAnInFlightForegroundReloadBeforeCompositionTeardown', 0, async () => {
       const reloadBarrier = new DeferredValue<void>();
       const events: string[] = [];
-      const readyState = {
-        status: 'READY',
-        application: {
-          reloadFromRepository: async (): Promise<void> => {
-            events.push('reload.start');
-            await reloadBarrier.promise;
-            events.push('reload.end');
-          }
-        }
-      } as ApplicationCompositionState;
+      const readyState = createReadyState(async (): Promise<void> => {
+        events.push('reload.start');
+        await reloadBarrier.promise;
+        events.push('reload.end');
+      });
       const composition = new FakeApplicationComposition(readyState, async (): Promise<void> => {
         events.push('close');
       });
       const ability = new EntryAbility();
-      const surface = ability as unknown as EntryAbilityTestSurface;
-      surface.applicationComposition = composition;
+      Reflect.set(ability, 'applicationComposition', composition);
 
       ability.onForeground();
       await settleMicrotasks();
@@ -118,25 +140,19 @@ export default function entryAbilityTestsuite() {
       expect(events).assertDeepEquals(['reload.start']);
 
       reloadBarrier.resolve(undefined);
-      await surface.navigationPromise;
+      await Reflect.get(ability, 'navigationPromise') as Promise<void>;
       expect(events).assertDeepEquals(['reload.start', 'reload.end', 'close']);
     });
 
     it('coalescesDuplicateForegroundEventsWithinOneNavigationGeneration', 0, async () => {
       const reloadBarrier = new DeferredValue<void>();
       let reloadCalls = 0;
-      const readyState = {
-        status: 'READY',
-        application: {
-          reloadFromRepository: async (): Promise<void> => {
-            reloadCalls += 1;
-            await reloadBarrier.promise;
-          }
-        }
-      } as ApplicationCompositionState;
+      const readyState = createReadyState(async (): Promise<void> => {
+        reloadCalls += 1;
+        await reloadBarrier.promise;
+      });
       const ability = new EntryAbility();
-      const surface = ability as unknown as EntryAbilityTestSurface;
-      surface.applicationComposition = new FakeApplicationComposition(readyState);
+      Reflect.set(ability, 'applicationComposition', new FakeApplicationComposition(readyState));
 
       ability.onForeground();
       ability.onForeground();
@@ -145,7 +161,7 @@ export default function entryAbilityTestsuite() {
       expect(reloadCalls).assertEqual(1);
 
       reloadBarrier.resolve(undefined);
-      await surface.navigationPromise;
+      await Reflect.get(ability, 'navigationPromise') as Promise<void>;
       expect(reloadCalls).assertEqual(1);
     });
   });

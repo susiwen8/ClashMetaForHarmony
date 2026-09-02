@@ -28,6 +28,8 @@ import {
   type ProfileApplicationSnapshot,
   ProfileCommitService,
   RefreshProfileUseCase,
+  type RefreshProfileCommand,
+  type RefreshProfileResult,
   RefreshProfilesUseCase,
   type RefreshProfilesCommand,
   type RefreshProfilesResult,
@@ -56,6 +58,8 @@ import {
   type ProfileRefreshSchedulePort,
   type ProfileRepository,
   type ProfileRevision,
+  type ProfileRefreshExecutorPort,
+  type RefreshProfilesItemResult,
   type ProxyApplicationPort,
   type ProxyDelayResult,
   type ProxyGroupListQueryResult,
@@ -172,6 +176,11 @@ interface ProfileApplicationSubscriptionTask5AContract {
   refreshAllSubscriptions(): Promise<RefreshAllSubscriptionsResultContract>;
   updateAutoUpdateInterval(profileId: string, intervalMs: number): Promise<UpdateProfileResultContract>;
   reloadFromRepository(): Promise<void>;
+}
+
+interface ProfileApplicationSubscriptionTask5AStatefulContract extends ProfileApplicationSubscriptionTask5AContract {
+  current(): ProfileApplicationSnapshot;
+  delete(profileId: string): Promise<ManageDeleteResultContract>;
 }
 
 class RuntimeCoordinatorDependencyBag implements LocalRuntimeCoordinatorDependencies {
@@ -365,6 +374,17 @@ class FakeProfileRefreshLeasePort implements ProfileRefreshLeasePort {
   }
 }
 
+class FakeProfileRefreshExecutorPort implements ProfileRefreshExecutorPort {
+  async execute(_command: RefreshProfileCommand): Promise<RefreshProfileResult> {
+    return {
+      kind: 'FAILED',
+      error: createAppError('PERSISTENCE', 'fake refresh executor should stay unused.', {
+        retryable: false
+      })
+    };
+  }
+}
+
 class FakeRefreshProfilesUseCase extends RefreshProfilesUseCase {
   readonly commands: RefreshProfilesCommand[] = [];
   sharedLog?: string[];
@@ -381,11 +401,7 @@ class FakeRefreshProfilesUseCase extends RefreshProfilesUseCase {
   constructor() {
     super({
       repository: new FakeProfileRepository([]),
-      executor: {
-        async execute() {
-          throw new Error('fake batch executor should stay unused');
-        }
-      },
+      executor: new FakeProfileRefreshExecutorPort(),
       clock: new FakeClock([buildTimestamp(0)])
     });
   }
@@ -1607,11 +1623,14 @@ function cloneProfile(profile: Profile): Profile {
 }
 
 function cloneRefreshProfilesResult(result: RefreshProfilesResult): RefreshProfilesResult {
-  return {
-    items: result.items.map((item) => ({
+  const clonedItems: RefreshProfilesItemResult[] = result.items.map(
+    (item: RefreshProfilesItemResult): RefreshProfilesItemResult => ({
       profileId: item.profileId,
       status: item.status
-    })),
+    })
+  );
+  return {
+    items: clonedItems,
     deadlineReached: result.deadlineReached,
     cancelled: result.cancelled,
     remainingCount: result.remainingCount
@@ -2506,7 +2525,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         scheduledSchedule
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
       const idleApplication = createApplication(
         new FakeProfileRepository([idleProfile], 'idle'),
         new FakeProfileContentStore(),
@@ -2519,7 +2538,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         idleSchedule
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await scheduledApplication.reloadFromRepository();
       await idleApplication.reloadFromRepository();
@@ -2572,7 +2591,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const result = await application.updateAutoUpdateInterval('remote-interval', 2 * 60 * 60 * 1000);
@@ -2611,7 +2630,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const result = await application.updateAutoUpdateInterval('remote-last-zero', 0);
@@ -2644,7 +2663,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         invalidSchedule
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
       const localApplication = createApplication(
         localRepository,
         new FakeProfileContentStore(),
@@ -2657,7 +2676,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         localSchedule
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await invalidApplication.reloadFromRepository();
       await localApplication.reloadFromRepository();
@@ -2691,7 +2710,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const result = await application.updateAutoUpdateInterval('schedule-failure', 2 * 60 * 60 * 1000);
@@ -2734,7 +2753,7 @@ export default function profileManagementTestsuite() {
         proxyService,
         undefined,
         batchUseCase
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const result = await application.refreshAllSubscriptions();
@@ -2782,7 +2801,7 @@ export default function profileManagementTestsuite() {
         undefined,
         new FakeProfileRefreshLeasePort(),
         batchUseCase
-      ) as ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const startPromise = runtimeCoordinator.start();
@@ -2820,7 +2839,7 @@ export default function profileManagementTestsuite() {
         undefined,
         batchUseCase,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const batchPromise = application.refreshAllSubscriptions();
@@ -2859,7 +2878,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       repository.overwriteProfile(createProfile({
@@ -2910,7 +2929,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       schedulePort.error = new Error('reload schedule boom');
@@ -2942,7 +2961,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       const result = await application.delete('scheduled-delete');
@@ -2969,7 +2988,7 @@ export default function profileManagementTestsuite() {
         undefined,
         undefined,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AStatefulContract;
 
       await application.reloadFromRepository();
       schedulePort.error = new Error('delete schedule boom');
@@ -3008,7 +3027,7 @@ export default function profileManagementTestsuite() {
         undefined,
         batchUseCase,
         schedulePort
-      ) as ProfileApplication & ProfileApplicationSubscriptionTask5AContract;
+      ) as ProfileApplicationSubscriptionTask5AContract;
 
       await application.reloadFromRepository();
       const updatePromise = application.updateAutoUpdateInterval('interval-lock', 2 * 60 * 60 * 1000);
@@ -5530,9 +5549,8 @@ export default function profileManagementTestsuite() {
       await application.reconcileActiveSelections();
 
       const combined: string = sharedLog.join('>');
-      expect(leasePort.tryAcquireCallCount).assertEqual(1);
-      expect(combined).assertContain('proxy.drain>repository.get:active>lease.tryAcquire:active>source.acquireRemote:Profile active');
-      expect(combined).assertContain('proxy.drain>repository.get:active>source.acquireRemote:Profile active');
+      expect(leasePort.tryAcquireCallCount).assertEqual(2);
+      expect(combined).assertContain('proxy.drain>repository.get:active>lease.tryAcquire:active>repository.get:active>source.acquireRemote:Profile active');
       expect(combined).assertContain('proxy.drain>repository.get:active');
       expect(combined).assertContain(
         'repository.getActiveId>repository.get:active>core.validate:/sandbox/profiles/active.yaml>core.load:/sandbox/profiles/active.yaml>core.startLocal:/sandbox/profiles/active.yaml:7890'

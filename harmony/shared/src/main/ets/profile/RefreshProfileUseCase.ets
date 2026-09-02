@@ -72,8 +72,10 @@ export type RefreshProfileResult =
 
 class RefreshProfileCancelledResultValue implements RefreshProfileCancelledResult {
   kind: 'CANCELLED' = 'CANCELLED';
+  leaseReleased?: boolean;
 
-  constructor(readonly leaseReleased?: boolean) {
+  constructor(leaseReleased?: boolean) {
+    this.leaseReleased = leaseReleased;
   }
 }
 
@@ -165,7 +167,7 @@ export class RefreshProfileUseCase {
       if (isLeasedRemoteProfileRefreshError(error)) {
         return new RefreshProfileFailedResultValue(createProfileRefreshLeaseFailedError(this.clock));
       }
-      throw error;
+      throw error as Error;
     }
   }
 

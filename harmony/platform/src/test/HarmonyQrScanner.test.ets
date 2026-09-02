@@ -21,6 +21,24 @@ interface ScannedResultView {
   value: string;
 }
 
+class FakeAbilityInfo {
+  readonly name: string;
+
+  constructor(name: string) {
+    this.name = name;
+  }
+}
+
+class ScanRequestRecord {
+  readonly context: common.UIAbilityContext;
+  readonly options: HarmonyQrScannerRequest;
+
+  constructor(context: common.UIAbilityContext, options: HarmonyQrScannerRequest) {
+    this.context = context;
+    this.options = options;
+  }
+}
+
 class FakeContext {
   readonly filesDir: string;
   readonly abilityInfo?: Object;
@@ -65,14 +83,14 @@ class DeferredDriverResult {
 }
 
 class FakeHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
-  readonly requests: { context: common.UIAbilityContext; options: HarmonyQrScannerRequest }[] = [];
+  readonly requests: ScanRequestRecord[] = [];
   readonly outcomes: Array<() => Promise<HarmonyScanResultShape>> = [];
 
   enqueueResolved(result: HarmonyScanResultShape): void {
     this.outcomes.push(() => Promise.resolve(result));
   }
 
-  enqueueRejected(error: Error): void {
+  enqueueRejected(error: Object): void {
     this.outcomes.push(() => Promise.reject(error));
   }
 
@@ -84,15 +102,20 @@ class FakeHarmonyQrScannerDriver implements HarmonyQrScannerDriver {
     context: common.UIAbilityContext,
     options: HarmonyQrScannerRequest
   ): Promise<HarmonyScanResultShape> {
-    this.requests.push({
-      context,
-      options
-    });
+    this.requests.push(new ScanRequestRecord(context, options));
     const nextOutcome: (() => Promise<HarmonyScanResultShape>) | undefined = this.outcomes.shift();
     if (nextOutcome === undefined) {
       throw new Error('Missing scripted QR scan outcome.');
     }
     return await nextOutcome();
+  }
+}
+
+class CancelledError extends Error {
+  code: number = CANCELLED_SCAN_ERROR_CODE;
+
+  constructor(message: string) {
+    super(message);
   }
 }
 
@@ -102,7 +125,7 @@ function createUiContext(
 ): common.UIAbilityContext {
   return new FakeContext(
     filesDir,
-    includeAbilityInfo ? { name: 'MainAbility' } : undefined
+    includeAbilityInfo ? new FakeAbilityInfo('MainAbility') : undefined
   ) as common.UIAbilityContext;
 }
 
@@ -186,8 +209,7 @@ export default function harmonyQrScannerTestsuite() {
 
     it('mapsTheOfficialCancellationBusinessErrorToCancelled', 0, async () => {
       const driver = new FakeHarmonyQrScannerDriver();
-      const cancelled = new Error('user cancelled /private/path');
-      (cancelled as Error & { code: number }).code = CANCELLED_SCAN_ERROR_CODE;
+      const cancelled = new CancelledError('user cancelled /private/path');
       driver.enqueueRejected(cancelled);
       const scanner = buildScanner(driver, createUiContext('/data/storage/el2/base/files-c'));
 

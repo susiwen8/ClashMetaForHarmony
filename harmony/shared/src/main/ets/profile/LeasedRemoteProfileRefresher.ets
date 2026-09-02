@@ -90,7 +90,7 @@ export class LeasedRemoteProfileRefresher {
       return new LeasedRemoteProfileRefreshCompletedValue(value, leaseReleased);
     } catch (error) {
       await this.releaseBestEffort(profileId, ownerToken);
-      throw error;
+      throw error as Error;
     }
   }
 
