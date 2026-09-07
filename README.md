@@ -1,87 +1,38 @@
-## Clash Meta for Android
+# Clash Meta for HarmonyOS
 
-A Graphical user interface of [Clash.Meta](https://github.com/MetaCubeX/Clash.Meta) for Android
+面向 HarmonyOS 6.x 的原生 VPN 客户端，使用 ArkTS / ArkUI、VPN Extension、C++ N-API 和 mihomo Go 核心。
 
-### Feature
+本分支仅保留鸿蒙实现。项目源自 [ClashMetaForAndroid](https://github.com/MetaCubeX/ClashMetaForAndroid)，Android 源码和构建流程仍可在上游及 Git 历史中查阅。
 
-Feature of [Clash.Meta](https://github.com/MetaCubeX/Clash.Meta)
+## 使用与开发
 
-[<img src="https://fdroid.gitlab.io/artwork/badge/get-it-on.png"
-     alt="Get it on F-Droid"
-     height="80">](https://f-droid.org/packages/com.github.metacubex.clash.meta/)
+- [操作手册](docs/harmony/current-version-vpn-user-guide.md)：配置导入、节点选择、VPN 和诊断。
+- [构建与验证](harmony/README.md)：工具链锁定、核心构建、测试和真机验证。
+- [第三方声明](harmony/THIRD_PARTY_NOTICES.md)、[许可证](LICENSE) 和 [历史第三方声明](NOTICE)。
 
-### Requirement
+使用 DevEco Studio 打开 **`harmony/`**，不要将仓库根目录作为工程。当前锁定 DevEco Studio 6.1.1.300、SDK 6.1.1.125，target API 24、compatible API 20，目标架构 AArch64。以 `harmony/toolchain.lock.json` 为准。
 
-- Android 5.0+ (minimum)
-- Android 7.0+ (recommend)
-- `armeabi-v7a` , `arm64-v8a`, `x86` or `x86_64` Architecture
+## 目录
 
-### Build
+| 路径 | 用途 |
+| --- | --- |
+| `harmony/entry` | 主应用 UI、VPN Extension |
+| `harmony/shared`、`harmony/platform` | 共享模型与鸿蒙平台能力 |
+| `harmony/core` | N-API 桥接与独立 mihomo Go 模块 |
+| `harmony/traffic-probe` | 独立流量验证应用 |
+| `harmony/tests`、`harmony/tools` | 回归测试、构建与验证工具 |
+| `docs/harmony`、`docs/superpowers` | 使用说明、设计与实施记录 |
 
-1. Update submodules
+## 本地检查
 
-   ```bash
-   git submodule update --init --recursive
-   ```
+```bash
+node --test harmony/tests/structure/*.test.mjs
+cd harmony
+./hvigorw --mode module -p module=entry@default -p product=default -p buildMode=debug assembleHap
+```
 
-2. Install **OpenJDK 11**, **Android SDK**, **CMake** and **Golang**
+首次构建及核心重建请按[完整说明](harmony/README.md)操作。默认输出 `harmony/entry/build/default/outputs/default/entry-default-unsigned.hap`；未签名 HAP 不能直接安装到真机。签名证书、设备注册信息和本地配置不得提交到 Git。
 
-3. Create `local.properties` in project root with
+不再需要 Android SDK、Gradle 或 Android mihomo 子模块。鸿蒙核心依赖由 `harmony/core/go/go.mod`、`go.sum` 及上游锁文件管理。
 
-   ```properties
-   sdk.dir=/path/to/android-sdk
-   ```
-
-4. (Optional) Custom app package name. Add the following configuration to `local.properties`.
-
-   ```properties
-   # config your ownn applicationId, or it will be 'com.github.metacubex.clash'
-   custom.application.id=com.my.compile.clash
-   # remove application id suffix, or the applicaion id will be 'com.github.metacubex.clash.alpha'
-   remove.suffix=true
-
-5. Create `signing.properties` in project root with
-
-   ```properties
-   keystore.path=/path/to/keystore/file
-   keystore.password=<key store password>
-   key.alias=<key alias>
-   key.password=<key password>
-   ```
-
-6. Build
-
-   ```bash
-   ./gradlew app:assembleAlphaRelease
-   ```
-
-### Automation
-
-APP package name is `com.github.metacubex.clash.meta`
-
-- Toggle Clash.Meta service status
-  - Send intent to activity `com.github.kr328.clash.ExternalControlActivity` with action `com.github.metacubex.clash.meta.action.TOGGLE_CLASH`
-- Start Clash.Meta service
-  - Send intent to activity `com.github.kr328.clash.ExternalControlActivity` with action `com.github.metacubex.clash.meta.action.START_CLASH`
-- Stop Clash.Meta service
-  - Send intent to activity `com.github.kr328.clash.ExternalControlActivity` with action `com.github.metacubex.clash.meta.action.STOP_CLASH`
-- Import a profile
-  - URL Scheme `clash://install-config?url=<encoded URI>` or `clashmeta://install-config?url=<encoded URI>`
-
-### Contribution and Project Maintenance
-
-#### Meta Kernel
-
-- CMFA uses the kernel from `android-real` branch under `MetaCubeX/Clash.Meta`, which is a merge of the main `Alpha` branch and `android-open`.
-  - If you want to contribute to the kernel, make PRs to `Alpha` branch of the Meta kernel repository.
-  - If you want to contribute Android-specific patches to the kernel, make PRs to  `android-open` branch of the Meta kernel repository.
-
-#### Maintenance
-
-- When `MetaCubeX/Clash.Meta` kernel is updated to a new version, the `Update Dependencies` actions in this repo will be triggered automatically.
-  - It will pull the new version of the meta kernel, update all the golang dependencies, and create a PR without manual intervention.
-  - If there is any compile error in PR, you need to fix it before merging. Alternatively, you may merge the PR directly.
-- Manually triggering `Build Pre-Release` actions will compile and publish a `PreRelease` version.
-- Manually triggering `Build Release` actions will compile, tag and publish a `Release` version.
-  - You must fill the blank `Release Tag` with the tag you want to release in the format of `v1.2.3`.
-  - `versionName` and `versionCode` in `build.gradle.kts` will be automatically bumped to the tag you filled above.
+当前仓库不提供公开分发资格保证；开发设备签名不等同于任意设备的正式分发签名。

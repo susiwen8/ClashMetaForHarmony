@@ -32,26 +32,12 @@ function resolvePathFromImportMetaUrl(importMetaUrl, relativePath = '../..') {
   return path.resolve(fileURLToPath(new URL(relativePath, importMetaUrl)));
 }
 
-function containsHarmonyProjectLiteral(source) {
-  return /":harmony(?::[^"]+)?"/u.test(source);
-}
-
 function extractRouteLiterals(source) {
   const matches = [...source.matchAll(/['"](pages\/(?:Index|CoreDebugPage))['"]/gu)].map((match) => match[1]);
   return [...new Set(matches)].sort();
 }
 
-test('phase0 layout helpers reject harmony project literals across multi-arg includes and decode encoded spaces', () => {
-  const includeSamples = [
-    `include(":${['app'].join('')}", ":${['harm', 'ony'].join('')}")`,
-    `include(":${['harm', 'ony'].join('')}", ":${['app'].join('')}")`,
-    `include(${['"common"', '":harmony:entry"', '":service"'].join(', ')})`
-  ];
-
-  for (const sample of includeSamples) {
-    assert.equal(containsHarmonyProjectLiteral(sample), true);
-  }
-
+test('phase0 layout helpers decode encoded spaces', () => {
   const spacedRoot = resolvePathFromImportMetaUrl('file:///tmp/Space%20Folder/harmony/tests/structure/phase0-layout.test.mjs');
   assert.equal(spacedRoot, '/tmp/Space Folder/harmony');
 });
@@ -120,9 +106,8 @@ test('phase0 Stage skeleton matches the HarmonyOS 6/API 20 contract', async () =
   assert.match(indexSource, /struct\s+Index/u);
 });
 
-test('phase0 layout keeps Harmony isolated from the Android root project and wrapper copies', async () => {
-  const rootSettings = await fs.readFile(path.join(repoRoot, 'settings.gradle.kts'), 'utf8');
-  assert.equal(containsHarmonyProjectLiteral(rootSettings), false);
+test('phase0 layout uses the standalone Harmony project without Gradle or wrapper copies', async () => {
+  await assert.rejects(fs.access(path.join(repoRoot, 'settings.gradle.kts')), { code: 'ENOENT' });
 
   await assert.rejects(fs.access(path.join(harmonyRoot, 'hvigorw.js')));
   await assert.rejects(fs.access(path.join(harmonyRoot, 'hvigorw.bat')));
