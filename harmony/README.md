@@ -1,7 +1,7 @@
 # HarmonyOS native rewrite
 
 This directory contains the isolated native HarmonyOS rewrite of
-ClashMetaForAndroid. It targets HarmonyOS 6.x, API 20 or later, and AArch64.
+ClashMetaForAndroid. It targets HarmonyOS 6.x (API 20–25), HarmonyOS 7.x (API 26+), and AArch64. API 26+ uses authenticated loopback TCP for VPN RPC; earlier devices retain LocalSocket.
 The Android application is not a compatibility target for this work.
 
 The repository currently proves the API 24 toolchain, native ABI, ArkTS/N-API

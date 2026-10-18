@@ -1,12 +1,12 @@
 # Harmony VPN Runtime Bridge
 
-当前实现已经从旧的进程内桥接方案切到真正的 cross-process `LocalSocket RPC`。
+当前实现已经从旧的进程内桥接方案切到真正的 cross-process authenticated RPC。鸿蒙 6 使用 `LocalSocket RPC`，鸿蒙 7 使用 loopback TCP 承载同一个协议。
 
 核心事实：
 
 - HarmonyOS 真机上 UIAbility 和 VPN Extension 仍然是 `two PIDs`。
 - UI 只持有 `single shared UI client`，VPN Extension 只持有 `single VPN-extension server`。
-- 业务面只走 app-private `LocalSocket RPC`；`NetworkKit` 里的 socket adapter 只存在于 `platform` 层。
+- API 20–25 使用原 app-private `LocalSocket RPC`；API 26 起使用仅绑定 `127.0.0.1` 的 TCP RPC。`NetworkKit` socket adapter 只存在于 `platform` 层，按设备 API 选择，不在连接失败后切换传输。
 - 密钥材料来自 `HUKS`，根 HMAC key 只生成和使用，不导出。
 
 协议约束：
@@ -25,6 +25,13 @@
 - `ProxyViewModel` / `Index` 只调用 application-owned use cases，不直接接管 VPN runtime。
 - reconnect、UI recreation、hot-switch、delay cancel/drain 都必须在 authenticated RPC ready 之后恢复，不允许静态 native fallback。
 
+鸿蒙 7 调试安装兼容：
+
+- 隔离 VPN 进程可能无法在调试数据目录创建或访问 Unix socket。API 26 起使用 loopback TCP，避免依赖目录标签；旧 socket 文件不删除。
+- 端口只由 HUKS 派生的不透明地址确定；端口不是认证凭据。端口冲突拒绝启动，不接管其他 listener、不扫描备用端口。
+- 仍需双向 HUKS 认证、逐帧 MAC、epoch/sequence 与已有预算。最多保留四个原生连接；已有待鉴权连接时拒绝后续候选，候选三秒超时，不允许陌生连接中断当前已鉴权会话。
+- 在创建 TCP listener 前调用 `protectProcessNet()`；现有自包排除规则同时保留。
+
 启动与恢复边界：
 
 - startup probe 只走一次 authenticated `connectOnce`；它用于在 Home 首屏前尽快判断是否已经有可附着的 runtime authority。
@@ -38,7 +45,7 @@
 禁止回退：
 
 - 不再使用旧的进程内静态 bridge 方案。
-- 不使用 `CommonEvent`、TCP socket、自定义文件桥、RDB、`AppStorage` 作为 VPN 业务传输回退。
+- 不使用 `CommonEvent`、自定义文件桥、RDB、`AppStorage` 作为 VPN 业务传输回退。API 26 起的 loopback TCP 是明确选择的内部 RPC 传输。
 - production docs 不暴露签名材料、test URL、握手材料、proof 原文或运行态内部值。
 
 验证命令：

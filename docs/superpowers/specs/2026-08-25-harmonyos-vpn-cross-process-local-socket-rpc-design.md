@@ -137,12 +137,20 @@ The address is therefore deterministic for the installed app, bounded, collision
 
 The server rejects all business frames until mutual authentication succeeds.
 
+### HarmonyOS 7 transport selection
+
+API 20–25 retain the original app-private LocalSocket transport. API 26+ use TCP bound strictly to IPv4 loopback, because isolated VPN processes can lack socket permissions on debug-labelled application data. UI and Extension select the same transport from the actual device API. Failures never cause automatic transport fallback.
+
+The opaque HUKS-derived address maps deterministically to one port in 30000–59999. A discoverable port is not an authentication boundary: mutual HUKS authentication, per-frame MACs, epochs, sequences and budgets remain mandatory. Port conflicts fail closed without killing or reclaiming an unknown listener. No discovery file or raw endpoint is persisted or logged.
+
+The TCP adapter admits at most four native connections, including pending/closing sockets. It never replaces an authenticated socket on raw accept. Its server-session policy preserves a pending candidate against further unauthenticated accepts until the existing three-second timeout or completion; only successful mutual authentication promotes a replacement. Process socket protection runs before TCP listener creation.
+
 ### Address lifecycle
 
 - one `VpnExtensionComposition` owns one server instance;
 - the server calls `listen` once after key/address derivation and before accepting business work;
 - normal stop/destroy closes every connection and awaits `LocalSocketServer.close()` exactly once;
-- process death relies on the OS to release the local socket address;
+- on API 20–25, process death relies on the original LocalSocket lifecycle; on API 26+, the kernel releases the TCP listener without filesystem endpoint cleanup;
 - `address already in use` never triggers unlink/removal of an unknown socket and maps to fixed `RPC_UNAVAILABLE`;
 - a client that reaches a stale or rogue listener cannot authenticate and continues only inside its bounded connection retry window;
 - server restart uses the same address but a new `serverInstance`, nonce pair, role keys, sequences, client epoch, response cache, and catalog map;

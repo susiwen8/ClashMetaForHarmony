@@ -1002,6 +1002,7 @@ class UnusedRpcSocketServer implements VpnRpcSocketServerPort {
 }
 
 class RecordingRpcPlatformBundle implements HarmonyVpnRpcPlatformBundle {
+  transport?: 'LOCAL_SOCKET' | 'LOOPBACK_TCP';
   readonly crypto: VpnRpcCryptoPort;
   readonly clientFactory: VpnRpcSocketClientFactoryPort;
   readonly server: VpnRpcSocketServerPort;
@@ -1400,6 +1401,7 @@ class BindingProxyLifecycle implements VpnProxyRuntimeLifecyclePort {
 }
 
 interface RpcEnabledCompositionDependencies extends VpnExtensionCompositionDependencies {
+  prepareLoopbackProcess?: () => Promise<void>;
   createVpnRpcPlatformBundle?: () => HarmonyVpnRpcPlatformBundle;
   createVpnRpcServerSession?: (
     crypto: VpnRpcCryptoPort,
@@ -1475,6 +1477,7 @@ class RpcEnabledCompositionDependenciesRecord implements RpcEnabledCompositionDe
   createClock?: () => ClockPort;
   createScheduler?: () => BoundedDelaySchedulerPort;
   createEvidenceJournal?: () => VpnEvidenceJournalPort;
+  prepareLoopbackProcess?: () => Promise<void>;
   createVpnRpcPlatformBundle?: () => HarmonyVpnRpcPlatformBundle;
   createVpnRpcServerSession?: (
     crypto: VpnRpcCryptoPort,
@@ -1972,6 +1975,29 @@ export default function vpnExtensionCompositionTestsuite() {
       ]);
     });
 
+    it('doesNotOpenLoopbackListenerWhenProcessProtectionFails', 0, async () => {
+      const request = createVpnStartRequest('profile-1', '2026-08-16T12:00:00.000Z', 'session-rpc-protect-failure');
+      const registry = new VpnSessionRegistry();
+      registry.beginPending(request);
+      const log: string[] = [];
+      const platformFactory = new RecordingPlatformFactory(log, buildProfile(request.profileId, request.versionId));
+      const topology = createRpcTopology();
+      const rpcSession = new RecordingRpcServerSession(log);
+      const rpcBundle = new RecordingRpcPlatformBundle(new RpcHashCryptoPort(), new QueueRandomPort([]));
+      rpcBundle.transport = 'LOOPBACK_TCP';
+      const coordinator = new ManualCoordinator(request, []);
+      const dependencies = new RpcEnabledCompositionDependenciesRecord(createDependencies(
+        registry, platformFactory, new RecordingPlatformPort(log), new RecordingTunRuntime(log), () => coordinator
+      ));
+      dependencies.createCoreService = () => new RecordingCoreProxyService(topology.groups, topology.groupSnapshots);
+      dependencies.createVpnRpcPlatformBundle = () => rpcBundle;
+      dependencies.createVpnRpcServerSession = (_crypto, _random, _scheduler, _socketServer, _address, _handler) => rpcSession;
+      dependencies.prepareLoopbackProcess = async (): Promise<void> => { throw new Error('protection unavailable'); };
+      await new VpnExtensionComposition(undefined, dependencies).start(buildExactWant(request.profileId, request.versionId, request.sessionId));
+      expect(rpcSession.listenCalls).assertEqual(0);
+      expect(registry.snapshot().lastFailure?.code).assertEqual('VPN_CREATE_FAILED');
+    });
+
     it('listensRpcBeforeBusinessReadinessAndServesStartingSnapshotsWithoutRawNames', 0, async () => {
       const request = createVpnStartRequest('profile-1', '2026-08-16T12:00:00.000Z', 'session-rpc-starting');
       const registry = new VpnSessionRegistry();
@@ -2006,6 +2032,8 @@ export default function vpnExtensionCompositionTestsuite() {
           (_dependencies: VpnRuntimeCoordinatorDependencies) => coordinator
         )
       );
+      rpcBundle.transport = 'LOOPBACK_TCP';
+      dependencies.prepareLoopbackProcess = async (): Promise<void> => { log.push('rpc.process-protected'); };
       dependencies.createCoreService = () => new RecordingCoreProxyService(topology.groups, topology.groupSnapshots);
       dependencies.createVpnRpcPlatformBundle = () => rpcBundle;
       dependencies.createVpnRpcServerSession = (_crypto, _random, _scheduler, _socketServer, _address, _handler) => rpcSession;
@@ -2019,6 +2047,7 @@ export default function vpnExtensionCompositionTestsuite() {
 
       await waitForCondition(() => rpcSession.listenCalls === 1, 80);
       expect(log.indexOf('rpc.listen') >= 0).assertTrue();
+      assertSubsequence(log, ['rpc.process-protected', 'rpc.listen']);
       const startingSnapshot = await rpcServerHolder.require().handleRequest(
         createRpcRequest(1, 'GET_SNAPSHOT', 0, createVpnRpcGuards(null, null, null), createVpnRpcEmptyPayload())
       );
@@ -2064,6 +2093,7 @@ export default function vpnExtensionCompositionTestsuite() {
           (_dependencies: VpnRuntimeCoordinatorDependencies) => coordinator
         )
       );
+      dependencies.prepareLoopbackProcess = async (): Promise<void> => { throw new Error('LocalSocket must not prepare loopback protection'); };
       dependencies.createCoreService = () => new RecordingCoreProxyService(topology.groups, topology.groupSnapshots);
       dependencies.createVpnRpcPlatformBundle = () => rpcBundle;
       dependencies.createVpnRpcServerSession = (_crypto, _random, _scheduler, _socketServer, _address, _handler) => rpcSession;

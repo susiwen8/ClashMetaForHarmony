@@ -600,6 +600,15 @@ export class VpnRpcServerSession implements VpnRpcServerSessionPort {
       } catch {}
       return;
     }
+    // Network-visible transports must not let later unauthenticated peers
+    // repeatedly cancel an existing handshake. Local transports keep their
+    // previous replacement policy unless they explicitly opt in.
+    if (this.server.preservePendingCandidate === true && this.candidateContext !== null) {
+      try {
+        await socket.close();
+      } catch {}
+      return;
+    }
     const previousCandidateContext: SessionContextValue | null = this.candidateContext;
     const context: SessionContextValue = new SessionContextValue(
       this.nextContextToken + 1,

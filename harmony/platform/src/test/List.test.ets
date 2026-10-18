@@ -7,6 +7,7 @@ import harmonyProxyIdentityHasherTestsuite from './HarmonyProxyIdentityHasher.te
 import harmonyVpnRpcKeyProviderTestsuite from './HarmonyVpnRpcKeyProvider.test';
 import harmonyVpnLocalSocketClientTestsuite from './HarmonyVpnLocalSocketClient.test';
 import harmonyVpnLocalSocketServerTestsuite from './HarmonyVpnLocalSocketServer.test';
+import harmonyVpnLoopbackSocketTestsuite from './HarmonyVpnLoopbackSocket.test';
 import harmonyVpnRpcPlatformFactoryTestsuite from './HarmonyVpnRpcPlatformFactory.test';
 import sandboxProfileContentStoreTestsuite from './SandboxProfileContentStore.test';
 import harmonyFilePickerTestsuite from './HarmonyFilePicker.test';
@@ -34,6 +35,7 @@ export default function testsuite() {
   harmonyVpnRpcKeyProviderTestsuite();
   harmonyVpnLocalSocketClientTestsuite();
   harmonyVpnLocalSocketServerTestsuite();
+  harmonyVpnLoopbackSocketTestsuite();
   harmonyVpnRpcPlatformFactoryTestsuite();
   sandboxProfileContentStoreTestsuite();
   harmonyFilePickerTestsuite();

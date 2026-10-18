@@ -42,7 +42,7 @@ function assertOrdered(source, labelsAndNeedles) {
   }
 }
 
-test('vpn local socket rpc keeps business transport in platform-only LocalSocket and HUKS adapters', async () => {
+test('vpn rpc keeps versioned business transport in platform-only socket and HUKS adapters', async () => {
   const [clientSource, serverSource, keyProviderSource, platformFactorySource, proxyHandlerSource] = await Promise.all([
     readUtf8(LOCAL_SOCKET_CLIENT_PATH),
     readUtf8(LOCAL_SOCKET_SERVER_PATH),
@@ -56,7 +56,10 @@ test('vpn local socket rpc keeps business transport in platform-only LocalSocket
   assert.match(platformFactorySource, /new HarmonyVpnLocalSocketClient\(undefined, this\.socketRootDir\)/u);
   assert.match(platformFactorySource, /new HarmonyVpnLocalSocketServer\(undefined, this\.socketRootDir\)/u);
   assert.match(platformFactorySource, /new HarmonyVpnRpcKeyProvider\(\)/u);
-  assert.match(platformFactorySource, /constructor\(dependencies\?: HarmonyVpnRpcPlatformDependencies, socketRootDir: string = ''\)/u);
+  assert.match(platformFactorySource, /const useLoopback: boolean = this\.sdkApiVersion >= 26;/u);
+  assert.match(platformFactorySource, /new HarmonyVpnLoopbackSocketClient\(\)/u);
+  assert.match(platformFactorySource, /new HarmonyVpnLoopbackSocketServer\(\)/u);
+  assert.match(platformFactorySource, /constructor\(\s*dependencies\?: HarmonyVpnRpcPlatformDependencies,\s*socketRootDir: string = '',\s*sdkApiVersion: number = deviceInfo\.sdkApiVersion\s*\)/u);
   assert.match(clientSource, /resolveLocalSocketAddress\(this\.socketRootDir, address\)/u);
   assert.match(serverSource, /resolveLocalSocketAddress\(this\.socketRootDir, address\)/u);
 

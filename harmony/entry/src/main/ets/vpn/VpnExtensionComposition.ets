@@ -165,6 +165,7 @@ export interface VpnExtensionCompositionDependencies {
   createClock?: () => ClockPort;
   createScheduler?: () => BoundedDelaySchedulerPort;
   createEvidenceJournal?: () => VpnEvidenceJournalPort;
+  prepareLoopbackProcess?: () => Promise<void>;
   createVpnRpcPlatformBundle?: () => HarmonyVpnRpcPlatformBundle;
   createVpnRpcServerSession?: (
     crypto: VpnRpcCryptoPort,
@@ -1030,6 +1031,19 @@ export class VpnExtensionComposition implements VpnExtensionCompositionRunner {
         const rpcScheduler: VpnRpcSchedulerPort = new VpnRpcSchedulerAdapter(scheduler);
         const coreProxy: CoreProxyPort = new CoreProxyServiceAdapter(runtimeCoreService);
         const rpcBundle: HarmonyVpnRpcPlatformBundle = this.createVpnRpcPlatformBundle();
+        if (rpcBundle.transport === 'LOOPBACK_TCP') {
+          reportVpnStartStage('rpc.process-protect.begin');
+          if (this.dependencies.prepareLoopbackProcess !== undefined) {
+            await this.dependencies.prepareLoopbackProcess();
+          } else {
+            if (this.context === undefined) {
+              throw new CompositionResolveError('VPN_CREATE_FAILED', 'VPN extension context was unavailable.');
+            }
+            const api = new HarmonyVpnConnectionApi(this.context, defaultSdkApiVersionResolver);
+            await api.createConnection().protectProcessNet();
+          }
+          reportVpnStartStage('rpc.process-protect.ok');
+        }
         reportVpnStartStage('rpc.catalog.begin');
         const rpcCatalog = await buildVpnRpcCatalog(
           rpcBundle.crypto,

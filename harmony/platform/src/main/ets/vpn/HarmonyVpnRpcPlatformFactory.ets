@@ -1,3 +1,5 @@
+import deviceInfo from '@ohos.deviceInfo';
+import { HarmonyVpnLoopbackSocketClient, HarmonyVpnLoopbackSocketServer } from './HarmonyVpnLoopbackSocket';
 import { cryptoFramework } from '@kit.CryptoArchitectureKit';
 import type {
   VpnRpcCryptoPort,
@@ -16,6 +18,7 @@ export interface HarmonyVpnCryptoFrameworkRandomDriver {
 }
 
 export interface HarmonyVpnRpcPlatformBundle {
+  readonly transport?: 'LOCAL_SOCKET' | 'LOOPBACK_TCP';
   readonly crypto: VpnRpcCryptoPort;
   readonly clientFactory: VpnRpcSocketClientFactoryPort;
   readonly server: VpnRpcSocketServerPort;
@@ -56,26 +59,39 @@ export class HarmonyVpnRpcPlatformFactory {
   private readonly crypto: VpnRpcCryptoPort;
   private readonly random: VpnRpcRandomPort;
   private readonly socketRootDir: string;
+  private readonly sdkApiVersion: number;
   private readonly dependencies: HarmonyVpnRpcPlatformDependencies;
 
-  constructor(dependencies?: HarmonyVpnRpcPlatformDependencies, socketRootDir: string = '') {
+  constructor(
+    dependencies?: HarmonyVpnRpcPlatformDependencies,
+    socketRootDir: string = '',
+    sdkApiVersion: number = deviceInfo.sdkApiVersion
+  ) {
     this.socketRootDir = socketRootDir;
+    this.sdkApiVersion = sdkApiVersion;
     this.dependencies = dependencies ?? new HarmonyVpnRpcPlatformDependenciesRecord();
     this.crypto = this.dependencies.crypto ?? new HarmonyVpnRpcKeyProvider();
     this.random = this.dependencies.random ?? new HarmonyVpnRpcCryptoFrameworkRandomPort();
   }
 
   create(): HarmonyVpnRpcPlatformBundle {
+    const useLoopback: boolean = this.sdkApiVersion >= 26;
     return new HarmonyVpnRpcPlatformBundleRecord(
       this.crypto,
-      this.dependencies.createClientFactory?.() ?? new HarmonyVpnLocalSocketClient(undefined, this.socketRootDir),
-      this.dependencies.createServer?.() ?? new HarmonyVpnLocalSocketServer(undefined, this.socketRootDir),
-      this.random
+      this.dependencies.createClientFactory?.() ?? (useLoopback
+        ? new HarmonyVpnLoopbackSocketClient()
+        : new HarmonyVpnLocalSocketClient(undefined, this.socketRootDir)),
+      this.dependencies.createServer?.() ?? (useLoopback
+        ? new HarmonyVpnLoopbackSocketServer()
+        : new HarmonyVpnLocalSocketServer(undefined, this.socketRootDir)),
+      this.random,
+      useLoopback ? 'LOOPBACK_TCP' : 'LOCAL_SOCKET'
     );
   }
 }
 
 class HarmonyVpnRpcPlatformBundleRecord implements HarmonyVpnRpcPlatformBundle {
+  readonly transport: 'LOCAL_SOCKET' | 'LOOPBACK_TCP';
   readonly crypto: VpnRpcCryptoPort;
   readonly clientFactory: VpnRpcSocketClientFactoryPort;
   readonly server: VpnRpcSocketServerPort;
@@ -85,8 +101,10 @@ class HarmonyVpnRpcPlatformBundleRecord implements HarmonyVpnRpcPlatformBundle {
     crypto: VpnRpcCryptoPort,
     clientFactory: VpnRpcSocketClientFactoryPort,
     server: VpnRpcSocketServerPort,
-    random: VpnRpcRandomPort
+    random: VpnRpcRandomPort,
+    transport: 'LOCAL_SOCKET' | 'LOOPBACK_TCP'
   ) {
+    this.transport = transport;
     this.crypto = crypto;
     this.clientFactory = clientFactory;
     this.server = server;

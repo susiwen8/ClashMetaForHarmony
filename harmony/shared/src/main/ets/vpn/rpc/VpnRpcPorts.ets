@@ -72,6 +72,7 @@ export interface VpnRpcSocketClientFactoryPort {
 }
 
 export interface VpnRpcSocketServerPort {
+  readonly preservePendingCandidate?: boolean;
   listen(address: string, listener: (connection: VpnRpcSocketConnectionPort) => void | Promise<void>): Promise<void>;
   close(): Promise<void>;
 }

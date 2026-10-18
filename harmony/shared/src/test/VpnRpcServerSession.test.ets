@@ -362,11 +362,16 @@ class SocketPair {
 }
 
 class TestSocketServer implements VpnRpcSocketServerPort {
+  readonly preservePendingCandidate?: boolean;
   readonly listenCalls: string[] = [];
   readonly pairs: SocketPair[] = [];
   private listener: ((connection: VpnRpcSocketConnectionPort) => void) | null = null;
   closeCalls: number = 0;
   listenFailure: VpnRpcSocketFailure | Error | null = null;
+
+  constructor(preservePendingCandidate?: boolean) {
+    this.preservePendingCandidate = preservePendingCandidate;
+  }
 
   async listen(address: string, listener: (connection: VpnRpcSocketConnectionPort) => void): Promise<void> {
     this.listenCalls.push(address);
@@ -874,6 +879,82 @@ export default function vpnRpcServerSessionTestsuite() {
 
       expect(promotedClient.assignedClientEpoch).assertEqual(2);
       expect(activePair.server.closeCalls).assertEqual(1);
+    });
+
+    it('preservesPendingCandidateBeforeFirstAuthenticationWhenRequestedByTransport', 0, async () => {
+      const serverPort: TestSocketServer = new TestSocketServer(true);
+      const scheduler: ManualSchedulerPort = new ManualSchedulerPort(new ManualClockPort());
+      const session = new BarrelVpnRpcServerSession(
+        new TestCryptoPort(),
+        new ScriptedRandomPort([...createServerRandom(1), ...createServerRandom(2)]),
+        scheduler,
+        serverPort,
+        SERVER_ADDRESS,
+        async (request: VpnRpcBody): Promise<VpnRpcBody> => createSuccessFor(request)
+      );
+      await session.listen();
+      const firstPair: SocketPair = serverPort.accept();
+      const firstClient: RpcClientPeer = new RpcClientPeer([sequentialBytes(32, 0x44)]);
+      firstClient.attach(firstPair.client);
+      await waitForCondition((): boolean => firstClient.receivedHellos.length === 1, 'first pending hello');
+
+      const rejectedPair: SocketPair = serverPort.accept();
+      const rejectedClient: RpcClientPeer = new RpcClientPeer([]);
+      rejectedClient.attach(rejectedPair.client);
+      await waitForCondition((): boolean => rejectedPair.server.closeCalls === 1, 'later pending rejection');
+      expect(firstPair.server.closeCalls).assertEqual(0);
+      expect(rejectedClient.receivedHellos.length).assertEqual(0);
+      await firstClient.authenticate();
+      await sendPingRequest(firstClient, 1);
+      expect((await firstClient.decodeNextResponse()).ok).assertTrue();
+      expect(firstClient.assignedClientEpoch).assertEqual(1);
+      await session.close();
+    });
+
+    it('preservesPendingCandidateAndActiveClientUntilTimeoutAllowsRetry', 0, async () => {
+      const serverPort: TestSocketServer = new TestSocketServer(true);
+      const scheduler: ManualSchedulerPort = new ManualSchedulerPort(new ManualClockPort());
+      const session = new BarrelVpnRpcServerSession(
+        new TestCryptoPort(),
+        new ScriptedRandomPort([
+          ...createServerRandom(1), ...createServerRandom(2), ...createServerRandom(3)
+        ]),
+        scheduler,
+        serverPort,
+        SERVER_ADDRESS,
+        async (request: VpnRpcBody): Promise<VpnRpcBody> => createSuccessFor(request)
+      );
+      await session.listen();
+      const activePair: SocketPair = serverPort.accept();
+      const activeClient: RpcClientPeer = new RpcClientPeer([sequentialBytes(32, 0x44)]);
+      activeClient.attach(activePair.client);
+      await activeClient.authenticate();
+      const pendingPair: SocketPair = serverPort.accept();
+      const pendingClient: RpcClientPeer = new RpcClientPeer([]);
+      pendingClient.attach(pendingPair.client);
+      await waitForCondition((): boolean => pendingClient.receivedHellos.length === 1, 'preserved pending hello');
+      const rejectedPair: SocketPair = serverPort.accept();
+      const rejectedClient: RpcClientPeer = new RpcClientPeer([]);
+      rejectedClient.attach(rejectedPair.client);
+      await waitForCondition((): boolean => rejectedPair.server.closeCalls === 1, 'active session candidate rejection');
+      expect(pendingPair.server.closeCalls).assertEqual(0);
+      expect(rejectedClient.receivedHellos.length).assertEqual(0);
+      expect(activePair.server.closeCalls).assertEqual(0);
+      await sendPingRequest(activeClient, 1);
+      expect((await activeClient.decodeNextResponse()).ok).assertTrue();
+
+      await scheduler.advanceAndRun(3000);
+      await waitForCondition((): boolean => pendingPair.server.closeCalls === 1, 'preserved candidate timeout');
+      expect(activePair.server.closeCalls).assertEqual(0);
+      const retryPair: SocketPair = serverPort.accept();
+      const retryClient: RpcClientPeer = new RpcClientPeer([sequentialBytes(32, 0x64)]);
+      retryClient.attach(retryPair.client);
+      await retryClient.authenticate();
+      expect(retryClient.assignedClientEpoch).assertEqual(2);
+      expect(activePair.server.closeCalls).assertEqual(1);
+      await sendPingRequest(retryClient, 1);
+      expect((await retryClient.decodeNextResponse()).ok).assertTrue();
+      await session.close();
     });
 
     it('replacesOnlyPreviousUnauthenticatedCandidateAndKeepsActiveHealthy', 0, async () => {

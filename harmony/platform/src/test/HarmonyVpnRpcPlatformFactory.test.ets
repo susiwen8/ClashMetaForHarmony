@@ -7,6 +7,9 @@ import type {
   VpnRpcSocketServerPort
 } from '@cmfa/shared';
 import { HarmonyVpnRpcPlatformFactory } from '../../Index';
+import { HarmonyVpnLoopbackSocketClient, HarmonyVpnLoopbackSocketServer } from '../main/ets/vpn/HarmonyVpnLoopbackSocket';
+import { HarmonyVpnLocalSocketClient } from '../main/ets/vpn/HarmonyVpnLocalSocketClient';
+import { HarmonyVpnLocalSocketServer } from '../main/ets/vpn/HarmonyVpnLocalSocketServer';
 import {
   HarmonyVpnRpcCryptoFrameworkRandomPort,
   type HarmonyVpnCryptoFrameworkRandomDriver,
@@ -131,6 +134,21 @@ function bytesToCsv(bytes: Uint8Array): string {
 
 export default function harmonyVpnRpcPlatformFactoryTestsuite() {
   describe('HarmonyVpnRpcPlatformFactoryTest', () => {
+    it('keepsApi20Through25OnLocalSocketAndUsesLoopbackOn26AndLater', 0, () => {
+      for (const api of [20, 21, 22, 24, 25]) {
+        const bundle = new HarmonyVpnRpcPlatformFactory(undefined, '/sandbox/files', api).create();
+        expect(bundle.transport).assertEqual('LOCAL_SOCKET');
+        expect(bundle.clientFactory instanceof HarmonyVpnLocalSocketClient).assertTrue();
+        expect(bundle.server instanceof HarmonyVpnLocalSocketServer).assertTrue();
+      }
+      for (const api of [26, 27]) {
+        const bundle = new HarmonyVpnRpcPlatformFactory(undefined, '/sandbox/files', api).create();
+        expect(bundle.transport).assertEqual('LOOPBACK_TCP');
+        expect(bundle.clientFactory instanceof HarmonyVpnLoopbackSocketClient).assertTrue();
+        expect(bundle.server instanceof HarmonyVpnLoopbackSocketServer).assertTrue();
+      }
+    });
+
     it('exportsPlatformAssemblyFromIndexAndReusesCryptoWhileCreatingFreshSocketOwners', 0, () => {
       const sharedCrypto: RecordingCryptoPort = new RecordingCryptoPort();
       const sharedRandomSeed: Uint8Array[] = [new Uint8Array([1, 2, 3, 4]), new Uint8Array([5, 6, 7, 8])];
