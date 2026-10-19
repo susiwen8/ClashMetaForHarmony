@@ -21,6 +21,35 @@ See [the Phase 0–2 verification guide](../docs/harmony/phase-0-2-verification.
 for the evidence model and deferred phone procedure. Third-party source and
 license information is in [THIRD_PARTY_NOTICES.md](THIRD_PARTY_NOTICES.md).
 
+## HarmonyOS 7 support and HarmonyOS 6 compatibility
+
+HarmonyOS 7 introduces an isolated VPN process whose permissions can prevent
+Unix socket access in debug-labelled application data. The API 26+ transport
+uses loopback TCP so local debug-signed installations can establish VPN sessions
+without relying on filesystem socket permissions.
+
+| Behavior | HarmonyOS 6 / API 20–25 | HarmonyOS 7 / API 26+ |
+| --- | --- | --- |
+| UI-to-VPN RPC transport | Original app-private LocalSocket | IPv4 TCP bound only to `127.0.0.1` |
+| Authentication and message integrity | Mutual HUKS authentication, per-frame MACs, epoch/sequence checks | Same protocol and checks |
+| Pending connection policy | Original LocalSocket behavior | Bounded connections and handshake timeout; new unauthenticated connections cannot evict an active session or pending handshake |
+| Process socket protection | Existing VPN startup protection | `protectProcessNet()` also runs before TCP listener creation |
+| Configuration and UI | Existing profile, node and VPN operations | Same operations; no manual transport setting |
+| Verification for this change | API routing regression tests; no physical-device retest | Mate 70, HarmonyOS 7.0.0.109, API 26 |
+
+Selection uses `deviceInfo.sdkApiVersion`, not a marketing version string.
+Transport failures do not trigger fallback to the other transport. Loopback TCP
+is internal RPC, not an HTTP/SOCKS proxy; a discoverable port is not an
+authentication credential, and port conflicts fail closed.
+
+The same HAP retains target API 24 and compatible API 20. The 2026-10-18
+HarmonyOS 7 device check covered VPN start, normal stop/restart, foreground and
+background transitions, and browser access to Google, Facebook and Twitter/X
+with increasing TUN counters. Facebook and X were verified through their public
+landing/login pages; account login and forced UI process recreation were not
+verified. See [the runtime bridge notes](../docs/harmony/vpn-runtime-bridge.md)
+for transport and authentication details.
+
 ## Locked inputs
 
 The checked-in locks currently require:
